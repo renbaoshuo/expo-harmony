@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
@@ -103,6 +105,66 @@ test('keeps non-Harmony requests on the original resolver', () => {
 
   assert.deepEqual(result, { type: 'sourceFile', filePath: 'ios:expo:example' });
   assert.deepEqual(calls.map(call => call.kind), ['expo', 'metro']);
+});
+
+test('resolves the entry package prelude to the exact application platform file', (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'expo-harmony-entry-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const harmonyPrelude = path.join(projectRoot, 'prelude.harmony.js');
+  fs.writeFileSync(harmonyPrelude, '\'use strict\';\n');
+  fs.writeFileSync(path.join(projectRoot, 'prelude.js'), '\'use strict\';\n');
+
+  const { calls, withHarmonyConfig } = createHarness();
+  const config = withHarmonyConfig({ projectRoot, resolver: {} });
+  const result = config.resolver.resolveRequest(createContext(calls), '@expo-harmony/entry/app-prelude', 'harmony');
+
+  assert.deepEqual(result, { type: 'sourceFile', filePath: harmonyPrelude });
+  assert.deepEqual(calls, []);
+});
+
+test('falls back to the application prelude.js', (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'expo-harmony-entry-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const appPrelude = path.join(projectRoot, 'prelude.js');
+  fs.writeFileSync(appPrelude, '\'use strict\';\n');
+
+  const { calls, withHarmonyConfig } = createHarness();
+  const config = withHarmonyConfig({ projectRoot, resolver: {} });
+  const result = config.resolver.resolveRequest(createContext(calls), '@expo-harmony/entry/app-prelude', 'harmony');
+
+  assert.deepEqual(result, { type: 'sourceFile', filePath: appPrelude });
+  assert.deepEqual(calls, []);
+});
+
+test('supports application preludes for non-Harmony requests too', (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'expo-harmony-entry-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const iosPrelude = path.join(projectRoot, 'prelude.ios.js');
+  fs.writeFileSync(iosPrelude, '\'use strict\';\n');
+
+  const { calls, withHarmonyConfig } = createHarness();
+  const config = withHarmonyConfig({ projectRoot, resolver: {} });
+  const result = config.resolver.resolveRequest(createContext(calls), '@expo-harmony/entry/app-prelude', 'ios');
+
+  assert.deepEqual(result, { type: 'sourceFile', filePath: iosPrelude });
+  assert.deepEqual(calls, []);
+});
+
+test('does not use application index files as preludes', (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'expo-harmony-entry-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(projectRoot, 'index.js'), '\'use strict\';\n');
+  fs.writeFileSync(path.join(projectRoot, 'index.harmony.js'), '\'use strict\';\n');
+
+  const { calls, withHarmonyConfig } = createHarness();
+  const config = withHarmonyConfig({ projectRoot, resolver: {} });
+  const result = config.resolver.resolveRequest(createContext(calls), '@expo-harmony/entry/app-prelude', 'harmony');
+
+  assert.deepEqual(result, {
+    type: 'sourceFile',
+    filePath: 'harmony:@expo-harmony/entry/app-prelude',
+  });
+  assert.deepEqual(calls.map(call => call.kind), ['metro']);
 });
 
 test('bridges RNOH back into the original Expo resolver', () => {

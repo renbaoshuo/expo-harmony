@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/metro-config",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Composable Metro configuration for Expo apps targeting HarmonyOS with RNOH",
   "keywords": [
     "expo",
@@ -27,12 +27,6 @@
       "default": "./index.js"
     }
   },
-  "files": [
-    "index.js",
-    "index.d.ts",
-    "src",
-    "README.md"
-  ],
   "scripts": {
     "test": "node --test test/*.test.js"
   },

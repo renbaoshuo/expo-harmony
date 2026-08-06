@@ -1,8 +1,38 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
+
 const HARMONY_PLATFORM = 'harmony';
 const DEFAULT_REACT_NATIVE_HARMONY_PACKAGE = '@react-native-oh/react-native-harmony';
+const APP_PRELUDE_MODULE = '@expo-harmony/entry/app-prelude';
 const NO_RESOLUTION = Symbol('NO_RESOLUTION');
+
+function findFile(filePaths) {
+  for (const filePath of filePaths) {
+    try {
+      if (fs.statSync(filePath).isFile()) {
+        return filePath;
+      }
+    } catch {
+      // Try the next application prelude candidate.
+    }
+  }
+
+  return null;
+}
+
+function getApplicationPrelude(projectRoot, platform) {
+  const candidates = [];
+
+  if (typeof platform === 'string' && /^[a-z0-9_-]+$/iu.test(platform)) {
+    candidates.push(path.join(projectRoot, `prelude.${platform}.js`));
+  }
+
+  candidates.push(path.join(projectRoot, 'prelude.js'));
+
+  return findFile(candidates);
+}
 
 function assertObject(value, name) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -210,6 +240,15 @@ function createResolver({ baseResolver, harmonyResolver, options, projectRoot })
         targetPlatform
       );
     };
+
+    if (moduleName === APP_PRELUDE_MODULE) {
+      const appPrelude = getApplicationPrelude(projectRoot, platform);
+      if (appPrelude) {
+        return { type: 'sourceFile', filePath: appPrelude };
+      }
+
+      return resolveBase(moduleName, platform);
+    }
 
     if (platform !== HARMONY_PLATFORM) {
       return resolveBase(moduleName, platform);

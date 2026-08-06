@@ -1,5 +1,7 @@
 # @expo-harmony/metro-config
 
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/metro-config)
+
 用于将 Expo Metro 配置与 React Native OpenHarmony（RNOH）组合起来，使 Expo 项目能够同时支持 HarmonyOS。
 
 这个包会隔离 Expo 与 RNOH 的 resolver 调用链：
@@ -43,7 +45,21 @@ module.exports = config;
 }
 ```
 
-原生端此时请求 `index.bundle?platform=harmony` 即可。不要向 Expo CLI 传递 `--harmony`，这样会导致无法正常启动。
+Harmony 原生端通过 Expo virtual entry 请求 bundle：
+
+```text
+/.expo/.virtual-metro-entry.bundle?platform=harmony&dev=true&minify=false&modulesOnly=false&runModule=true
+```
+
+Expo Metro 会把这个 URL 重写到 `package.json#main` 解析出的实际入口。不要向 Expo CLI 传递 `--harmony`，这样会导致无法正常启动。
+
+当 `package.json#main` 使用 `@expo-harmony/entry` 时，入口包会先安装 HarmonyOS 所需的 Expo polyfill，再按以下顺序从应用根目录解析 prelude：
+
+1. `prelude.<platform>.js`
+2. `prelude.js`
+3. 入口包中的空实现
+
+入口配置、应用 prelude 和其他高阶用法参见 [`@expo-harmony/entry` 文档](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/entry#readme)。
 
 ## 配置
 
@@ -145,3 +161,10 @@ module.exports = withNativeWind(config, { input: './global.css' });
 ```
 
 这样 `env` 中的 Harmony 环境变量也能在 NativeWind 等后续配置读取时生效。
+
+## Author
+
+**expo-harmony** © [Baoshuo](https://github.com/renbaoshuo), Released under the [MIT](./LICENSE) License.<br>
+Authored and maintained by Baoshuo with help from [contributors](https://github.com/renbaoshuo/expo-harmony/contributors).
+
+> [Personal Website](https://baoshuo.ren) · [Blog](https://blog.baoshuo.ren) · GitHub [@renbaoshuo](https://github.com/renbaoshuo) · Twitter [@renbaoshuo](https://twitter.com/renbaoshuo)

@@ -6,8 +6,9 @@
 
 已经移植的库都发布在 `@expo-harmony/` 下，具体列表如下：
 
-| 包名                                                                                   | 目录                                               |                                               |
-| -------------------------------------------------------------------------------------- | -------------------------------------------------- | --------------------------------------------- |
+| 包名                                                                                   | 目录                                               |                                                                |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------- |
+| [@expo-harmony/entry](https://www.npmjs.com/package/@expo-harmony/entry)               | [`packages/entry`](./packages/entry)               | Expo 必需 polyfill、应用前置脚本与 Router 统一入口             |
 | [@expo-harmony/metro-config](https://www.npmjs.com/package/@expo-harmony/metro-config) | [`packages/metro-config`](./packages/metro-config) | 基础 Metro 配置，[接入指引](./packages/metro-config/README.md) |
 
 更多 Expo 库正在移植中，也欢迎贡献更多移植！
