@@ -1,0 +1,20 @@
+{
+    "eslint.format.enable": true,
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true,
+    "editor.renderFinalNewline": "on",
+    "files.insertFinalNewline": true,
+    "files.trimFinalNewlines": true,
+    "[javascript]": {
+        "editor.defaultFormatter": "dbaeumer.vscode-eslint"
+    },
+    "[typescript]": {
+        "editor.defaultFormatter": "dbaeumer.vscode-eslint"
+    },
+    "[javascriptreact]": {
+        "editor.defaultFormatter": "dbaeumer.vscode-eslint"
+    },
+    "[typescriptreact]": {
+        "editor.defaultFormatter": "dbaeumer.vscode-eslint"
+    }
+}
