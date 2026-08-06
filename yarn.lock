@@ -93,6 +93,18 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@expo-harmony/metro-config@workspace:packages/metro-config":
+  version: 0.0.0-use.local
+  resolution: "@expo-harmony/metro-config@workspace:packages/metro-config"
+  peerDependencies:
+    "@react-native-oh/react-native-harmony": "*"
+    metro-config: "*"
+  peerDependenciesMeta:
+    "@react-native-oh/react-native-harmony":
+      optional: true
+  languageName: unknown
+  linkType: soft
+
 "@humanfs/core@npm:^0.19.2":
   version: 0.19.2
   resolution: "@humanfs/core@npm:0.19.2"

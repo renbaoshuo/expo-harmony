@@ -1,0 +1,54 @@
+{
+  "name": "@expo-harmony/metro-config",
+  "version": "0.0.1",
+  "description": "Composable Metro configuration for Expo apps targeting HarmonyOS with RNOH",
+  "keywords": [
+    "expo",
+    "harmonyos",
+    "metro",
+    "react-native",
+    "rnoh"
+  ],
+  "author": "Baoshuo <i@baoshuo.ren>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renbaoshuo/expo-harmony.git",
+    "directory": "packages/metro-config"
+  },
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/metro-config#readme",
+  "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "require": "./index.js",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "peerDependencies": {
+    "@react-native-oh/react-native-harmony": "*",
+    "metro-config": "*"
+  },
+  "peerDependenciesMeta": {
+    "@react-native-oh/react-native-harmony": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
