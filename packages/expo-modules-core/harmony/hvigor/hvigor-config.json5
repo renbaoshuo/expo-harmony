@@ -1,0 +1,10 @@
+{
+  "modelVersion": "5.0.0",
+  "dependencies": {},
+  "execution": {
+    "daemon": false,
+    "parallel": true,
+    "incremental": true,
+    "typeCheck": true
+  }
+}

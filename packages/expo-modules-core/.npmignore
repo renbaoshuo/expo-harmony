@@ -1,0 +1,11 @@
+test/
+scripts/
+/hvigorfile.ts
+**/.hvigor/
+**/.cxx/
+**/build/
+**/oh_modules/
+**/BuildProfile.ets
+
+# The source HAR is the native entrypoint shipped with this npm package.
+!harmony/*.har

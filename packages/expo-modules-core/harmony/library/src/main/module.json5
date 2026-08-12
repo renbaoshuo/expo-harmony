@@ -1,0 +1,11 @@
+{
+  "module": {
+    "name": "expo_modules_core",
+    "type": "har",
+    "deviceTypes": [
+      "default",
+      "tablet",
+      "2in1"
+    ]
+  }
+}

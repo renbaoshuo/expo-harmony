@@ -2,3 +2,19 @@
 /.yarn/releases/*    binary
 /.yarn/plugins/**/*  binary
 /.pnp.*              binary linguist-generated
+/packages/**/harmony/** -text
+/packages/**/harmony/**/*.ets text eol=lf
+/packages/**/harmony/**/*.ts text eol=lf
+/packages/**/harmony/**/*.cpp text eol=lf
+/packages/**/harmony/**/*.cc text eol=lf
+/packages/**/harmony/**/*.cxx text eol=lf
+/packages/**/harmony/**/*.h text eol=lf
+/packages/**/harmony/**/*.hpp text eol=lf
+/packages/**/harmony/**/*.cmake text eol=lf
+/packages/**/harmony/**/CMakeLists.txt text eol=lf
+/packages/**/harmony/**/*.json text eol=lf
+/packages/**/harmony/**/*.json5 text eol=lf
+/packages/**/harmony/**/*.txt text eol=lf
+/packages/**/harmony/**/*.svg text eol=lf
+/scripts/*.mjs        text eol=lf
+*.har                 -text

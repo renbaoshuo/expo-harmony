@@ -4,14 +4,18 @@
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
-
-# Whether you use PnP or not, the node_modules folder is often used to store
-# build artifacts that should be gitignored
-node_modules
-
-# Swap the comments on the following lines if you wish to use zero-installs
-# In that case, don't forget to run `yarn config set enableGlobalCache false`!
-# Documentation here: https://yarnpkg.com/features/caching#zero-installs
-
 #!.yarn/cache
+node_modules
+.hvigor/
 .pnp.*
+
+# CNG/Hvigor outputs
+**/harmony/**/.cxx/
+**/harmony/**/build/
+**/harmony/**/oh_modules/
+
+# Harmony package artifacts.
+*.har
+*.hap
+*.app
+*.hsp
