@@ -19,12 +19,24 @@ BinPackParameters: false
 BreakBeforeBinaryOperators: All
 PackConstructorInitializers: NextLine
 IncludeCategories:
-  - Regex: '^<.*'
+  - Regex: '^<[^/]+>$'
+    Priority: 1
+    SortPriority: 0
+    CaseSensitive: false
+  - Regex: '^<jsi/'
     Priority: 2
     SortPriority: 0
     CaseSensitive: false
-  - Regex: '.*'
+  - Regex: '^<RNOH/'
     Priority: 3
+    SortPriority: 0
+    CaseSensitive: false
+  - Regex: '^<[^>]+/[^>]+>$'
+    Priority: 4
+    SortPriority: 0
+    CaseSensitive: false
+  - Regex: '.*'
+    Priority: 5
     SortPriority: 0
     CaseSensitive: false
 InsertBraces: true   ## clang-format 15

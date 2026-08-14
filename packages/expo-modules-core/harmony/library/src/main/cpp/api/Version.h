@@ -15,20 +15,24 @@ constexpr int versionPart(std::string_view version, std::size_t expectedPart) {
   int value = 0;
   for (const char character : version) {
     if (character == '.') {
-      if (part == expectedPart) return value;
+      if (part == expectedPart) {
+        return value;
+      }
       ++part;
       value = 0;
     } else if (character >= '0' && character <= '9') {
-      if (part == expectedPart) value = value * 10 + (character - '0');
+      if (part == expectedPart) {
+        value = value * 10 + (character - '0');
+      }
     }
   }
   return part == expectedPart ? value : 0;
 }
-} // namespace detail
+}  // namespace detail
 
 inline constexpr char ExpoModulesCoreVersion[] = EXPO_MODULES_CORE_VERSION;
 inline constexpr int ExpoModulesCoreVersionMajor = detail::versionPart(ExpoModulesCoreVersion, 0);
 inline constexpr int ExpoModulesCoreVersionMinor = detail::versionPart(ExpoModulesCoreVersion, 1);
 inline constexpr int ExpoModulesCoreVersionPatch = detail::versionPart(ExpoModulesCoreVersion, 2);
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

@@ -1,17 +1,20 @@
 #pragma once
 
-#include <ReactCommon/CallInvoker.h>
-#include <RNOH/TaskExecutor/TaskExecutor.h>
-#include <jsi/jsi.h>
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <typeindex>
-#include <functional>
 #include <unordered_map>
 #include <vector>
+
+#include <jsi/jsi.h>
+
+#include <RNOH/TaskExecutor/TaskExecutor.h>
+
+#include <ReactCommon/CallInvoker.h>
 #include <folly/dynamic.h>
 
 namespace expo::harmony {
@@ -24,15 +27,15 @@ struct ViewDefinition;
 enum class FunctionQueue;
 
 class RuntimeContext final : public std::enable_shared_from_this<RuntimeContext> {
- public:
+public:
   RuntimeContext(
-      facebook::jsi::Runtime& runtime,
+      facebook::jsi::Runtime &runtime,
       std::shared_ptr<facebook::react::CallInvoker> jsInvoker,
       rnoh::TaskExecutor::Shared taskExecutor,
       std::weak_ptr<ExpoModulesCoreTurboModule> turboModule);
   ~RuntimeContext();
 
-  facebook::jsi::Runtime& runtime() const;
+  facebook::jsi::Runtime &runtime() const;
   std::shared_ptr<facebook::react::CallInvoker> jsInvoker() const;
   std::shared_ptr<ExpoModulesCoreTurboModule> turboModule() const;
   bool isAlive() const noexcept;
@@ -66,23 +69,23 @@ class RuntimeContext final : public std::enable_shared_from_this<RuntimeContext>
       std::string methodName,
       folly::dynamic arguments = folly::dynamic::array());
   void updateViewProps(
-      const ViewDefinition& view,
+      const ViewDefinition &view,
       int64_t tag,
-      const std::string& componentName,
-      const folly::dynamic& props);
+      const std::string &componentName,
+      const folly::dynamic &props);
   void forgetView(int64_t tag) noexcept;
 
   void initializeModuleRegistry();
   bool hasModuleRegistry() const noexcept;
-  ModuleRegistry& moduleRegistry() const;
+  ModuleRegistry &moduleRegistry() const;
 
   long allocateSharedObjectId();
   long registerNativeSharedObject(std::shared_ptr<NativeSharedObject> object);
   std::shared_ptr<NativeSharedObject> getNativeSharedObject(long objectId) const;
   std::shared_ptr<NativeSharedObject> getNativeSharedObject(
       long objectId,
-      const std::string& moduleName,
-      const std::string& className) const;
+      const std::string &moduleName,
+      const std::string &className) const;
   facebook::jsi::Value materializeNativeSharedObject(
       std::string moduleName,
       std::string className,
@@ -94,7 +97,7 @@ class RuntimeContext final : public std::enable_shared_from_this<RuntimeContext>
       facebook::jsi::Object javaScriptObject);
   void retainSharedObject(
       long objectId,
-      const facebook::jsi::Object& object);
+      const facebook::jsi::Object &object);
   void releaseSharedObject(long objectId);
   void scheduleSharedObjectRelease(long objectId) noexcept;
   facebook::jsi::Value getSharedObject(long objectId);
@@ -104,7 +107,7 @@ class RuntimeContext final : public std::enable_shared_from_this<RuntimeContext>
   void retainClass(
       std::string moduleName,
       std::string className,
-      const facebook::jsi::Function& klass);
+      const facebook::jsi::Function &klass);
   void registerNativeClass(
       std::type_index nativeType,
       std::string moduleName,
@@ -112,19 +115,19 @@ class RuntimeContext final : public std::enable_shared_from_this<RuntimeContext>
   std::pair<std::string, std::string> nativeClass(
       std::type_index nativeType) const;
   facebook::jsi::Value getClass(
-      const std::string& moduleName,
-      const std::string& className);
+      const std::string &moduleName,
+      const std::string &className);
 
   void retainModule(
       std::string name,
-      const facebook::jsi::Object& module);
-  facebook::jsi::Value getModule(const std::string& name);
+      const facebook::jsi::Object &module);
+  facebook::jsi::Value getModule(const std::string &name);
   void clearJSIReferences();
-  void retainPromise(const std::shared_ptr<Promise>& promise);
-  void releasePromise(const Promise* promise);
+  void retainPromise(const std::shared_ptr<Promise> &promise);
+  void releasePromise(const Promise *promise);
 
- private:
-  facebook::jsi::Runtime* runtime_;
+private:
+  facebook::jsi::Runtime *runtime_;
   std::shared_ptr<facebook::react::CallInvoker> jsInvoker_;
   rnoh::TaskExecutor::Shared taskExecutor_;
   std::weak_ptr<ExpoModulesCoreTurboModule> turboModule_;
@@ -137,15 +140,15 @@ class RuntimeContext final : public std::enable_shared_from_this<RuntimeContext>
   std::unique_ptr<ModuleRegistry> moduleRegistry_;
   std::unordered_map<long, std::shared_ptr<facebook::jsi::WeakObject>> sharedObjects_;
   std::unordered_map<long, std::shared_ptr<NativeSharedObject>> nativeSharedObjects_;
-  std::unordered_map<const NativeSharedObject*, long> nativeSharedObjectIds_;
+  std::unordered_map<const NativeSharedObject *, long> nativeSharedObjectIds_;
   std::unordered_map<long, std::pair<std::string, std::string>> nativeSharedObjectClasses_;
   std::unordered_map<long, size_t> sharedObjectObservationCounts_;
   std::unordered_map<std::string, std::unique_ptr<facebook::jsi::Object>> modules_;
   std::unordered_map<std::string, std::unique_ptr<facebook::jsi::Function>> classes_;
   std::unordered_map<std::type_index, std::pair<std::string, std::string>>
       nativeClasses_;
-  std::unordered_map<const Promise*, std::shared_ptr<Promise>> promises_;
+  std::unordered_map<const Promise *, std::shared_ptr<Promise>> promises_;
   std::unordered_map<int64_t, folly::dynamic> viewProps_;
 };
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

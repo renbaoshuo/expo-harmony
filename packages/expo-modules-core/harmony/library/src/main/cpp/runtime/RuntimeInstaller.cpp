@@ -1,14 +1,15 @@
 #include "RuntimeInstaller.h"
 
 #include <common/EventEmitter.h>
+#include <common/JSI/JSIUtils.h>
 #include <common/NativeModule.h>
 #include <common/SharedObject.h>
 #include <common/SharedRef.h>
-#include <common/JSI/JSIUtils.h>
+
 #include "errors/CodedError.h"
 #include "modules/ModulesHostObject.h"
-#include "runtime/RuntimeContext.h"
 #include "runtime/ModuleRegistry.h"
+#include "runtime/RuntimeContext.h"
 #include "worklets/WorkletRuntimeInstaller.h"
 
 namespace jsi = facebook::jsi;
@@ -18,35 +19,32 @@ namespace expo::harmony {
 namespace {
 
 class RuntimeContextNativeState final : public jsi::NativeState {
- public:
+public:
   explicit RuntimeContextNativeState(std::shared_ptr<RuntimeContext> context)
       : context_(std::move(context)) {}
+
   ~RuntimeContextNativeState() override {
     context_->invalidate();
   }
 
- private:
+private:
   std::shared_ptr<RuntimeContext> context_;
 };
 
 void defineReadOnly(
-    jsi::Runtime& runtime,
-    jsi::Object& object,
-    const char* name,
+    jsi::Runtime &runtime,
+    jsi::Object &object,
+    const char *name,
     jsi::Value value,
     bool enumerable = true) {
-  expo::common::defineProperty(runtime, &object, name, {
-      .configurable = false,
-      .enumerable = enumerable,
-      .writable = false,
-      .value = std::move(value)});
+  expo::common::defineProperty(runtime, &object, name, {.configurable = false, .enumerable = enumerable, .writable = false, .value = std::move(value)});
 }
 
-} // namespace
+}  // namespace
 
 bool RuntimeInstaller::install(
-    jsi::Runtime& runtime,
-    const std::shared_ptr<RuntimeContext>& context,
+    jsi::Runtime &runtime,
+    const std::shared_ptr<RuntimeContext> &context,
     bool workletRuntime) {
   auto existing = runtime.global().getProperty(runtime, "expo");
   if (existing.isObject()) {
@@ -70,11 +68,7 @@ bool RuntimeInstaller::install(
       });
 
   auto global = runtime.global();
-  expo::common::defineProperty(runtime, &global, "expo", {
-      .configurable = true,
-      .enumerable = true,
-      .writable = true,
-      .value = jsi::Value(runtime, expoObject)});
+  expo::common::defineProperty(runtime, &global, "expo", {.configurable = true, .enumerable = true, .writable = true, .value = jsi::Value(runtime, expoObject)});
   try {
     expo::EventEmitter::installClass(runtime);
     expo::NativeModule::installClass(runtime);
@@ -107,7 +101,7 @@ bool RuntimeInstaller::install(
             "The native ExpoModulesCore definition was not registered.");
       }
       auto core = coreValue.getObject(runtime);
-      for (const char* constant : {
+      for (const char *constant : {
                "expoModulesCoreVersion", "cacheDir", "documentsDir"}) {
         defineReadOnly(
             runtime,
@@ -116,9 +110,8 @@ bool RuntimeInstaller::install(
             core.getProperty(runtime, constant));
       }
 
-      for (const char* function : {
-               "uuidv4", "uuidv5", "getViewConfig", "reloadAppAsync",
-               "installOnUIRuntime"}) {
+      for (const char *function : {
+               "uuidv4", "uuidv5", "getViewConfig", "reloadAppAsync", "installOnUIRuntime"}) {
         expoObject.setProperty(runtime, function, core.getProperty(runtime, function));
       }
     }
@@ -132,11 +125,7 @@ bool RuntimeInstaller::install(
     if (!workletRuntime) {
       context->moduleRegistry().notifyCreated();
     }
-    expo::common::defineProperty(runtime, &global, "expo", {
-        .configurable = false,
-        .enumerable = true,
-        .writable = false,
-        .value = jsi::Value(runtime, expoObject)});
+    expo::common::defineProperty(runtime, &global, "expo", {.configurable = false, .enumerable = true, .writable = false, .value = jsi::Value(runtime, expoObject)});
     return true;
   } catch (...) {
     context->invalidate();
@@ -145,4 +134,4 @@ bool RuntimeInstaller::install(
   }
 }
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

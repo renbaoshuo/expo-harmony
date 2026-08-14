@@ -1,29 +1,29 @@
 #pragma once
 
-#include "api/ExpoModule.h"
-
 #include <memory>
+
+#include "api/ExpoModule.h"
 
 namespace expo::harmony {
 
 class RuntimeContext;
 
 class CoreModule final : public ExpoModule {
- public:
+public:
   explicit CoreModule(std::shared_ptr<RuntimeContext> context);
   ModuleDefinition definition() override;
 
- private:
+private:
   std::weak_ptr<RuntimeContext> context_;
 };
 
 class NativeModulesProxyModule final : public ExpoModule {
- public:
+public:
   explicit NativeModulesProxyModule(std::shared_ptr<RuntimeContext> context);
   ModuleDefinition definition() override;
 
- private:
+private:
   std::weak_ptr<RuntimeContext> context_;
 };
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

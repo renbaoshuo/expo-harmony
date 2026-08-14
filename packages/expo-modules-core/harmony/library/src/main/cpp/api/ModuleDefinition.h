@@ -1,7 +1,5 @@
 #pragma once
 
-#include <jsi/jsi.h>
-
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -12,6 +10,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include <jsi/jsi.h>
+
 #include <folly/dynamic.h>
 
 namespace expo::harmony {
@@ -28,35 +29,35 @@ enum class FunctionQueue {
 };
 
 class Invocation final {
- public:
+public:
   Invocation(
       std::shared_ptr<RuntimeContext> context,
       std::string path,
-      facebook::jsi::Runtime& runtime,
-      const facebook::jsi::Value& thisValue,
-      const facebook::jsi::Value* arguments,
+      facebook::jsi::Runtime &runtime,
+      const facebook::jsi::Value &thisValue,
+      const facebook::jsi::Value *arguments,
       size_t argumentCount);
 
-  RuntimeContext& context() const;
+  RuntimeContext &context() const;
   std::shared_ptr<RuntimeContext> sharedContext() const;
-  facebook::jsi::Runtime& runtime() const;
-  const std::string& path() const noexcept;
-  const facebook::jsi::Value& thisValue() const noexcept;
+  facebook::jsi::Runtime &runtime() const;
+  const std::string &path() const noexcept;
+  const facebook::jsi::Value &thisValue() const noexcept;
   size_t argumentCount() const noexcept;
-  const facebook::jsi::Value& argument(size_t index) const;
+  const facebook::jsi::Value &argument(size_t index) const;
   void requireArgumentCount(size_t required, size_t desired) const;
 
- private:
+private:
   std::shared_ptr<RuntimeContext> context_;
   std::string path_;
-  facebook::jsi::Runtime* runtime_;
+  facebook::jsi::Runtime *runtime_;
   facebook::jsi::Value thisValue_;
-  const facebook::jsi::Value* arguments_;
+  const facebook::jsi::Value *arguments_;
   size_t argumentCount_;
 };
 
 class NativeSharedObject {
- public:
+public:
   virtual ~NativeSharedObject() = default;
   virtual std::string nativeRefType() const;
   virtual size_t getAdditionalMemoryPressure() const noexcept;
@@ -66,7 +67,7 @@ class NativeSharedObject {
       std::string eventName,
       std::vector<folly::dynamic> arguments = {}) const;
 
- private:
+private:
   friend class RuntimeContext;
   void bindToRuntime(std::weak_ptr<RuntimeContext> context, long objectId);
   void unbindFromRuntime() noexcept;
@@ -81,40 +82,38 @@ struct SharedObjectResult final {
   std::shared_ptr<NativeSharedObject> object;
 };
 
-using ValueFactory = std::function<facebook::jsi::Value(Invocation&)>;
-using FunctionBody = std::function<facebook::jsi::Value(Invocation&)>;
-using AsyncFunctionBody =
-    std::function<void(Invocation&, const std::shared_ptr<Promise>&)>;
-using PropertyGetter = std::function<facebook::jsi::Value(Invocation&)>;
-using PropertySetter = std::function<void(Invocation&, const facebook::jsi::Value&)>;
-using SharedObjectConstructor =
-    std::function<std::shared_ptr<NativeSharedObject>(Invocation&)>;
+using ValueFactory = std::function<facebook::jsi::Value(Invocation &)>;
+using FunctionBody = std::function<facebook::jsi::Value(Invocation &)>;
+using AsyncFunctionBody = std::function<void(Invocation &, const std::shared_ptr<Promise> &)>;
+using PropertyGetter = std::function<facebook::jsi::Value(Invocation &)>;
+using PropertySetter = std::function<void(Invocation &, const facebook::jsi::Value &)>;
+using SharedObjectConstructor = std::function<std::shared_ptr<NativeSharedObject>(Invocation &)>;
 using SharedObjectFunctionBody = std::function<facebook::jsi::Value(
-    Invocation&,
-    const std::shared_ptr<NativeSharedObject>&)>;
+    Invocation &,
+    const std::shared_ptr<NativeSharedObject> &)>;
 using SharedObjectAsyncFunctionBody = std::function<void(
-    Invocation&,
-    const std::shared_ptr<NativeSharedObject>&,
-    const std::shared_ptr<Promise>&)>;
+    Invocation &,
+    const std::shared_ptr<NativeSharedObject> &,
+    const std::shared_ptr<Promise> &)>;
 using SharedObjectPropertyGetter = std::function<facebook::jsi::Value(
-    Invocation&,
-    const std::shared_ptr<NativeSharedObject>&)>;
+    Invocation &,
+    const std::shared_ptr<NativeSharedObject> &)>;
 using SharedObjectPropertySetter = std::function<void(
-    Invocation&,
-    const std::shared_ptr<NativeSharedObject>&,
-    const facebook::jsi::Value&)>;
+    Invocation &,
+    const std::shared_ptr<NativeSharedObject> &,
+    const facebook::jsi::Value &)>;
 using SharedObjectObservationCallback = std::function<void(
-    RuntimeContext&,
-    const std::shared_ptr<NativeSharedObject>&,
-    const std::string&)>;
+    RuntimeContext &,
+    const std::shared_ptr<NativeSharedObject> &,
+    const std::string &)>;
 using SharedObjectLifecycleObservationCallback = std::function<void(
-    RuntimeContext&,
-    const std::shared_ptr<NativeSharedObject>&)>;
+    RuntimeContext &,
+    const std::shared_ptr<NativeSharedObject> &)>;
 
 struct ModuleEventObserver {
   std::optional<std::string> eventName;
   bool everyEvent{false};
-  std::function<void(RuntimeContext&, const std::string&)> body;
+  std::function<void(RuntimeContext &, const std::string &)> body;
 };
 
 struct SharedObjectEventObserver {
@@ -186,18 +185,17 @@ struct ClassDefinition {
   std::vector<SharedObjectEventObserver> stopObservers;
 };
 
-using ViewLifecycleCallback =
-    std::function<void(RuntimeContext&, int64_t, const std::string&)>;
+using ViewLifecycleCallback = std::function<void(RuntimeContext &, int64_t, const std::string &)>;
 using ViewPropCallback = std::function<void(
-    RuntimeContext&,
+    RuntimeContext &,
     int64_t,
-    const std::string&,
-    const folly::dynamic&)>;
+    const std::string &,
+    const folly::dynamic &)>;
 using ViewDidUpdateCallback = std::function<void(
-    RuntimeContext&,
+    RuntimeContext &,
     int64_t,
-    const std::string&,
-    const folly::dynamic&)>;
+    const std::string &,
+    const folly::dynamic &)>;
 
 struct ViewPropDefinition {
   std::string name;
@@ -229,65 +227,65 @@ struct ModuleDefinition {
   std::vector<ObjectDefinition> objects;
   std::vector<ClassDefinition> classes;
   std::vector<ViewDefinition> views;
-  std::function<void(RuntimeContext&)> onCreate;
-  std::function<void(RuntimeContext&)> onRegisterActivityContracts;
-  std::function<void(RuntimeContext&)> onDestroy;
-  std::function<void(RuntimeContext&)> onForeground;
-  std::function<void(RuntimeContext&)> onBackground;
-  std::function<void(RuntimeContext&)> onUserLeaves;
-  std::function<void(RuntimeContext&)> onActivityDestroy;
-  std::function<void(RuntimeContext&, const folly::dynamic&)> onNewIntent;
-  std::function<void(RuntimeContext&, int, int, const folly::dynamic&)>
+  std::function<void(RuntimeContext &)> onCreate;
+  std::function<void(RuntimeContext &)> onRegisterActivityContracts;
+  std::function<void(RuntimeContext &)> onDestroy;
+  std::function<void(RuntimeContext &)> onForeground;
+  std::function<void(RuntimeContext &)> onBackground;
+  std::function<void(RuntimeContext &)> onUserLeaves;
+  std::function<void(RuntimeContext &)> onActivityDestroy;
+  std::function<void(RuntimeContext &, const folly::dynamic &)> onNewIntent;
+  std::function<void(RuntimeContext &, int, int, const folly::dynamic &)>
       onActivityResult;
   std::vector<ModuleEventObserver> startObservers;
   std::vector<ModuleEventObserver> stopObservers;
 };
 
 class ModuleDefinitionBuilder final {
- public:
+public:
   explicit ModuleDefinitionBuilder(std::string name);
 
-  ModuleDefinitionBuilder& constant(std::string name, ValueFactory factory);
-  ModuleDefinitionBuilder& function(FunctionDefinition definition);
-  ModuleDefinitionBuilder& asyncFunction(FunctionDefinition definition);
-  ModuleDefinitionBuilder& property(PropertyDefinition definition);
-  ModuleDefinitionBuilder& events(std::vector<std::string> names);
-  ModuleDefinitionBuilder& object(ObjectDefinition definition);
-  ModuleDefinitionBuilder& klass(ClassDefinition definition);
-  ModuleDefinitionBuilder& view(ViewDefinition definition);
-  ModuleDefinitionBuilder& onCreate(std::function<void(RuntimeContext&)> body);
-  ModuleDefinitionBuilder& onRegisterActivityContracts(
-      std::function<void(RuntimeContext&)> body);
-  ModuleDefinitionBuilder& onDestroy(std::function<void(RuntimeContext&)> body);
-  ModuleDefinitionBuilder& onForeground(std::function<void(RuntimeContext&)> body);
-  ModuleDefinitionBuilder& onBackground(std::function<void(RuntimeContext&)> body);
-  ModuleDefinitionBuilder& onUserLeaves(std::function<void(RuntimeContext&)> body);
-  ModuleDefinitionBuilder& onActivityDestroy(
-      std::function<void(RuntimeContext&)> body);
-  ModuleDefinitionBuilder& onNewIntent(
-      std::function<void(RuntimeContext&, const folly::dynamic&)> body);
-  ModuleDefinitionBuilder& onActivityResult(
-      std::function<void(RuntimeContext&, int, int, const folly::dynamic&)> body);
-  ModuleDefinitionBuilder& onStartObserving(
-      std::function<void(RuntimeContext&, const std::string&)> body);
-  ModuleDefinitionBuilder& onStartObserving(
-      std::function<void(RuntimeContext&)> body);
-  ModuleDefinitionBuilder& onStartObserving(
+  ModuleDefinitionBuilder &constant(std::string name, ValueFactory factory);
+  ModuleDefinitionBuilder &function(FunctionDefinition definition);
+  ModuleDefinitionBuilder &asyncFunction(FunctionDefinition definition);
+  ModuleDefinitionBuilder &property(PropertyDefinition definition);
+  ModuleDefinitionBuilder &events(std::vector<std::string> names);
+  ModuleDefinitionBuilder &object(ObjectDefinition definition);
+  ModuleDefinitionBuilder &klass(ClassDefinition definition);
+  ModuleDefinitionBuilder &view(ViewDefinition definition);
+  ModuleDefinitionBuilder &onCreate(std::function<void(RuntimeContext &)> body);
+  ModuleDefinitionBuilder &onRegisterActivityContracts(
+      std::function<void(RuntimeContext &)> body);
+  ModuleDefinitionBuilder &onDestroy(std::function<void(RuntimeContext &)> body);
+  ModuleDefinitionBuilder &onForeground(std::function<void(RuntimeContext &)> body);
+  ModuleDefinitionBuilder &onBackground(std::function<void(RuntimeContext &)> body);
+  ModuleDefinitionBuilder &onUserLeaves(std::function<void(RuntimeContext &)> body);
+  ModuleDefinitionBuilder &onActivityDestroy(
+      std::function<void(RuntimeContext &)> body);
+  ModuleDefinitionBuilder &onNewIntent(
+      std::function<void(RuntimeContext &, const folly::dynamic &)> body);
+  ModuleDefinitionBuilder &onActivityResult(
+      std::function<void(RuntimeContext &, int, int, const folly::dynamic &)> body);
+  ModuleDefinitionBuilder &onStartObserving(
+      std::function<void(RuntimeContext &, const std::string &)> body);
+  ModuleDefinitionBuilder &onStartObserving(
+      std::function<void(RuntimeContext &)> body);
+  ModuleDefinitionBuilder &onStartObserving(
       std::string eventName,
-      std::function<void(RuntimeContext&)> body);
-  ModuleDefinitionBuilder& onStopObserving(
-      std::function<void(RuntimeContext&, const std::string&)> body);
-  ModuleDefinitionBuilder& onStopObserving(
-      std::function<void(RuntimeContext&)> body);
-  ModuleDefinitionBuilder& onStopObserving(
+      std::function<void(RuntimeContext &)> body);
+  ModuleDefinitionBuilder &onStopObserving(
+      std::function<void(RuntimeContext &, const std::string &)> body);
+  ModuleDefinitionBuilder &onStopObserving(
+      std::function<void(RuntimeContext &)> body);
+  ModuleDefinitionBuilder &onStopObserving(
       std::string eventName,
-      std::function<void(RuntimeContext&)> body);
+      std::function<void(RuntimeContext &)> body);
   ModuleDefinition build() &&;
 
- private:
+private:
   ModuleDefinition definition_;
 };
 
-void validateModuleDefinition(const ModuleDefinition& definition);
+void validateModuleDefinition(const ModuleDefinition &definition);
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

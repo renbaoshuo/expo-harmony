@@ -8,7 +8,9 @@ CodedError CodedError::withOrigin(
     ExceptionOrigin origin,
     std::string nativeFrame) const {
   auto stack = nativeStack_;
-  if (!nativeFrame.empty()) stack.insert(stack.begin(), std::move(nativeFrame));
+  if (!nativeFrame.empty()) {
+    stack.insert(stack.begin(), std::move(nativeFrame));
+  }
   return CodedError(code_, what(), std::move(origin), cause_, std::move(stack));
 }
 
@@ -17,7 +19,9 @@ CodedError CodedError::wrapping(
     std::string message,
     ExceptionOrigin origin) const {
   std::vector<std::string> stack;
-  if (!origin.functionName.empty()) stack.push_back(origin.functionName);
+  if (!origin.functionName.empty()) {
+    stack.push_back(origin.functionName);
+  }
   message += "\n→ Caused by: ";
   message += what();
   return CodedError(
@@ -30,7 +34,7 @@ CodedError CodedError::wrapping(
 
 namespace {
 
-jsi::Object makeErrorObject(jsi::Runtime& runtime, const CodedError& error) {
+jsi::Object makeErrorObject(jsi::Runtime &runtime, const CodedError &error) {
   jsi::Object result(runtime);
   auto codedError = runtime.global().getProperty(runtime, "ExpoModulesCore_CodedError");
   if (codedError.isObject() && codedError.getObject(runtime).isFunction(runtime)) {
@@ -56,17 +60,17 @@ jsi::Object makeErrorObject(jsi::Runtime& runtime, const CodedError& error) {
   return result;
 }
 
-} // namespace
+}  // namespace
 
-jsi::JSError makeJSError(jsi::Runtime& runtime, const CodedError& error) {
+jsi::JSError makeJSError(jsi::Runtime &runtime, const CodedError &error) {
   return jsi::JSError(runtime, makeErrorObject(runtime, error));
 }
 
 jsi::JSError makeJSError(
-    jsi::Runtime& runtime,
-    const std::string& code,
-    const std::string& message) {
+    jsi::Runtime &runtime,
+    const std::string &code,
+    const std::string &message) {
   return makeJSError(runtime, CodedError(std::move(code), std::move(message)));
 }
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

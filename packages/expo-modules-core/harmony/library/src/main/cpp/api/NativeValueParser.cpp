@@ -1,10 +1,10 @@
 #include "api/NativeValueParser.h"
 
 #include <algorithm>
-#include <charconv>
-#include <cerrno>
-#include <cmath>
 #include <cctype>
+#include <cerrno>
+#include <charconv>
+#include <cmath>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -16,8 +16,7 @@ namespace expo::harmony {
 namespace {
 
 bool isAsciiAlpha(char value) {
-  return (value >= 'a' && value <= 'z') ||
-      (value >= 'A' && value <= 'Z');
+  return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z');
 }
 
 bool isAsciiDigit(char value) {
@@ -25,33 +24,26 @@ bool isAsciiDigit(char value) {
 }
 
 bool isHexDigit(char value) {
-  return isAsciiDigit(value) ||
-      (value >= 'a' && value <= 'f') ||
-      (value >= 'A' && value <= 'F');
+  return isAsciiDigit(value) || (value >= 'a' && value <= 'f') || (value >= 'A' && value <= 'F');
 }
 
 bool isSchemeCharacter(char value) {
-  return isAsciiAlpha(value) || isAsciiDigit(value) ||
-      value == '+' || value == '-' || value == '.';
+  return isAsciiAlpha(value) || isAsciiDigit(value) || value == '+' || value == '-' || value == '.';
 }
 
 bool isUriAsciiCharacter(char value) {
-  return isAsciiAlpha(value) || isAsciiDigit(value) ||
-      std::string_view("-._~:/?#[]@!$&'()*+,;=%").find(value) !=
-          std::string_view::npos;
+  return isAsciiAlpha(value) || isAsciiDigit(value) || std::string_view("-._~:/?#[]@!$&'()*+,;=%").find(value) != std::string_view::npos;
 }
 
 void validateCommonUriCharacters(std::string_view value) {
   int bracketDepth = 0;
   for (size_t index = 0; index < value.size(); ++index) {
     const auto byte = static_cast<unsigned char>(value[index]);
-    if (byte <= 0x20U || byte == 0x7fU ||
-        (byte < 0x80U && !isUriAsciiCharacter(value[index]))) {
+    if (byte <= 0x20U || byte == 0x7fU || (byte < 0x80U && !isUriAsciiCharacter(value[index]))) {
       throw std::invalid_argument("URI contains a character outside the RFC 3986 syntax");
     }
     if (value[index] == '%') {
-      if (index + 2 >= value.size() ||
-          !isHexDigit(value[index + 1]) || !isHexDigit(value[index + 2])) {
+      if (index + 2 >= value.size() || !isHexDigit(value[index + 1]) || !isHexDigit(value[index + 2])) {
         throw std::invalid_argument("URI contains an invalid percent escape");
       }
       index += 2;
@@ -80,7 +72,9 @@ std::vector<std::string_view> splitIpv6Groups(std::string_view value) {
     result.push_back(value.substr(
         start,
         separator == std::string_view::npos ? value.size() - start : separator - start));
-    if (separator == std::string_view::npos) break;
+    if (separator == std::string_view::npos) {
+      break;
+    }
     start = separator + 1;
   }
   return result;
@@ -94,15 +88,20 @@ bool isValidIpv4(std::string_view value) {
     const auto component = value.substr(
         start,
         separator == std::string_view::npos ? value.size() - start : separator - start);
-    if (component.empty() || component.size() > 3 ||
-        !std::all_of(component.begin(), component.end(), isAsciiDigit)) {
+    if (component.empty() || component.size() > 3 || !std::all_of(component.begin(), component.end(), isAsciiDigit)) {
       return false;
     }
     unsigned int number = 0;
-    for (const char digit : component) number = number * 10U + (digit - '0');
-    if (number > 255U) return false;
+    for (const char digit : component) {
+      number = number * 10U + (digit - '0');
+    }
+    if (number > 255U) {
+      return false;
+    }
     ++components;
-    if (separator == std::string_view::npos) break;
+    if (separator == std::string_view::npos) {
+      break;
+    }
     start = separator + 1;
   }
   return components == 4;
@@ -112,32 +111,39 @@ bool isValidIpv6(std::string_view value) {
   const auto zone = value.find("%25");
   if (zone != std::string_view::npos) {
     const auto zoneName = value.substr(zone + 3);
-    if (zoneName.empty() || zoneName.find('%') != std::string_view::npos) return false;
+    if (zoneName.empty() || zoneName.find('%') != std::string_view::npos) {
+      return false;
+    }
     value = value.substr(0, zone);
   } else if (value.find('%') != std::string_view::npos) {
     return false;
   }
-  if (value.empty()) return false;
+  if (value.empty()) {
+    return false;
+  }
 
   const auto compression = value.find("::");
-  if (compression != std::string_view::npos &&
-      value.find("::", compression + 2) != std::string_view::npos) {
+  if (compression != std::string_view::npos && value.find("::", compression + 2) != std::string_view::npos) {
     return false;
   }
   const auto left = compression == std::string_view::npos
-      ? value
-      : value.substr(0, compression);
+                      ? value
+                      : value.substr(0, compression);
   const auto right = compression == std::string_view::npos
-      ? std::string_view{}
-      : value.substr(compression + 2);
+                       ? std::string_view{}
+                       : value.substr(compression + 2);
   size_t groupCount = 0;
   bool sawIpv4 = false;
   const auto validateSide = [&](std::string_view side, bool finalSide) {
-    if (side.empty()) return true;
+    if (side.empty()) {
+      return true;
+    }
     const auto groups = splitIpv6Groups(side);
     for (size_t index = 0; index < groups.size(); ++index) {
       const auto group = groups[index];
-      if (group.empty()) return false;
+      if (group.empty()) {
+        return false;
+      }
       if (group.find('.') != std::string_view::npos) {
         if (!finalSide || index + 1 != groups.size() || sawIpv4 || !isValidIpv4(group)) {
           return false;
@@ -145,8 +151,7 @@ bool isValidIpv6(std::string_view value) {
         groupCount += 2;
         sawIpv4 = true;
       } else {
-        if (group.size() > 4 ||
-            !std::all_of(group.begin(), group.end(), isHexDigit)) {
+        if (group.size() > 4 || !std::all_of(group.begin(), group.end(), isHexDigit)) {
           return false;
         }
         ++groupCount;
@@ -154,8 +159,7 @@ bool isValidIpv6(std::string_view value) {
     }
     return true;
   };
-  if (!validateSide(left, compression == std::string_view::npos) ||
-      !validateSide(right, true)) {
+  if (!validateSide(left, compression == std::string_view::npos) || !validateSide(right, true)) {
     return false;
   }
   return compression == std::string_view::npos ? groupCount == 8 : groupCount < 8;
@@ -166,15 +170,12 @@ void validateBracketedAuthority(std::string_view value) {
   size_t authorityStart = std::string_view::npos;
   if (value.starts_with("//")) {
     authorityStart = 2;
-  } else if (schemeSeparator != std::string_view::npos &&
-             value.substr(schemeSeparator + 1).starts_with("//")) {
+  } else if (schemeSeparator != std::string_view::npos && value.substr(schemeSeparator + 1).starts_with("//")) {
     authorityStart = schemeSeparator + 3;
   }
   if (authorityStart == std::string_view::npos) {
     const auto firstPathDelimiter = value.find_first_of("/?#");
-    const bool opaque = schemeSeparator != std::string_view::npos &&
-        (firstPathDelimiter == std::string_view::npos || schemeSeparator < firstPathDelimiter) &&
-        !value.substr(schemeSeparator + 1).starts_with('/');
+    const bool opaque = schemeSeparator != std::string_view::npos && (firstPathDelimiter == std::string_view::npos || schemeSeparator < firstPathDelimiter) && !value.substr(schemeSeparator + 1).starts_with('/');
     if (!opaque) {
       const auto pathEnd = value.find_first_of("?#");
       const auto hierarchicalPath = value.substr(
@@ -193,8 +194,7 @@ void validateBracketedAuthority(std::string_view value) {
           ? value.size() - authorityStart
           : authorityEnd - authorityStart);
   const auto at = authority.rfind('@');
-  if (at != std::string_view::npos &&
-      authority.substr(0, at).find_first_of("[]@") != std::string_view::npos) {
+  if (at != std::string_view::npos && authority.substr(0, at).find_first_of("[]@") != std::string_view::npos) {
     throw std::invalid_argument("authority user info contains an illegal bracket or @ character");
   }
   const auto hostAndPort = authority.substr(at == std::string_view::npos ? 0 : at + 1);
@@ -204,14 +204,11 @@ void validateBracketedAuthority(std::string_view value) {
     }
   } else {
     const auto closingBracket = hostAndPort.find(']');
-    if (closingBracket == std::string_view::npos ||
-        !isValidIpv6(hostAndPort.substr(1, closingBracket - 1))) {
+    if (closingBracket == std::string_view::npos || !isValidIpv6(hostAndPort.substr(1, closingBracket - 1))) {
       throw std::invalid_argument("authority contains an invalid IPv6 host");
     }
     const auto suffix = hostAndPort.substr(closingBracket + 1);
-    if (!suffix.empty() &&
-        (!suffix.starts_with(':') || suffix.size() == 1 ||
-         !std::all_of(suffix.begin() + 1, suffix.end(), isAsciiDigit))) {
+    if (!suffix.empty() && (!suffix.starts_with(':') || suffix.size() == 1 || !std::all_of(suffix.begin() + 1, suffix.end(), isAsciiDigit))) {
       throw std::invalid_argument("authority contains invalid text after its IPv6 host");
     }
   }
@@ -290,11 +287,10 @@ double parseDecimal(std::string_view text) {
   }
 
   const std::string owned(text);
-  char* end = nullptr;
+  char *end = nullptr;
   errno = 0;
   const auto result = std::strtod(owned.c_str(), &end);
-  if (errno == ERANGE || end != owned.c_str() + owned.size() ||
-      !std::isfinite(result)) {
+  if (errno == ERANGE || end != owned.c_str() + owned.size() || !std::isfinite(result)) {
     throw std::invalid_argument("color component is not a finite number");
   }
   return result;
@@ -322,25 +318,25 @@ std::vector<std::string_view> splitComponents(std::string_view value) {
     auto component = value.substr(
         start,
         comma == std::string_view::npos ? value.size() - start : comma - start);
-    while (!component.empty() &&
-           std::isspace(static_cast<unsigned char>(component.front()))) {
+    while (!component.empty() && std::isspace(static_cast<unsigned char>(component.front()))) {
       component.remove_prefix(1);
     }
-    while (!component.empty() &&
-           std::isspace(static_cast<unsigned char>(component.back()))) {
+    while (!component.empty() && std::isspace(static_cast<unsigned char>(component.back()))) {
       component.remove_suffix(1);
     }
     if (component.empty()) {
       throw std::invalid_argument("color contains an empty component");
     }
     result.push_back(component);
-    if (comma == std::string_view::npos) break;
+    if (comma == std::string_view::npos) {
+      break;
+    }
     start = comma + 1;
   }
   return result;
 }
 
-uint32_t parseRgbFunction(const std::string& value) {
+uint32_t parseRgbFunction(const std::string &value) {
   const bool hasAlpha = value.starts_with("rgba(");
   const size_t prefixLength = hasAlpha ? 5 : 4;
   if (!value.ends_with(')')) {
@@ -355,13 +351,10 @@ uint32_t parseRgbFunction(const std::string& value) {
   const auto green = rgbByte(parseDecimal(components[1]));
   const auto blue = rgbByte(parseDecimal(components[2]));
   const auto alpha = hasAlpha ? normalizedByte(parseDecimal(components[3])) : 0xffU;
-  return (static_cast<uint32_t>(alpha) << 24U) |
-      (static_cast<uint32_t>(red) << 16U) |
-      (static_cast<uint32_t>(green) << 8U) |
-      blue;
+  return (static_cast<uint32_t>(alpha) << 24U) | (static_cast<uint32_t>(red) << 16U) | (static_cast<uint32_t>(green) << 8U) | blue;
 }
 
-const std::unordered_map<std::string, uint32_t>& namedColors() {
+const std::unordered_map<std::string, uint32_t> &namedColors() {
   static const std::unordered_map<std::string, uint32_t> values = {
       {"aliceblue", 0xfff0f8ffu},
       {"antiquewhite", 0xfffaebd7u},
@@ -516,15 +509,13 @@ const std::unordered_map<std::string, uint32_t>& namedColors() {
   return values;
 }
 
-} // namespace
+}  // namespace
 
 void validateAbsoluteUrl(std::string_view value) {
   validateCommonUriCharacters(value);
   validateBracketedAuthority(value);
   const auto separator = value.find(':');
-  if (separator == std::string_view::npos || separator == 0 ||
-      !isAsciiAlpha(value.front()) ||
-      !std::all_of(value.begin() + 1, value.begin() + separator, isSchemeCharacter)) {
+  if (separator == std::string_view::npos || separator == 0 || !isAsciiAlpha(value.front()) || !std::all_of(value.begin() + 1, value.begin() + separator, isSchemeCharacter)) {
     throw std::invalid_argument("URL does not have a valid absolute scheme");
   }
   const auto remainder = value.substr(separator + 1);
@@ -534,8 +525,7 @@ void validateAbsoluteUrl(std::string_view value) {
 
   std::string scheme(value.substr(0, separator));
   std::transform(
-      scheme.begin(), scheme.end(), scheme.begin(),
-      [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+      scheme.begin(), scheme.end(), scheme.begin(), [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
   if (scheme == "http" || scheme == "https") {
     if (!remainder.starts_with("//")) {
       throw std::invalid_argument("HTTP URL has no authority");
@@ -547,8 +537,8 @@ void validateAbsoluteUrl(std::string_view value) {
             ? remainder.size() - 2
             : authorityEnd - 2);
     const auto hostStart = authority.rfind('@') == std::string_view::npos
-        ? 0
-        : authority.rfind('@') + 1;
+                             ? 0
+                             : authority.rfind('@') + 1;
     const auto hostAndPort = authority.substr(hostStart);
     std::string_view host;
     std::string_view port;
@@ -586,23 +576,22 @@ void validateAbsoluteUrl(std::string_view value) {
     if (!hostAndPort.starts_with('[') && host.find(':') != std::string_view::npos) {
       throw std::invalid_argument("IPv6 hosts must be enclosed in brackets");
     }
-    if (hostAndPort.ends_with(':') ||
-        (!port.empty() && !std::all_of(port.begin(), port.end(), isAsciiDigit))) {
+    if (hostAndPort.ends_with(':') || (!port.empty() && !std::all_of(port.begin(), port.end(), isAsciiDigit))) {
       throw std::invalid_argument("HTTP URL has an invalid port");
     }
   }
 }
 
 void validateUri(std::string_view value) {
-  if (value.empty()) return; // java.net.URI.create("") is a valid relative URI.
+  if (value.empty()) {
+    return;  // java.net.URI.create("") is a valid relative URI.
+  }
   validateCommonUriCharacters(value);
   validateBracketedAuthority(value);
   const auto separator = value.find(':');
   const auto firstPathDelimiter = value.find_first_of("/?#");
-  if (separator != std::string_view::npos &&
-      (firstPathDelimiter == std::string_view::npos || separator < firstPathDelimiter)) {
-    if (separator == 0 || !isAsciiAlpha(value.front()) ||
-        !std::all_of(value.begin() + 1, value.begin() + separator, isSchemeCharacter)) {
+  if (separator != std::string_view::npos && (firstPathDelimiter == std::string_view::npos || separator < firstPathDelimiter)) {
+    if (separator == 0 || !isAsciiAlpha(value.front()) || !std::all_of(value.begin() + 1, value.begin() + separator, isSchemeCharacter)) {
       throw std::invalid_argument("URI has an invalid scheme");
     }
   }
@@ -617,10 +606,16 @@ uint32_t parseCssColor(std::string_view value) {
       iterator != namedColors().end()) {
     return iterator->second;
   }
-  if (normalized.starts_with("rgb(")) return parseRgbFunction(normalized);
-  if (normalized.starts_with("rgba(")) return parseRgbFunction(normalized);
+  if (normalized.starts_with("rgb(")) {
+    return parseRgbFunction(normalized);
+  }
+  if (normalized.starts_with("rgba(")) {
+    return parseRgbFunction(normalized);
+  }
 
-  if (normalized.front() == '#') normalized.erase(0, 1);
+  if (normalized.front() == '#') {
+    normalized.erase(0, 1);
+  }
   if (normalized.size() == 3 || normalized.size() == 4) {
     std::string expanded;
     expanded.reserve(normalized.size() * 2);
@@ -630,9 +625,10 @@ uint32_t parseCssColor(std::string_view value) {
     }
     normalized = std::move(expanded);
   }
-  if (normalized.size() == 6) normalized += "ff";
-  if (normalized.size() != 8 ||
-      !std::all_of(normalized.begin(), normalized.end(), isHexDigit)) {
+  if (normalized.size() == 6) {
+    normalized += "ff";
+  }
+  if (normalized.size() != 8 || !std::all_of(normalized.begin(), normalized.end(), isHexDigit)) {
     throw std::invalid_argument("color is not a CSS name, rgb()/rgba(), or RGB/RGBA hex value");
   }
   uint32_t rgba = 0;
@@ -652,10 +648,7 @@ uint32_t packNormalizedColor(std::span<const double> components) {
   const auto green = normalizedByte(components[1]);
   const auto blue = normalizedByte(components[2]);
   const auto alpha = components.size() == 4 ? normalizedByte(components[3]) : 0xffU;
-  return (static_cast<uint32_t>(alpha) << 24U) |
-      (static_cast<uint32_t>(red) << 16U) |
-      (static_cast<uint32_t>(green) << 8U) |
-      blue;
+  return (static_cast<uint32_t>(alpha) << 24U) | (static_cast<uint32_t>(red) << 16U) | (static_cast<uint32_t>(green) << 8U) | blue;
 }
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

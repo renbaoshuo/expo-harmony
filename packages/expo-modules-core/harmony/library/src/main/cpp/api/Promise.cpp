@@ -23,8 +23,8 @@ Promise::Promise(
       cancellationToken_(std::make_shared<CancellationToken>()) {}
 
 jsi::Value Promise::create(
-    jsi::Runtime& runtime,
-    const std::shared_ptr<RuntimeContext>& context,
+    jsi::Runtime &runtime,
+    const std::shared_ptr<RuntimeContext> &context,
     Setup setup) {
   auto constructor = runtime.global().getPropertyAsFunction(runtime, "Promise");
   auto executorName = jsi::PropNameID::forAscii(runtime, "expoPromiseExecutor");
@@ -33,9 +33,9 @@ jsi::Value Promise::create(
       executorName,
       2,
       [context, setup = std::move(setup)](
-          jsi::Runtime& rt,
-          const jsi::Value&,
-          const jsi::Value* arguments,
+          jsi::Runtime &rt,
+          const jsi::Value &,
+          const jsi::Value *arguments,
           size_t count) {
         if (count != 2 || !arguments[0].isObject() || !arguments[1].isObject()) {
           throw makeJSError(
@@ -48,9 +48,9 @@ jsi::Value Promise::create(
         context->retainPromise(promise);
         try {
           setup(promise);
-        } catch (const CodedError& error) {
+        } catch (const CodedError &error) {
           promise->reject(error);
-        } catch (const std::exception& error) {
+        } catch (const std::exception &error) {
           promise->reject("ERR_UNEXPECTED", error.what());
         }
         return jsi::Value::undefined();
@@ -59,31 +59,35 @@ jsi::Value Promise::create(
 }
 
 jsi::Value Promise::rejected(
-    jsi::Runtime& runtime,
-    const std::shared_ptr<RuntimeContext>& context,
+    jsi::Runtime &runtime,
+    const std::shared_ptr<RuntimeContext> &context,
     std::string code,
     std::string message) {
   return create(
       runtime,
       context,
       [code = std::move(code), message = std::move(message)](
-          const std::shared_ptr<Promise>& promise) {
+          const std::shared_ptr<Promise> &promise) {
         promise->reject(code, message);
       });
 }
 
-void Promise::settle(std::function<void(jsi::Runtime&)> body) {
+void Promise::settle(std::function<void(jsi::Runtime &)> body) {
   if (settled_.exchange(true, std::memory_order_acq_rel)) {
     // Promise settlement is idempotent on the public JS surface. Throwing
     // here can escape a worker callback and terminate the native process.
     return;
   }
   auto context = context_.lock();
-  if (!context || !context->isAlive()) return;
+  if (!context || !context->isAlive()) {
+    return;
+  }
   auto task = [self = shared_from_this(), body = std::move(body)](
-                  jsi::Runtime& runtime) mutable {
+                  jsi::Runtime &runtime) mutable {
     auto context = self->context_.lock();
-    if (!context || !context->isAlive()) return;
+    if (!context || !context->isAlive()) {
+      return;
+    }
     try {
       body(runtime);
     } catch (...) {
@@ -105,14 +109,14 @@ void Promise::settle(std::function<void(jsi::Runtime&)> body) {
 
 void Promise::resolve(ValueFactory valueFactory) {
   settle([self = shared_from_this(), valueFactory = std::move(valueFactory)](
-             jsi::Runtime& runtime) mutable {
+             jsi::Runtime &runtime) mutable {
     try {
       self->resolve_->call(runtime, valueFactory(runtime));
-    } catch (const CodedError& error) {
+    } catch (const CodedError &error) {
       self->reject_->call(runtime, makeJSError(runtime, error).value());
-    } catch (const jsi::JSError& error) {
+    } catch (const jsi::JSError &error) {
       self->reject_->call(runtime, error.value());
-    } catch (const std::exception& error) {
+    } catch (const std::exception &error) {
       self->reject_->call(
           runtime,
           makeJSError(runtime, "ERR_UNEXPECTED", error.what()).value());
@@ -129,7 +133,7 @@ void Promise::resolve(ValueFactory valueFactory) {
 }
 
 void Promise::resolveUndefined() {
-  resolve([](jsi::Runtime&) { return jsi::Value::undefined(); });
+  resolve([](jsi::Runtime &) { return jsi::Value::undefined(); });
 }
 
 void Promise::reject(std::string code, std::string message) {
@@ -153,7 +157,7 @@ void Promise::reject(
 
 void Promise::reject(CodedError codedError) {
   settle([self = shared_from_this(), codedError = std::move(codedError)](
-             jsi::Runtime& runtime) {
+             jsi::Runtime &runtime) {
     auto error = makeJSError(runtime, codedError);
     self->reject_->call(runtime, error.value());
   });
@@ -174,4 +178,4 @@ void Promise::invalidate() noexcept {
   reject_.reset();
 }
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

@@ -6,14 +6,14 @@ namespace expo::harmony {
 
 class ExpoModulesCoreTurboModuleFactoryDelegate final
     : public rnoh::TurboModuleFactoryDelegate {
- public:
+public:
   SharedTurboModule createTurboModule(
       Context context,
-      const std::string& name) const override;
+      const std::string &name) const override;
 };
 
 class ExpoModulesCorePackage final : public rnoh::Package {
- public:
+public:
   explicit ExpoModulesCorePackage(Package::Context context)
       : Package(std::move(context)) {}
 
@@ -26,9 +26,9 @@ class ExpoModulesCorePackage final : public rnoh::Package {
   rnoh::ComponentNapiBinderByString createComponentNapiBinderByName() override;
 
   rnoh::ComponentInstance::Shared createComponentInstance(
-      const rnoh::ComponentInstance::Context& context) override;
+      const rnoh::ComponentInstance::Context &context) override;
 
   rnoh::EventEmitRequestHandlers createEventEmitRequestHandlers() override;
 };
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

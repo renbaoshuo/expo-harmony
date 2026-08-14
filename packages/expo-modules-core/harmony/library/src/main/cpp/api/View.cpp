@@ -1,10 +1,10 @@
 #include "api/View.h"
 
+#include <cmath>
+
 #include "errors/CodedError.h"
 #include "runtime/Protocol.h"
 #include "runtime/RuntimeContext.h"
-
-#include <cmath>
 
 namespace jsi = facebook::jsi;
 
@@ -13,7 +13,7 @@ namespace expo::harmony {
 namespace {
 
 std::shared_ptr<RuntimeContext> requireContext(
-    const std::weak_ptr<RuntimeContext>& weakContext) {
+    const std::weak_ptr<RuntimeContext> &weakContext) {
   auto context = weakContext.lock();
   if (!context || !context->isAlive()) {
     throw CodedError(
@@ -23,7 +23,7 @@ std::shared_ptr<RuntimeContext> requireContext(
   return context;
 }
 
-} // namespace
+}  // namespace
 
 void ViewHandle::dispatchCommand(
     std::string commandName,
@@ -50,10 +50,10 @@ void ViewHandle::emitEvent(
 }
 
 ViewHandle requireViewHandle(
-    Invocation& invocation,
-    const std::string& componentName) {
-  auto& runtime = invocation.runtime();
-  const auto& thisValue = invocation.thisValue();
+    Invocation &invocation,
+    const std::string &componentName) {
+  auto &runtime = invocation.runtime();
+  const auto &thisValue = invocation.thisValue();
   if (!thisValue.isObject()) {
     throw CodedError(
         "ERR_VIEW_NOT_FOUND",
@@ -61,8 +61,7 @@ ViewHandle requireViewHandle(
   }
   auto object = thisValue.getObject(runtime);
   auto nativeTag = object.getProperty(runtime, "nativeTag");
-  if (!nativeTag.isNumber() || !std::isfinite(nativeTag.getNumber()) ||
-      std::trunc(nativeTag.getNumber()) != nativeTag.getNumber()) {
+  if (!nativeTag.isNumber() || !std::isfinite(nativeTag.getNumber()) || std::trunc(nativeTag.getNumber()) != nativeTag.getNumber()) {
     throw CodedError(
         "ERR_VIEW_NOT_FOUND",
         invocation.path() + " cannot resolve the mounted Expo view tag.");
@@ -73,4 +72,4 @@ ViewHandle requireViewHandle(
       componentName);
 }
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

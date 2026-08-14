@@ -19,4 +19,4 @@ inline constexpr const char kLifecycleActivityDestroy[] = "ACTIVITY_DESTROY";
 inline constexpr const char kLifecycleNewIntent[] = "NEW_INTENT";
 inline constexpr const char kLifecycleActivityResult[] = "ACTIVITY_RESULT";
 
-} // namespace expo::harmony::protocol
+}  // namespace expo::harmony::protocol

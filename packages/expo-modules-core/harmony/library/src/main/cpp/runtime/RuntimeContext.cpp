@@ -1,18 +1,21 @@
 #include "RuntimeContext.h"
 
-#include "errors/CodedError.h"
+#include <algorithm>
+#include <cstring>
+
+#include <jsi/JSIDynamic.h>
+
+#include <common/EventEmitter.h>
+#include <common/JSI/JSIUtils.h>
+#include <common/LazyObject.h>
+#include <common/SharedObject.h>
+#include <worklets/WorkletRuntime/WorkletRuntime.h>
+
 #include "api/ModuleDefinition.h"
 #include "api/Promise.h"
-#include <common/JSI/JSIUtils.h>
-#include <common/SharedObject.h>
-#include <common/EventEmitter.h>
-#include <common/LazyObject.h>
-#include <jsi/JSIDynamic.h>
+#include "errors/CodedError.h"
 #include "modules/ExpoModulesCoreTurboModule.h"
 #include "runtime/ModuleRegistry.h"
-#include <worklets/WorkletRuntime/WorkletRuntime.h>
-#include <cstring>
-#include <algorithm>
 
 namespace jsi = facebook::jsi;
 
@@ -21,8 +24,8 @@ namespace expo::harmony {
 namespace {
 
 jsi::Value unwrapPlatformServiceResult(
-    jsi::Runtime& runtime,
-    const jsi::Value& result) {
+    jsi::Runtime &runtime,
+    const jsi::Value &result) {
   if (!result.isObject()) {
     throw makeJSError(
         runtime,
@@ -44,18 +47,18 @@ jsi::Value unwrapPlatformServiceResult(
   auto codeValue = object.getProperty(runtime, "code");
   auto messageValue = object.getProperty(runtime, "message");
   const auto code = codeValue.isString()
-      ? codeValue.getString(runtime).utf8(runtime)
-      : std::string("ERR_PLATFORM_ADAPTER");
+                      ? codeValue.getString(runtime).utf8(runtime)
+                      : std::string("ERR_PLATFORM_ADAPTER");
   const auto message = messageValue.isString()
-      ? messageValue.getString(runtime).utf8(runtime)
-      : std::string("The Harmony platform service failed.");
+                         ? messageValue.getString(runtime).utf8(runtime)
+                         : std::string("The Harmony platform service failed.");
   throw makeJSError(runtime, code, message);
 }
 
-} // namespace
+}  // namespace
 
 RuntimeContext::RuntimeContext(
-    jsi::Runtime& runtime,
+    jsi::Runtime &runtime,
     std::shared_ptr<facebook::react::CallInvoker> jsInvoker,
     rnoh::TaskExecutor::Shared taskExecutor,
     std::weak_ptr<ExpoModulesCoreTurboModule> turboModule)
@@ -69,7 +72,7 @@ RuntimeContext::~RuntimeContext() {
   invalidate();
 }
 
-jsi::Runtime& RuntimeContext::runtime() const {
+jsi::Runtime &RuntimeContext::runtime() const {
   if (!isAlive() || runtime_ == nullptr) {
     throw CodedError("ERR_RUNTIME_DESTROYED", "The Expo JavaScript runtime has been destroyed.");
   }
@@ -121,7 +124,7 @@ void RuntimeContext::invalidate() noexcept {
     }
     if (jsInvoker_) {
       jsInvoker_->invokeAsync(
-          [context = std::move(retainedContext)](jsi::Runtime&) {
+          [context = std::move(retainedContext)](jsi::Runtime &) {
             context->invalidationScheduled_.store(
                 false, std::memory_order_release);
             context->invalidate();
@@ -143,10 +146,14 @@ void RuntimeContext::invalidate() noexcept {
 }
 
 void RuntimeContext::dispatch(FunctionQueue queue, std::function<void()> task) {
-  if (!task || !isAlive()) return;
+  if (!task || !isAlive()) {
+    return;
+  }
   auto guarded = [weakContext = weak_from_this(), task = std::move(task)]() mutable {
     auto context = weakContext.lock();
-    if (context && context->isAlive()) task();
+    if (context && context->isAlive()) {
+      task();
+    }
   };
   switch (queue) {
     case FunctionQueue::JavaScript:
@@ -179,19 +186,18 @@ void RuntimeContext::dispatch(FunctionQueue queue, std::function<void()> task) {
             "The UI Runtime is unavailable. Install and import react-native-worklets first.");
       }
       auto buffer = holder.getObject(runtime()).getArrayBuffer(runtime());
-      if (buffer.size(runtime()) != sizeof(jsi::Runtime*)) {
+      if (buffer.size(runtime()) != sizeof(jsi::Runtime *)) {
         throw CodedError(
             "ERR_INVALID_WORKLET_RUNTIME",
             "_WORKLET_RUNTIME does not contain one runtime pointer.");
       }
-      jsi::Runtime* uiRuntime = nullptr;
+      jsi::Runtime *uiRuntime = nullptr;
       std::memcpy(&uiRuntime, buffer.data(runtime()), sizeof(uiRuntime));
       if (!uiRuntime) {
         throw CodedError(
             "ERR_INVALID_WORKLET_RUNTIME", "_WORKLET_RUNTIME contains a null pointer.");
       }
-      auto workletRuntime =
-          worklets::WorkletRuntime::getWeakRuntimeFromJSIRuntime(*uiRuntime).lock();
+      auto workletRuntime = worklets::WorkletRuntime::getWeakRuntimeFromJSIRuntime(*uiRuntime).lock();
       if (!workletRuntime) {
         throw CodedError(
             "ERR_WORKLET_RUNTIME_DESTROYED", "The UI Runtime has been destroyed.");
@@ -211,25 +217,32 @@ void RuntimeContext::emitModuleEvent(
                eventName = std::move(eventName),
                arguments = std::move(arguments)]() mutable {
     auto context = weakContext.lock();
-    if (!context || !context->isAlive()) return;
+    if (!context || !context->isAlive()) {
+      return;
+    }
     context->assertRuntimeThread();
     auto moduleValue = context->getModule(moduleName);
-    if (!moduleValue.isObject()) return;
+    if (!moduleValue.isObject()) {
+      return;
+    }
     auto moduleWrapper = moduleValue.getObject(context->runtime());
-    const auto& unwrappedModule = expo::LazyObject::unwrapObjectIfNecessary(
+    const auto &unwrappedModule = expo::LazyObject::unwrapObjectIfNecessary(
         context->runtime(), moduleWrapper);
     auto module = jsi::Value(context->runtime(), unwrappedModule)
                       .getObject(context->runtime());
     std::vector<jsi::Value> values;
     values.reserve(arguments.size());
-    for (const auto& argument : arguments) {
+    for (const auto &argument : arguments) {
       values.push_back(jsi::valueFromDynamic(context->runtime(), argument));
     }
     expo::EventEmitter::emitEvent(
         context->runtime(), module, eventName, values);
   };
-  if (isRuntimeThread()) task();
-  else if (jsInvoker_) jsInvoker_->invokeAsync(std::move(task));
+  if (isRuntimeThread()) {
+    task();
+  } else if (jsInvoker_) {
+    jsInvoker_->invokeAsync(std::move(task));
+  }
 }
 
 void RuntimeContext::emitSharedObjectEvent(
@@ -241,21 +254,28 @@ void RuntimeContext::emitSharedObjectEvent(
                eventName = std::move(eventName),
                arguments = std::move(arguments)]() mutable {
     auto context = weakContext.lock();
-    if (!context || !context->isAlive()) return;
+    if (!context || !context->isAlive()) {
+      return;
+    }
     context->assertRuntimeThread();
     auto objectValue = context->getSharedObject(objectId);
-    if (!objectValue.isObject()) return;
+    if (!objectValue.isObject()) {
+      return;
+    }
     auto object = objectValue.getObject(context->runtime());
     std::vector<jsi::Value> values;
     values.reserve(arguments.size());
-    for (const auto& argument : arguments) {
+    for (const auto &argument : arguments) {
       values.push_back(jsi::valueFromDynamic(context->runtime(), argument));
     }
     expo::EventEmitter::emitEvent(
         context->runtime(), object, eventName, values);
   };
-  if (isRuntimeThread()) task();
-  else if (jsInvoker_) jsInvoker_->invokeAsync(std::move(task));
+  if (isRuntimeThread()) {
+    task();
+  } else if (jsInvoker_) {
+    jsInvoker_->invokeAsync(std::move(task));
+  }
 }
 
 void RuntimeContext::postPlatformMessage(
@@ -270,7 +290,7 @@ facebook::jsi::Value RuntimeContext::callPlatformSync(
   assertRuntimeThread();
   std::vector<jsi::Value> values;
   values.reserve(arguments.size());
-  for (const auto& argument : arguments) {
+  for (const auto &argument : arguments) {
     values.push_back(jsi::valueFromDynamic(runtime(), argument));
   }
   return turboModule()->callPlatformSync(
@@ -283,7 +303,7 @@ facebook::jsi::Value RuntimeContext::callPlatformAsync(
   assertRuntimeThread();
   std::vector<jsi::Value> values;
   values.reserve(arguments.size());
-  for (const auto& argument : arguments) {
+  for (const auto &argument : arguments) {
     values.push_back(jsi::valueFromDynamic(runtime(), argument));
   }
   return turboModule()->callPlatformAsync(
@@ -322,9 +342,9 @@ facebook::jsi::Value RuntimeContext::invokePlatformService(
       runtime(),
       jsi::PropNameID::forAscii(runtime(), "unwrapExpoPlatformServiceResult"),
       1,
-      [](jsi::Runtime& runtime,
-         const jsi::Value&,
-         const jsi::Value* arguments,
+      [](jsi::Runtime &runtime,
+         const jsi::Value &,
+         const jsi::Value *arguments,
          size_t count) -> jsi::Value {
         if (count == 0) {
           throw makeJSError(
@@ -357,34 +377,37 @@ facebook::jsi::Value RuntimeContext::invokePlatformServiceSync(
       });
   try {
     return unwrapPlatformServiceResult(runtime(), result);
-  } catch (const jsi::JSError&) {
+  } catch (const jsi::JSError &) {
     throw;
   }
 }
 
 void RuntimeContext::updateViewProps(
-    const ViewDefinition& view,
+    const ViewDefinition &view,
     int64_t tag,
-    const std::string& componentName,
-    const folly::dynamic& props) {
-  if (!props.isObject()) return;
-  std::vector<std::pair<const ViewPropDefinition*, folly::dynamic>> changes;
+    const std::string &componentName,
+    const folly::dynamic &props) {
+  if (!props.isObject()) {
+    return;
+  }
+  std::vector<std::pair<const ViewPropDefinition *, folly::dynamic>> changes;
   {
     std::scoped_lock lock(mutex_);
-    auto& previousProps =
-        viewProps_.try_emplace(tag, folly::dynamic::object()).first->second;
-    for (const auto& prop : view.props) {
-      if (!prop.setter) continue;
-      const auto* currentValue = props.get_ptr(prop.name);
+    auto &previousProps = viewProps_.try_emplace(tag, folly::dynamic::object()).first->second;
+    for (const auto &prop : view.props) {
+      if (!prop.setter) {
+        continue;
+      }
+      const auto *currentValue = props.get_ptr(prop.name);
       // Fabric raw props use an explicit null to reset a prop. An omitted key
       // means that this descriptor update does not change the prop.
-      if (currentValue == nullptr) continue;
-      const auto* previousValue = previousProps.get_ptr(prop.name);
+      if (currentValue == nullptr) {
+        continue;
+      }
+      const auto *previousValue = previousProps.get_ptr(prop.name);
       const bool currentIsNil = currentValue->isNull();
-      const bool previousIsNil =
-          previousValue == nullptr || previousValue->isNull();
-      if ((currentIsNil && previousIsNil) ||
-          (previousValue != nullptr && *currentValue == *previousValue)) {
+      const bool previousIsNil = previousValue == nullptr || previousValue->isNull();
+      if ((currentIsNil && previousIsNil) || (previousValue != nullptr && *currentValue == *previousValue)) {
         continue;
       }
       auto storedValue = *currentValue;
@@ -396,7 +419,7 @@ void RuntimeContext::updateViewProps(
               : std::move(storedValue));
     }
   }
-  for (auto& [prop, value] : changes) {
+  for (auto &[prop, value] : changes) {
     prop->setter(*this, tag, componentName, value);
   }
   if (view.onDidUpdateProps) {
@@ -421,7 +444,7 @@ bool RuntimeContext::hasModuleRegistry() const noexcept {
   return moduleRegistry_ != nullptr;
 }
 
-ModuleRegistry& RuntimeContext::moduleRegistry() const {
+ModuleRegistry &RuntimeContext::moduleRegistry() const {
   if (!isAlive()) {
     throw CodedError(
         "ERR_RUNTIME_DESTROYED", "The Expo module registry runtime was destroyed.");
@@ -528,13 +551,12 @@ std::shared_ptr<NativeSharedObject> RuntimeContext::getNativeSharedObject(
 
 std::shared_ptr<NativeSharedObject> RuntimeContext::getNativeSharedObject(
     long objectId,
-    const std::string& moduleName,
-    const std::string& className) const {
+    const std::string &moduleName,
+    const std::string &className) const {
   std::scoped_lock lock(mutex_);
   auto nativeIterator = nativeSharedObjects_.find(objectId);
   auto classIterator = nativeSharedObjectClasses_.find(objectId);
-  if (nativeIterator == nativeSharedObjects_.end() ||
-      classIterator == nativeSharedObjectClasses_.end()) {
+  if (nativeIterator == nativeSharedObjects_.end() || classIterator == nativeSharedObjectClasses_.end()) {
     throw CodedError(
         "ERR_SHARED_OBJECT_NOT_FOUND",
         "Native shared object " + std::to_string(objectId) + " has been released.");
@@ -545,17 +567,17 @@ std::shared_ptr<NativeSharedObject> RuntimeContext::getNativeSharedObject(
     if (actualModule == moduleName && actualClass == className) {
       return nativeIterator->second;
     }
-    const auto* moduleDefinition = moduleRegistry_->find(actualModule);
-    if (!moduleDefinition) break;
+    const auto *moduleDefinition = moduleRegistry_->find(actualModule);
+    if (!moduleDefinition) {
+      break;
+    }
     auto definition = std::find_if(
         moduleDefinition->classes.begin(),
         moduleDefinition->classes.end(),
-        [&](const ClassDefinition& candidate) {
+        [&](const ClassDefinition &candidate) {
           return candidate.name == actualClass;
         });
-    if (definition == moduleDefinition->classes.end() ||
-        definition->baseClassName == "SharedObject" ||
-        definition->baseClassName == "SharedRef") {
+    if (definition == moduleDefinition->classes.end() || definition->baseClassName == "SharedObject" || definition->baseClassName == "SharedRef") {
       break;
     }
     auto separator = definition->baseClassName.find('.');
@@ -568,13 +590,12 @@ std::shared_ptr<NativeSharedObject> RuntimeContext::getNativeSharedObject(
   }
   throw CodedError(
       "ERR_SHARED_OBJECT_TYPE",
-      "SharedObject " + std::to_string(objectId) + " is not an instance of '" +
-          moduleName + "." + className + "'.");
+      "SharedObject " + std::to_string(objectId) + " is not an instance of '" + moduleName + "." + className + "'.");
 }
 
 void RuntimeContext::retainSharedObject(
     long objectId,
-    const jsi::Object& object) {
+    const jsi::Object &object) {
   std::scoped_lock lock(mutex_);
   sharedObjects_[objectId] = std::make_shared<jsi::WeakObject>(runtime(), object);
 }
@@ -601,7 +622,9 @@ void RuntimeContext::releaseSharedObject(long objectId) {
 }
 
 void RuntimeContext::scheduleSharedObjectRelease(long objectId) noexcept {
-  if (!isAlive()) return;
+  if (!isAlive()) {
+    return;
+  }
   if (isRuntimeThread()) {
     try {
       releaseSharedObject(objectId);
@@ -609,11 +632,15 @@ void RuntimeContext::scheduleSharedObjectRelease(long objectId) noexcept {
     }
     return;
   }
-  if (!jsInvoker_) return;
+  if (!jsInvoker_) {
+    return;
+  }
   jsInvoker_->invokeAsync(
-      [weakContext = weak_from_this(), objectId](jsi::Runtime&) {
+      [weakContext = weak_from_this(), objectId](jsi::Runtime &) {
         auto context = weakContext.lock();
-        if (!context || !context->isAlive()) return;
+        if (!context || !context->isAlive()) {
+          return;
+        }
         try {
           context->releaseSharedObject(objectId);
         } catch (...) {
@@ -645,7 +672,9 @@ jsi::Value RuntimeContext::getSharedObject(long objectId) {
 
 size_t RuntimeContext::beginObservingSharedObject(long objectId) {
   std::scoped_lock lock(mutex_);
-  if (!nativeSharedObjects_.contains(objectId)) return 0;
+  if (!nativeSharedObjects_.contains(objectId)) {
+    return 0;
+  }
   return ++sharedObjectObservationCounts_[objectId];
 }
 
@@ -656,14 +685,16 @@ size_t RuntimeContext::endObservingSharedObject(long objectId) {
     return 0;
   }
   const auto count = --iterator->second;
-  if (count == 0) sharedObjectObservationCounts_.erase(iterator);
+  if (count == 0) {
+    sharedObjectObservationCounts_.erase(iterator);
+  }
   return count;
 }
 
 void RuntimeContext::retainClass(
     std::string moduleName,
     std::string className,
-    const jsi::Function& klass) {
+    const jsi::Function &klass) {
   std::scoped_lock lock(mutex_);
   auto key = std::move(moduleName) + "\n" + std::move(className);
   classes_[std::move(key)] = std::make_unique<jsi::Function>(
@@ -677,8 +708,7 @@ void RuntimeContext::registerNativeClass(
   if (nativeType == std::type_index(typeid(void))) {
     throw CodedError(
         "ERR_INVALID_DEFINITION",
-        "Native Expo class '" + moduleName + "." + className +
-            "' has no C++ runtime type.");
+        "Native Expo class '" + moduleName + "." + className + "' has no C++ runtime type.");
   }
   std::scoped_lock lock(mutex_);
   auto value = std::make_pair(std::move(moduleName), std::move(className));
@@ -703,8 +733,8 @@ std::pair<std::string, std::string> RuntimeContext::nativeClass(
 }
 
 jsi::Value RuntimeContext::getClass(
-    const std::string& moduleName,
-    const std::string& className) {
+    const std::string &moduleName,
+    const std::string &className) {
   std::scoped_lock lock(mutex_);
   auto iterator = classes_.find(moduleName + "\n" + className);
   if (iterator == classes_.end()) {
@@ -715,13 +745,13 @@ jsi::Value RuntimeContext::getClass(
 
 void RuntimeContext::retainModule(
     std::string name,
-    const jsi::Object& module) {
+    const jsi::Object &module) {
   std::scoped_lock lock(mutex_);
   modules_[std::move(name)] = std::make_unique<jsi::Object>(
       jsi::Value(runtime(), module).getObject(runtime()));
 }
 
-jsi::Value RuntimeContext::getModule(const std::string& name) {
+jsi::Value RuntimeContext::getModule(const std::string &name) {
   std::scoped_lock lock(mutex_);
   auto iterator = modules_.find(name);
   if (iterator == modules_.end()) {
@@ -735,14 +765,14 @@ void RuntimeContext::clearJSIReferences() {
   std::vector<std::shared_ptr<NativeSharedObject>> releasedObjects;
   {
     std::scoped_lock lock(mutex_);
-    for (const auto& [pointer, promise] : promises_) {
+    for (const auto &[pointer, promise] : promises_) {
       (void)pointer;
       promise->invalidate();
     }
     promises_.clear();
     sharedObjects_.clear();
     releasedObjects.reserve(nativeSharedObjects_.size());
-    for (auto& [objectId, object] : nativeSharedObjects_) {
+    for (auto &[objectId, object] : nativeSharedObjects_) {
       (void)objectId;
       releasedObjects.push_back(std::move(object));
     }
@@ -755,7 +785,7 @@ void RuntimeContext::clearJSIReferences() {
     nativeClasses_.clear();
     viewProps_.clear();
   }
-  for (const auto& object : releasedObjects) {
+  for (const auto &object : releasedObjects) {
     try {
       object->unbindFromRuntime();
       object->sharedObjectDidRelease();
@@ -764,17 +794,19 @@ void RuntimeContext::clearJSIReferences() {
   }
 }
 
-void RuntimeContext::retainPromise(const std::shared_ptr<Promise>& promise) {
-  if (!promise) return;
+void RuntimeContext::retainPromise(const std::shared_ptr<Promise> &promise) {
+  if (!promise) {
+    return;
+  }
   assertRuntimeThread();
   std::scoped_lock lock(mutex_);
   promises_[promise.get()] = promise;
 }
 
-void RuntimeContext::releasePromise(const Promise* promise) {
+void RuntimeContext::releasePromise(const Promise *promise) {
   assertRuntimeThread();
   std::scoped_lock lock(mutex_);
   promises_.erase(promise);
 }
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

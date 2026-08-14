@@ -13,4 +13,4 @@ void validateUri(std::string_view value);
 uint32_t parseCssColor(std::string_view value);
 uint32_t packNormalizedColor(std::span<const double> components);
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

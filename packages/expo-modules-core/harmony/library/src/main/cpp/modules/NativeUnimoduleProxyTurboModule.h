@@ -5,10 +5,10 @@
 namespace expo::harmony {
 
 class NativeUnimoduleProxyTurboModule final : public rnoh::ArkTSTurboModule {
- public:
+public:
   NativeUnimoduleProxyTurboModule(
       rnoh::ArkTSTurboModule::Context context,
-      const std::string& name);
+      const std::string &name);
 };
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

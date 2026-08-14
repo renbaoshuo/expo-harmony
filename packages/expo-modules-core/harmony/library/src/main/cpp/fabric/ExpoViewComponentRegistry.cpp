@@ -1,7 +1,8 @@
 #include "ExpoViewComponentRegistry.h"
 
-#include <common/fabric/ExpoViewComponentDescriptor.h>
 #include <algorithm>
+
+#include <common/fabric/ExpoViewComponentDescriptor.h>
 
 namespace react = facebook::react;
 
@@ -13,7 +14,7 @@ std::vector<std::shared_ptr<const std::string>> ExpoViewComponentRegistry::names
 void ExpoViewComponentRegistry::registerComponent(std::string componentName) {
   std::scoped_lock lock(mutex_);
   auto duplicate = std::find_if(
-      names_.begin(), names_.end(), [&](const auto& value) {
+      names_.begin(), names_.end(), [&](const auto &value) {
         return *value == componentName;
       });
   if (duplicate == names_.end()) {
@@ -21,9 +22,9 @@ void ExpoViewComponentRegistry::registerComponent(std::string componentName) {
   }
 }
 
-bool ExpoViewComponentRegistry::contains(const std::string& componentName) {
+bool ExpoViewComponentRegistry::contains(const std::string &componentName) {
   std::scoped_lock lock(mutex_);
-  return std::any_of(names_.begin(), names_.end(), [&](const auto& value) {
+  return std::any_of(names_.begin(), names_.end(), [&](const auto &value) {
     return *value == componentName;
   });
 }
@@ -32,7 +33,7 @@ std::vector<std::string> ExpoViewComponentRegistry::componentNames() {
   std::scoped_lock lock(mutex_);
   std::vector<std::string> result;
   result.reserve(names_.size());
-  for (const auto& name : names_) {
+  for (const auto &name : names_) {
     result.push_back(*name);
   }
   return result;
@@ -43,7 +44,7 @@ ExpoViewComponentRegistry::descriptorProviders() {
   std::scoped_lock lock(mutex_);
   std::vector<react::ComponentDescriptorProvider> result;
   result.reserve(names_.size());
-  for (const auto& flavor : names_) {
+  for (const auto &flavor : names_) {
     result.push_back(react::ComponentDescriptorProvider{
         reinterpret_cast<react::ComponentHandle>(flavor->c_str()),
         react::ComponentName{flavor->c_str()},
@@ -53,4 +54,4 @@ ExpoViewComponentRegistry::descriptorProviders() {
   return result;
 }
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

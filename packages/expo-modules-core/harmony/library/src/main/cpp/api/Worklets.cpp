@@ -39,27 +39,29 @@ std::vector<std::shared_ptr<worklets::Serializable>> unwrapArguments(
     std::vector<Serializable> arguments) {
   std::vector<std::shared_ptr<worklets::Serializable>> result;
   result.reserve(arguments.size());
-  for (const auto& argument : arguments) result.push_back(argument.value());
+  for (const auto &argument : arguments) {
+    result.push_back(argument.value());
+  }
   return result;
 }
 
 void invoke(
-    jsi::Runtime& runtime,
-    const std::shared_ptr<worklets::SerializableWorklet>& worklet,
-    const std::vector<std::shared_ptr<worklets::Serializable>>& arguments) {
+    jsi::Runtime &runtime,
+    const std::shared_ptr<worklets::SerializableWorklet> &worklet,
+    const std::vector<std::shared_ptr<worklets::Serializable>> &arguments) {
   auto function = worklet->toJSValue(runtime).asObject(runtime).asFunction(runtime);
   std::vector<jsi::Value> values;
   values.reserve(arguments.size());
-  for (const auto& argument : arguments) {
+  for (const auto &argument : arguments) {
     values.push_back(argument->toJSValue(runtime));
   }
   function.call(
       runtime,
-      static_cast<const jsi::Value*>(values.data()),
+      static_cast<const jsi::Value *>(values.data()),
       values.size());
 }
 
-} // namespace
+}  // namespace
 
 Serializable::Serializable(std::shared_ptr<worklets::Serializable> value)
     : value_(std::move(value)) {
@@ -72,11 +74,11 @@ SerializableValueType Serializable::type() const {
   return stableType(value_->valueType());
 }
 
-const std::shared_ptr<worklets::Serializable>& Serializable::value() const noexcept {
+const std::shared_ptr<worklets::Serializable> &Serializable::value() const noexcept {
   return value_;
 }
 
-jsi::Value Serializable::toJSValue(jsi::Runtime& runtime) const {
+jsi::Value Serializable::toJSValue(jsi::Runtime &runtime) const {
   return worklets::SerializableJSRef::newNativeStateObject(runtime, value_);
 }
 
@@ -88,10 +90,12 @@ Worklet::Worklet(std::shared_ptr<worklets::SerializableWorklet> value)
 }
 
 void Worklet::schedule(
-    const WorkletRuntime& runtime,
+    const WorkletRuntime &runtime,
     std::vector<Serializable> arguments) const {
   auto nativeRuntime = runtime.runtime_.lock();
-  if (!nativeRuntime) return;
+  if (!nativeRuntime) {
+    return;
+  }
   auto worklet = worklet_;
   if (arguments.empty()) {
     nativeRuntime->schedule(std::move(worklet));
@@ -100,13 +104,13 @@ void Worklet::schedule(
   auto nativeArguments = unwrapArguments(std::move(arguments));
   nativeRuntime->schedule(
       [worklet = std::move(worklet), arguments = std::move(nativeArguments)](
-          jsi::Runtime& targetRuntime) {
+          jsi::Runtime &targetRuntime) {
         invoke(targetRuntime, worklet, arguments);
       });
 }
 
 void Worklet::execute(
-    const WorkletRuntime& runtime,
+    const WorkletRuntime &runtime,
     std::vector<Serializable> arguments) const {
   auto nativeRuntime = runtime.requireRuntime();
   if (arguments.empty()) {
@@ -116,19 +120,19 @@ void Worklet::execute(
   auto nativeArguments = unwrapArguments(std::move(arguments));
   nativeRuntime->runSync(
       [worklet = worklet_, arguments = std::move(nativeArguments)](
-          jsi::Runtime& targetRuntime) {
+          jsi::Runtime &targetRuntime) {
         invoke(targetRuntime, worklet, arguments);
       });
 }
 
-const std::shared_ptr<worklets::SerializableWorklet>& Worklet::worklet() const noexcept {
+const std::shared_ptr<worklets::SerializableWorklet> &Worklet::worklet() const noexcept {
   return worklet_;
 }
 
 WorkletRuntime::WorkletRuntime(std::weak_ptr<worklets::WorkletRuntime> runtime)
     : runtime_(std::move(runtime)) {}
 
-WorkletRuntime WorkletRuntime::fromJSRuntime(jsi::Runtime& runtime) {
+WorkletRuntime WorkletRuntime::fromJSRuntime(jsi::Runtime &runtime) {
   return WorkletRuntime(
       worklets::WorkletRuntime::getWeakRuntimeFromJSIRuntime(runtime));
 }
@@ -154,4 +158,4 @@ std::shared_ptr<worklets::WorkletRuntime> WorkletRuntime::requireRuntime() const
   return runtime;
 }
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

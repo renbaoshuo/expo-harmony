@@ -1,19 +1,19 @@
 #pragma once
 
-#include "api/TypeConverter.h"
-
-#include <folly/dynamic.h>
-
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include <folly/dynamic.h>
+
+#include "api/TypeConverter.h"
+
 namespace expo::harmony {
 
 class ViewHandle final {
- public:
+public:
   ViewHandle(
       std::weak_ptr<RuntimeContext> context,
       int64_t tag,
@@ -22,8 +22,13 @@ class ViewHandle final {
         tag_(tag),
         componentName_(std::move(componentName)) {}
 
-  int64_t tag() const noexcept { return tag_; }
-  const std::string& componentName() const noexcept { return componentName_; }
+  int64_t tag() const noexcept {
+    return tag_;
+  }
+
+  const std::string &componentName() const noexcept {
+    return componentName_;
+  }
 
   void dispatchCommand(
       std::string commandName,
@@ -32,22 +37,21 @@ class ViewHandle final {
       std::string eventName,
       folly::dynamic payload = folly::dynamic::object()) const;
 
- private:
+private:
   std::weak_ptr<RuntimeContext> context_;
   int64_t tag_;
   std::string componentName_;
 };
 
 ViewHandle requireViewHandle(
-    Invocation& invocation,
-    const std::string& componentName);
+    Invocation &invocation,
+    const std::string &componentName);
 
-template <typename Return, typename... Arguments, typename Body,
-          size_t... Indices>
+template <typename Return, typename... Arguments, typename Body, size_t... Indices>
 facebook::jsi::Value invokeTypedViewBody(
-    Invocation& invocation,
-    const std::string& componentName,
-    Body& body,
+    Invocation &invocation,
+    const std::string &componentName,
+    Body &body,
     std::index_sequence<Indices...>) {
   invocation.requireArgumentCount(
       requiredArgumentCount<Arguments...>(), sizeof...(Arguments));
@@ -74,7 +78,7 @@ FunctionDefinition typedViewFunction(
   definition.requiredArity = requiredArgumentCount<Arguments...>();
   definition.body = [body = std::move(body),
                      componentName = std::move(componentName)](
-                        Invocation& invocation) mutable {
+                        Invocation &invocation) mutable {
     return invokeTypedViewBody<Return, Arguments...>(
         invocation,
         componentName,
@@ -99,13 +103,11 @@ FunctionDefinition typedAsyncViewFunction(
   definition.asyncBody =
       [body = std::move(body),
        componentName = std::move(componentName),
-       queue](Invocation& invocation, const std::shared_ptr<Promise>& promise) mutable {
-        if (queue != FunctionQueue::JavaScript &&
-            (isJavaScriptBound<Return> || (isJavaScriptBound<Arguments> || ...))) {
+       queue](Invocation &invocation, const std::shared_ptr<Promise> &promise) mutable {
+        if (queue != FunctionQueue::JavaScript && (isJavaScriptBound<Return> || (isJavaScriptBound<Arguments> || ...))) {
           throw CodedError(
               "ERR_WRONG_THREAD",
-              invocation.path() +
-                  " uses a JSI-bound type and must run on the JavaScript queue.");
+              invocation.path() + " uses a JSI-bound type and must run on the JavaScript queue.");
         }
         auto handle = requireViewHandle(invocation, componentName);
         auto context = invocation.sharedContext();
@@ -122,14 +124,14 @@ FunctionDefinition typedAsyncViewFunction(
                 promise->cancellationToken()->throwIfCancellationRequested();
                 if constexpr (std::is_void_v<Return>) {
                   std::apply(
-                      [&](auto&&... values) {
+                      [&](auto &&...values) {
                         body(handle, std::forward<decltype(values)>(values)...);
                       },
                       std::move(arguments));
                   promise->resolveUndefined();
                 } else {
                   auto result = std::apply(
-                      [&](auto&&... values) {
+                      [&](auto &&...values) {
                         return body(
                             handle, std::forward<decltype(values)>(values)...);
                       },
@@ -137,13 +139,13 @@ FunctionDefinition typedAsyncViewFunction(
                   auto retained = std::make_shared<Return>(std::move(result));
                   promise->resolve(
                       [context, retained = std::move(retained)](
-                          facebook::jsi::Runtime&) mutable {
+                          facebook::jsi::Runtime &) mutable {
                         return convertToJS(context, std::move(*retained));
                       });
                 }
-              } catch (const CodedError& error) {
+              } catch (const CodedError &error) {
                 promise->reject(error);
-              } catch (const std::exception& error) {
+              } catch (const std::exception &error) {
                 promise->reject("ERR_UNEXPECTED", error.what());
               } catch (...) {
                 promise->reject(
@@ -155,4 +157,4 @@ FunctionDefinition typedAsyncViewFunction(
   return definition;
 }
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

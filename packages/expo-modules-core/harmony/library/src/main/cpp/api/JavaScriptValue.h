@@ -1,8 +1,5 @@
 #pragma once
 
-#include <common/JSI/TypedArray.h>
-#include <jsi/jsi.h>
-
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -10,6 +7,10 @@
 #include <optional>
 #include <string>
 #include <vector>
+
+#include <jsi/jsi.h>
+
+#include <common/JSI/TypedArray.h>
 
 namespace expo::harmony {
 
@@ -21,10 +22,10 @@ class JavaScriptArrayBuffer;
 class JavaScriptTypedArray;
 
 class JavaScriptValue {
- public:
+public:
   JavaScriptValue(
       std::shared_ptr<RuntimeContext> context,
-      const facebook::jsi::Value& value);
+      const facebook::jsi::Value &value);
 
   facebook::jsi::Value get() const;
   bool isValid() const noexcept;
@@ -50,9 +51,9 @@ class JavaScriptValue {
   JavaScriptTypedArray getTypedArray() const;
   std::vector<JavaScriptValue> getArray() const;
 
- protected:
+protected:
   std::shared_ptr<RuntimeContext> requireContext() const;
-  facebook::jsi::Runtime& runtime() const;
+  facebook::jsi::Runtime &runtime() const;
 
   std::weak_ptr<RuntimeContext> context_;
   std::shared_ptr<facebook::jsi::Value> value_;
@@ -68,22 +69,22 @@ struct JavaScriptPropertyDescriptor {
 };
 
 class JavaScriptObject {
- public:
+public:
   JavaScriptObject(
       std::shared_ptr<RuntimeContext> context,
-      const facebook::jsi::Object& object);
+      const facebook::jsi::Object &object);
 
   facebook::jsi::Object get() const;
   bool isValid() const noexcept;
-  bool strictEquals(const JavaScriptObject& other) const;
-  bool hasProperty(const std::string& name) const;
-  JavaScriptValue getProperty(const std::string& name) const;
+  bool strictEquals(const JavaScriptObject &other) const;
+  bool hasProperty(const std::string &name) const;
+  JavaScriptValue getProperty(const std::string &name) const;
   std::vector<std::string> getPropertyNames() const;
-  void setProperty(const std::string& name, const facebook::jsi::Value& value);
-  void unsetProperty(const std::string& name);
+  void setProperty(const std::string &name, const facebook::jsi::Value &value);
+  void unsetProperty(const std::string &name);
   void defineProperty(
-      const std::string& name,
-      const JavaScriptPropertyDescriptor& descriptor);
+      const std::string &name,
+      const JavaScriptPropertyDescriptor &descriptor);
   void defineNativeDeallocator(std::function<void()> deallocator);
   void setExternalMemoryPressure(size_t size);
   bool isArray() const;
@@ -94,80 +95,80 @@ class JavaScriptObject {
   bool isTypedArray() const;
   JavaScriptWeakObject createWeak() const;
 
- private:
+private:
   friend class JavaScriptWeakObject;
   std::shared_ptr<RuntimeContext> requireContext() const;
-  facebook::jsi::Runtime& runtime() const;
+  facebook::jsi::Runtime &runtime() const;
 
   std::weak_ptr<RuntimeContext> context_;
   std::shared_ptr<facebook::jsi::Object> object_;
 };
 
 class JavaScriptWeakObject {
- public:
-  explicit JavaScriptWeakObject(const JavaScriptObject& object);
+public:
+  explicit JavaScriptWeakObject(const JavaScriptObject &object);
   std::optional<JavaScriptObject> lock() const;
 
- private:
+private:
   std::weak_ptr<RuntimeContext> context_;
   std::shared_ptr<facebook::jsi::WeakObject> weakObject_;
 };
 
 class JavaScriptFunction {
- public:
+public:
   JavaScriptFunction(
       std::shared_ptr<RuntimeContext> context,
-      const facebook::jsi::Function& function);
+      const facebook::jsi::Function &function);
 
   facebook::jsi::Function get() const;
   bool isValid() const noexcept;
   JavaScriptValue call(
-      const facebook::jsi::Value* arguments = nullptr,
+      const facebook::jsi::Value *arguments = nullptr,
       size_t argumentCount = 0) const;
   JavaScriptValue callWithThis(
-      const JavaScriptObject& thisObject,
-      const facebook::jsi::Value* arguments = nullptr,
+      const JavaScriptObject &thisObject,
+      const facebook::jsi::Value *arguments = nullptr,
       size_t argumentCount = 0) const;
 
- private:
+private:
   std::shared_ptr<RuntimeContext> requireContext() const;
-  facebook::jsi::Runtime& runtime() const;
+  facebook::jsi::Runtime &runtime() const;
 
   std::weak_ptr<RuntimeContext> context_;
   std::shared_ptr<facebook::jsi::Function> function_;
 };
 
 class JavaScriptArrayBuffer {
- public:
+public:
   JavaScriptArrayBuffer(
       std::shared_ptr<RuntimeContext> context,
-      const facebook::jsi::ArrayBuffer& buffer);
+      const facebook::jsi::ArrayBuffer &buffer);
 
   static JavaScriptArrayBuffer create(
-      const std::shared_ptr<RuntimeContext>& context,
-      uint8_t* data,
+      const std::shared_ptr<RuntimeContext> &context,
+      uint8_t *data,
       size_t size,
       std::function<void()> deallocator);
   facebook::jsi::ArrayBuffer get() const;
   bool isValid() const noexcept;
-  uint8_t* data() const;
+  uint8_t *data() const;
   size_t size() const;
-  void readBytes(size_t offset, void* destination, size_t size) const;
-  void writeBytes(size_t offset, const void* source, size_t size) const;
+  void readBytes(size_t offset, void *destination, size_t size) const;
+  void writeBytes(size_t offset, const void *source, size_t size) const;
 
- private:
+private:
   std::shared_ptr<RuntimeContext> requireContext() const;
-  facebook::jsi::Runtime& runtime() const;
+  facebook::jsi::Runtime &runtime() const;
 
   std::weak_ptr<RuntimeContext> context_;
   std::shared_ptr<facebook::jsi::ArrayBuffer> buffer_;
 };
 
 class JavaScriptTypedArray {
- public:
+public:
   JavaScriptTypedArray(
       std::shared_ptr<RuntimeContext> context,
-      const facebook::jsi::Object& typedArray);
+      const facebook::jsi::Object &typedArray);
 
   facebook::jsi::Object get() const;
   bool isValid() const noexcept;
@@ -175,17 +176,17 @@ class JavaScriptTypedArray {
   size_t byteOffset() const;
   size_t byteLength() const;
   size_t length() const;
-  void* data() const;
-  void readBytes(size_t byteOffset, void* destination, size_t size) const;
-  void writeBytes(size_t byteOffset, const void* source, size_t size) const;
+  void *data() const;
+  void readBytes(size_t byteOffset, void *destination, size_t size) const;
+  void writeBytes(size_t byteOffset, const void *source, size_t size) const;
   JavaScriptArrayBuffer buffer() const;
 
- private:
+private:
   std::shared_ptr<RuntimeContext> requireContext() const;
-  facebook::jsi::Runtime& runtime() const;
+  facebook::jsi::Runtime &runtime() const;
 
   std::weak_ptr<RuntimeContext> context_;
   std::shared_ptr<expo::TypedArray> typedArray_;
 };
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

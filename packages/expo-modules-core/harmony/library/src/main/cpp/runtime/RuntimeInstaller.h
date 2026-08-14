@@ -1,18 +1,19 @@
 #pragma once
 
-#include <jsi/jsi.h>
 #include <memory>
+
+#include <jsi/jsi.h>
 
 namespace expo::harmony {
 
 class RuntimeContext;
 
 class RuntimeInstaller final {
- public:
+public:
   static bool install(
-      facebook::jsi::Runtime& runtime,
-      const std::shared_ptr<RuntimeContext>& context,
+      facebook::jsi::Runtime &runtime,
+      const std::shared_ptr<RuntimeContext> &context,
       bool workletRuntime);
 };
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

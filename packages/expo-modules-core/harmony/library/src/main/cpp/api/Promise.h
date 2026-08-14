@@ -1,11 +1,11 @@
 #pragma once
 
-#include <jsi/jsi.h>
-
+#include <atomic>
 #include <functional>
 #include <memory>
-#include <atomic>
 #include <string>
+
+#include <jsi/jsi.h>
 
 #include "errors/CodedError.h"
 
@@ -14,30 +14,35 @@ namespace expo::harmony {
 class RuntimeContext;
 
 class CancellationToken final {
- public:
+public:
   bool isCancellationRequested() const noexcept {
     return cancelled_.load(std::memory_order_acquire);
   }
+
   void throwIfCancellationRequested() const;
 
- private:
+private:
   friend class Promise;
-  void cancel() noexcept { cancelled_.store(true, std::memory_order_release); }
+
+  void cancel() noexcept {
+    cancelled_.store(true, std::memory_order_release);
+  }
+
   std::atomic_bool cancelled_{false};
 };
 
 class Promise final : public std::enable_shared_from_this<Promise> {
- public:
-  using Setup = std::function<void(const std::shared_ptr<Promise>&)>;
-  using ValueFactory = std::function<facebook::jsi::Value(facebook::jsi::Runtime&)>;
+public:
+  using Setup = std::function<void(const std::shared_ptr<Promise> &)>;
+  using ValueFactory = std::function<facebook::jsi::Value(facebook::jsi::Runtime &)>;
 
   static facebook::jsi::Value create(
-      facebook::jsi::Runtime& runtime,
-      const std::shared_ptr<RuntimeContext>& context,
+      facebook::jsi::Runtime &runtime,
+      const std::shared_ptr<RuntimeContext> &context,
       Setup setup);
   static facebook::jsi::Value rejected(
-      facebook::jsi::Runtime& runtime,
-      const std::shared_ptr<RuntimeContext>& context,
+      facebook::jsi::Runtime &runtime,
+      const std::shared_ptr<RuntimeContext> &context,
       std::string code,
       std::string message);
 
@@ -52,13 +57,13 @@ class Promise final : public std::enable_shared_from_this<Promise> {
   std::shared_ptr<const CancellationToken> cancellationToken() const noexcept;
   bool isSettled() const noexcept;
 
- private:
+private:
   friend class RuntimeContext;
   Promise(
       std::shared_ptr<RuntimeContext> context,
       facebook::jsi::Function resolve,
       facebook::jsi::Function reject);
-  void settle(std::function<void(facebook::jsi::Runtime&)> body);
+  void settle(std::function<void(facebook::jsi::Runtime &)> body);
   void invalidate() noexcept;
 
   std::weak_ptr<RuntimeContext> context_;
@@ -68,4 +73,4 @@ class Promise final : public std::enable_shared_from_this<Promise> {
   std::atomic_bool settled_{false};
 };
 
-} // namespace expo::harmony
+}  // namespace expo::harmony

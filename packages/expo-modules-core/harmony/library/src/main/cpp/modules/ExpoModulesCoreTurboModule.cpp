@@ -1,15 +1,16 @@
 #include "ExpoModulesCoreTurboModule.h"
 
+#include <jsi/JSIDynamic.h>
+
+#include <hilog/log.h>
+
 #include "common/EventEmitter.h"
 #include "common/LazyObject.h"
 #include "errors/CodedError.h"
-#include "runtime/RuntimeContext.h"
-#include "runtime/RuntimeInstaller.h"
 #include "runtime/ModuleRegistry.h"
 #include "runtime/Protocol.h"
-
-#include <jsi/JSIDynamic.h>
-#include <hilog/log.h>
+#include "runtime/RuntimeContext.h"
+#include "runtime/RuntimeInstaller.h"
 
 namespace jsi = facebook::jsi;
 namespace react = facebook::react;
@@ -19,25 +20,24 @@ namespace expo::harmony {
 namespace {
 
 constexpr unsigned int kExpoModulesLogDomain = 0xD003900;
-constexpr const char* kExpoModulesLogTag = "ExpoModulesCore";
+constexpr const char *kExpoModulesLogTag = "ExpoModulesCore";
 
 jsi::Value installModulesHostFunction(
-    jsi::Runtime& runtime,
-    react::TurboModule& turboModule,
-    const jsi::Value*,
+    jsi::Runtime &runtime,
+    react::TurboModule &turboModule,
+    const jsi::Value *,
     size_t) {
   try {
-    return static_cast<ExpoModulesCoreTurboModule&>(turboModule).install(runtime);
-  } catch (const jsi::JSError&) {
+    return static_cast<ExpoModulesCoreTurboModule &>(turboModule).install(runtime);
+  } catch (const jsi::JSError &) {
     throw;
-  } catch (const CodedError& error) {
+  } catch (const CodedError &error) {
     throw makeJSError(runtime, error);
-  } catch (const std::exception& error) {
+  } catch (const std::exception &error) {
     throw makeJSError(
         runtime,
         "ERR_RUNTIME_INSTALLATION",
-        "Expo Modules could not install the native runtime: " +
-            std::string(error.what()));
+        "Expo Modules could not install the native runtime: " + std::string(error.what()));
   } catch (...) {
     throw makeJSError(
         runtime,
@@ -46,11 +46,11 @@ jsi::Value installModulesHostFunction(
   }
 }
 
-} // namespace
+}  // namespace
 
 ExpoModulesCoreTurboModule::ExpoModulesCoreTurboModule(
     rnoh::ArkTSTurboModule::Context context,
-    const std::string& name)
+    const std::string &name)
     : rnoh::ArkTSMessageHub::Observer(context.arkTSMessageHub),
       rnoh::TurboModule(context, name),
       jsInvoker_(context.jsInvoker),
@@ -69,11 +69,13 @@ ExpoModulesCoreTurboModule::~ExpoModulesCoreTurboModule() noexcept {
 }
 
 std::shared_ptr<RuntimeContext> ExpoModulesCoreTurboModule::runtimeContext(
-    jsi::Runtime& runtime) {
+    jsi::Runtime &runtime) {
   std::scoped_lock lock(contextsMutex_);
   auto iterator = contexts_.find(&runtime);
   if (iterator != contexts_.end()) {
-    if (auto existing = iterator->second.lock()) return existing;
+    if (auto existing = iterator->second.lock()) {
+      return existing;
+    }
   }
   auto context = std::make_shared<RuntimeContext>(
       runtime, jsInvoker_, taskExecutor_, weak_from_this());
@@ -81,11 +83,15 @@ std::shared_ptr<RuntimeContext> ExpoModulesCoreTurboModule::runtimeContext(
   return context;
 }
 
-bool ExpoModulesCoreTurboModule::hasRuntimeContext(jsi::Runtime* runtime) {
-  if (!runtime) return false;
+bool ExpoModulesCoreTurboModule::hasRuntimeContext(jsi::Runtime *runtime) {
+  if (!runtime) {
+    return false;
+  }
   std::scoped_lock lock(contextsMutex_);
   auto iterator = contexts_.find(runtime);
-  if (iterator == contexts_.end()) return false;
+  if (iterator == contexts_.end()) {
+    return false;
+  }
   auto context = iterator->second.lock();
   if (!context || !context->isAlive()) {
     contexts_.erase(iterator);
@@ -95,22 +101,22 @@ bool ExpoModulesCoreTurboModule::hasRuntimeContext(jsi::Runtime* runtime) {
 }
 
 void ExpoModulesCoreTurboModule::registerRuntimeContext(
-    jsi::Runtime& runtime,
-    const std::shared_ptr<RuntimeContext>& context) {
+    jsi::Runtime &runtime,
+    const std::shared_ptr<RuntimeContext> &context) {
   std::scoped_lock lock(contextsMutex_);
   contexts_[&runtime] = context;
 }
 
-jsi::Value ExpoModulesCoreTurboModule::install(jsi::Runtime& runtime) {
+jsi::Value ExpoModulesCoreTurboModule::install(jsi::Runtime &runtime) {
   auto context = runtimeContext(runtime);
   RuntimeInstaller::install(runtime, context, false);
   return jsi::Value(true);
 }
 
 jsi::Value ExpoModulesCoreTurboModule::callPlatformSync(
-    jsi::Runtime& runtime,
-    const std::string& methodName,
-    const jsi::Value* arguments,
+    jsi::Runtime &runtime,
+    const std::string &methodName,
+    const jsi::Value *arguments,
     size_t argumentCount) {
   // This boundary is deliberately restricted to JSON-like platform values.
   // JSI wrappers and module bodies never pass through ArkTSTurboModule.
@@ -119,17 +125,17 @@ jsi::Value ExpoModulesCoreTurboModule::callPlatformSync(
 }
 
 jsi::Value ExpoModulesCoreTurboModule::callPlatformAsync(
-    jsi::Runtime& runtime,
-    const std::string& methodName,
-    const jsi::Value* arguments,
+    jsi::Runtime &runtime,
+    const std::string &methodName,
+    const jsi::Value *arguments,
     size_t argumentCount) {
   return platformBridge_->callAsync(
       runtime, methodName, arguments, argumentCount);
 }
 
 void ExpoModulesCoreTurboModule::postMessageToArkTS(
-    const std::string& name,
-    const folly::dynamic& payload) {
+    const std::string &name,
+    const folly::dynamic &payload) {
   auto instance = safeInstance_.lock();
   if (!instance) {
     throw CodedError(
@@ -140,25 +146,28 @@ void ExpoModulesCoreTurboModule::postMessageToArkTS(
 }
 
 void ExpoModulesCoreTurboModule::onMessageReceived(
-    const rnoh::ArkTSMessage& message) {
+    const rnoh::ArkTSMessage &message) {
   if (message.name == protocol::kViewEvent && message.payload.isObject()) {
     auto phase = message.payload.getDefault("phase", "").asString();
-    auto componentName =
-        message.payload.getDefault("componentName", "").asString();
+    auto componentName = message.payload.getDefault("componentName", "").asString();
     auto tag = message.payload.getDefault("tag", 0).asInt();
     auto props = message.payload.getDefault("props", folly::dynamic::object());
     std::vector<std::weak_ptr<RuntimeContext>> contexts;
     {
       std::scoped_lock lock(contextsMutex_);
-      for (const auto& [runtime, context] : contexts_) contexts.push_back(context);
+      for (const auto &[runtime, context] : contexts_) {
+        contexts.push_back(context);
+      }
     }
-    for (const auto& weakContext : contexts) {
+    for (const auto &weakContext : contexts) {
       auto context = weakContext.lock();
       if (!context || !context->isAlive() || !context->hasModuleRegistry()) {
         continue;
       }
-      const auto* view = context->moduleRegistry().findView(componentName);
-      if (!view) continue;
+      const auto *view = context->moduleRegistry().findView(componentName);
+      if (!view) {
+        continue;
+      }
       try {
         if (phase == protocol::kViewPhaseCreate && view->onCreate) {
           view->onCreate(*context, tag, componentName);
@@ -170,7 +179,7 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
             view->onDestroy(*context, tag, componentName);
           }
         }
-      } catch (const std::exception& error) {
+      } catch (const std::exception &error) {
         OH_LOG_Print(
             LOG_APP,
             LOG_ERROR,
@@ -201,61 +210,68 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
     std::vector<std::weak_ptr<RuntimeContext>> contexts;
     {
       std::scoped_lock lock(contextsMutex_);
-      for (const auto& [runtime, context] : contexts_) contexts.push_back(context);
+      for (const auto &[runtime, context] : contexts_) {
+        contexts.push_back(context);
+      }
     }
     jsInvoker_->invokeAsync(
         [contexts = std::move(contexts),
          eventName = std::move(eventName),
          payload = std::move(payload)](
-            jsi::Runtime& runtime) {
-          for (const auto& weakContext : contexts) {
+            jsi::Runtime &runtime) {
+          for (const auto &weakContext : contexts) {
             auto context = weakContext.lock();
-            if (!context || !context->isAlive()) continue;
+            if (!context || !context->isAlive()) {
+              continue;
+            }
             if (eventName == protocol::kLifecycleDestroy) {
               context->invalidate();
-            } else if (context->hasModuleRegistry() &&
-                       &context->runtime() == &runtime) {
-                context->moduleRegistry().dispatchLifecycle(eventName, payload);
+            } else if (context->hasModuleRegistry() && &context->runtime() == &runtime) {
+              context->moduleRegistry().dispatchLifecycle(eventName, payload);
             }
           }
         });
     return;
   }
-  if (message.name != protocol::kModuleEvent || !message.payload.isObject()) return;
+  if (message.name != protocol::kModuleEvent || !message.payload.isObject()) {
+    return;
+  }
   auto moduleName = message.payload.getDefault("moduleName", "").asString();
   auto eventName = message.payload.getDefault("eventName", "").asString();
-  auto arguments =
-      message.payload.getDefault("arguments", folly::dynamic::array());
-  if (moduleName.empty() || eventName.empty() || !arguments.isArray()) return;
+  auto arguments = message.payload.getDefault("arguments", folly::dynamic::array());
+  if (moduleName.empty() || eventName.empty() || !arguments.isArray()) {
+    return;
+  }
 
   std::vector<std::weak_ptr<RuntimeContext>> contexts;
   {
     std::scoped_lock lock(contextsMutex_);
     contexts.reserve(contexts_.size());
-    for (const auto& [runtime, context] : contexts_) contexts.push_back(context);
+    for (const auto &[runtime, context] : contexts_) {
+      contexts.push_back(context);
+    }
   }
   auto invoker = jsInvoker_;
   invoker->invokeAsync(
       [contexts = std::move(contexts),
        moduleName = std::move(moduleName),
        eventName = std::move(eventName),
-       arguments = std::move(arguments)](jsi::Runtime& runtime) mutable {
-        for (const auto& weakContext : contexts) {
+       arguments = std::move(arguments)](jsi::Runtime &runtime) mutable {
+        for (const auto &weakContext : contexts) {
           auto context = weakContext.lock();
-          if (!context || !context->isAlive() ||
-              !context->hasModuleRegistry() ||
-              &context->runtime() != &runtime) {
+          if (!context || !context->isAlive() || !context->hasModuleRegistry() || &context->runtime() != &runtime) {
             continue;
           }
           auto moduleValue = context->getModule(moduleName);
-          if (!moduleValue.isObject()) continue;
+          if (!moduleValue.isObject()) {
+            continue;
+          }
           auto moduleWrapper = moduleValue.getObject(runtime);
-          const auto& unwrappedModule =
-              expo::LazyObject::unwrapObjectIfNecessary(runtime, moduleWrapper);
+          const auto &unwrappedModule = expo::LazyObject::unwrapObjectIfNecessary(runtime, moduleWrapper);
           auto module = jsi::Value(runtime, unwrappedModule).getObject(runtime);
           std::vector<jsi::Value> values;
           values.reserve(arguments.size());
-          for (const auto& argument : arguments) {
+          for (const auto &argument : arguments) {
             values.push_back(jsi::valueFromDynamic(runtime, argument));
           }
           expo::EventEmitter::emitEvent(
@@ -267,4 +283,4 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
       });
 }
 
-} // namespace expo::harmony
+}  // namespace expo::harmony
