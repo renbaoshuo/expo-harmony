@@ -1,0 +1,44 @@
+{
+  "configurations": [
+    {
+      "name": "OpenHarmony",
+      "compilerPath": "${env:DEVECO_SDK_HOME}/default/openharmony/native/llvm/bin/clang++",
+      "compilerArgs": [
+        "--target=aarch64-linux-ohos",
+        "--sysroot=${env:DEVECO_SDK_HOME}/default/openharmony/native/sysroot"
+      ],
+      "intelliSenseMode": "macos-clang-arm64",
+      "cStandard": "c17",
+      "cppStandard": "c++20",
+      "defines": [
+        "EXPO_HARMONY=1",
+        "REACT_NATIVE_MINOR_VERSION=84",
+        "WORKLETS_ENABLED=1",
+        "HERMES_V1_ENABLED=1"
+      ],
+      "includePath": [
+        "${workspaceFolder}/packages/**/harmony/**/src/main/cpp/**",
+        "${workspaceFolder}/packages/**/harmony/**/src/main/cpp",
+        "${workspaceFolder}/packages/**/harmony/**/oh_modules/**/src/main/cpp/**",
+        "${workspaceFolder}/packages/**/native/generated/cpp/**",
+        "${workspaceFolder}/node_modules/react-native/ReactCommon/**",
+        "${env:DEVECO_SDK_HOME}/default/openharmony/native/sysroot/usr/include/**",
+        "${env:DEVECO_SDK_HOME}/default/hms/native/sysroot/usr/include/**",
+        "${env:DEVECO_SDK_HOME}/default/openharmony/native/llvm/include/c++/v1",
+        "${env:DEVECO_SDK_HOME}/default/openharmony/native/llvm/lib/clang/**/include"
+      ],
+      "browse": {
+        "path": [
+          "${workspaceFolder}/packages/**/harmony/**/src/main/cpp/**",
+          "${workspaceFolder}/packages/**/harmony/**/oh_modules/**/src/main/cpp/**",
+          "${workspaceFolder}/packages/**/native/generated/cpp/**",
+          "${workspaceFolder}/node_modules/react-native/ReactCommon/**",
+          "${env:DEVECO_SDK_HOME}/default/openharmony/native/sysroot/usr/include/**",
+          "${env:DEVECO_SDK_HOME}/default/hms/native/sysroot/usr/include/**"
+        ],
+        "limitSymbolsToIncludedHeaders": true
+      }
+    }
+  ],
+  "version": 4
+}
