@@ -1,6 +1,13 @@
-**/*
+*
+
+!*/
+
+node_modules/
+oh_modules/
+dist/
+build/
+.git/
+
 !**/*.md
-!**/*.json
-!**/*.json5
 !**/*.yml
 !**/*.yaml

@@ -13,6 +13,7 @@ node_modules
 **/harmony/**/.cxx/
 **/harmony/**/build/
 **/harmony/**/oh_modules/
+**/harmony/library/BuildProfile.ets
 
 # Harmony package artifacts.
 *.har
