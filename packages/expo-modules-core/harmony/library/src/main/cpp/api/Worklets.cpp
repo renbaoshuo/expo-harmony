@@ -30,9 +30,9 @@ SerializableValueType stableType(worklets::Serializable::ValueType type) {
     case Source::SynchronizableType: return SerializableValueType::Synchronizable;
     case Source::CustomType: return SerializableValueType::Custom;
   }
-  // Match Expo's iOS/Android forward-compatibility behavior: a value type
-  // introduced by a newer Worklets build degrades to Undefined.
-  return SerializableValueType::Undefined;
+  throw CodedError(
+      "ERR_SERIALIZABLE_TYPE",
+      "The Worklets runtime returned an unknown serializable value type.");
 }
 
 std::vector<std::shared_ptr<worklets::Serializable>> unwrapArguments(

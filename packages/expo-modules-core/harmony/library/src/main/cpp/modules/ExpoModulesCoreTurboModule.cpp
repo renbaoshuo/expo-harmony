@@ -110,6 +110,17 @@ void ExpoModulesCoreTurboModule::registerRuntimeContext(
 jsi::Value ExpoModulesCoreTurboModule::install(jsi::Runtime &runtime) {
   auto context = runtimeContext(runtime);
   RuntimeInstaller::install(runtime, context, false);
+  std::vector<PendingLifecycleEvent> pendingEvents;
+  {
+    std::scoped_lock lock(contextsMutex_);
+    pendingEvents.swap(pendingLifecycleEvents_);
+  }
+  if (context->hasModuleRegistry()) {
+    for (auto &event : pendingEvents) {
+      context->moduleRegistry().dispatchLifecycle(
+          event.name, event.payload);
+    }
+  }
   return jsi::Value(true);
 }
 
@@ -210,8 +221,21 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
     std::vector<std::weak_ptr<RuntimeContext>> contexts;
     {
       std::scoped_lock lock(contextsMutex_);
-      for (const auto &[runtime, context] : contexts_) {
+      for (auto iterator = contexts_.begin(); iterator != contexts_.end();) {
+        auto context = iterator->second.lock();
+        if (!context || !context->isAlive()) {
+          iterator = contexts_.erase(iterator);
+          continue;
+        }
         contexts.push_back(context);
+        ++iterator;
+      }
+      if (contexts.empty()) {
+        pendingLifecycleEvents_.push_back(PendingLifecycleEvent{
+            .name = std::move(eventName),
+            .payload = std::move(payload),
+        });
+        return;
       }
     }
     jsInvoker_->invokeAsync(

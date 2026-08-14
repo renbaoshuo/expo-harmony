@@ -190,7 +190,19 @@ ModuleDefinition NativeModulesProxyModule::definition() {
             jsi::Value::undefined(),
             nullptr,
             0);
-        constants.setProperty(runtime, name.c_str(), factory(constantInvocation));
+        try {
+          constants.setProperty(runtime, name.c_str(), factory(constantInvocation));
+        } catch (const CodedError &error) {
+          throw error.wrapping(
+              "ERR_MODULE_CONSTANT",
+              "Failed to read module constant '" + moduleName + "." + name + "'.",
+              {.moduleName = moduleName, .functionName = name});
+        } catch (const std::exception &error) {
+          throw CodedError(
+              "ERR_MODULE_CONSTANT",
+              "Failed to read module constant '" + moduleName + "." + name + "': " + error.what(),
+              {.moduleName = moduleName, .functionName = name});
+        }
       }
       result.setProperty(runtime, moduleName.c_str(), std::move(constants));
     }

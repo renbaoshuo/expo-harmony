@@ -930,7 +930,10 @@ struct TypeConverter<std::vector<T>> {
       const std::string &path) {
     auto &runtime = context->runtime();
     if (!value.isObject() || !value.getObject(runtime).isArray(runtime)) {
-      throwConversionError(runtime, path, "array", value);
+      std::vector<T> result;
+      result.reserve(1);
+      result.push_back(convertFromJS<T>(context, value, path + "[0]"));
+      return result;
     }
     auto array = value.getObject(runtime).getArray(runtime);
     std::vector<T> result;

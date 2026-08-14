@@ -36,10 +36,18 @@ export class ExpoModulesCoreTurboModule extends EtsUITurboModule {
   private readonly coreContext: UITurboModuleContext;
   private readonly platformServices: ExpoPlatformServiceRegistry;
 
-  constructor(coreContext: UITurboModuleContext) {
+  static async create(coreContext: UITurboModuleContext): Promise<ExpoModulesCoreTurboModule> {
+    const platformServices = await ExpoPlatformServiceRegistry.createScope(coreContext);
+    return new ExpoModulesCoreTurboModule(coreContext, platformServices);
+  }
+
+  constructor(
+    coreContext: UITurboModuleContext,
+    platformServices: ExpoPlatformServiceRegistry,
+  ) {
     super(coreContext);
     this.coreContext = coreContext;
-    this.platformServices = ExpoPlatformServiceRegistry.createScope(coreContext);
+    this.platformServices = platformServices;
     this.unsubscribeLifecycle.push(
       ExpoLifecycleDispatcher.register(this),
       coreContext.rnInstance.subscribeToLifecycleEvents('FOREGROUND', () =>
@@ -74,10 +82,6 @@ export class ExpoModulesCoreTurboModule extends EtsUITurboModule {
     this.coreContext.uiAbilityContext.resourceManager.closeRawFdSync(path);
   }
 
-  getStatusBarHeight(): number {
-    return this.coreContext.safeAreaInsetsProvider.safeAreaInsets.top;
-  }
-
   async reloadAppAsync(_reason: string): Promise<void> {
     await this.coreContext.reloadRNInstance(this.coreContext.rnInstance);
   }
@@ -89,9 +93,17 @@ export class ExpoModulesCoreTurboModule extends EtsUITurboModule {
     );
   }
 
-  async startAbilityForResult(want: Want): Promise<ExpoAbilityResult> {
+  async startAbilityForResult(
+    want: Want,
+    requestCode: number = 0,
+  ): Promise<ExpoAbilityResult> {
     const result = await this.coreContext.uiAbilityContext.startAbilityForResult(want);
-    return { resultCode: result.resultCode, want: result.want };
+    const abilityResult: ExpoAbilityResult = {
+      resultCode: result.resultCode,
+      want: result.want,
+    };
+    ExpoLifecycleDispatcher.onActivityResult(requestCode, abilityResult);
+    return abilityResult;
   }
 
   async invokePlatformService(

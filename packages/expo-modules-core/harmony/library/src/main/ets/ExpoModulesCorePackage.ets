@@ -13,13 +13,12 @@ export class ExpoModulesCorePackage extends RNOHPackage {
 
   override getUITurboModuleFactoryByNameMap(): Map<string, (ctx: UITurboModuleContext) => UITurboModule | null> {
     return new Map<string, (ctx: UITurboModuleContext) => UITurboModule | null>()
-      .set(ExpoModulesCoreTurboModule.NAME, (ctx) => new ExpoModulesCoreTurboModule(ctx))
       .set(NativeUnimoduleProxyTurboModule.NAME, (ctx) => new NativeUnimoduleProxyTurboModule(ctx));
   }
 
   override async createEagerUITurboModuleByNameMap(ctx: UITurboModuleContext): Promise<Map<string, UITurboModule>> {
     return new Map<string, UITurboModule>()
-      .set(ExpoModulesCoreTurboModule.NAME, new ExpoModulesCoreTurboModule(ctx));
+      .set(ExpoModulesCoreTurboModule.NAME, await ExpoModulesCoreTurboModule.create(ctx));
   }
 
   override createWrappedCustomRNComponentBuilderByComponentNameMap(): Map<string, WrappedBuilder<[ComponentBuilderContext]>> {

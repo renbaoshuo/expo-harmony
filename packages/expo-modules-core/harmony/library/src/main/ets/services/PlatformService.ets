@@ -28,7 +28,7 @@ export class ExpoPlatformServiceError extends Error {
 
 export interface ExpoPlatformServiceFactory {
   readonly name: string;
-  create(context: UITurboModuleContext): ExpoPlatformService;
+  create(context: UITurboModuleContext): ExpoPlatformService | Promise<ExpoPlatformService>;
 }
 
 interface ExpoPlatformServiceErrorLike {
@@ -63,17 +63,20 @@ export class ExpoPlatformServiceRegistry {
     };
   }
 
-  static createScope(context: UITurboModuleContext): ExpoPlatformServiceRegistry {
+  static async createScope(context: UITurboModuleContext): Promise<ExpoPlatformServiceRegistry> {
     const services = new Map<string, ExpoPlatformService>();
-    ExpoPlatformServiceRegistry.factories.forEach((factory, name) => {
-      const service = factory.create(context);
+    const factories = Array.from(ExpoPlatformServiceRegistry.factories.entries());
+    for (let index = 0; index < factories.length; ++index) {
+      const name = factories[index][0];
+      const factory = factories[index][1];
+      const service = await factory.create(context);
       if (service.name !== name) {
         throw new Error(
           `Expo platform service factory '${name}' created service '${service.name}'.`,
         );
       }
       services.set(name, service);
-    });
+    }
     return new ExpoPlatformServiceRegistry(services);
   }
 

@@ -6,6 +6,7 @@
 #include "api/ExpoModule.h"
 #include "api/ExpoModulesProvider.h"
 #include "errors/CodedError.h"
+#include "fabric/ExpoViewComponentRegistry.h"
 #include "modules/CoreModule.h"
 #include "runtime/Protocol.h"
 #include "runtime/RuntimeContext.h"
@@ -170,6 +171,13 @@ void ModuleRegistry::registerModule(std::shared_ptr<ExpoModule> module) {
     }
   }
   for (const auto &view : retained->views) {
+    if (!ExpoViewComponentRegistry::contains(view.componentName)) {
+      throw CodedError(
+          "ERR_VIEW_NOT_REGISTERED",
+          "Fabric component '" + view.componentName + "' was defined by Expo module '" + retained->name +
+              "' but was not registered before React initialized its component registry. "
+              "Register the module's views with EXPO_HARMONY_REGISTER_VIEWS.");
+    }
     if (views_.contains(view.componentName)) {
       throw CodedError(
           "ERR_DUPLICATE_VIEW",

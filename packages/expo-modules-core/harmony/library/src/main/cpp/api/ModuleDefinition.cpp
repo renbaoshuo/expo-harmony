@@ -342,15 +342,16 @@ void validateFunctions(
   }
 }
 
+template <typename Property>
 void validateProperties(
-    const std::vector<PropertyDefinition> &properties,
+    const std::vector<Property> &properties,
     const std::string &owner) {
   requireUniqueNames(properties, owner, "property");
   for (const auto &property : properties) {
-    if (!property.getter) {
+    if (!property.getter && !property.setter) {
       throw CodedError(
           "ERR_INVALID_DEFINITION",
-          owner + "." + property.name + " has no getter.");
+          owner + "." + property.name + " has neither a getter nor a setter.");
     }
   }
 }
@@ -454,7 +455,7 @@ void validateModuleDefinition(const ModuleDefinition &definition) {
           owner + " has an invalid constructor argument count.");
     }
     requireUniqueNames(klass.functions, owner, "function");
-    requireUniqueNames(klass.properties, owner, "property");
+    validateProperties(klass.properties, owner);
     validateFunctions(klass.javaScriptFunctions, owner);
     validateProperties(klass.javaScriptProperties, owner);
     validateFunctions(klass.staticFunctions, owner);

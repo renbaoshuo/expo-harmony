@@ -4,12 +4,15 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <jsi/jsi.h>
 
 #include <RNOH/ArkTSMessageHub.h>
 #include <RNOH/ArkTSTurboModule.h>
 #include <RNOH/TurboModule.h>
+
+#include <folly/dynamic.h>
 
 namespace expo::harmony {
 
@@ -50,6 +53,11 @@ public:
   void onMessageReceived(const rnoh::ArkTSMessage &message) override;
 
 private:
+  struct PendingLifecycleEvent final {
+    std::string name;
+    folly::dynamic payload;
+  };
+
   std::shared_ptr<facebook::react::CallInvoker> jsInvoker_;
   rnoh::TaskExecutor::Shared taskExecutor_;
   rnoh::RNInstance::SafeWeak safeInstance_;
@@ -59,6 +67,7 @@ private:
       facebook::jsi::Runtime *,
       std::weak_ptr<RuntimeContext>>
       contexts_;
+  std::vector<PendingLifecycleEvent> pendingLifecycleEvents_;
 };
 
 }  // namespace expo::harmony

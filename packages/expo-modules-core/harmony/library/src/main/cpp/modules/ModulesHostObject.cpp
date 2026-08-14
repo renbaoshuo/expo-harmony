@@ -226,32 +226,49 @@ void defineProperty(
     const std::shared_ptr<RuntimeContext> &context,
     std::string path,
     const PropertyDefinition &definition) {
-  expo::common::defineProperty(runtime, &target, definition.name.c_str(), {.configurable = false, .enumerable = definition.enumerable, .get = [context, path, definition = &definition](jsi::Runtime &rt, jsi::Object receiver) {
-                                                                             return translateErrors(rt, context, path, false, [&]() {
-                                                                               Invocation invocation(
-                                                                                   context,
-                                                                                   path,
-                                                                                   rt,
-                                                                                   jsi::Value(rt, receiver),
-                                                                                   nullptr,
-                                                                                   0);
-                                                                               return definition->getter(invocation);
-                                                                             });
-                                                                           },
-                                                                           .set = definition.setter ? std::function<void(jsi::Runtime &, jsi::Object, jsi::Value)>([context, path, definition = &definition](jsi::Runtime &rt, jsi::Object receiver, jsi::Value value) {
-                                                                             translateErrors(rt, context, path, false, [&]() {
-                                                                               Invocation invocation(
-                                                                                   context,
-                                                                                   path,
-                                                                                   rt,
-                                                                                   jsi::Value(rt, receiver),
-                                                                                   nullptr,
-                                                                                   0);
-                                                                               definition->setter(invocation, value);
-                                                                               return jsi::Value::undefined();
-                                                                             });
-                                                                           })
-                                                                                                    : nullptr});
+  std::function<jsi::Value(jsi::Runtime &, jsi::Object)> getter;
+  if (definition.getter) {
+    getter = [context, path, definition = &definition](
+                 jsi::Runtime &rt, jsi::Object receiver) {
+      return translateErrors(rt, context, path, false, [&]() {
+        Invocation invocation(
+            context,
+            path,
+            rt,
+            jsi::Value(rt, receiver),
+            nullptr,
+            0);
+        return definition->getter(invocation);
+      });
+    };
+  }
+  std::function<void(jsi::Runtime &, jsi::Object, jsi::Value)> setter;
+  if (definition.setter) {
+    setter = [context, path, definition = &definition](
+                 jsi::Runtime &rt, jsi::Object receiver, jsi::Value value) {
+      translateErrors(rt, context, path, false, [&]() {
+        Invocation invocation(
+            context,
+            path,
+            rt,
+            jsi::Value(rt, receiver),
+            nullptr,
+            0);
+        definition->setter(invocation, value);
+        return jsi::Value::undefined();
+      });
+    };
+  }
+  expo::common::defineProperty(
+      runtime,
+      &target,
+      definition.name.c_str(),
+      {
+          .configurable = false,
+          .enumerable = definition.enumerable,
+          .get = std::move(getter),
+          .set = std::move(setter),
+      });
 }
 
 void defineConstant(
@@ -262,26 +279,30 @@ void defineConstant(
     const std::string &name,
     const ValueFactory &factory) {
   auto cachedValue = std::make_shared<std::unique_ptr<jsi::Value>>();
-  expo::common::defineProperty(runtime, &target, name.c_str(), {.configurable = false, .enumerable = true, .get = [context, path = std::move(path), factory = &factory, cachedValue](jsi::Runtime &rt, jsi::Object) {
-                                                                  if (*cachedValue) {
-                                                                    return jsi::Value(rt, **cachedValue);
-                                                                  }
-                                                                  Invocation invocation(
-                                                                      context,
-                                                                      path,
-                                                                      rt,
-                                                                      jsi::Value::undefined(),
-                                                                      nullptr,
-                                                                      0);
-                                                                  auto value = translateErrors(
-                                                                      rt,
-                                                                      context,
-                                                                      path,
-                                                                      false,
-                                                                      [&invocation, factory]() { return (*factory)(invocation); });
-                                                                  *cachedValue = std::make_unique<jsi::Value>(rt, value);
-                                                                  return value;
-                                                                }});
+  expo::common::defineProperty(
+      runtime,
+      &target,
+      name.c_str(),
+      {.configurable = false, .enumerable = true, .get = [context, path = std::move(path), factory = &factory, cachedValue](jsi::Runtime &rt, jsi::Object) {
+         if (*cachedValue) {
+           return jsi::Value(rt, **cachedValue);
+         }
+         Invocation invocation(
+             context,
+             path,
+             rt,
+             jsi::Value::undefined(),
+             nullptr,
+             0);
+         auto value = translateErrors(
+             rt,
+             context,
+             path,
+             false,
+             [&invocation, factory]() { return (*factory)(invocation); });
+         *cachedValue = std::make_unique<jsi::Value>(rt, value);
+         return value;
+       }});
 }
 
 void defineSharedFunction(
@@ -387,32 +408,49 @@ void defineSharedProperty(
     std::string moduleName,
     std::string className,
     const SharedObjectPropertyDefinition &definition) {
-  expo::common::defineProperty(runtime, &target, definition.name.c_str(), {.configurable = false, .enumerable = definition.enumerable, .get = [context, path, moduleName, className, definition = &definition](jsi::Runtime &rt, jsi::Object receiver) {
-                                                                             return translateErrors(rt, context, path, false, [&]() {
-                                                                               auto receiverValue = jsi::Value(rt, receiver);
-                                                                               auto nativeObject = context->getNativeSharedObject(
-                                                                                   requireSharedObjectId(rt, receiverValue, className),
-                                                                                   moduleName,
-                                                                                   className);
-                                                                               Invocation invocation(
-                                                                                   context, path, rt, receiverValue, nullptr, 0);
-                                                                               return definition->getter(invocation, nativeObject);
-                                                                             });
-                                                                           },
-                                                                           .set = definition.setter ? std::function<void(jsi::Runtime &, jsi::Object, jsi::Value)>([context, path, moduleName, className, definition = &definition](jsi::Runtime &rt, jsi::Object receiver, jsi::Value value) {
-                                                                             translateErrors(rt, context, path, false, [&]() {
-                                                                               auto receiverValue = jsi::Value(rt, receiver);
-                                                                               auto nativeObject = context->getNativeSharedObject(
-                                                                                   requireSharedObjectId(rt, receiverValue, className),
-                                                                                   moduleName,
-                                                                                   className);
-                                                                               Invocation invocation(
-                                                                                   context, path, rt, receiverValue, nullptr, 0);
-                                                                               definition->setter(invocation, nativeObject, value);
-                                                                               return jsi::Value::undefined();
-                                                                             });
-                                                                           })
-                                                                                                    : nullptr});
+  std::function<jsi::Value(jsi::Runtime &, jsi::Object)> getter;
+  if (definition.getter) {
+    getter = [context, path, moduleName, className, definition = &definition](
+                 jsi::Runtime &rt, jsi::Object receiver) {
+      return translateErrors(rt, context, path, false, [&]() {
+        auto receiverValue = jsi::Value(rt, receiver);
+        auto nativeObject = context->getNativeSharedObject(
+            requireSharedObjectId(rt, receiverValue, className),
+            moduleName,
+            className);
+        Invocation invocation(
+            context, path, rt, receiverValue, nullptr, 0);
+        return definition->getter(invocation, nativeObject);
+      });
+    };
+  }
+  std::function<void(jsi::Runtime &, jsi::Object, jsi::Value)> setter;
+  if (definition.setter) {
+    setter = [context, path, moduleName, className, definition = &definition](
+                 jsi::Runtime &rt, jsi::Object receiver, jsi::Value value) {
+      translateErrors(rt, context, path, false, [&]() {
+        auto receiverValue = jsi::Value(rt, receiver);
+        auto nativeObject = context->getNativeSharedObject(
+            requireSharedObjectId(rt, receiverValue, className),
+            moduleName,
+            className);
+        Invocation invocation(
+            context, path, rt, receiverValue, nullptr, 0);
+        definition->setter(invocation, nativeObject, value);
+        return jsi::Value::undefined();
+      });
+    };
+  }
+  expo::common::defineProperty(
+      runtime,
+      &target,
+      definition.name.c_str(),
+      {
+          .configurable = false,
+          .enumerable = definition.enumerable,
+          .get = std::move(getter),
+          .set = std::move(setter),
+      });
 }
 
 }  // namespace
@@ -501,8 +539,7 @@ jsi::Object ModulesHostObject::createModule(
 
   if (!definition.startObservers.empty() || !definition.stopObservers.empty()) {
     auto observedEventCount = std::make_shared<size_t>(0);
-    auto startName = jsi::PropNameID::forAscii(
-        runtime, "__expo_onStartListeningToEvent");
+    auto startName = jsi::PropNameID::forAscii(runtime, "startObserving");
     module.setProperty(
         runtime,
         startName,
@@ -528,8 +565,7 @@ jsi::Object ModulesHostObject::createModule(
               }
               return jsi::Value::undefined();
             }));
-    auto stopName = jsi::PropNameID::forAscii(
-        runtime, "__expo_onStopListeningToEvent");
+    auto stopName = jsi::PropNameID::forAscii(runtime, "stopObserving");
     module.setProperty(
         runtime,
         stopName,
