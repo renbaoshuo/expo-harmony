@@ -103,7 +103,11 @@ void Promise::settle(std::function<void(jsi::Runtime &)> body) {
   if (context->isRuntimeThread()) {
     task(context->runtime());
   } else {
-    context->jsInvoker()->invokeAsync(std::move(task));
+    auto jsInvoker = context->jsInvoker();
+    if (!jsInvoker) {
+      return;
+    }
+    jsInvoker->invokeAsync(std::move(task));
   }
 }
 

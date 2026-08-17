@@ -616,6 +616,8 @@ uint32_t parseCssColor(std::string_view value) {
   if (normalized.front() == '#') {
     normalized.erase(0, 1);
   }
+  bool explicitArgb = false;
+  const bool cssShorthandRgba = normalized.size() == 4;
   if (normalized.size() == 3 || normalized.size() == 4) {
     std::string expanded;
     expanded.reserve(normalized.size() * 2);
@@ -627,6 +629,8 @@ uint32_t parseCssColor(std::string_view value) {
   }
   if (normalized.size() == 6) {
     normalized += "ff";
+  } else if (normalized.size() == 8) {
+    explicitArgb = !cssShorthandRgba;
   }
   if (normalized.size() != 8 || !std::all_of(normalized.begin(), normalized.end(), isHexDigit)) {
     throw std::invalid_argument("color is not a CSS name, rgb()/rgba(), or RGB/RGBA hex value");
@@ -637,7 +641,7 @@ uint32_t parseCssColor(std::string_view value) {
   if (error != std::errc{} || end != normalized.data() + normalized.size()) {
     throw std::invalid_argument("color contains an invalid hex value");
   }
-  return ((rgba & 0xffU) << 24U) | (rgba >> 8U);
+  return explicitArgb ? rgba : ((rgba & 0xffU) << 24U) | (rgba >> 8U);
 }
 
 uint32_t packNormalizedColor(std::span<const double> components) {

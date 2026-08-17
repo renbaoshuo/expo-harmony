@@ -27,6 +27,10 @@ public:
     context_->invalidate();
   }
 
+  std::shared_ptr<RuntimeContext> context() const {
+    return context_;
+  }
+
 private:
   std::shared_ptr<RuntimeContext> context_;
 };
@@ -40,7 +44,43 @@ void defineReadOnly(
   expo::common::defineProperty(runtime, &object, name, {.configurable = false, .enumerable = enumerable, .writable = false, .value = std::move(value)});
 }
 
+void defineCoreAlias(
+    jsi::Runtime &runtime,
+    jsi::Object &expoObject,
+    const char *name) {
+  expo::common::defineProperty(
+      runtime,
+      &expoObject,
+      name,
+      {
+          .configurable = false,
+          .enumerable = true,
+          .get = [property = std::string(name)](jsi::Runtime &rt, jsi::Object) {
+            auto expo = rt.global().getPropertyAsObject(rt, "expo");
+            auto modules = expo.getPropertyAsObject(rt, "modules");
+            auto core = modules.getPropertyAsObject(rt, "ExpoModulesCore");
+            return core.getProperty(rt, property.c_str());
+          },
+      });
+}
+
 }  // namespace
+
+std::shared_ptr<RuntimeContext> RuntimeInstaller::installedContext(
+    jsi::Runtime &runtime) {
+  auto existing = runtime.global().getProperty(runtime, "expo");
+  if (!existing.isObject()) {
+    return nullptr;
+  }
+  auto expoObject = existing.getObject(runtime);
+  auto marker = expoObject.getProperty(runtime, "__expo_harmony_runtime_context__");
+  if (!marker.isBool() || !marker.getBool() || !expoObject.hasNativeState<RuntimeContextNativeState>(runtime)) {
+    return nullptr;
+  }
+  auto nativeState = expoObject.getNativeState<RuntimeContextNativeState>(runtime);
+  auto context = nativeState ? nativeState->context() : nullptr;
+  return context && context->isAlive() ? context : nullptr;
+}
 
 bool RuntimeInstaller::install(
     jsi::Runtime &runtime,
@@ -101,14 +141,13 @@ bool RuntimeInstaller::install(
             "The native ExpoModulesCore definition was not registered.");
       }
       auto core = coreValue.getObject(runtime);
-      for (const char *constant : {
-               "expoModulesCoreVersion", "cacheDir", "documentsDir"}) {
-        defineReadOnly(
-            runtime,
-            expoObject,
-            constant,
-            core.getProperty(runtime, constant));
-      }
+      defineReadOnly(
+          runtime,
+          expoObject,
+          "expoModulesCoreVersion",
+          core.getProperty(runtime, "expoModulesCoreVersion"));
+      defineCoreAlias(runtime, expoObject, "cacheDir");
+      defineCoreAlias(runtime, expoObject, "documentsDir");
 
       for (const char *function : {
                "uuidv4", "uuidv5", "getViewConfig", "reloadAppAsync", "installOnUIRuntime"}) {

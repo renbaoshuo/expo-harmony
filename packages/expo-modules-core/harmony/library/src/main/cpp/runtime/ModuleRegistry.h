@@ -21,6 +21,9 @@ public:
   void notifyCreated();
   const ModuleDefinition *find(const std::string &name) const;
   const ViewDefinition *findView(const std::string &componentName) const;
+  bool isSharedRefClass(
+      const std::string &moduleName,
+      const std::string &className) const;
   const std::vector<std::string> &names() const noexcept;
   void dispatchLifecycle(
       const std::string &eventName,

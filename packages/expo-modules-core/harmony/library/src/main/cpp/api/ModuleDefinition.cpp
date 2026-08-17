@@ -104,9 +104,7 @@ void NativeSharedObject::sendEvent(
     objectId = objectId_;
   }
   if (!context || !context->isAlive() || objectId == 0) {
-    throw CodedError(
-        "ERR_RUNTIME_DESTROYED",
-        "Cannot emit an event from a SharedObject detached from its runtime.");
+    return;
   }
   context->emitSharedObjectEvent(
       objectId, std::move(eventName), std::move(arguments));

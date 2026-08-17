@@ -65,6 +65,10 @@ export class ExpoModulesCoreTurboModule extends EtsUITurboModule {
     return ensureDirectoryUri(this.coreContext.uiAbilityContext.filesDir);
   }
 
+  getTemporaryDirectory(): string {
+    return ensureDirectoryUri(this.coreContext.uiAbilityContext.tempDir);
+  }
+
   getRawFileList(path: string): string[] {
     return this.coreContext.uiAbilityContext.resourceManager.getRawFileListSync(path);
   }
@@ -82,7 +86,12 @@ export class ExpoModulesCoreTurboModule extends EtsUITurboModule {
     this.coreContext.uiAbilityContext.resourceManager.closeRawFdSync(path);
   }
 
+  getRuntimeId(): number {
+    return this.coreContext.rnInstance.getId();
+  }
+
   async reloadAppAsync(_reason: string): Promise<void> {
+    await this.platformServices.prepareForReload();
     await this.coreContext.reloadRNInstance(this.coreContext.rnInstance);
   }
 
@@ -123,6 +132,7 @@ export class ExpoModulesCoreTurboModule extends EtsUITurboModule {
   }
 
   override __onDestroy__(): void {
+    this.platformServices.destroyScope();
     this.postLifecycleEvent(EXPO_LIFECYCLE_DESTROY);
     this.unsubscribeLifecycle.forEach((unsubscribe) => unsubscribe());
     this.unsubscribeLifecycle.length = 0;

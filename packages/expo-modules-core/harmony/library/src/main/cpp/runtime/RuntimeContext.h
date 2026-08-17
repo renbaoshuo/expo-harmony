@@ -38,6 +38,8 @@ public:
   facebook::jsi::Runtime &runtime() const;
   std::shared_ptr<facebook::react::CallInvoker> jsInvoker() const;
   std::shared_ptr<ExpoModulesCoreTurboModule> turboModule() const;
+  void attachTurboModule(
+      std::weak_ptr<ExpoModulesCoreTurboModule> turboModule);
   bool isAlive() const noexcept;
   bool isRuntimeThread() const noexcept;
   void assertRuntimeThread() const;
@@ -108,10 +110,9 @@ public:
       std::string moduleName,
       std::string className,
       const facebook::jsi::Function &klass);
-  void registerNativeClass(
-      std::type_index nativeType,
-      std::string moduleName,
-      std::string className);
+  void replaceNativeClassesForModule(
+      const std::string &moduleName,
+      const std::vector<std::pair<std::type_index, std::string>> &classes);
   std::pair<std::string, std::string> nativeClass(
       std::type_index nativeType) const;
   facebook::jsi::Value getClass(

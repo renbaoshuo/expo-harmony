@@ -4,6 +4,8 @@ export interface ExpoPlatformService {
   readonly name: string;
   invoke(methodName: string, argumentsValue: ESObject[]): Promise<ESObject>;
   invokeSync?(methodName: string, argumentsValue: ESObject[]): ESObject;
+  prepareForReload?(): void | Promise<void>;
+  onDestroy?(): void;
 }
 
 export interface ExpoPlatformServiceResult {
@@ -43,9 +45,14 @@ interface ExpoPlatformServiceErrorLike {
 export class ExpoPlatformServiceRegistry {
   private static readonly factories: Map<string, ExpoPlatformServiceFactory> = new Map();
   private readonly services: Map<string, ExpoPlatformService>;
+  private readonly factoryFailures: Map<string, ExpoPlatformServiceResult>;
 
-  private constructor(services: Map<string, ExpoPlatformService>) {
+  private constructor(
+    services: Map<string, ExpoPlatformService>,
+    factoryFailures: Map<string, ExpoPlatformServiceResult>,
+  ) {
     this.services = services;
+    this.factoryFailures = factoryFailures;
   }
 
   static register(factory: ExpoPlatformServiceFactory): () => void {
@@ -65,24 +72,36 @@ export class ExpoPlatformServiceRegistry {
 
   static async createScope(context: UITurboModuleContext): Promise<ExpoPlatformServiceRegistry> {
     const services = new Map<string, ExpoPlatformService>();
+    const factoryFailures = new Map<string, ExpoPlatformServiceResult>();
     const factories = Array.from(ExpoPlatformServiceRegistry.factories.entries());
     for (let index = 0; index < factories.length; ++index) {
       const name = factories[index][0];
       const factory = factories[index][1];
-      const service = await factory.create(context);
-      if (service.name !== name) {
-        throw new Error(
-          `Expo platform service factory '${name}' created service '${service.name}'.`,
-        );
+      try {
+        const service = await factory.create(context);
+        if (service.name !== name) {
+          throw new Error(
+            `Expo platform service factory '${name}' created service '${service.name}'.`,
+          );
+        }
+        services.set(name, service);
+      } catch (error) {
+        factoryFailures.set(name, platformServiceFailure(error));
       }
-      services.set(name, service);
     }
-    return new ExpoPlatformServiceRegistry(services);
+    return new ExpoPlatformServiceRegistry(services, factoryFailures);
   }
 
   require(name: string): ExpoPlatformService {
     const service = this.services.get(name);
     if (service === undefined) {
+      const failure = this.factoryFailures.get(name);
+      if (failure !== undefined) {
+        throw new ExpoPlatformServiceError(
+          failure.code ?? 'ERR_PLATFORM_ADAPTER',
+          failure.message ?? `Expo platform service '${name}' could not be created.`,
+        );
+      }
       throw new Error(`Expo platform service '${name}' is not registered.`);
     }
     return service;
@@ -118,6 +137,27 @@ export class ExpoPlatformServiceRegistry {
       return { ok: true, value: service.invokeSync(methodName, argumentsValue) };
     } catch (error) {
       return platformServiceFailure(error);
+    }
+  }
+
+  async prepareForReload(): Promise<void> {
+    const services = Array.from(this.services.values());
+    for (let index = 0; index < services.length; ++index) {
+      const service = services[index];
+      if (service.prepareForReload !== undefined) await service.prepareForReload();
+    }
+  }
+
+  destroyScope(): void {
+    const services = Array.from(this.services.values());
+    this.services.clear();
+    this.factoryFailures.clear();
+    for (let index = 0; index < services.length; ++index) {
+      const service = services[index];
+      try {
+        service.onDestroy?.();
+      } catch (_) {
+      }
     }
   }
 }

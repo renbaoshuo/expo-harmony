@@ -5,6 +5,7 @@ export class ExpoViewContentContext {
   readonly tag: number;
   readonly componentName: string;
   readonly nativeView: ESObject;
+  private sizeState: ExpoViewSizeState = {};
 
   constructor(
     rnComponentContext: RNComponentContext,
@@ -27,19 +28,24 @@ export class ExpoViewContentContext {
   }
 
   setShadowNodeSize(width: number, height: number): void {
-    this.rnComponentContext.descriptorRegistry.setState(this.tag, {
-      width,
-      height,
-    });
+    this.sizeState.width = width;
+    this.sizeState.height = height;
+    this.rnComponentContext.descriptorRegistry.setState(this.tag, this.sizeState);
   }
 
   setStyleSize(width: number, height: number): void {
-    this.rnComponentContext.descriptorRegistry.setState(this.tag, {
-      styleWidth: width,
-      styleHeight: height,
-    });
+    this.sizeState.styleWidth = width;
+    this.sizeState.styleHeight = height;
+    this.rnComponentContext.descriptorRegistry.setState(this.tag, this.sizeState);
   }
 
+}
+
+interface ExpoViewSizeState {
+  width?: number;
+  height?: number;
+  styleWidth?: number;
+  styleHeight?: number;
 }
 
 export interface ExpoViewAdapter {

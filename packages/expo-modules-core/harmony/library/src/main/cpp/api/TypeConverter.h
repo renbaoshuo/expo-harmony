@@ -887,17 +887,11 @@ struct TypeConverter<std::vector<uint8_t>> {
       const std::shared_ptr<RuntimeContext> &context,
       const std::vector<uint8_t> &value) {
     auto &runtime = context->runtime();
-    auto buffer = runtime.global()
-                      .getPropertyAsFunction(runtime, "ArrayBuffer")
-                      .callAsConstructor(runtime, static_cast<double>(value.size()))
-                      .getObject(runtime);
-    auto rawBuffer = buffer.getArrayBuffer(runtime);
-    if (!value.empty()) {
-      std::memcpy(rawBuffer.data(runtime), value.data(), value.size());
-    }
+    auto storage = std::make_shared<std::vector<uint8_t>>(value);
+    auto buffer = JavaScriptArrayBuffer::create(context, storage->data(), storage->size(), [storage]() {});
     return runtime.global()
         .getPropertyAsFunction(runtime, "Uint8Array")
-        .callAsConstructor(runtime, buffer);
+        .callAsConstructor(runtime, buffer.get());
   }
 };
 
@@ -930,10 +924,7 @@ struct TypeConverter<std::vector<T>> {
       const std::string &path) {
     auto &runtime = context->runtime();
     if (!value.isObject() || !value.getObject(runtime).isArray(runtime)) {
-      std::vector<T> result;
-      result.reserve(1);
-      result.push_back(convertFromJS<T>(context, value, path + "[0]"));
-      return result;
+      throwConversionError(runtime, path, "array", value);
     }
     auto array = value.getObject(runtime).getArray(runtime);
     std::vector<T> result;

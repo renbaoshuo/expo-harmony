@@ -22,11 +22,15 @@ public:
   explicit TestingSyncJSCallInvoker(const std::shared_ptr<jsi::Runtime>& runtime) : runtime(runtime) {}
 
   void invokeAsync(react::CallFunc &&func) noexcept override {
-    func(*runtime.lock());
+    if (auto lockedRuntime = runtime.lock()) {
+      func(*lockedRuntime);
+    }
   }
 
   void invokeSync(react::CallFunc &&func) override {
-    func(*runtime.lock());
+    if (auto lockedRuntime = runtime.lock()) {
+      func(*lockedRuntime);
+    }
   }
 
   ~TestingSyncJSCallInvoker() override = default;

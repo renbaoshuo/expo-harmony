@@ -108,8 +108,18 @@ void ExpoModulesCoreTurboModule::registerRuntimeContext(
 }
 
 jsi::Value ExpoModulesCoreTurboModule::install(jsi::Runtime &runtime) {
-  auto context = runtimeContext(runtime);
-  RuntimeInstaller::install(runtime, context, false);
+  auto context = RuntimeInstaller::installedContext(runtime);
+  if (context) {
+    context->attachTurboModule(weak_from_this());
+    registerRuntimeContext(runtime, context);
+  } else {
+    context = runtimeContext(runtime);
+    if (!RuntimeInstaller::install(runtime, context, false)) {
+      throw CodedError(
+          "ERR_RUNTIME_INSTALLATION",
+          "Expo Modules found an installed runtime without recoverable native state.");
+    }
+  }
   std::vector<PendingLifecycleEvent> pendingEvents;
   {
     std::scoped_lock lock(contextsMutex_);
@@ -117,8 +127,11 @@ jsi::Value ExpoModulesCoreTurboModule::install(jsi::Runtime &runtime) {
   }
   if (context->hasModuleRegistry()) {
     for (auto &event : pendingEvents) {
-      context->moduleRegistry().dispatchLifecycle(
-          event.name, event.payload);
+      if (event.name == protocol::kLifecycleDestroy) {
+        context->invalidate();
+        break;
+      }
+      context->moduleRegistry().dispatchLifecycle(event.name, event.payload);
     }
   }
   return jsi::Value(true);

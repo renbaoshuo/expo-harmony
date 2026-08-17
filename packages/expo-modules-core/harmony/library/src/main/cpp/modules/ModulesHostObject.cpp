@@ -461,26 +461,55 @@ ModulesHostObject::ModulesHostObject(std::shared_ptr<RuntimeContext> context)
 jsi::Value ModulesHostObject::get(
     jsi::Runtime &runtime,
     const jsi::PropNameID &property) {
-  if (!context_->isAlive()) {
-    return jsi::Value::undefined();
+  try {
+    if (!context_->isAlive()) {
+      return jsi::Value::undefined();
+    }
+    auto name = property.utf8(runtime);
+    auto cached = context_->getModule(name);
+    if (!cached.isUndefined()) {
+      return cached;
+    }
+    if (!context_->moduleRegistry().find(name)) {
+      return jsi::Value::undefined();
+    }
+    auto lazy = std::make_shared<expo::LazyObject>(
+        [weakSelf = weak_from_this(), name](jsi::Runtime &currentRuntime) {
+          auto self = weakSelf.lock();
+          if (!self || !self->context_->isAlive()) {
+            throw makeJSError(
+                currentRuntime,
+                "ERR_RUNTIME_DESTROYED",
+                "Cannot materialize Expo module '" + name + "' after runtime destruction.");
+          }
+          const auto *definition = self->context_->moduleRegistry().find(name);
+          if (!definition) {
+            throw makeJSError(
+                currentRuntime,
+                "ERR_MODULE_NOT_FOUND",
+                "Expo module '" + name + "' is no longer registered.");
+          }
+          return std::make_shared<jsi::Object>(
+              self->createModule(currentRuntime, *definition));
+        });
+    auto object = jsi::Object::createFromHostObject(runtime, std::move(lazy));
+    context_->retainModule(name, object);
+    return jsi::Value(runtime, object);
+  } catch (const jsi::JSError &) {
+    throw;
+  } catch (const CodedError &error) {
+    throw makeJSError(runtime, error);
+  } catch (const std::exception &error) {
+    throw makeJSError(
+        runtime,
+        "ERR_MODULE_GET",
+        "Could not access an Expo module: " + std::string(error.what()));
+  } catch (...) {
+    throw makeJSError(
+        runtime,
+        "ERR_MODULE_GET",
+        "Could not access an Expo module because native code threw an unknown exception.");
   }
-  auto name = property.utf8(runtime);
-  auto cached = context_->getModule(name);
-  if (!cached.isUndefined()) {
-    return cached;
-  }
-  const auto *definition = context_->moduleRegistry().find(name);
-  if (!definition) {
-    return jsi::Value::undefined();
-  }
-  auto lazy = std::make_shared<expo::LazyObject>(
-      [this, definition](jsi::Runtime &currentRuntime) {
-        return std::make_shared<jsi::Object>(
-            createModule(currentRuntime, *definition));
-      });
-  auto object = jsi::Object::createFromHostObject(runtime, std::move(lazy));
-  context_->retainModule(name, object);
-  return jsi::Value(runtime, object);
 }
 
 void ModulesHostObject::set(
@@ -834,16 +863,6 @@ jsi::Object ModulesHostObject::createModule(
                 }
                 return jsi::Value::undefined();
               }));
-    }
-    if (classDefinition.baseClassName == "SharedRef") {
-      expo::common::defineProperty(runtime, &prototype, "nativeRefType", {.configurable = false, .enumerable = true, .get = [context = context_, moduleName = definition.name, className = classDefinition.name](jsi::Runtime &rt, jsi::Object receiver) {
-                                                                            auto receiverValue = jsi::Value(rt, receiver);
-                                                                            auto nativeObject = context->getNativeSharedObject(
-                                                                                requireSharedObjectId(rt, receiverValue, className),
-                                                                                moduleName,
-                                                                                className);
-                                                                            return jsi::String::createFromUtf8(rt, nativeObject->nativeRefType());
-                                                                          }});
     }
     module.setProperty(runtime, classDefinition.name.c_str(), std::move(klass));
   }

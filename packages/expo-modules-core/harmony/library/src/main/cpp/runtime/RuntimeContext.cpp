@@ -84,11 +84,23 @@ std::shared_ptr<facebook::react::CallInvoker> RuntimeContext::jsInvoker() const 
 }
 
 std::shared_ptr<ExpoModulesCoreTurboModule> RuntimeContext::turboModule() const {
+  std::scoped_lock lock(mutex_);
   auto module = turboModule_.lock();
   if (!module || !isAlive()) {
     throw CodedError("ERR_RUNTIME_DESTROYED", "Expo Modules Core is no longer attached to a runtime.");
   }
   return module;
+}
+
+void RuntimeContext::attachTurboModule(
+    std::weak_ptr<ExpoModulesCoreTurboModule> turboModule) {
+  if (!isAlive()) {
+    throw CodedError(
+        "ERR_RUNTIME_DESTROYED",
+        "Cannot attach Expo Modules Core to a destroyed runtime.");
+  }
+  std::scoped_lock lock(mutex_);
+  turboModule_ = std::move(turboModule);
 }
 
 bool RuntimeContext::isAlive() const noexcept {
@@ -157,6 +169,9 @@ void RuntimeContext::dispatch(FunctionQueue queue, std::function<void()> task) {
   };
   switch (queue) {
     case FunctionQueue::JavaScript:
+      if (!jsInvoker_) {
+        throw CodedError("ERR_QUEUE_UNAVAILABLE", "The Harmony JavaScript queue is unavailable.");
+      }
       jsInvoker_->invokeAsync(std::move(guarded));
       return;
     case FunctionQueue::Main:
@@ -166,10 +181,10 @@ void RuntimeContext::dispatch(FunctionQueue queue, std::function<void()> task) {
       taskExecutor_->runTask(rnoh::TaskThread::MAIN, std::move(guarded));
       return;
     case FunctionQueue::Modules:
-      if (!taskExecutor_) {
+      if (!jsInvoker_) {
         throw CodedError("ERR_QUEUE_UNAVAILABLE", "The Harmony modules queue is unavailable.");
       }
-      taskExecutor_->runTask(rnoh::TaskThread::BACKGROUND, std::move(guarded));
+      jsInvoker_->invokeAsync(std::move(guarded));
       return;
     case FunctionQueue::Background:
       if (!taskExecutor_) {
@@ -390,7 +405,15 @@ void RuntimeContext::updateViewProps(
   if (!props.isObject()) {
     return;
   }
-  std::vector<std::pair<const ViewPropDefinition *, folly::dynamic>> changes;
+
+  struct ViewPropChange final {
+    const ViewPropDefinition *definition;
+    std::string name;
+    folly::dynamic storedValue;
+    folly::dynamic setterValue;
+  };
+
+  std::vector<ViewPropChange> changes;
   {
     std::scoped_lock lock(mutex_);
     auto &previousProps = viewProps_.try_emplace(tag, folly::dynamic::object()).first->second;
@@ -411,16 +434,20 @@ void RuntimeContext::updateViewProps(
         continue;
       }
       auto storedValue = *currentValue;
-      previousProps[prop.name] = storedValue;
-      changes.emplace_back(
-          &prop,
-          storedValue.isNull() && prop.hasDefaultValue
-              ? prop.defaultValue
-              : std::move(storedValue));
+      changes.push_back(ViewPropChange{
+          .definition = &prop,
+          .name = prop.name,
+          .storedValue = storedValue,
+          .setterValue = storedValue.isNull() && prop.hasDefaultValue
+                           ? prop.defaultValue
+                           : storedValue,
+      });
     }
   }
-  for (auto &[prop, value] : changes) {
-    prop->setter(*this, tag, componentName, value);
+  for (auto &change : changes) {
+    change.definition->setter(*this, tag, componentName, change.setterValue);
+    std::scoped_lock lock(mutex_);
+    viewProps_.try_emplace(tag, folly::dynamic::object()).first->second[change.name] = std::move(change.storedValue);
   }
   if (view.onDidUpdateProps) {
     view.onDidUpdateProps(*this, tag, componentName, props);
@@ -529,6 +556,18 @@ jsi::Value RuntimeContext::bindNativeSharedObject(
               context->scheduleSharedObjectRelease(id);
             }
           }));
+  if (moduleRegistry().isSharedRefClass(moduleName, className)) {
+    expo::common::defineProperty(
+        runtime(),
+        &jsObject,
+        "nativeRefType",
+        {
+            .configurable = false,
+            .enumerable = true,
+            .writable = false,
+            .value = jsi::String::createFromUtf8(runtime(), nativeObject->nativeRefType()),
+        });
+  }
   const auto memoryPressure = nativeObject->getAdditionalMemoryPressure();
   if (memoryPressure > 0) {
     jsObject.setExternalMemoryPressure(runtime(), memoryPressure);
@@ -596,8 +635,9 @@ std::shared_ptr<NativeSharedObject> RuntimeContext::getNativeSharedObject(
 void RuntimeContext::retainSharedObject(
     long objectId,
     const jsi::Object &object) {
+  auto weakObject = std::make_shared<jsi::WeakObject>(runtime(), object);
   std::scoped_lock lock(mutex_);
-  sharedObjects_[objectId] = std::make_shared<jsi::WeakObject>(runtime(), object);
+  sharedObjects_[objectId] = std::move(weakObject);
 }
 
 void RuntimeContext::releaseSharedObject(long objectId) {
@@ -701,23 +741,34 @@ void RuntimeContext::retainClass(
       jsi::Value(runtime(), klass).getObject(runtime()).getFunction(runtime()));
 }
 
-void RuntimeContext::registerNativeClass(
-    std::type_index nativeType,
-    std::string moduleName,
-    std::string className) {
-  if (nativeType == std::type_index(typeid(void))) {
-    throw CodedError(
-        "ERR_INVALID_DEFINITION",
-        "Native Expo class '" + moduleName + "." + className + "' has no C++ runtime type.");
-  }
+void RuntimeContext::replaceNativeClassesForModule(
+    const std::string &moduleName,
+    const std::vector<std::pair<std::type_index, std::string>> &classes) {
   std::scoped_lock lock(mutex_);
-  auto value = std::make_pair(std::move(moduleName), std::move(className));
-  auto [iterator, inserted] = nativeClasses_.emplace(nativeType, value);
-  if (!inserted && iterator->second != value) {
-    throw CodedError(
-        "ERR_DUPLICATE_CLASS_TYPE",
-        "One C++ native type cannot back two unrelated Expo classes.");
+  auto replacement = nativeClasses_;
+  for (auto iterator = replacement.begin();
+       iterator != replacement.end();) {
+    if (iterator->second.first == moduleName) {
+      iterator = replacement.erase(iterator);
+    } else {
+      ++iterator;
+    }
   }
+  for (const auto &[nativeType, className] : classes) {
+    if (nativeType == std::type_index(typeid(void))) {
+      throw CodedError(
+          "ERR_INVALID_DEFINITION",
+          "Native Expo class '" + moduleName + "." + className + "' has no C++ runtime type.");
+    }
+    auto value = std::make_pair(moduleName, className);
+    auto [iterator, inserted] = replacement.emplace(nativeType, value);
+    if (!inserted && iterator->second != value) {
+      throw CodedError(
+          "ERR_DUPLICATE_CLASS_TYPE",
+          "One C++ native type cannot back two unrelated Expo classes.");
+    }
+  }
+  nativeClasses_.swap(replacement);
 }
 
 std::pair<std::string, std::string> RuntimeContext::nativeClass(

@@ -3,6 +3,13 @@ export {
   ExpoLifecycleSink,
   HarmonyAbilityResult,
 } from './appcontext/LifecycleDispatcher';
+export { ExpoRNAbility } from './appcontext/ExpoRNAbility';
+export {
+  ExpoAbilityLifecycleSubscriber,
+  ExpoHarmonyHostProvider,
+  ExpoReactInstanceLifecycleDispatcher,
+  ExpoReactInstanceLifecycleListener,
+} from './appcontext/HarmonyHostLifecycle';
 export {
   EXPO_LIFECYCLE_DESTROY,
   EXPO_LIFECYCLE_FOREGROUND,

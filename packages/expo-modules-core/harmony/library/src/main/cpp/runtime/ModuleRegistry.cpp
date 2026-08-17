@@ -1,5 +1,6 @@
 #include "ModuleRegistry.h"
 
+#include <algorithm>
 #include <functional>
 #include <unordered_map>
 
@@ -153,23 +154,28 @@ void ModuleRegistry::registerModule(std::shared_ptr<ExpoModule> module) {
   }
   auto definition = module->definition();
   validateModuleDefinition(definition);
-  if (definitions_.contains(definition.name)) {
-    throw CodedError(
-        "ERR_DUPLICATE_MODULE",
-        "A module named '" + definition.name + "' was registered twice.");
-  }
   auto name = definition.name;
-  modules_.push_back(std::move(module));
-  names_.push_back(name);
   auto retained = std::make_unique<ModuleDefinition>(std::move(definition));
-  if (auto context = context_.lock()) {
-    for (const auto &klass : retained->classes) {
-      if (klass.nativeType != std::type_index(typeid(void))) {
-        context->registerNativeClass(
-            klass.nativeType, retained->name, klass.name);
-      }
+  const auto *previous = find(name);
+  auto position = names_.end();
+  if (previous) {
+    position = std::find(names_.begin(), names_.end(), name);
+    if (position == names_.end()) {
+      throw CodedError(
+          "ERR_INVALID_PROVIDER",
+          "Expo module registry lost the ordering entry for '" + name + "'.");
     }
   }
+
+  // Validate the replacement before changing any retained pointers. A module
+  // may replace its own view metadata, but not another module's component.
+  std::unordered_map<std::string, bool> replacementViews;
+  if (previous) {
+    for (const auto &view : previous->views) {
+      replacementViews.emplace(view.componentName, true);
+    }
+  }
+  std::unordered_map<std::string, bool> newViews;
   for (const auto &view : retained->views) {
     if (!ExpoViewComponentRegistry::contains(view.componentName)) {
       throw CodedError(
@@ -178,14 +184,45 @@ void ModuleRegistry::registerModule(std::shared_ptr<ExpoModule> module) {
               "' but was not registered before React initialized its component registry. "
               "Register the module's views with EXPO_HARMONY_REGISTER_VIEWS.");
     }
-    if (views_.contains(view.componentName)) {
+    if (!newViews.emplace(view.componentName, true).second) {
+      throw CodedError(
+          "ERR_DUPLICATE_VIEW",
+          "Fabric component '" + view.componentName + "' is defined twice by Expo module '" + retained->name + "'.");
+    }
+    if (views_.contains(view.componentName) && !replacementViews.contains(view.componentName)) {
       throw CodedError(
           "ERR_DUPLICATE_VIEW",
           "Fabric component '" + view.componentName + "' is registered by more than one Expo module.");
     }
+  }
+
+  std::vector<std::pair<std::type_index, std::string>> nativeClasses;
+  nativeClasses.reserve(retained->classes.size());
+  for (const auto &klass : retained->classes) {
+    if (klass.nativeType != std::type_index(typeid(void))) {
+      nativeClasses.emplace_back(klass.nativeType, klass.name);
+    }
+  }
+  if (auto context = context_.lock()) {
+    context->replaceNativeClassesForModule(name, nativeClasses);
+  }
+  if (previous) {
+    for (const auto &view : previous->views) {
+      views_.erase(view.componentName);
+    }
+  }
+  for (const auto &view : retained->views) {
     views_[view.componentName] = &view;
   }
-  definitions_[std::move(name)] = std::move(retained);
+  if (previous) {
+    modules_[static_cast<size_t>(std::distance(names_.begin(), position))] = std::move(module);
+  } else {
+    modules_.push_back(std::move(module));
+    names_.push_back(name);
+  }
+  // Match the upstream Android registry: the last provider for a module name
+  // wins while retaining the name's original ordering slot.
+  definitions_[name] = std::move(retained);
 }
 
 const ModuleDefinition *ModuleRegistry::find(const std::string &name) const {
@@ -197,6 +234,42 @@ const ViewDefinition *ModuleRegistry::findView(
     const std::string &componentName) const {
   auto iterator = views_.find(componentName);
   return iterator == views_.end() ? nullptr : iterator->second;
+}
+
+bool ModuleRegistry::isSharedRefClass(
+    const std::string &moduleName,
+    const std::string &className) const {
+  auto currentModule = moduleName;
+  auto currentClass = className;
+  for (size_t depth = 0; depth < 64; ++depth) {
+    const auto *module = find(currentModule);
+    if (!module) {
+      return false;
+    }
+    const auto definition = std::find_if(
+        module->classes.begin(),
+        module->classes.end(),
+        [&](const ClassDefinition &candidate) {
+          return candidate.name == currentClass;
+        });
+    if (definition == module->classes.end()) {
+      return false;
+    }
+    if (definition->baseClassName == "SharedRef") {
+      return true;
+    }
+    if (definition->baseClassName.empty() || definition->baseClassName == "SharedObject") {
+      return false;
+    }
+    const auto separator = definition->baseClassName.find('.');
+    if (separator == std::string::npos) {
+      currentClass = definition->baseClassName;
+    } else {
+      currentModule = definition->baseClassName.substr(0, separator);
+      currentClass = definition->baseClassName.substr(separator + 1);
+    }
+  }
+  return false;
 }
 
 const std::vector<std::string> &ModuleRegistry::names() const noexcept {
