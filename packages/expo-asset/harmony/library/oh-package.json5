@@ -1,0 +1,10 @@
+{
+  "name": "@expo-harmony/expo-asset",
+  "version": "55.0.18-harmony.0",
+  "main": "Index.ets",
+  "license": "MIT",
+  "dependencies": {
+    "@rnoh/react-native-openharmony": "0.84.1",
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.0"
+  }
+}
