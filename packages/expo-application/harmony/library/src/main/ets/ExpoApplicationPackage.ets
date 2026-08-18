@@ -11,75 +11,90 @@ let registered: boolean = false;
 class ExpoApplicationService {
   readonly name: string = SERVICE_NAME;
   private readonly context: UITurboModuleContext;
-  private bundleInfo?: bundleManager.BundleInfo;
-  private bundleInfoPromise?: Promise<bundleManager.BundleInfo>;
+  private info?: bundleManager.BundleInfo;
+  private promise?: Promise<bundleManager.BundleInfo>;
 
   constructor(context: UITurboModuleContext) {
     this.context = context;
   }
 
-  async invoke(methodName: string, argumentsValue: ESObject[]): Promise<ESObject> {
-    if (methodName === 'getInstallationTime') {
+  async invoke(method: string, args: ESObject[]): Promise<ESObject> {
+    if (method === 'getInstallationTime') {
       const info = await this.readBundleInfo('ERR_APPLICATION_INSTALLATION_TIME', 'installation time');
+
       return installationTime(info);
     }
-    if (methodName === 'getLastUpdateTime') {
+
+    if (method === 'getLastUpdateTime') {
       const info = await this.readBundleInfo('ERR_APPLICATION_LAST_UPDATE_TIME', 'last update time');
+
       return checkedTimestamp(info.updateTime, 'last update', 'ERR_APPLICATION_LAST_UPDATE_TIME');
     }
-    return this.invokeSync(methodName, argumentsValue);
+
+    return this.invokeSync(method, args);
   }
 
-  invokeSync(methodName: string, _: ESObject[]): ESObject {
-    if (methodName === 'getApplicationName') {
+  invokeSync(method: string, args: ESObject[]): ESObject {
+    if (method === 'getApplicationName') {
       const info = this.readBundleInfoSync('ERR_APPLICATION_NAME', 'application name');
+
       return resolveApplicationName(this.context, info);
     }
-    if (methodName === 'getApplicationId') {
+
+    if (method === 'getApplicationId') {
       const info = this.readBundleInfoSync('ERR_APPLICATION_ID', 'application ID');
+
       return nonEmptyOrNull(info.name);
     }
-    if (methodName === 'getNativeApplicationVersion') {
+
+    if (method === 'getNativeApplicationVersion') {
       const info = this.readBundleInfoSync('ERR_APPLICATION_VERSION', 'application version');
+
       return nonEmptyOrNull(info.versionName);
     }
-    if (methodName === 'getNativeBuildVersion') {
+
+    if (method === 'getNativeBuildVersion') {
       const info = this.readBundleInfoSync('ERR_APPLICATION_BUILD_VERSION', 'application build version');
+
       return Number.isFinite(info.versionCode) && Number.isInteger(info.versionCode) ? String(info.versionCode) : null;
     }
-    throw new ExpoPlatformServiceError('ERR_APPLICATION_UNKNOWN_METHOD', `Unknown ExpoApplication Harmony method '${methodName}'.`);
+
+    throw new ExpoPlatformServiceError('ERR_APPLICATION_UNKNOWN_METHOD', `Unknown ExpoApplication Harmony method '${method}'.`);
   }
 
-  private readBundleInfoSync(errorCode: string, valueName: string): bundleManager.BundleInfo {
-    if (this.bundleInfo !== undefined) return this.bundleInfo;
+  private readBundleInfoSync(code: string, label: string): bundleManager.BundleInfo {
+    if (this.info !== undefined) {
+      return this.info;
+    }
+
     try {
-      this.bundleInfo = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
-      return this.bundleInfo;
+      this.info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
+
+      return this.info;
     } catch (error) {
-      throw bundleInfoError(errorCode, valueName, error);
+      throw new ExpoPlatformServiceError(code, `Unable to read the running Harmony application's ${label}: ${String(error)}`);
     }
   }
 
-  private async readBundleInfo(errorCode: string, valueName: string): Promise<bundleManager.BundleInfo> {
-    if (this.bundleInfo !== undefined) {
-      return this.bundleInfo;
+  private async readBundleInfo(code: string, label: string): Promise<bundleManager.BundleInfo> {
+    if (this.info !== undefined) {
+      return this.info;
     }
-    if (this.bundleInfoPromise === undefined) {
-      this.bundleInfoPromise = bundleManager.getBundleInfoForSelf(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
+
+    if (this.promise === undefined) {
+      this.promise = bundleManager.getBundleInfoForSelf(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
     }
+
     try {
-      this.bundleInfo = await this.bundleInfoPromise;
-      return this.bundleInfo;
+      this.info = await this.promise;
+
+      return this.info;
     } catch (error) {
-      throw bundleInfoError(errorCode, valueName, error);
+      throw new ExpoPlatformServiceError(code, `Unable to read the running Harmony application's ${label}: ${String(error)}`);
     } finally {
-      this.bundleInfoPromise = undefined;
+      this.promise = undefined;
     }
   }
-}
-
-function bundleInfoError(errorCode: string, valueName: string, error: Object): ExpoPlatformServiceError {
-  return new ExpoPlatformServiceError(errorCode, `Unable to read the running Harmony application's ${valueName}: ${String(error)}`);
 }
 
 function nonEmptyOrNull(value: string): string | null {
@@ -89,15 +104,17 @@ function nonEmptyOrNull(value: string): string | null {
 function installationTime(info: bundleManager.BundleInfo): number {
   return checkedTimestamp(
     selectInstallationTimestamp(deviceInfo.sdkApiVersion, info.firstInstallTime, info.installTime),
-    'installation', 'ERR_APPLICATION_INSTALLATION_TIME',
+    'installation',
+    'ERR_APPLICATION_INSTALLATION_TIME',
   );
 }
 
-function checkedTimestamp(value: number, kind: string, errorCode: string): number {
-  if (!Number.isFinite(value) || value < 0) {
-    throw new ExpoPlatformServiceError(errorCode, `Harmony returned an invalid ${kind} timestamp.`);
+function checkedTimestamp(time: number, kind: string, code: string): number {
+  if (!Number.isFinite(time) || time < 0) {
+    throw new ExpoPlatformServiceError(code, `Harmony returned an invalid ${kind} timestamp.`);
   }
-  return value;
+
+  return time;
 }
 
 function resolveApplicationName(context: UITurboModuleContext, info: bundleManager.BundleInfo): string | null {
@@ -108,6 +125,7 @@ function resolveApplicationName(context: UITurboModuleContext, info: bundleManag
     // Older bundle records and resource overlays may not expose a resolvable
     // Resource object. Retain the numeric and literal fallbacks below.
   }
+
   const labelId = info.appInfo.labelId;
   if (Number.isSafeInteger(labelId) && labelId > 0) {
     try {
@@ -118,15 +136,18 @@ function resolveApplicationName(context: UITurboModuleContext, info: bundleManag
       // resource overlay that is not addressable through the current module.
     }
   }
+
   return literalApplicationLabel(info.appInfo.label);
 }
 
 function registerService(): void {
   if (registered) return;
+
   ExpoPlatformServiceRegistry.register({
     name: SERVICE_NAME,
     create: (context: UITurboModuleContext) => new ExpoApplicationService(context),
   });
+
   registered = true;
 }
 
