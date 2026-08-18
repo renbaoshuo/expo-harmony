@@ -1,0 +1,44 @@
+{
+  "name": "@expo-harmony/expo-constants",
+  "version": "55.0.17-harmony.0",
+  "license": "MIT",
+  "author": "Baoshuo <i@baoshuo.ren>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renbaoshuo/expo-harmony.git",
+    "directory": "packages/expo-constants"
+  },
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "harmony:clean": "cd harmony && hvigorw --mode module -p module=expo_constants@default -p product=default -p buildMode=release --no-daemon clean",
+    "harmony:build": "cd harmony && hvigorw --mode module -p module=expo_constants@default -p product=default -p buildMode=release --no-daemon assembleHar && mv -f library/build/default/outputs/default/expo_constants.har ."
+  },
+  "peerDependencies": {
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.0",
+    "expo-constants": "55.0.17"
+  },
+  "devDependencies": {
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.0",
+    "@react-native-oh/react-native-harmony": "0.84.1",
+    "expo": "55.0.26",
+    "expo-constants": "55.0.17",
+    "expo-modules-core": "55.0.25",
+    "react": "19.2.3",
+    "react-native": "0.84.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "harmony": {
+    "autolinking": {
+      "mainHarPath": "harmony",
+      "ohPackageName": "@expo-harmony/expo-constants",
+      "etsPackageClassName": "ExpoConstantsPackage",
+      "cmakeLibraryTargetName": "expo_harmony__expo_constants"
+    }
+  }
+}
