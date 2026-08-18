@@ -1,0 +1,14 @@
+{
+  "platforms": ["harmony"],
+  "harmony": {
+    "providers": [
+      {
+        "identifier": "expo-application:ExpoApplicationProvider",
+        "header": "ExpoApplicationProvider.h",
+        "className": "expo::harmony::application::ExpoApplicationProvider",
+        "cmakeTargetName": "expo_harmony__expo_application",
+        "debugOnly": false
+      }
+    ]
+  }
+}
