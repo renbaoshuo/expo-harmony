@@ -1,0 +1,14 @@
+{
+  "platforms": ["harmony"],
+  "harmony": {
+    "providers": [
+      {
+        "identifier": "expo-file-system:ExpoFileSystemProvider",
+        "header": "ExpoFileSystemProvider.h",
+        "className": "expo::harmony::filesystem::ExpoFileSystemProvider",
+        "cmakeTargetName": "expo_harmony__expo_file_system",
+        "debugOnly": false
+      }
+    ]
+  }
+}
