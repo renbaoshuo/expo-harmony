@@ -5,7 +5,15 @@ import stylistic from '@stylistic/eslint-plugin';
 import globals from 'globals';
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', '**/harmony/**'] },
+  {
+    ignores: [
+      '**/dist/**',
+      '**/build/**',
+      '**/.cxx/**',
+      '**/generated/**',
+      '**/oh_modules/**',
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   react.configs.flat.recommended,

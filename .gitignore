@@ -14,9 +14,13 @@ node_modules
 **/harmony/**/build/
 **/harmony/**/oh_modules/
 **/harmony/library/BuildProfile.ets
+oh-package-lock.json5
 
 # Harmony package artifacts.
 *.har
 *.hap
 *.app
 *.hsp
+
+# local build artifacts
+local/

@@ -1,0 +1,26 @@
+{
+  "printWidth": 150,
+  "tabWidth": 2,
+  "useTabs": false,
+
+  "singleQuote": true,
+  "jsxSingleQuote": false,
+  "quoteProps": "preserve",
+
+  "semi": true,
+  "trailingComma": "all",
+  "arrowParens": "always",
+
+  "bracketSpacing": true,
+  "bracketSameLine": false,
+  "singleAttributePerLine": false,
+
+  "endOfLine": "lf",
+  "insertFinalNewline": true,
+
+  "ignorePatterns": [
+    "node_modules/**",
+    "oh_modules/**",
+    "build/**"
+  ]
+}

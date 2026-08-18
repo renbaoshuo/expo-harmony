@@ -1,7 +1,6 @@
 {
   "name": "@expo-harmony/expo-application",
   "version": "55.0.15-harmony.0",
-  "description": "HarmonyOS Expo Application provider",
   "main": "Index.ets",
   "license": "MIT",
   "dependencies": {
