@@ -1,0 +1,14 @@
+{
+  "platforms": ["harmony"],
+  "harmony": {
+    "providers": [
+      {
+        "identifier": "expo-fetch:ExpoFetchProvider",
+        "header": "ExpoFetchProvider.h",
+        "className": "expo::harmony::fetch::ExpoFetchProvider",
+        "cmakeTargetName": "expo_harmony__expo_fetch",
+        "debugOnly": false
+      }
+    ]
+  }
+}
