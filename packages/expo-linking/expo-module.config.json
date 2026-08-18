@@ -1,0 +1,15 @@
+{
+  "platforms": ["harmony"],
+  "harmony": {
+    "abilityLifecycleSubscribers": ["ExpoLinkingAbilityLifecycleSubscriber"],
+    "providers": [
+      {
+        "identifier": "expo-linking:ExpoLinkingProvider",
+        "header": "ExpoLinkingProvider.h",
+        "className": "expo::harmony::linking::ExpoLinkingProvider",
+        "cmakeTargetName": "expo_harmony__expo_linking",
+        "debugOnly": false
+      }
+    ]
+  }
+}
