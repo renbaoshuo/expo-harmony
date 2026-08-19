@@ -1,0 +1,48 @@
+{
+  "name": "@expo-harmony/config-plugins",
+  "version": "55.0.10-harmony.0",
+  "license": "MIT",
+  "author": "Baoshuo <i@baoshuo.ren>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renbaoshuo/expo-harmony.git",
+    "directory": "packages/config-plugins"
+  },
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "require": "./build/index.js",
+      "default": "./build/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@expo/config-plugins": "55.0.10",
+    "@expo/config-types": "^55.0.5",
+    "json5": "2.2.3"
+  },
+  "peerDependencies": {
+    "@expo/config": "55.0.17"
+  },
+  "peerDependenciesMeta": {
+    "@expo/config": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "18.19.0",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
