@@ -40,7 +40,7 @@ module.exports = config;
 {
   "scripts": {
     "start": "expo start",
-    "harmony": "cross-env EXPO_METRO_TARGET=harmony expo start --port 8082 --localhost"
+    "harmony": "cross-env EXPO_METRO_TARGET=harmony expo start"
   }
 }
 ```
@@ -52,14 +52,6 @@ Harmony 原生端通过 Expo virtual entry 请求 bundle：
 ```
 
 Expo Metro 会把这个 URL 重写到 `package.json#main` 解析出的实际入口。不要向 Expo CLI 传递 `--harmony`，这样会导致无法正常启动。
-
-当 `package.json#main` 使用 `@expo-harmony/entry` 时，入口包会先安装 HarmonyOS 所需的 Expo polyfill，再按以下顺序从应用根目录解析 prelude：
-
-1. `prelude.<platform>.js`
-2. `prelude.js`
-3. 入口包中的空实现
-
-入口配置、应用 prelude 和其他高阶用法参见 [`@expo-harmony/entry` 文档](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/entry#readme)。
 
 ## 配置
 
@@ -88,11 +80,12 @@ config = withHarmonyConfig(config, {
   },
 
   // 追加 Harmony 平台的 package exports conditions。
-  // 默认为 ['react-native']；原有 conditions 会被保留并去重。
-  conditions: ['react-native'],
+  // 默认为 ['harmony', 'react-native']；原有 conditions 会被保留并去重。
+  conditions: ['harmony', 'react-native'],
 
   // 加载配置时写入 process.env 的额外变量。
-  // 默认总会写入 EXPO_HARMONY=true；设置 env: false 可完全禁止修改环境变量。
+  // 仅在显式配置时写入；默认不会污染共享 Metro 进程的环境变量。
+  // 也可设为 false，明确禁止本次调用修改环境变量。
   env: {
     IS_HARMONY: 'true',
   },
@@ -112,7 +105,8 @@ config = withHarmonyConfig(config, {
   // - 字符串会交给原有的 Expo resolver 解析；
   // - false 会返回 Metro 的 empty 结果；
   // - Metro resolution 对象；
-  // - 接收当前请求并返回上述结果的函数。
+  // - 接收当前请求并返回上述结果的函数；
+  // - null/undefined 会继续尝试 aliases，最后进入 RNOH resolver。
   redirects: {
     'expo-blur': path.join(projectRoot, 'harmony-adapters/expo-blur.harmony.js'),
     'react-native-screens/experimental': false,
@@ -127,14 +121,28 @@ config = withHarmonyConfig(config, {
   emptyModules: [/MaterialSymbols/u],
 
   // 只处理 Harmony 请求，适合根据导入来源进行动态重定向。
+  // redirects 中的动态函数和 emptyModules 的函数项也会收到相同结构的请求。
   // 可以返回 Metro resolution、交给 Expo resolver 解析的模块名或 false；
   // 返回 null/undefined 会继续尝试 redirects、aliases，最后进入 RNOH resolver。
   // resolve() 可直接调用 Expo resolver；resolveHarmony() 可跳过自定义规则调用 RNOH resolver。
-  resolveRequest({ context, moduleName, resolve, resolveHarmony }) {
+  resolveRequest({
+    // 当前 Metro 解析上下文，可通过 originModulePath 判断导入来源。
+    context,
+    // 当前尚未解析的 import 模块标识符。
+    moduleName,
+    // 当前请求平台；这个 hook 被调用时始终为 harmony。
+    platform,
+    // withHarmonyConfig 最终使用的绝对项目根目录。
+    projectRoot: root,
+    // 使用原有的 Expo/Metro resolver 解析模块；platform 可选，默认使用当前请求值。
+    resolve,
+    // 跳过所有自定义规则直接调用 RNOH resolver；参数可选，默认使用当前请求值。
+    resolveHarmony,
+  }) {
     if (moduleName === './SplashScreen' && context.originModulePath.includes(`${path.sep}expo-splash-screen${path.sep}`)) {
       return {
         type: 'sourceFile',
-        filePath: path.join(projectRoot, 'harmony-adapters/SplashScreen.native.js'),
+        filePath: path.join(root, 'harmony-adapters/SplashScreen.native.js'),
       };
     }
   },
