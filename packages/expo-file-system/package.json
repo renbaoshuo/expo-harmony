@@ -15,11 +15,11 @@
     "harmony:build": "cd harmony && hvigorw --mode module -p module=expo_file_system@default -p product=default -p buildMode=release --no-daemon assembleHar && mv -f library/build/default/outputs/default/expo_file_system.har ."
   },
   "peerDependencies": {
-    "@expo-harmony/expo-modules-core": "55.0.25-harmony.0",
+    "@expo-harmony/expo-modules-core": "workspace:*",
     "expo-file-system": "55.0.24"
   },
   "devDependencies": {
-    "@expo-harmony/expo-modules-core": "55.0.25-harmony.0",
+    "@expo-harmony/expo-modules-core": "workspace:*",
     "@react-native-oh/react-native-harmony": "0.84.1",
     "expo": "55.0.26",
     "expo-file-system": "55.0.24",

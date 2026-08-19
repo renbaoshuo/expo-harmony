@@ -37,7 +37,7 @@ export class ProgressCadence {
     now: number,
     transferred: number,
     expected: number,
-    force: boolean = false,
+    force: boolean = false
   ): boolean {
     if (force && this.lastTransferred === transferred && this.lastExpected === expected) {
       return false;

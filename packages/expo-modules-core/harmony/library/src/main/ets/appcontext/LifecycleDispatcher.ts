@@ -45,7 +45,7 @@ export class ExpoLifecycleDispatcher {
 
   static onActivityResult(
     requestCode: number,
-    result: HarmonyAbilityResult,
+    result: HarmonyAbilityResult
   ): void {
     ExpoLifecycleDispatcher.dispatch(EXPO_LIFECYCLE_ACTIVITY_RESULT, {
       requestCode,
@@ -55,7 +55,7 @@ export class ExpoLifecycleDispatcher {
   }
 
   private static dispatch(eventName: string, payload?: ESObject): void {
-    Array.from(ExpoLifecycleDispatcher.sinks).forEach((sink) =>
+    Array.from(ExpoLifecycleDispatcher.sinks).forEach(sink =>
       sink.postLifecycleEvent(eventName, payload));
   }
 }

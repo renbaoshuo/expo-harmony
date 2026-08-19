@@ -128,6 +128,7 @@ async function updateOhpmManifestAsync(manifestPath, descriptors, options) {
   const deps = collectOhpmDeps(descriptors, options.buildType);
   let manifest;
   try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     manifest = JSON5.parse(await fs.promises.readFile(manifestPath, 'utf8')) as Record<string, any>;
   } catch (cause) {
     throw new HarmonyAutolinkingError('INVALID_OPTIONS', 'harmony/oh-package.json5 must contain a JSON5 object.', {
