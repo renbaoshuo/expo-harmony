@@ -1,0 +1,7 @@
+{
+  "module": {
+    "name": "expo_font",
+    "type": "har",
+    "deviceTypes": ["default", "tablet", "2in1"]
+  }
+}

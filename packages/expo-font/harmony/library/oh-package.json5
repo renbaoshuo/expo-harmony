@@ -1,0 +1,11 @@
+{
+  "name": "@expo-harmony/expo-font",
+  "version": "55.0.8-harmony.0",
+  "main": "Index.ets",
+  "license": "MIT",
+  "dependencies": {
+    "@rnoh/react-native-openharmony": "0.84.1",
+    "@react-native-ohos/react-native-worklets": "1.0.0",
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.0"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "app": {
+    "bundleName": "dev.expo.font.build",
+    "vendor": "expo-harmony",
+    "versionCode": 550008,
+    "versionName": "55.0.8-harmony.0"
+  }
+}
