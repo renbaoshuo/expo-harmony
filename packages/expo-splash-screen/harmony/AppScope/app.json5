@@ -1,0 +1,8 @@
+{
+  "app": {
+    "bundleName": "dev.expo.splashscreen.build",
+    "vendor": "expo-harmony",
+    "versionCode": 550021,
+    "versionName": "55.0.21-harmony.0"
+  }
+}

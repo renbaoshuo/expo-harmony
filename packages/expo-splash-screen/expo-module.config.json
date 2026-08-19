@@ -1,0 +1,15 @@
+{
+  "platforms": ["harmony"],
+  "harmony": {
+    "abilityLifecycleSubscribers": ["ExpoSplashScreenAbilityLifecycleSubscriber"],
+    "reactInstanceLifecycleListeners": ["ExpoSplashScreenReactInstanceLifecycleListener"],
+    "rootViewComponents": ["ExpoSplashScreenView"],
+    "providers": [{
+      "identifier": "expo-splash-screen:ExpoSplashScreenProvider",
+      "header": "ExpoSplashScreenProvider.h",
+      "className": "expo::harmony::splashscreen::ExpoSplashScreenProvider",
+      "cmakeTargetName": "expo_harmony__expo_splash_screen",
+      "debugOnly": false
+    }]
+  }
+}
