@@ -1,0 +1,13 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "expo-harmony entry module",
+  "license": "MIT",
+  "author": {
+    "name": "Baoshuo",
+    "email": "i@baoshuo.ren"
+  },
+  "homepage": "https://github.com/renbaoshuo/expo-harmony",
+  "repository": "https://github.com/renbaoshuo/expo-harmony.git",
+  "dependencies": {}
+}

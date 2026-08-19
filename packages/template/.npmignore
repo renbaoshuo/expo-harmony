@@ -1,0 +1,12 @@
+test/
+**/.hvigor/
+**/build/
+**/oh_modules/
+**/oh-package-lock.json5
+**/*.hap
+**/*.app
+**/*.hsp
+**/*.har
+harmony/local.properties
+harmony/entry/src/main/resources/rawfile/*.hbc
+harmony/entry/src/main/resources/rawfile/*.map

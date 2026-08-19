@@ -1,0 +1,12 @@
+oh_modules/
+.hvigor/
+build/
+**/build/
+local.properties
+oh-package-lock.json5
+*.hap
+*.app
+*.hsp
+*.har
+entry/src/main/resources/rawfile/*.hbc
+entry/src/main/resources/rawfile/*.map

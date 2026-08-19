@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "expo_harmony_ability_desc", "value": "Expo Harmony main ability" },
+    { "name": "expo_harmony_ability_label", "value": "Expo Harmony App" },
+    { "name": "expo_harmony_module_desc", "value": "Expo Harmony entry module" }
+  ]
+}
