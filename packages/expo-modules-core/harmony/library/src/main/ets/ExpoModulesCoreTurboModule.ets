@@ -1,19 +1,9 @@
 import { EtsUITurboModule, UITurboModuleContext } from '@rnoh/react-native-openharmony';
-import {
-  abilityAccessCtrl,
-  PermissionRequestResult,
-  Permissions,
-  Want,
-} from '@kit.AbilityKit';
+import { abilityAccessCtrl, PermissionRequestResult, Permissions, Want } from '@kit.AbilityKit';
 import { ExpoLifecycleDispatcher } from './appcontext/LifecycleDispatcher';
 import { ExpoPlatformServiceRegistry } from './services/PlatformService';
 import type { ExpoPlatformServiceResult } from './services/PlatformService';
-import {
-  EXPO_LIFECYCLE_DESTROY,
-  EXPO_LIFECYCLE_BACKGROUND,
-  EXPO_LIFECYCLE_EVENT,
-  EXPO_LIFECYCLE_FOREGROUND,
-} from './protocol/Protocol';
+import { EXPO_LIFECYCLE_DESTROY, EXPO_LIFECYCLE_BACKGROUND, EXPO_LIFECYCLE_EVENT, EXPO_LIFECYCLE_FOREGROUND } from './protocol/Protocol';
 
 export interface ExpoAbilityResult {
   resultCode: number;
@@ -41,19 +31,14 @@ export class ExpoModulesCoreTurboModule extends EtsUITurboModule {
     return new ExpoModulesCoreTurboModule(coreContext, platformServices);
   }
 
-  constructor(
-    coreContext: UITurboModuleContext,
-    platformServices: ExpoPlatformServiceRegistry,
-  ) {
+  constructor(coreContext: UITurboModuleContext, platformServices: ExpoPlatformServiceRegistry) {
     super(coreContext);
     this.coreContext = coreContext;
     this.platformServices = platformServices;
     this.unsubscribeLifecycle.push(
       ExpoLifecycleDispatcher.register(this),
-      coreContext.rnInstance.subscribeToLifecycleEvents('FOREGROUND', () =>
-        this.postLifecycleEvent(EXPO_LIFECYCLE_FOREGROUND)),
-      coreContext.rnInstance.subscribeToLifecycleEvents('BACKGROUND', () =>
-        this.postLifecycleEvent(EXPO_LIFECYCLE_BACKGROUND)),
+      coreContext.rnInstance.subscribeToLifecycleEvents('FOREGROUND', () => this.postLifecycleEvent(EXPO_LIFECYCLE_FOREGROUND)),
+      coreContext.rnInstance.subscribeToLifecycleEvents('BACKGROUND', () => this.postLifecycleEvent(EXPO_LIFECYCLE_BACKGROUND)),
     );
   }
 
@@ -96,16 +81,10 @@ export class ExpoModulesCoreTurboModule extends EtsUITurboModule {
   }
 
   async requestPermissions(permissions: string[]): Promise<PermissionRequestResult> {
-    return abilityAccessCtrl.createAtManager().requestPermissionsFromUser(
-      this.coreContext.uiAbilityContext,
-      permissions as Permissions[],
-    );
+    return abilityAccessCtrl.createAtManager().requestPermissionsFromUser(this.coreContext.uiAbilityContext, permissions as Permissions[]);
   }
 
-  async startAbilityForResult(
-    want: Want,
-    requestCode: number = 0,
-  ): Promise<ExpoAbilityResult> {
+  async startAbilityForResult(want: Want, requestCode: number = 0): Promise<ExpoAbilityResult> {
     const result = await this.coreContext.uiAbilityContext.startAbilityForResult(want);
     const abilityResult: ExpoAbilityResult = {
       resultCode: result.resultCode,
@@ -115,19 +94,11 @@ export class ExpoModulesCoreTurboModule extends EtsUITurboModule {
     return abilityResult;
   }
 
-  async invokePlatformService(
-    serviceName: string,
-    methodName: string,
-    argumentsValue: ESObject[],
-  ): Promise<ExpoPlatformServiceResult> {
+  async invokePlatformService(serviceName: string, methodName: string, argumentsValue: ESObject[]): Promise<ExpoPlatformServiceResult> {
     return await this.platformServices.invoke(serviceName, methodName, argumentsValue);
   }
 
-  invokePlatformServiceSync(
-    serviceName: string,
-    methodName: string,
-    argumentsValue: ESObject[],
-  ): ExpoPlatformServiceResult {
+  invokePlatformServiceSync(serviceName: string, methodName: string, argumentsValue: ESObject[]): ExpoPlatformServiceResult {
     return this.platformServices.invokeSync(serviceName, methodName, argumentsValue);
   }
 

@@ -7,12 +7,7 @@ export class ExpoViewContentContext {
   readonly nativeView: ESObject;
   private sizeState: ExpoViewSizeState = {};
 
-  constructor(
-    rnComponentContext: RNComponentContext,
-    tag: number,
-    componentName: string,
-    nativeView: ESObject,
-  ) {
+  constructor(rnComponentContext: RNComponentContext, tag: number, componentName: string, nativeView: ESObject) {
     this.rnComponentContext = rnComponentContext;
     this.tag = tag;
     this.componentName = componentName;
@@ -20,11 +15,7 @@ export class ExpoViewContentContext {
   }
 
   emit(eventName: string, payload: ESObject = {}): void {
-    this.rnComponentContext.rnInstance.emitComponentEvent(
-      this.tag,
-      eventName,
-      payload,
-    );
+    this.rnComponentContext.rnInstance.emitComponentEvent(this.tag, eventName, payload);
   }
 
   setShadowNodeSize(width: number, height: number): void {
@@ -38,7 +29,6 @@ export class ExpoViewContentContext {
     this.sizeState.styleHeight = height;
     this.rnComponentContext.descriptorRegistry.setState(this.tag, this.sizeState);
   }
-
 }
 
 interface ExpoViewSizeState {
@@ -52,11 +42,7 @@ export interface ExpoViewAdapter {
   readonly componentName: string;
   readonly group?: boolean;
   readonly content?: WrappedBuilder<[ExpoViewContentContext]>;
-  create(
-    rnComponentContext: RNComponentContext,
-    tag: number,
-    componentName: string,
-  ): ESObject;
+  create(rnComponentContext: RNComponentContext, tag: number, componentName: string): ESObject;
   updateProps(view: ESObject, props: Record<string, ESObject>): void;
   receiveCommand?(view: ESObject, commandName: string, args: ESObject[]): void;
   destroy?(view: ESObject): void;
@@ -77,9 +63,7 @@ export class ExpoViewAdapterRegistry {
 
   static register(adapter: ExpoViewAdapter): () => void {
     if (!adapter.componentName.startsWith('ViewManagerAdapter_')) {
-      throw new Error(
-        `Expo component '${adapter.componentName}' must use the ViewManagerAdapter_ prefix.`,
-      );
+      throw new Error(`Expo component '${adapter.componentName}' must use the ViewManagerAdapter_ prefix.`);
     }
     if (ExpoViewAdapterRegistry.adapters.has(adapter.componentName)) {
       throw new Error(`Expo component '${adapter.componentName}' was registered twice.`);
@@ -123,12 +107,7 @@ export class ExpoViewAdapterRegistry {
     if (boundViews.size === 0) ExpoViewAdapterRegistry.boundViewsByInstance.delete(instanceId);
   }
 
-  static dispatchCommand(
-    instanceId: number,
-    tag: number,
-    commandName: string,
-    args: ESObject[],
-  ): void {
+  static dispatchCommand(instanceId: number, tag: number, commandName: string, args: ESObject[]): void {
     const bound = ExpoViewAdapterRegistry.boundViewsByInstance.get(instanceId)?.get(tag);
     if (bound === undefined) return;
     bound.adapter.receiveCommand?.(bound.view, commandName, args);

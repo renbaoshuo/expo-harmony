@@ -47,10 +47,7 @@ export class ExpoPlatformServiceRegistry {
   private readonly services: Map<string, ExpoPlatformService>;
   private readonly factoryFailures: Map<string, ExpoPlatformServiceResult>;
 
-  private constructor(
-    services: Map<string, ExpoPlatformService>,
-    factoryFailures: Map<string, ExpoPlatformServiceResult>,
-  ) {
+  private constructor(services: Map<string, ExpoPlatformService>, factoryFailures: Map<string, ExpoPlatformServiceResult>) {
     this.services = services;
     this.factoryFailures = factoryFailures;
   }
@@ -80,9 +77,7 @@ export class ExpoPlatformServiceRegistry {
       try {
         const service = await factory.create(context);
         if (service.name !== name) {
-          throw new Error(
-            `Expo platform service factory '${name}' created service '${service.name}'.`,
-          );
+          throw new Error(`Expo platform service factory '${name}' created service '${service.name}'.`);
         }
         services.set(name, service);
       } catch (error) {
@@ -107,11 +102,7 @@ export class ExpoPlatformServiceRegistry {
     return service;
   }
 
-  async invoke(
-    name: string,
-    methodName: string,
-    argumentsValue: ESObject[],
-  ): Promise<ExpoPlatformServiceResult> {
+  async invoke(name: string, methodName: string, argumentsValue: ESObject[]): Promise<ExpoPlatformServiceResult> {
     try {
       const value: ESObject = await this.require(name).invoke(methodName, argumentsValue);
       return { ok: true, value };
@@ -120,11 +111,7 @@ export class ExpoPlatformServiceRegistry {
     }
   }
 
-  invokeSync(
-    name: string,
-    methodName: string,
-    argumentsValue: ESObject[],
-  ): ExpoPlatformServiceResult {
+  invokeSync(name: string, methodName: string, argumentsValue: ESObject[]): ExpoPlatformServiceResult {
     try {
       const service = this.require(name);
       if (service.invokeSync === undefined) {
@@ -156,8 +143,7 @@ export class ExpoPlatformServiceRegistry {
       const service = services[index];
       try {
         service.onDestroy?.();
-      } catch (_) {
-      }
+      } catch (_) {}
     }
   }
 }
@@ -170,8 +156,7 @@ function platformServiceFailure(error: Object): ExpoPlatformServiceResult {
       const structured = error as ExpoPlatformServiceErrorLike;
       const candidateCode = structured.code;
       const candidateMessage = structured.message;
-      structuredCode = typeof candidateCode === 'string' &&
-        /^ERR_[A-Z0-9_]+$/.test(candidateCode) ? candidateCode : undefined;
+      structuredCode = typeof candidateCode === 'string' && /^ERR_[A-Z0-9_]+$/.test(candidateCode) ? candidateCode : undefined;
       structuredMessage = typeof candidateMessage === 'string' ? candidateMessage : undefined;
     }
   } catch (_) {
@@ -182,9 +167,7 @@ function platformServiceFailure(error: Object): ExpoPlatformServiceResult {
     return {
       ok: false,
       code: structuredCode,
-      message: structuredMessage !== undefined && structuredMessage.length > 0
-        ? structuredMessage
-        : structuredCode,
+      message: structuredMessage !== undefined && structuredMessage.length > 0 ? structuredMessage : structuredCode,
     };
   }
 

@@ -1,8 +1,4 @@
-export {
-  ExpoLifecycleDispatcher,
-  ExpoLifecycleSink,
-  HarmonyAbilityResult,
-} from './appcontext/LifecycleDispatcher';
+export { ExpoLifecycleDispatcher, ExpoLifecycleSink, HarmonyAbilityResult } from './appcontext/LifecycleDispatcher';
 export { ExpoRNAbility } from './appcontext/ExpoRNAbility';
 export {
   ExpoAbilityLifecycleSubscriber,
@@ -34,8 +30,4 @@ export {
   ExpoPlatformServiceResult,
   ExpoPlatformServiceRegistry,
 } from './services/PlatformService';
-export {
-  ExpoViewAdapter,
-  ExpoViewAdapterRegistry,
-  ExpoViewContentContext,
-} from './views/ExpoViewTypes';
+export { ExpoViewAdapter, ExpoViewAdapterRegistry, ExpoViewContentContext } from './views/ExpoViewTypes';

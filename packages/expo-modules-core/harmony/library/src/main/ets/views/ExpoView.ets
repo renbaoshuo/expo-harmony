@@ -1,14 +1,6 @@
-import {
-  ComponentBuilderContext,
-  RNComponentContext,
-  RNViewBase,
-} from '@rnoh/react-native-openharmony';
+import { ComponentBuilderContext, RNComponentContext, RNViewBase } from '@rnoh/react-native-openharmony';
 import type { Descriptor } from '@rnoh/react-native-openharmony/ts';
-import {
-  ExpoViewAdapter,
-  ExpoViewAdapterRegistry,
-  ExpoViewContentContext,
-} from './ExpoViewTypes';
+import { ExpoViewAdapter, ExpoViewAdapterRegistry, ExpoViewContentContext } from './ExpoViewTypes';
 import {
   EXPO_VIEW_COMMAND,
   EXPO_VIEW_EVENT,
@@ -17,7 +9,6 @@ import {
   EXPO_VIEW_PHASE_DESTROY,
   EXPO_VIEW_PHASE_PROPS,
 } from '../protocol/Protocol';
-
 @Builder
 export function buildExpoView(ctx: ComponentBuilderContext) {
   ExpoView({
@@ -40,17 +31,8 @@ struct ExpoView {
   aboutToAppear(): void {
     const adapter = ExpoViewAdapterRegistry.require(this.componentName);
     this.adapter = adapter;
-    this.nativeView = adapter.create(
-      this.ctx,
-      this.tag,
-      this.componentName,
-    );
-    this.contentContext = new ExpoViewContentContext(
-      this.ctx,
-      this.tag,
-      this.componentName,
-      this.nativeView,
-    );
+    this.nativeView = adapter.create(this.ctx, this.tag, this.componentName);
+    this.contentContext = new ExpoViewContentContext(this.ctx, this.tag, this.componentName, this.nativeView);
     ExpoViewAdapterRegistry.bind(this.ctx.rnInstance.getId(), this.tag, adapter, this.nativeView);
     this.ctx.rnInstance.postMessageToCpp(EXPO_VIEW_EVENT, {
       phase: EXPO_VIEW_PHASE_CREATE,
@@ -60,37 +42,16 @@ struct ExpoView {
     const descriptor = this.ctx.descriptorRegistry.getDescriptor<Descriptor>(this.tag);
     this.updateDescriptor(descriptor);
     this.cleanUpCallbacks.push(
-      this.ctx.descriptorRegistry.subscribeToDescriptorChanges(
-        this.tag,
-        (nextDescriptor: Descriptor) => this.updateDescriptor(nextDescriptor),
-      ),
-      this.ctx.rnInstance.cppEventEmitter.subscribe(
-        EXPO_VIEW_COMMAND,
-        (payload: ESObject) => {
-          if (payload.tag !== this.tag) return;
-          const values: ESObject[] = Array.isArray(payload.arguments)
-            ? payload.arguments as ESObject[]
-            : [];
-          ExpoViewAdapterRegistry.dispatchCommand(
-            this.ctx.rnInstance.getId(),
-            this.tag,
-            payload.commandName as string,
-            values,
-          );
-        },
-      ),
-      this.ctx.rnInstance.cppEventEmitter.subscribe(
-        EXPO_VIEW_EVENT_EMIT,
-        (payload: ESObject) => {
-          if (payload.tag !== this.tag ||
-              payload.componentName !== this.componentName) return;
-          this.ctx.rnInstance.emitComponentEvent(
-            this.tag,
-            payload.eventName as string,
-            payload.payload ?? {},
-          );
-        },
-      ),
+      this.ctx.descriptorRegistry.subscribeToDescriptorChanges(this.tag, (nextDescriptor: Descriptor) => this.updateDescriptor(nextDescriptor)),
+      this.ctx.rnInstance.cppEventEmitter.subscribe(EXPO_VIEW_COMMAND, (payload: ESObject) => {
+        if (payload.tag !== this.tag) return;
+        const values: ESObject[] = Array.isArray(payload.arguments) ? (payload.arguments as ESObject[]) : [];
+        ExpoViewAdapterRegistry.dispatchCommand(this.ctx.rnInstance.getId(), this.tag, payload.commandName as string, values);
+      }),
+      this.ctx.rnInstance.cppEventEmitter.subscribe(EXPO_VIEW_EVENT_EMIT, (payload: ESObject) => {
+        if (payload.tag !== this.tag || payload.componentName !== this.componentName) return;
+        this.ctx.rnInstance.emitComponentEvent(this.tag, payload.eventName as string, payload.payload ?? {});
+      }),
     );
   }
 
@@ -134,7 +95,7 @@ struct ExpoView {
 
   build(): void {
     RNViewBase({ ctx: this.ctx, tag: this.tag }) {
-      this.buildContent();
-    }
+      this.buildContent()
+    };
   }
 }
