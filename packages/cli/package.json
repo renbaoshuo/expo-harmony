@@ -1,0 +1,59 @@
+{
+  "name": "@expo-harmony/cli",
+  "version": "55.0.26-harmony.0",
+  "license": "MIT",
+  "author": "Baoshuo <i@baoshuo.ren>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renbaoshuo/expo-harmony.git",
+    "directory": "packages/cli"
+  },
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "require": "./build/index.js",
+      "default": "./build/index.js"
+    }
+  },
+  "bin": {
+    "expo-harmony": "build/bin/expo-harmony.js"
+  },
+  "dependencies": {
+    "@expo-harmony/config-plugins": "workspace:*",
+    "@expo-harmony/expo-modules-autolinking": "workspace:*",
+    "@expo-harmony/prebuild-config": "workspace:*",
+    "@expo-harmony/template": "workspace:*",
+    "@expo/config": "55.0.17",
+    "cross-spawn": "^7.0.6",
+    "json5": "2.2.3",
+    "metro-source-map": "0.83.7"
+  },
+  "peerDependencies": {
+    "expo": "55.0.26",
+    "hermes-compiler": "250829098.0.9"
+  },
+  "peerDependenciesMeta": {
+    "expo": {
+      "optional": false
+    }
+  },
+  "devDependencies": {
+    "@types/node": "18.19.0",
+    "expo": "55.0.26",
+    "react": "19.2.3",
+    "react-native": "0.84.1",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
