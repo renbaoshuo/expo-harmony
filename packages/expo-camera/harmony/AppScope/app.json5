@@ -1,0 +1,8 @@
+{
+  "app": {
+    "bundleName": "dev.expo.camera.build",
+    "vendor": "expo-harmony",
+    "versionCode": 550019,
+    "versionName": "55.0.19-harmony.0"
+  }
+}

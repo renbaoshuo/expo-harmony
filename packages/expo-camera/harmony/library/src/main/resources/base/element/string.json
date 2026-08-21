@@ -1,0 +1,12 @@
+{
+  "string": [
+    {
+      "name": "camera_permission_reason",
+      "value": "用于相机预览、拍照和录像"
+    },
+    {
+      "name": "microphone_permission_reason",
+      "value": "用于录制带声音的视频"
+    }
+  ]
+}
