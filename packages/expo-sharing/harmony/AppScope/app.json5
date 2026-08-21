@@ -1,0 +1,8 @@
+{
+  "app": {
+    "bundleName": "dev.expo.sharing.build",
+    "vendor": "expo-harmony",
+    "versionCode": 550020,
+    "versionName": "55.0.20-harmony.0"
+  }
+}

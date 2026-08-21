@@ -1,0 +1,15 @@
+{
+  "platforms": ["harmony"],
+  "harmony": {
+    "abilityLifecycleSubscribers": ["ExpoSharingAbilityLifecycleSubscriber"],
+    "providers": [
+      {
+        "identifier": "expo-sharing:ExpoSharingProvider",
+        "header": "ExpoSharingProvider.h",
+        "className": "expo::harmony::sharing::ExpoSharingProvider",
+        "cmakeTargetName": "expo_harmony__expo_sharing",
+        "debugOnly": false
+      }
+    ]
+  }
+}

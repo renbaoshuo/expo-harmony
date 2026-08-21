@@ -1,0 +1,7 @@
+{
+  "module": {
+    "name": "expo_sharing",
+    "type": "har",
+    "deviceTypes": ["default", "tablet", "2in1"]
+  }
+}
