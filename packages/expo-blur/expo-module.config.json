@@ -1,0 +1,14 @@
+{
+  "platforms": ["harmony"],
+  "harmony": {
+    "providers": [
+      {
+        "identifier": "expo-blur:ExpoBlurProvider",
+        "header": "ExpoBlurProvider.h",
+        "className": "expo::harmony::blur::ExpoBlurProvider",
+        "cmakeTargetName": "expo_harmony__expo_blur",
+        "debugOnly": false
+      }
+    ]
+  }
+}

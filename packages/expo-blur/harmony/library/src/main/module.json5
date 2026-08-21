@@ -1,0 +1,7 @@
+{
+  "module": {
+    "name": "expo_blur",
+    "type": "har",
+    "deviceTypes": ["default", "tablet", "2in1"]
+  }
+}
