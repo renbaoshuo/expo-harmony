@@ -1,0 +1,51 @@
+{
+  "name": "@expo-harmony/expo-linear-gradient",
+  "version": "55.0.14-harmony.0",
+  "license": "MIT",
+  "author": "Baoshuo <i@baoshuo.ren>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renbaoshuo/expo-harmony.git",
+    "directory": "packages/expo-linear-gradient"
+  },
+  "main": "index.js",
+  "react-native": "src/index.ts",
+  "types": "index.d.ts",
+  "scripts": {
+    "harmony:clean": "cd harmony && hvigorw --mode module -p module=expo_linear_gradient@default -p product=default -p buildMode=release --no-daemon clean",
+    "harmony:build": "cd harmony && hvigorw --mode module -p module=expo_linear_gradient@default -p product=default -p buildMode=release --no-daemon assembleHar && mv -f library/build/default/outputs/default/expo_linear_gradient.har .",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@expo-harmony/expo-modules-core": "workspace:*",
+    "expo-linear-gradient": "55.0.14"
+  },
+  "devDependencies": {
+    "@expo-harmony/expo-modules-core": "workspace:*",
+    "@react-native-oh/react-native-harmony": "0.84.1",
+    "@types/react": "19.2.2",
+    "expo": "55.0.26",
+    "expo-linear-gradient": "55.0.14",
+    "expo-modules-core": "55.0.25",
+    "react": "19.2.3",
+    "react-native": "0.84.1",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "harmony": {
+    "alias": "expo-linear-gradient",
+    "redirectInternalImports": true,
+    "autolinking": {
+      "mainHarPath": "harmony",
+      "ohPackageName": "@expo-harmony/expo-linear-gradient",
+      "etsPackageClassName": "ExpoLinearGradientPackage",
+      "cppPackageClassName": "ExpoHarmonyExpoLinearGradientPackage",
+      "cmakeLibraryTargetName": "expo_harmony__expo_linear_gradient"
+    }
+  }
+}
