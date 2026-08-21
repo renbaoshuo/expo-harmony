@@ -1,0 +1,15 @@
+{
+  "platforms": ["harmony"],
+  "harmony": {
+    "reactInstanceLifecycleListeners": ["ExpoNavigationBarReactInstanceLifecycleListener"],
+    "providers": [
+      {
+        "identifier": "expo-navigation-bar:ExpoNavigationBarProvider",
+        "header": "ExpoNavigationBarProvider.h",
+        "className": "expo::harmony::navigationbar::ExpoNavigationBarProvider",
+        "cmakeTargetName": "expo_harmony__expo_navigation_bar",
+        "debugOnly": false
+      }
+    ]
+  }
+}

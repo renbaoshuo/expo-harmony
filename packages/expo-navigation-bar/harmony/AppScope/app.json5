@@ -1,0 +1,8 @@
+{
+  "app": {
+    "bundleName": "dev.expo.navigationbar.build",
+    "vendor": "expo-harmony",
+    "versionCode": 550013,
+    "versionName": "55.0.13-harmony.0"
+  }
+}

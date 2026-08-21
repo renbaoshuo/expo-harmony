@@ -1,0 +1,7 @@
+{
+  "module": {
+    "name": "expo_navigation_bar",
+    "type": "har",
+    "deviceTypes": ["default", "tablet", "2in1"]
+  }
+}
