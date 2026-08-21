@@ -64,11 +64,17 @@ function normalizeRadius(value: ESObject, _index: number): GradientRadius {
 
 function normalizeBorderRadii(radii: ESObject): GradientRadius[] {
   if (radii === undefined || radii === null) return [0, 0, 0, 0];
-  if (!Array.isArray(radii) || radii.length !== 4) return [0, 0, 0, 0];
+  if (!Array.isArray(radii)) return [0, 0, 0, 0];
+  if (radii.length !== 4 && radii.length !== 8) return [0, 0, 0, 0];
+
+  const indices: number[] = radii.length === 8
+    ? [0, 2, 4, 6]
+    : [0, 1, 2, 3];
 
   const values: GradientRadius[] = [];
-  for (let index = 0; index < 4; index += 1) {
-    values.push(normalizeRadius(radii[index], index));
+  for (let index = 0; index < indices.length; index += 1) {
+    const source = indices[index];
+    values.push(normalizeRadius(radii[source], source));
   }
 
   return values;
