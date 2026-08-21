@@ -12,21 +12,22 @@ npm install @expo-harmony/prebuild-config
 
 ## 基础用法
 
-在 `app.config.js` 中启用插件并声明 HarmonyOS 配置：
+在 `app.json` 中启用插件并声明 HarmonyOS 配置：
 
-```js
-module.exports = {
-  name: 'Example',
-  slug: 'example',
-  version: '1.0.0',
-  platforms: ['ios', 'android', 'harmony'],
-  plugins: ['@expo-harmony/prebuild-config'],
-  harmony: {
-    bundleName: 'com.example.app',
-    versionCode: 1,
-    deviceTypes: ['phone', 'tablet'],
-  },
-};
+```json
+{
+  "expo": {
+    "name": "Example",
+    "slug": "example",
+    "version": "1.0.0",
+    "plugins": ["@expo-harmony/prebuild-config"],
+    "harmony": {
+      "bundleName": "com.example.app",
+      "versionCode": 1,
+      "deviceTypes": ["phone", "tablet"]
+    }
+  }
+}
 ```
 
 使用 Expo Harmony CLI 生成或更新原生工程：
@@ -37,15 +38,26 @@ npx expo-harmony prebuild
 
 需要使用字体、启动屏或其他 HarmonyOS 配置插件时，应将这些插件放在 `@expo-harmony/prebuild-config` 之前，由本包最后注册 Harmony Base Mods：
 
-```js
-plugins: [
-  '@expo-harmony/expo-font',
-  ['@expo-harmony/expo-splash-screen', {
-    image: './assets/splash.png',
-    backgroundColor: '#FFFFFF',
-  }],
-  '@expo-harmony/prebuild-config',
-]
+```json
+{
+  "expo": {
+    "plugins": [
+      "@expo-harmony/expo-font",
+      [
+        "@expo-harmony/expo-splash-screen",
+        {
+          "image": "./assets/splash.png",
+          "backgroundColor": "#FFFFFF"
+        }
+      ],
+      "@expo-harmony/expo-system-ui",
+      "@expo-harmony/prebuild-config"
+    ],
+    "harmony": {
+      "bundleName": "com.example.app"
+    }
+  }
+}
 ```
 
 ## Author
