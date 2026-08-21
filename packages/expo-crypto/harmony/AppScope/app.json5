@@ -1,0 +1,8 @@
+{
+  "app": {
+    "bundleName": "dev.expo.crypto.build",
+    "vendor": "expo-harmony",
+    "versionCode": 550015,
+    "versionName": "55.0.15-harmony.0"
+  }
+}

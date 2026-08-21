@@ -1,0 +1,14 @@
+{
+  "platforms": ["harmony"],
+  "harmony": {
+    "providers": [
+      {
+        "identifier": "expo-crypto:ExpoCryptoProvider",
+        "header": "ExpoCryptoProvider.h",
+        "className": "expo::harmony::crypto::ExpoCryptoProvider",
+        "cmakeTargetName": "expo_harmony__expo_crypto",
+        "debugOnly": false
+      }
+    ]
+  }
+}
