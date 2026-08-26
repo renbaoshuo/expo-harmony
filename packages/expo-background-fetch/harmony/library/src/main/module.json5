@@ -1,0 +1,7 @@
+{
+  "module": {
+    "name": "expo_background_fetch",
+    "type": "har",
+    "deviceTypes": ["default", "tablet", "2in1"]
+  }
+}

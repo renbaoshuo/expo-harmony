@@ -1,0 +1,14 @@
+{
+  "platforms": ["harmony"],
+  "harmony": {
+    "providers": [
+      {
+        "identifier": "expo-background-fetch:ExpoBackgroundFetchProvider",
+        "header": "ExpoBackgroundFetchProvider.h",
+        "className": "expo::harmony::backgroundfetch::ExpoBackgroundFetchProvider",
+        "cmakeTargetName": "expo_harmony__expo_background_fetch",
+        "debugOnly": false
+      }
+    ]
+  }
+}
