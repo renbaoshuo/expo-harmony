@@ -1,0 +1,11 @@
+{
+  "app": {
+    "bundleName": "expo.harmony.backgroundtask",
+    "vendor": "expo-harmony",
+    "versionCode": 550018,
+    "versionName": "55.0.18-harmony.0",
+    "icon": "$media:app_icon",
+    "label": "$string:app_name"
+  }
+}
+

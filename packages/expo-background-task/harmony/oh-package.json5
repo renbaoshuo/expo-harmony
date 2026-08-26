@@ -1,0 +1,15 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "expo-background-task-harmony",
+  "version": "55.0.18-harmony.0",
+  "license": "MIT",
+  "dependencies": {
+    "@expo-harmony/expo-background-task": "./library"
+  },
+  "overrides": {
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.0",
+    "@expo-harmony/expo-task-manager": "55.0.16-harmony.0",
+    "@rnoh/react-native-openharmony": "0.84.1",
+    "@react-native-ohos/react-native-worklets": "1.0.0"
+  }
+}
