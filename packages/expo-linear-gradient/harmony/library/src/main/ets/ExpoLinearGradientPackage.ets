@@ -67,9 +67,7 @@ function normalizeBorderRadii(radii: ESObject): GradientRadius[] {
   if (!Array.isArray(radii)) return [0, 0, 0, 0];
   if (radii.length !== 4 && radii.length !== 8) return [0, 0, 0, 0];
 
-  const indices: number[] = radii.length === 8
-    ? [0, 2, 4, 6]
-    : [0, 1, 2, 3];
+  const indices: number[] = radii.length === 8 ? [0, 2, 4, 6] : [0, 1, 2, 3];
 
   const values: GradientRadius[] = [];
   for (let index = 0; index < indices.length; index += 1) {
