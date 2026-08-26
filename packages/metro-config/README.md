@@ -157,6 +157,8 @@ Harmony 请求的 resolver 匹配顺序如下：
 4. 前缀匹配的 `aliases`，优先使用最长匹配项
 5. RNOH resolver
 
+声明了 `harmony.alias` 的适配包可以直接导入同名官方包或其子路径。
+
 ## 与其他 Metro enhancer 组合
 
 通用的 Metro enhancer 应在 `withHarmonyConfig` 之后应用：

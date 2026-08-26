@@ -1,7 +1,7 @@
 import { requireNativeModule } from 'expo-modules-core';
 import type { EventSubscription } from 'expo-modules-core';
-import { useIncomingShare as useExpoIncomingShare } from 'expo-sharing-upstream';
-import type { UseIncomingShareResult } from 'expo-sharing-upstream';
+import { useIncomingShare as useExpoIncomingShare } from 'expo-sharing';
+import type { UseIncomingShareResult } from 'expo-sharing';
 import { useCallback, useEffect } from 'react';
 
 type SharingModule = {

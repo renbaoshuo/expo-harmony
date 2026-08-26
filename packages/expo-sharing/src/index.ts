@@ -1,2 +1,2 @@
-export * from 'expo-sharing-upstream';
+export * from 'expo-sharing';
 export { useIncomingShare } from './useIncomingShare';

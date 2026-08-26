@@ -13,8 +13,7 @@
   "types": "index.d.ts",
   "dependencies": {
     "@expo-harmony/config-plugins": "workspace:*",
-    "@expo/config-plugins": "55.0.10",
-    "expo-sharing-upstream": "npm:expo-sharing@55.0.20"
+    "@expo/config-plugins": "55.0.10"
   },
   "scripts": {
     "harmony:clean": "cd harmony && hvigorw --mode module -p module=expo_sharing@default -p product=default -p buildMode=release --no-daemon clean",

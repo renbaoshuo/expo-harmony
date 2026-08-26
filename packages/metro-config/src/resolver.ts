@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import type { InputConfigT } from 'metro-config';
 
 import { HarmonyPlatform } from './constants';
@@ -85,6 +88,66 @@ interface ResolverOptions {
 }
 
 const NoResolution = Symbol('NoResolution');
+const DirectoryHarmonyAliases = new Map<string, string | null>();
+
+function getPackageName(moduleName: string): string | null {
+  if (moduleName.startsWith('.') || moduleName.startsWith('/')) return null;
+
+  const parts = moduleName.split('/');
+  if (moduleName.startsWith('@')) {
+    return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null;
+  }
+
+  return parts[0] || null;
+}
+
+function getOriginHarmonyAlias(originModulePath: string): string | null {
+  let directory = path.dirname(originModulePath);
+  const visited: string[] = [];
+
+  while (true) {
+    const cached = DirectoryHarmonyAliases.get(directory);
+    if (cached !== undefined) {
+      visited.forEach(item => DirectoryHarmonyAliases.set(item, cached));
+      return cached;
+    }
+
+    visited.push(directory);
+
+    const manifestPath = path.join(directory, 'package.json');
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+          harmony?: { alias?: unknown };
+        };
+        const alias = typeof manifest.harmony?.alias === 'string'
+          ? manifest.harmony.alias
+          : null;
+
+        visited.forEach(item => DirectoryHarmonyAliases.set(item, alias));
+        return alias;
+      } catch {
+        visited.forEach(item => DirectoryHarmonyAliases.set(item, null));
+        return null;
+      }
+    }
+
+    const parent = path.dirname(directory);
+    if (parent === directory) break;
+
+    directory = parent;
+  }
+
+  visited.forEach(item => DirectoryHarmonyAliases.set(item, null));
+  return null;
+}
+
+function isUpstreamAliasRequest(request: HarmonyResolverRequest): boolean {
+  const packageName = getPackageName(request.moduleName);
+  if (!packageName) return false;
+
+  return packageName === getOriginHarmonyAlias(request.context.originModulePath);
+}
 
 export function getEntries<T = unknown>(value: unknown, name: string): [string, T][] {
   if (value === undefined) return [];
@@ -175,6 +238,8 @@ function resolveConfiguredRequest(
 
   const alias = getAlias(aliases, request.moduleName);
   if (alias !== NoResolution) return request.resolve(alias);
+
+  if (isUpstreamAliasRequest(request)) return request.resolve(request.moduleName);
 
   return request.resolveHarmony();
 }
