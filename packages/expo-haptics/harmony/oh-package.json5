@@ -1,0 +1,14 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "expo-haptics-harmony",
+  "version": "55.0.14-harmony.0",
+  "license": "MIT",
+  "dependencies": {
+    "@expo-harmony/expo-haptics": "./library"
+  },
+  "overrides": {
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.0",
+    "@rnoh/react-native-openharmony": "0.84.1",
+    "@react-native-ohos/react-native-worklets": "1.0.0"
+  }
+}

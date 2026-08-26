@@ -1,0 +1,12 @@
+{
+  "module": {
+    "name": "expo_haptics",
+    "type": "har",
+    "deviceTypes": ["default", "tablet", "2in1"],
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.VIBRATE"
+      }
+    ]
+  }
+}

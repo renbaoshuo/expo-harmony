@@ -1,0 +1,14 @@
+{
+  "platforms": ["harmony"],
+  "harmony": {
+    "providers": [
+      {
+        "identifier": "expo-haptics:ExpoHapticsProvider",
+        "header": "ExpoHapticsProvider.h",
+        "className": "expo::harmony::haptics::ExpoHapticsProvider",
+        "cmakeTargetName": "expo_harmony__expo_haptics",
+        "debugOnly": false
+      }
+    ]
+  }
+}
