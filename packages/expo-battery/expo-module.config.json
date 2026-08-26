@@ -1,0 +1,14 @@
+{
+  "platforms": ["harmony"],
+  "harmony": {
+    "providers": [
+      {
+        "identifier": "expo-battery:ExpoBatteryProvider",
+        "header": "ExpoBatteryProvider.h",
+        "className": "expo::harmony::battery::ExpoBatteryProvider",
+        "cmakeTargetName": "expo_harmony__expo_battery",
+        "debugOnly": false
+      }
+    ]
+  }
+}
