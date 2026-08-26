@@ -1,0 +1,8 @@
+{
+  "app": {
+    "bundleName": "dev.expo.appmetrics.build",
+    "vendor": "expo-harmony",
+    "versionCode": 202,
+    "versionName": "0.2.2-harmony.0"
+  }
+}

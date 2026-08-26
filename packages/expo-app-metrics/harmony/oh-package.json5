@@ -1,0 +1,13 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "expo-app-metrics-harmony",
+  "version": "0.2.2-harmony.0",
+  "license": "MIT",
+  "dependencies": {
+    "@expo-harmony/expo-app-metrics": "./library"
+  },
+  "overrides": {
+    "@rnoh/react-native-openharmony": "0.84.1",
+    "@react-native-ohos/react-native-worklets": "1.0.0"
+  }
+}
