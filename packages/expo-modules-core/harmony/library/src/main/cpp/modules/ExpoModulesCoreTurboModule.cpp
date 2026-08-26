@@ -270,6 +270,70 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
         });
     return;
   }
+  if (message.name == protocol::kSharedObjectEvent && message.payload.isObject()) {
+    auto objectId = message.payload.getDefault("objectId", 0).asInt();
+    auto moduleName = message.payload.getDefault("moduleName", "").asString();
+    auto className = message.payload.getDefault("className", "").asString();
+    auto eventName = message.payload.getDefault("eventName", "").asString();
+    auto arguments = message.payload.getDefault("arguments", folly::dynamic::array());
+    if (objectId <= 0 || moduleName.empty() || className.empty() || eventName.empty() || !arguments.isArray()) {
+      return;
+    }
+
+    std::vector<std::weak_ptr<RuntimeContext>> contexts;
+    {
+      std::scoped_lock lock(contextsMutex_);
+      contexts.reserve(contexts_.size());
+      for (const auto &[runtime, context] : contexts_) {
+        contexts.push_back(context);
+      }
+    }
+    auto invoker = jsInvoker_;
+    invoker->invokeAsync(
+        [contexts = std::move(contexts),
+         objectId,
+         moduleName = std::move(moduleName),
+         className = std::move(className),
+         eventName = std::move(eventName),
+         arguments = std::move(arguments)](jsi::Runtime &runtime) mutable {
+          for (const auto &weakContext : contexts) {
+            auto context = weakContext.lock();
+            if (!context || !context->isAlive() || !context->hasModuleRegistry() || &context->runtime() != &runtime) {
+              continue;
+            }
+            try {
+              (void)context->getNativeSharedObject(objectId, moduleName, className);
+              std::vector<folly::dynamic> values;
+              values.reserve(arguments.size());
+              for (const auto &argument : arguments) {
+                values.push_back(argument);
+              }
+              context->emitSharedObjectEvent(objectId, eventName, std::move(values));
+            } catch (const CodedError &) {
+              // The event may arrive after its SharedObject was released or may
+              // belong to a different runtime installed in the same RN instance.
+            } catch (const std::exception &error) {
+              OH_LOG_Print(
+                  LOG_APP,
+                  LOG_ERROR,
+                  kExpoModulesLogDomain,
+                  kExpoModulesLogTag,
+                  "Expo SharedObject event %{public}s failed: %{public}s",
+                  eventName.c_str(),
+                  error.what());
+            } catch (...) {
+              OH_LOG_Print(
+                  LOG_APP,
+                  LOG_ERROR,
+                  kExpoModulesLogDomain,
+                  kExpoModulesLogTag,
+                  "Expo SharedObject event %{public}s failed",
+                  eventName.c_str());
+            }
+          }
+        });
+    return;
+  }
   if (message.name != protocol::kModuleEvent || !message.payload.isObject()) {
     return;
   }

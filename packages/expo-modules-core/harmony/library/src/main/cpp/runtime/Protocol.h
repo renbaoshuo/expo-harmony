@@ -5,6 +5,7 @@ namespace expo::harmony::protocol {
 inline constexpr const char kViewEvent[] = "EXPO_VIEW_EVENT";
 inline constexpr const char kLifecycleEvent[] = "EXPO_LIFECYCLE_EVENT";
 inline constexpr const char kModuleEvent[] = "EXPO_MODULE_EVENT";
+inline constexpr const char kSharedObjectEvent[] = "EXPO_SHARED_OBJECT_EVENT";
 inline constexpr const char kViewCommand[] = "EXPO_VIEW_COMMAND";
 inline constexpr const char kViewEventEmit[] = "EXPO_VIEW_EVENT_EMIT";
 

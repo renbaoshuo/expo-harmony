@@ -7,7 +7,6 @@
 #include "api/Promise.h"
 #include "common/EventEmitter.h"
 #include "common/JSI/JSIUtils.h"
-#include "common/LazyObject.h"
 #include "common/NativeModule.h"
 #include "common/SharedObject.h"
 #include "common/SharedRef.h"
@@ -470,30 +469,17 @@ jsi::Value ModulesHostObject::get(
     if (!cached.isUndefined()) {
       return cached;
     }
-    if (!context_->moduleRegistry().find(name)) {
+    const auto *definition = context_->moduleRegistry().find(name);
+    if (!definition) {
       return jsi::Value::undefined();
     }
-    auto lazy = std::make_shared<expo::LazyObject>(
-        [weakSelf = weak_from_this(), name](jsi::Runtime &currentRuntime) {
-          auto self = weakSelf.lock();
-          if (!self || !self->context_->isAlive()) {
-            throw makeJSError(
-                currentRuntime,
-                "ERR_RUNTIME_DESTROYED",
-                "Cannot materialize Expo module '" + name + "' after runtime destruction.");
-          }
-          const auto *definition = self->context_->moduleRegistry().find(name);
-          if (!definition) {
-            throw makeJSError(
-                currentRuntime,
-                "ERR_MODULE_NOT_FOUND",
-                "Expo module '" + name + "' is no longer registered.");
-          }
-          return std::make_shared<jsi::Object>(
-              self->createModule(currentRuntime, *definition));
-        });
-    auto object = jsi::Object::createFromHostObject(runtime, std::move(lazy));
+
+    // Keep module lookup lazy, but expose a regular object once a module is
+    // requested. This makes own-property enumeration and object spread use the
+    // module's actual JavaScript descriptors on Harmony.
+    auto object = createModule(runtime, *definition);
     context_->retainModule(name, object);
+
     return jsi::Value(runtime, object);
   } catch (const jsi::JSError &) {
     throw;

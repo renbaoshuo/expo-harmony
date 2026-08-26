@@ -1,6 +1,7 @@
 export const EXPO_VIEW_EVENT: string = 'EXPO_VIEW_EVENT';
 export const EXPO_LIFECYCLE_EVENT: string = 'EXPO_LIFECYCLE_EVENT';
 export const EXPO_MODULE_EVENT: string = 'EXPO_MODULE_EVENT';
+export const EXPO_SHARED_OBJECT_EVENT: string = 'EXPO_SHARED_OBJECT_EVENT';
 export const EXPO_VIEW_COMMAND: string = 'EXPO_VIEW_COMMAND';
 export const EXPO_VIEW_EVENT_EMIT: string = 'EXPO_VIEW_EVENT_EMIT';
 
