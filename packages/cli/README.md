@@ -7,10 +7,10 @@
 ## 安装
 
 ```sh
-npm install -g @expo-harmony/cli
+npm install --save-dev @expo-harmony/cli
 ```
 
-项目需要使用 Node.js 20 或更高版本，并配置 `@expo-harmony/prebuild-config` 和 `@expo-harmony/metro-config`。原生构建还需要可用的 HarmonyOS SDK、OHPM、Hvigor 和 HDC。
+CLI 必须安装在项目本地，生成的 HarmonyOS Release 构建会通过包的公开入口调用它。项目还需要使用 Node.js 20 或更高版本，并配置 `@expo-harmony/prebuild-config` 和 `@expo-harmony/metro-config`。原生构建需要可用的 HarmonyOS SDK、OHPM、Hvigor 和 HDC。
 
 ## 命令
 

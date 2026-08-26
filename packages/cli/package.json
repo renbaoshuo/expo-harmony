@@ -19,7 +19,8 @@
       "types": "./build/index.d.ts",
       "require": "./build/index.js",
       "default": "./build/index.js"
-    }
+    },
+    "./bin/expo-harmony": "./build/bin/expo-harmony.js"
   },
   "bin": {
     "expo-harmony": "build/bin/expo-harmony.js"

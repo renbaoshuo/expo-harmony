@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { hvigor } from '@ohos/hvigor';
 import { appTasks, OhosPluginId } from '@ohos/hvigor-ohos-plugin';
@@ -12,7 +13,7 @@ process.env.HERMES_V1_ENABLED = 'true';
 const ProjectRoot = path.resolve('..');
 const HarmonyRoot = path.join(ProjectRoot, 'harmony');
 const NodeModules = findNodeModules();
-const CliPath = path.join(NodeModules, '@expo-harmony/cli/bin/expo-harmony.js');
+const ProjectRequire = createRequire(path.join(ProjectRoot, 'package.json'));
 const ModuleName = 'entry';
 const EmbeddedBundle = path.join(HarmonyRoot, ModuleName, 'src/main/resources/rawfile/hermes_bundle.hbc');
 const HermesMagic = 'c61fbc03c103191f';
@@ -139,6 +140,16 @@ function assertBundle() {
   }
 }
 
+function resolveCliPath(): string {
+  try {
+    return ProjectRequire.resolve('@expo-harmony/cli/bin/expo-harmony');
+  } catch (cause) {
+    throw new Error('Release bundling requires the project-local @expo-harmony/cli package.', {
+      cause,
+    });
+  }
+}
+
 function bundleRelease() {
   if (process.env.EXPO_HARMONY_BUNDLE_PREBUILT === '1') {
     assertBundle();
@@ -146,12 +157,9 @@ function bundleRelease() {
   }
 
   const executable = resolveMetroNode();
+  const cliPath = resolveCliPath();
 
-  if (!fs.existsSync(CliPath)) {
-    throw new Error('Release bundling requires the project-local @expo-harmony/cli package.');
-  }
-
-  const result = spawnSync(executable, [CliPath, 'export:embed', ProjectRoot, '--json'], {
+  const result = spawnSync(executable, [cliPath, 'export:embed', ProjectRoot, '--json'], {
     cwd: ProjectRoot,
     encoding: 'utf8',
     env: {
