@@ -17,6 +17,7 @@ import {
   START_ON_BOOT_PARAMETER,
   STOP_ON_TERMINATE_PARAMETER,
   TASK_NAME_PARAMETER,
+  TASK_MANAGER_OWNER_PARAMETER,
   TASK_TYPE,
   WORK_ID_MAXIMUM,
   WORK_ID_MINIMUM,
@@ -48,6 +49,8 @@ class ExpoBackgroundFetchError extends ExpoPlatformServiceError {
 
 class BackgroundFetchConsumer implements ExpoTaskConsumer {
   readonly taskType: string = TASK_TYPE;
+  readonly consumerId: string = '@expo-harmony/expo-background-fetch';
+  readonly consumerVersion: number = 1;
   private mutation: Promise<void> = Promise.resolve();
 
   async onTasksChanged(context: UITurboModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
@@ -107,12 +110,12 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
 
       desiredNames.add(name);
 
-      if (current !== undefined && workMatchesOptions(current, name, options)) {
+      if (current !== undefined && workMatchesOptions(current, name, options, ExpoTaskManagerRegistry.ownerKey(context))) {
         await cancelWorks(matching.slice(1), context);
         continue;
       }
 
-      const workId = current?.workId ?? allocateWorkId(reserved, name);
+      const workId = current?.workId ?? allocateWorkId(reserved, name, ExpoTaskManagerRegistry.ownerKey(context));
       const next = createWorkInfo(context, workId, name, options);
 
       if (current !== undefined) cancelWork(current);
@@ -274,6 +277,7 @@ function createWorkInfo(context: UITurboModuleContext, workId: number, taskName:
   const params: Record<string, number | string | boolean> = {};
   params[OWNER_PARAMETER] = OWNER_PARAMETER_VALUE;
   params[TASK_NAME_PARAMETER] = taskName;
+  params[TASK_MANAGER_OWNER_PARAMETER] = ExpoTaskManagerRegistry.ownerKey(context);
   params[MINIMUM_INTERVAL_PARAMETER] = options.minimumInterval ?? DEFAULT_MINIMUM_INTERVAL_SECONDS;
   params[STOP_ON_TERMINATE_PARAMETER] = options.stopOnTerminate !== false;
   params[START_ON_BOOT_PARAMETER] = options.startOnBoot === true;
@@ -290,7 +294,7 @@ function createWorkInfo(context: UITurboModuleContext, workId: number, taskName:
   };
 }
 
-function workMatchesOptions(work: workScheduler.WorkInfo, taskName: string, options: Options): boolean {
+function workMatchesOptions(work: workScheduler.WorkInfo, taskName: string, options: Options, ownerKey: string): boolean {
   const seconds = options.minimumInterval ?? DEFAULT_MINIMUM_INTERVAL_SECONDS;
   const interval = Math.max(Math.ceil(seconds * 1000), WORK_SCHEDULER_MINIMUM_INTERVAL_MS);
   const params = work.parameters;
@@ -300,6 +304,7 @@ function workMatchesOptions(work: workScheduler.WorkInfo, taskName: string, opti
     work.repeatCycleTime === interval &&
     (work.isPersisted === true) === (options.startOnBoot === true) &&
     params?.[TASK_NAME_PARAMETER] === taskName &&
+    params?.[TASK_MANAGER_OWNER_PARAMETER] === ownerKey &&
     params?.[MINIMUM_INTERVAL_PARAMETER] === seconds &&
     params?.[STOP_ON_TERMINATE_PARAMETER] === (options.stopOnTerminate !== false) &&
     params?.[START_ON_BOOT_PARAMETER] === (options.startOnBoot === true)
@@ -310,7 +315,8 @@ function isOwnedWork(context: UITurboModuleContext, work: workScheduler.WorkInfo
   return (
     work.bundleName === context.uiAbilityContext.abilityInfo.bundleName &&
     work.abilityName === WORK_SCHEDULER_EXTENSION_NAME &&
-    work.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE
+    work.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE &&
+    work.parameters?.[TASK_MANAGER_OWNER_PARAMETER] === ExpoTaskManagerRegistry.ownerKey(context)
   );
 }
 
@@ -335,9 +341,9 @@ async function readAllWorks(): Promise<workScheduler.WorkInfo[]> {
   }
 }
 
-function allocateWorkId(works: workScheduler.WorkInfo[], taskName: string): number {
+function allocateWorkId(works: workScheduler.WorkInfo[], taskName: string, ownerKey: string): number {
   const ids: Set<number> = new Set(works.map((work: workScheduler.WorkInfo): number => work.workId));
-  let id = stableWorkId(workIdentity(TASK_TYPE, taskName), WORK_ID_MINIMUM, WORK_ID_MAXIMUM);
+  let id = stableWorkId(workIdentity(`${TASK_TYPE}:${ownerKey}`, taskName), WORK_ID_MINIMUM, WORK_ID_MAXIMUM);
   const initial = id;
 
   do {

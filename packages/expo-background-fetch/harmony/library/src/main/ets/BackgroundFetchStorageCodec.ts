@@ -1,22 +1,28 @@
+export const PENDING_WORK_SCHEMA_VERSION: number = 1;
+
 export class StoredPendingWork {
+  version: number = PENDING_WORK_SCHEMA_VERSION;
   requestId: string;
   workId: number;
   bundleName: string;
   abilityName: string;
-  taskName?: string;
+  taskName: string;
+  ownerKey: string;
 
   constructor(
     requestId: string,
     workId: number,
     bundleName: string,
     abilityName: string,
-    taskName?: string,
+    taskName: string,
+    ownerKey: string,
   ) {
     this.requestId = requestId;
     this.workId = workId;
     this.bundleName = bundleName;
     this.abilityName = abilityName;
     this.taskName = taskName;
+    this.ownerKey = ownerKey;
   }
 }
 
@@ -45,13 +51,16 @@ export function decodePendingWorks(raw: ESObject): PendingWorkDecodeResult {
     }
 
     const requestId = item['requestId'];
+    const version = item['version'];
     const workId = item['workId'];
     const bundleName = item['bundleName'];
     const abilityName = item['abilityName'];
     const taskName = item['taskName'];
+    const ownerKey = item['ownerKey'];
 
     if (
-      typeof requestId !== 'string'
+      version !== PENDING_WORK_SCHEMA_VERSION
+      || typeof requestId !== 'string'
       || requestId.length === 0
       || typeof workId !== 'number'
       || !Number.isSafeInteger(workId)
@@ -59,13 +68,16 @@ export function decodePendingWorks(raw: ESObject): PendingWorkDecodeResult {
       || bundleName.length === 0
       || typeof abilityName !== 'string'
       || abilityName.length === 0
-      || (taskName !== undefined && (typeof taskName !== 'string' || taskName.length === 0))
+      || typeof taskName !== 'string'
+      || taskName.length === 0
+      || typeof ownerKey !== 'string'
+      || ownerKey.length === 0
     ) {
       corrupted = true;
       continue;
     }
 
-    works.push(new StoredPendingWork(requestId, workId, bundleName, abilityName, taskName));
+    works.push(new StoredPendingWork(requestId, workId, bundleName, abilityName, taskName, ownerKey));
   }
 
   return new PendingWorkDecodeResult(works, corrupted);

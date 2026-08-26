@@ -1,0 +1,8 @@
+{
+  "module": {
+    "name": "expo_task_manager",
+    "type": "har",
+    "deviceTypes": ["default", "tablet", "2in1"]
+  }
+}
+
