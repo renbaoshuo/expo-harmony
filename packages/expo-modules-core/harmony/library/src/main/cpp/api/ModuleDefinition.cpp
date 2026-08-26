@@ -75,9 +75,15 @@ size_t NativeSharedObject::getAdditionalMemoryPressure() const noexcept {
 
 void NativeSharedObject::deallocate() {}
 
+void NativeSharedObject::sharedObjectWillRelease() {}
+
 void NativeSharedObject::sharedObjectDidRelease() {
   deallocate();
 }
+
+void NativeSharedObject::onStartListeningToEvent(const std::string &) {}
+
+void NativeSharedObject::onStopListeningToEvent(const std::string &) {}
 
 void NativeSharedObject::bindToRuntime(
     std::weak_ptr<RuntimeContext> context,
@@ -105,6 +111,29 @@ void NativeSharedObject::sendEvent(
   }
   if (!context || !context->isAlive() || objectId == 0) {
     return;
+  }
+  context->emitSharedObjectEvent(
+      objectId, std::move(eventName), std::move(arguments));
+}
+
+void NativeSharedObject::sendEventWithArguments(
+    std::string eventName,
+    std::vector<SharedObjectEventArgument> arguments,
+    bool containsJavaScriptValues) const {
+  std::shared_ptr<RuntimeContext> context;
+  long objectId = 0;
+  {
+    std::scoped_lock lock(runtimeBindingMutex_);
+    context = runtimeContext_.lock();
+    objectId = objectId_;
+  }
+  if (!context || !context->isAlive() || objectId == 0) {
+    return;
+  }
+  if (containsJavaScriptValues && !context->isRuntimeThread()) {
+    throw CodedError(
+        "ERR_WRONG_THREAD",
+        "SharedObject events containing JSI-bound values must be sent from the JavaScript thread.");
   }
   context->emitSharedObjectEvent(
       objectId, std::move(eventName), std::move(arguments));
@@ -431,11 +460,6 @@ void validateModuleDefinition(const ModuleDefinition &definition) {
   for (const auto &klass : definition.classes) {
     const auto owner = definition.name + "." + klass.name;
     const bool nativeBacked = klass.nativeType != std::type_index(typeid(void));
-    if (nativeBacked && !klass.constructor) {
-      throw CodedError(
-          "ERR_INVALID_DEFINITION",
-          owner + " has no native constructor.");
-    }
     if (!nativeBacked && klass.constructor) {
       throw CodedError(
           "ERR_INVALID_DEFINITION",

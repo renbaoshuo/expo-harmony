@@ -8,6 +8,7 @@
 #include <thread>
 #include <typeindex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <jsi/jsi.h>
@@ -16,6 +17,8 @@
 
 #include <ReactCommon/CallInvoker.h>
 #include <folly/dynamic.h>
+
+#include "api/SharedObjectEventArgument.h"
 
 namespace expo::harmony {
 
@@ -53,6 +56,10 @@ public:
       long objectId,
       std::string eventName,
       std::vector<folly::dynamic> arguments = {});
+  void emitSharedObjectEvent(
+      long objectId,
+      std::string eventName,
+      std::vector<SharedObjectEventArgument> arguments);
   void postPlatformMessage(
       std::string name,
       folly::dynamic payload);
@@ -91,6 +98,8 @@ public:
   facebook::jsi::Value materializeNativeSharedObject(
       std::string moduleName,
       std::string className,
+      std::shared_ptr<NativeSharedObject> object);
+  facebook::jsi::Value materializeNativeSharedObject(
       std::shared_ptr<NativeSharedObject> object);
   facebook::jsi::Value bindNativeSharedObject(
       std::string moduleName,
@@ -143,6 +152,7 @@ private:
   std::unordered_map<long, std::shared_ptr<NativeSharedObject>> nativeSharedObjects_;
   std::unordered_map<const NativeSharedObject *, long> nativeSharedObjectIds_;
   std::unordered_map<long, std::pair<std::string, std::string>> nativeSharedObjectClasses_;
+  std::unordered_set<long> releasingSharedObjectIds_;
   std::unordered_map<long, size_t> sharedObjectObservationCounts_;
   std::unordered_map<std::string, std::unique_ptr<facebook::jsi::Object>> modules_;
   std::unordered_map<std::string, std::unique_ptr<facebook::jsi::Function>> classes_;

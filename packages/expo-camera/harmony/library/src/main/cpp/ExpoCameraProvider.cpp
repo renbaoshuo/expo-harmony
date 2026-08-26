@@ -295,11 +295,6 @@ public:
 
     ClassDefinitionBuilder<PictureRefObject> picture("Picture");
     picture.extends("SharedRef");
-    picture.constructor<>([]() -> std::shared_ptr<PictureRefObject> {
-      throw CodedError(
-          "ERR_CAMERA_PICTURE_REF",
-          "Picture references can only be created by the camera.");
-    });
     picture.property(typedSharedProperty<PictureRefObject, double>(
         "width", [](PictureRefObject &owner) { return owner.width(); }));
     picture.property(typedSharedProperty<PictureRefObject, double>(

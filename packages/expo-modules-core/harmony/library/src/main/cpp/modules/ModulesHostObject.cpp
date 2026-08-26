@@ -652,11 +652,13 @@ jsi::Object ModulesHostObject::createModule(
             thisValue,
             arguments,
             argumentCount);
-        invocation.requireArgumentCount(
-            classDefinition->constructorRequiredArity.value_or(
-                classDefinition->constructorArity),
-            classDefinition->constructorArity);
-        if (classDefinition->nativeType != std::type_index(typeid(void))) {
+        if (classDefinition->constructor || classDefinition->javaScriptConstructor) {
+          invocation.requireArgumentCount(
+              classDefinition->constructorRequiredArity.value_or(
+                  classDefinition->constructorArity),
+              classDefinition->constructorArity);
+        }
+        if (classDefinition->nativeType != std::type_index(typeid(void)) && classDefinition->constructor) {
           auto nativeObject = classDefinition->constructor(invocation);
           if (!thisValue.isObject()) {
             throw CodedError(
@@ -782,7 +784,8 @@ jsi::Object ModulesHostObject::createModule(
           classDefinition.name,
           property);
     }
-    if (!classDefinition.startObservers.empty() || !classDefinition.stopObservers.empty()) {
+    const bool nativeBacked = classDefinition.nativeType != std::type_index(typeid(void));
+    if ((nativeBacked && !classDefinition.events.empty()) || !classDefinition.startObservers.empty() || !classDefinition.stopObservers.empty()) {
       auto startName = jsi::PropNameID::forAscii(
           runtime, "__expo_onStartListeningToEvent");
       prototype.setProperty(
@@ -808,6 +811,7 @@ jsi::Object ModulesHostObject::createModule(
                       classDefinition->name);
                   const auto eventName = arguments[0].getString(rt).utf8(rt);
                   const auto observedEventCount = context->beginObservingSharedObject(objectId);
+                  nativeObject->onStartListeningToEvent(eventName);
                   for (const auto &observer : classDefinition->startObservers) {
                     if (observer.body && shouldNotifyObserver(observer, eventName, observedEventCount, true)) {
                       observer.body(*context, nativeObject, eventName);
@@ -841,6 +845,7 @@ jsi::Object ModulesHostObject::createModule(
                       classDefinition->name);
                   const auto eventName = arguments[0].getString(rt).utf8(rt);
                   const auto observedEventCount = context->endObservingSharedObject(objectId);
+                  nativeObject->onStopListeningToEvent(eventName);
                   for (const auto &observer : classDefinition->stopObservers) {
                     if (observer.body && shouldNotifyObserver(observer, eventName, observedEventCount, false)) {
                       observer.body(*context, nativeObject, eventName);

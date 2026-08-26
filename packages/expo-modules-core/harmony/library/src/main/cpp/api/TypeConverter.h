@@ -34,6 +34,7 @@
 #include "api/Promise.h"
 #include "api/Worklets.h"
 #include "errors/CodedError.h"
+#include "objects/BridgeCodec.h"
 #include "runtime/RuntimeContext.h"
 
 namespace expo::harmony {
@@ -1585,11 +1586,7 @@ struct TypeConverter<std::shared_ptr<T>> {
     if (!value.isObject()) {
       throwConversionError(runtime, path, "SharedObject", value);
     }
-    auto object = value.getObject(runtime);
-    if (!object.hasNativeState<expo::SharedObject::NativeState>(runtime)) {
-      throwConversionError(runtime, path, "SharedObject", value);
-    }
-    auto objectId = object.getNativeState<expo::SharedObject::NativeState>(runtime)->objectId;
+    auto objectId = requireSharedObjectId(runtime, value, path);
     auto nativeObject = context->getNativeSharedObject(objectId);
     auto converted = std::dynamic_pointer_cast<T>(nativeObject);
     if (!converted) {
@@ -1607,11 +1604,7 @@ struct TypeConverter<std::shared_ptr<T>> {
           "ERR_INVALID_SHARED_OBJECT",
           "A native SharedObject return value cannot be null.");
     }
-    auto [moduleName, className] = context->nativeClass(
-        std::type_index(typeid(*value)));
     return context->materializeNativeSharedObject(
-        std::move(moduleName),
-        std::move(className),
         std::static_pointer_cast<NativeSharedObject>(value));
   }
 };
@@ -1898,6 +1891,25 @@ FunctionDefinition typedPromiseFunction(
             });
       };
   return definition;
+}
+
+template <typename... Arguments>
+void NativeSharedObject::sendEvent(
+    std::string eventName,
+    Arguments &&...arguments) const {
+  std::vector<SharedObjectEventArgument> convertedArguments;
+  convertedArguments.reserve(sizeof...(Arguments));
+  (convertedArguments.emplace_back(
+       [retained = std::make_shared<std::decay_t<Arguments>>(
+            std::forward<Arguments>(arguments))](
+           const std::shared_ptr<RuntimeContext> &context) mutable {
+         return convertToJS(context, std::move(*retained));
+       }),
+   ...);
+  sendEventWithArguments(
+      std::move(eventName),
+      std::move(convertedArguments),
+      (false || ... || isJavaScriptBound<Arguments>));
 }
 
 }  // namespace expo::harmony

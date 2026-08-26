@@ -15,6 +15,8 @@
 
 #include <folly/dynamic.h>
 
+#include "api/SharedObjectEventArgument.h"
+
 namespace expo::harmony {
 
 class RuntimeContext;
@@ -62,15 +64,25 @@ public:
   virtual std::string nativeRefType() const;
   virtual size_t getAdditionalMemoryPressure() const noexcept;
   virtual void deallocate();
+  virtual void sharedObjectWillRelease();
   virtual void sharedObjectDidRelease();
+  virtual void onStartListeningToEvent(const std::string &eventName);
+  virtual void onStopListeningToEvent(const std::string &eventName);
   void sendEvent(
       std::string eventName,
       std::vector<folly::dynamic> arguments = {}) const;
+
+  template <typename... Arguments>
+  void sendEvent(std::string eventName, Arguments &&...arguments) const;
 
 private:
   friend class RuntimeContext;
   void bindToRuntime(std::weak_ptr<RuntimeContext> context, long objectId);
   void unbindFromRuntime() noexcept;
+  void sendEventWithArguments(
+      std::string eventName,
+      std::vector<SharedObjectEventArgument> arguments,
+      bool containsJavaScriptValues) const;
   mutable std::mutex runtimeBindingMutex_;
   std::weak_ptr<RuntimeContext> runtimeContext_;
   long objectId_{0};

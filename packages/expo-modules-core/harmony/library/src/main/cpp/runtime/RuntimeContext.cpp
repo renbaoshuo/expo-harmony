@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <exception>
+#include <optional>
 
 #include <jsi/JSIDynamic.h>
 
@@ -9,6 +11,7 @@
 #include <common/JSI/JSIUtils.h>
 #include <common/LazyObject.h>
 #include <common/SharedObject.h>
+#include <common/SharedRef.h>
 #include <worklets/WorkletRuntime/WorkletRuntime.h>
 
 #include "api/ModuleDefinition.h"
@@ -152,8 +155,8 @@ void RuntimeContext::invalidate() noexcept {
   if (moduleRegistry_) {
     moduleRegistry_->destroy();
   }
-  alive_.store(false, std::memory_order_release);
   clearJSIReferences();
+  alive_.store(false, std::memory_order_release);
   runtime_ = nullptr;
 }
 
@@ -285,6 +288,46 @@ void RuntimeContext::emitSharedObjectEvent(
     }
     expo::EventEmitter::emitEvent(
         context->runtime(), object, eventName, values);
+  };
+  if (isRuntimeThread()) {
+    task();
+  } else if (jsInvoker_) {
+    jsInvoker_->invokeAsync(std::move(task));
+  }
+}
+
+void RuntimeContext::emitSharedObjectEvent(
+    long objectId,
+    std::string eventName,
+    std::vector<SharedObjectEventArgument> arguments) {
+  auto task = [weakContext = weak_from_this(),
+               objectId,
+               eventName = std::move(eventName),
+               arguments = std::move(arguments)]() mutable {
+    auto context = weakContext.lock();
+    if (!context || !context->isAlive()) {
+      return;
+    }
+    context->assertRuntimeThread();
+    auto objectValue = context->getSharedObject(objectId);
+    if (!objectValue.isObject()) {
+      return;
+    }
+    auto object = objectValue.getObject(context->runtime());
+    std::vector<jsi::Value> values;
+    values.reserve(arguments.size());
+    try {
+      for (auto &argument : arguments) {
+        values.push_back(argument
+                             ? argument(context)
+                             : jsi::Value::undefined());
+      }
+      expo::EventEmitter::emitEvent(
+          context->runtime(), object, eventName, values);
+    } catch (...) {
+      // Events are best-effort and must not terminate the JavaScript executor
+      // when a native-to-JS argument conversion fails.
+    }
   };
   if (isRuntimeThread()) {
     task();
@@ -526,6 +569,44 @@ jsi::Value RuntimeContext::materializeNativeSharedObject(
       std::move(jsObject));
 }
 
+jsi::Value RuntimeContext::materializeNativeSharedObject(
+    std::shared_ptr<NativeSharedObject> nativeObject) {
+  assertRuntimeThread();
+  if (!nativeObject) {
+    throw CodedError(
+        "ERR_INVALID_SHARED_OBJECT",
+        "Cannot materialize a null shared object.");
+  }
+
+  std::optional<std::pair<std::string, std::string>> registeredClass;
+  {
+    std::scoped_lock lock(mutex_);
+    NativeSharedObject &nativeReference = *nativeObject;
+    auto iterator = nativeClasses_.find(std::type_index(typeid(nativeReference)));
+    if (iterator != nativeClasses_.end()) {
+      registeredClass = iterator->second;
+    }
+  }
+  if (registeredClass) {
+    return materializeNativeSharedObject(
+        registeredClass->first,
+        registeredClass->second,
+        std::move(nativeObject));
+  }
+
+  const bool isSharedRef = nativeObject->nativeRefType() != "SharedObject";
+  auto baseClass = isSharedRef
+                     ? expo::SharedRef::getBaseClass(runtime())
+                     : expo::SharedObject::getBaseClass(runtime());
+  auto prototype = baseClass.getPropertyAsObject(runtime(), "prototype");
+  auto jsObject = expo::common::createObjectWithPrototype(runtime(), &prototype);
+  return bindNativeSharedObject(
+      {},
+      isSharedRef ? "SharedRef" : "SharedObject",
+      std::move(nativeObject),
+      std::move(jsObject));
+}
+
 jsi::Value RuntimeContext::bindNativeSharedObject(
     std::string moduleName,
     std::string className,
@@ -547,6 +628,16 @@ jsi::Value RuntimeContext::bindNativeSharedObject(
   if (!cached.isUndefined()) {
     return cached;
   }
+  expo::common::defineProperty(
+      runtime(),
+      &jsObject,
+      "__expo_shared_object_id__",
+      {
+          .configurable = false,
+          .enumerable = false,
+          .writable = false,
+          .value = static_cast<double>(objectId),
+      });
   jsObject.setNativeState(
       runtime(),
       std::make_shared<expo::SharedObject::NativeState>(
@@ -556,14 +647,15 @@ jsi::Value RuntimeContext::bindNativeSharedObject(
               context->scheduleSharedObjectRelease(id);
             }
           }));
-  if (moduleRegistry().isSharedRefClass(moduleName, className)) {
+  const bool isSharedRef = (moduleName.empty() && className == "SharedRef") || (!moduleName.empty() && moduleRegistry().isSharedRefClass(moduleName, className));
+  if (isSharedRef) {
     expo::common::defineProperty(
         runtime(),
         &jsObject,
         "nativeRefType",
         {
             .configurable = false,
-            .enumerable = true,
+            .enumerable = false,
             .writable = false,
             .value = jsi::String::createFromUtf8(runtime(), nativeObject->nativeRefType()),
         });
@@ -581,9 +673,12 @@ std::shared_ptr<NativeSharedObject> RuntimeContext::getNativeSharedObject(
   std::scoped_lock lock(mutex_);
   auto iterator = nativeSharedObjects_.find(objectId);
   if (iterator == nativeSharedObjects_.end()) {
+    const bool wasReleased = objectId > 0 && objectId < nextObjectId_.load(std::memory_order_acquire);
     throw CodedError(
-        "ERR_SHARED_OBJECT_NOT_FOUND",
-        "Native shared object " + std::to_string(objectId) + " has been released.");
+        wasReleased ? "ERR_SHARED_OBJECT_RELEASED" : "ERR_INVALID_SHARED_OBJECT_ID",
+        wasReleased
+            ? "Cannot use shared object " + std::to_string(objectId) + " because it was already released."
+            : "Shared object " + std::to_string(objectId) + " does not have a valid native object.");
   }
   return iterator->second;
 }
@@ -596,9 +691,12 @@ std::shared_ptr<NativeSharedObject> RuntimeContext::getNativeSharedObject(
   auto nativeIterator = nativeSharedObjects_.find(objectId);
   auto classIterator = nativeSharedObjectClasses_.find(objectId);
   if (nativeIterator == nativeSharedObjects_.end() || classIterator == nativeSharedObjectClasses_.end()) {
+    const bool wasReleased = objectId > 0 && objectId < nextObjectId_.load(std::memory_order_acquire);
     throw CodedError(
-        "ERR_SHARED_OBJECT_NOT_FOUND",
-        "Native shared object " + std::to_string(objectId) + " has been released.");
+        wasReleased ? "ERR_SHARED_OBJECT_RELEASED" : "ERR_INVALID_SHARED_OBJECT_ID",
+        wasReleased
+            ? "Cannot use shared object " + std::to_string(objectId) + " because it was already released."
+            : "Shared object " + std::to_string(objectId) + " does not have a valid native object.");
   }
   auto actualModule = classIterator->second.first;
   auto actualClass = classIterator->second.second;
@@ -645,19 +743,43 @@ void RuntimeContext::releaseSharedObject(long objectId) {
   std::shared_ptr<NativeSharedObject> released;
   {
     std::scoped_lock lock(mutex_);
+    auto native = nativeSharedObjects_.find(objectId);
+    if (native == nativeSharedObjects_.end() || !releasingSharedObjectIds_.insert(objectId).second) {
+      return;
+    }
+    released = native->second;
+  }
+
+  std::exception_ptr releaseError;
+  try {
+    released->sharedObjectWillRelease();
+  } catch (...) {
+    releaseError = std::current_exception();
+  }
+
+  {
+    std::scoped_lock lock(mutex_);
     sharedObjects_.erase(objectId);
     auto native = nativeSharedObjects_.find(objectId);
-    if (native != nativeSharedObjects_.end()) {
-      released = std::move(native->second);
+    if (native != nativeSharedObjects_.end() && native->second == released) {
       nativeSharedObjectIds_.erase(released.get());
       nativeSharedObjects_.erase(native);
     }
     nativeSharedObjectClasses_.erase(objectId);
     sharedObjectObservationCounts_.erase(objectId);
+    releasingSharedObjectIds_.erase(objectId);
   }
-  if (released) {
-    released->unbindFromRuntime();
+
+  released->unbindFromRuntime();
+  try {
     released->sharedObjectDidRelease();
+  } catch (...) {
+    if (!releaseError) {
+      releaseError = std::current_exception();
+    }
+  }
+  if (releaseError) {
+    std::rethrow_exception(releaseError);
   }
 }
 
@@ -813,7 +935,6 @@ jsi::Value RuntimeContext::getModule(const std::string &name) {
 
 void RuntimeContext::clearJSIReferences() {
   assertRuntimeThread();
-  std::vector<std::shared_ptr<NativeSharedObject>> releasedObjects;
   {
     std::scoped_lock lock(mutex_);
     for (const auto &[pointer, promise] : promises_) {
@@ -821,27 +942,33 @@ void RuntimeContext::clearJSIReferences() {
       promise->invalidate();
     }
     promises_.clear();
-    sharedObjects_.clear();
-    releasedObjects.reserve(nativeSharedObjects_.size());
-    for (auto &[objectId, object] : nativeSharedObjects_) {
-      (void)objectId;
-      releasedObjects.push_back(std::move(object));
+  }
+  while (true) {
+    long objectId = 0;
+    {
+      std::scoped_lock lock(mutex_);
+      if (nativeSharedObjects_.empty()) {
+        break;
+      }
+      objectId = nativeSharedObjects_.begin()->first;
     }
+    try {
+      releaseSharedObject(objectId);
+    } catch (...) {
+    }
+  }
+  {
+    std::scoped_lock lock(mutex_);
+    sharedObjects_.clear();
     nativeSharedObjects_.clear();
     nativeSharedObjectIds_.clear();
     nativeSharedObjectClasses_.clear();
+    releasingSharedObjectIds_.clear();
     sharedObjectObservationCounts_.clear();
     modules_.clear();
     classes_.clear();
     nativeClasses_.clear();
     viewProps_.clear();
-  }
-  for (const auto &object : releasedObjects) {
-    try {
-      object->unbindFromRuntime();
-      object->sharedObjectDidRelease();
-    } catch (...) {
-    }
   }
 }
 

@@ -30,6 +30,14 @@ public:
     return 64;
   }
 
+  void emitExample(std::shared_ptr<ExampleSharedObject> other) {
+    sendEvent(
+        "change",
+        value,
+        std::string("value"),
+        std::move(other));
+  }
+
   int value;
 };
 
