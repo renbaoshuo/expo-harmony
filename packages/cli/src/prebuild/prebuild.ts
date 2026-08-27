@@ -1,11 +1,9 @@
 import fs from 'node:fs';
-import path from 'node:path';
-
-import { readManifestAsync } from '@expo-harmony/prebuild-config/check';
 
 import { HarmonyCliError } from '../errors';
 import { formatDiagnostics, spawnAsync } from '../process';
 import { resolveExpoCli } from '../expo';
+import { resolveHarmonyBuildPlanAsync } from '../tools';
 import { assertSafeCleanTarget } from './clean';
 import { packAsync } from './template';
 
@@ -51,10 +49,11 @@ async function prebuildParsedAsync(
       });
     }
 
-    const marker = path.join(projectRoot, 'harmony/.expo-harmony-template');
     try {
-      await readManifestAsync(projectRoot);
-      await fs.promises.access(marker, fs.constants.R_OK);
+      const plan = await resolveHarmonyBuildPlanAsync(projectRoot, {
+        buildMode: options.buildType,
+      });
+      await fs.promises.access(plan.projectFiles.templateMarker, fs.constants.R_OK);
     } catch (cause) {
       throw new HarmonyCliError('ERR_HARMONY_TEMPLATE_INVALID', 'Expo prebuild exited successfully but the Harmony marker or CNG manifest is invalid.', { cause, operation: 'verify-prebuild' });
     }

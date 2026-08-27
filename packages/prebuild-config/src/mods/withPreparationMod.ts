@@ -7,6 +7,7 @@ import {
   withHarmonyDangerousMod,
 } from '@expo-harmony/config-plugins';
 
+import { createHarmonyBuildDescriptor } from '../buildDescriptor';
 import { HarmonyPrebuildError } from '../errors';
 import { ensureGitignoreEntryAsync } from '../generatedFiles';
 import { readSigningConfigFile } from '../signing';
@@ -54,7 +55,10 @@ function withPreparationMod(config, normalized) {
         await fs.promises.rename(packedGitignore, gitignore);
       }
     }
-    await ensureGitignoreEntryAsync(gitignore, '/build-profile.json5');
+
+    const build = createHarmonyBuildDescriptor(normalized, null);
+    const profile = path.posix.relative(build.harmonyRoot, build.projectFiles.projectBuildProfile);
+    await ensureGitignoreEntryAsync(gitignore, `/${profile}`);
     recordManagedFile(value, gitignore, 'dangerous');
 
     if (normalized.signingConfigFile) {

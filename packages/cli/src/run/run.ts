@@ -14,7 +14,12 @@ import { doctorAsync, type DoctorResult } from '../doctor/doctor';
 import { HarmonyCliError } from '../errors';
 import { exportEmbedAsync } from '../exportEmbed/export';
 import type { HarmonyExportManifest } from '../exportEmbed/manifest';
-import { resolveHarmonyBuildPlanAsync, resolveHarmonyToolchain, type HarmonyBuildPlan } from '../tools';
+import {
+  resolveHarmonyBuildPlanAsync,
+  resolveHarmonyBuildPlanIfPresentAsync,
+  resolveHarmonyToolchain,
+  type HarmonyBuildPlan,
+} from '../tools';
 import { installHarmonyDependenciesAsync } from './install';
 import { requireExistingMetroAsync, startExpoMetroAsync } from './metro';
 import {
@@ -147,8 +152,10 @@ async function ensureGeneratedProjectAsync(
   options: NormalizedRunOptions,
   steps: Record<string, number>
 ) {
-  const harmonyRoot = path.join(projectRoot, 'harmony');
-  const exists = fs.existsSync(harmonyRoot);
+  const plan = await resolveHarmonyBuildPlanIfPresentAsync(projectRoot, {
+    buildMode: options.variant,
+  });
+  const exists = Boolean(plan && fs.existsSync(plan.harmonyRoot));
 
   progress(options, 'Checking the Harmony project');
   const doctor = await timed(steps, 'doctor', () => doctorAsync(projectRoot, {

@@ -8,8 +8,12 @@ import { canonicalizeAutolinkingArtifacts } from '@expo-harmony/expo-modules-aut
 import JSON5 from 'json5';
 
 import { HarmonyPrebuildError } from './errors';
-import { createHarmonyBuildDescriptor } from './buildDescriptor';
 import {
+  createHarmonyBuildDescriptor,
+  resolveHarmonyBuildPath,
+} from './buildDescriptor';
+import {
+  CngManifestPath,
   hashSha256,
   validateCngManifest,
   type CngManifest,
@@ -75,15 +79,13 @@ async function matchesIdentity(
 
   try {
     const [profileSource, moduleSource] = await Promise.all([
-      fs.promises.readFile(path.join(
+      fs.promises.readFile(resolveHarmonyBuildPath(
         project,
-        ...cng.build.harmonyRoot.split('/'),
-        'build-profile.json5'
+        cng.build.projectFiles.projectBuildProfile
       ), 'utf8'),
-      fs.promises.readFile(path.join(
+      fs.promises.readFile(resolveHarmonyBuildPath(
         project,
-        ...cng.build.moduleRoot.split('/'),
-        'src/main/module.json5'
+        cng.build.projectFiles.moduleJson
       ), 'utf8'),
     ]);
 
@@ -110,10 +112,24 @@ async function matchesIdentity(
     && target.applyToProducts.includes(identity.productName);
 }
 
-async function readManifestAsync(project: string): Promise<CngManifest> {
-  const file = path.join(project, '.expo/harmony/cng-manifest.json');
+async function readManifestIfPresentAsync(project: string): Promise<CngManifest | null> {
+  const file = resolveHarmonyBuildPath(project, CngManifestPath);
+  let source;
+
   try {
-    return validateCngManifest(JSON.parse(await fs.promises.readFile(file, 'utf8')), { file });
+    source = await fs.promises.readFile(file, 'utf8');
+  } catch (cause) {
+    if (cause.code === 'ENOENT') return null;
+
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_MANIFEST_DRIFT',
+      `Cannot read CNG manifest: ${file}`,
+      { cause, file, operation: 'check' }
+    );
+  }
+
+  try {
+    return validateCngManifest(JSON.parse(source), { file });
   } catch (cause) {
     throw new HarmonyPrebuildError(
       'ERR_HARMONY_MANIFEST_DRIFT',
@@ -123,8 +139,22 @@ async function readManifestAsync(project: string): Promise<CngManifest> {
   }
 }
 
+async function readManifestAsync(project: string): Promise<CngManifest> {
+  const manifest = await readManifestIfPresentAsync(project);
+  if (!manifest) {
+    const file = resolveHarmonyBuildPath(project, CngManifestPath);
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_MANIFEST_DRIFT',
+      `Cannot read CNG manifest: ${file}`,
+      { file, operation: 'check' }
+    );
+  }
+
+  return manifest;
+}
+
 async function stageManifestAsync(project: string, target: string): Promise<void> {
-  const source = path.join(project, '.expo/harmony/cng-manifest.json');
+  const source = resolveHarmonyBuildPath(project, CngManifestPath);
   let stat;
 
   try {
@@ -188,7 +218,7 @@ async function stageManifestAsync(project: string, target: string): Promise<void
     );
   }
 
-  const file = path.join(target, '.expo/harmony/cng-manifest.json');
+  const file = resolveHarmonyBuildPath(target, CngManifestPath);
   await fs.promises.mkdir(path.dirname(file), { recursive: true });
   await fs.promises.writeFile(file, stableHarmonyJson({
     ...manifest,
@@ -249,7 +279,8 @@ async function canonicalizeAutolinkingAsync(
   cng: CngManifest
 ): Promise<void> {
   const manifestFile = path.join(expected, '.expo/harmony/autolinking.json');
-  const ohpmFile = path.join(expected, 'harmony/oh-package.json5');
+  const ohpmPath = cng.build.nativeInputs.manifest;
+  const ohpmFile = resolveHarmonyBuildPath(expected, ohpmPath);
 
   try {
     const [manifestSource, ohPackageSource, generatedProjectRoot, canonicalProjectRoot]
@@ -273,7 +304,7 @@ async function canonicalizeAutolinkingAsync(
       item => item.path === '.expo/harmony/autolinking.json'
     );
     const ohpmDescriptor = cng.managedFiles.find(
-      item => item.path === 'harmony/oh-package.json5'
+      item => item.path === ohpmPath
     );
 
     if (manifestDescriptor) manifestDescriptor.sha256 = manifestHash;
@@ -328,7 +359,7 @@ async function compareAsync(
   }
 
   if (!isDeepStrictEqual(expected, actual)) {
-    changes.push({ path: '.expo/harmony/cng-manifest.json', type: 'changed' });
+    changes.push({ path: CngManifestPath, type: 'changed' });
   }
 
   changes.sort((left, right) => (
@@ -341,6 +372,7 @@ async function compareAsync(
 export {
   compareAsync,
   readManifestAsync,
+  readManifestIfPresentAsync,
   stageAsync,
 };
 export type {

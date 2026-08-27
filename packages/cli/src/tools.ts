@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { readManifestAsync } from '@expo-harmony/prebuild-config/check';
+import {
+  resolveHarmonyBuildPath,
+  type HarmonyBuildDescriptor,
+} from '@expo-harmony/prebuild-config/build-descriptor';
+import { readManifestIfPresentAsync } from '@expo-harmony/prebuild-config/check';
 
 import { HarmonyCliError } from './errors';
 
@@ -24,25 +28,14 @@ export interface HarmonyBuildPlan {
   buildMode: 'debug' | 'release';
   bundleName: string;
   expectedHap: string;
-  exportPaths: {
-    bundle: string;
-    manifest: string;
-    metadataRoot: string;
-    rawfileRoot: string;
-    sourceMap: string;
-  };
+  exportPaths: HarmonyBuildDescriptor['export'];
   harmonyRoot: string;
   hvigorArgs: string[];
   moduleName: string;
   moduleRoot: string;
-  nativeCache: {
-    invalidationRoots: string[];
-    stateFile: string;
-  };
-  nativeInputs: {
-    lockfile: string;
-    manifest: string;
-  };
+  nativeCache: HarmonyBuildDescriptor['nativeCache'];
+  nativeInputs: HarmonyBuildDescriptor['nativeInputs'];
+  projectFiles: HarmonyBuildDescriptor['projectFiles'];
   productName: string;
   targetName: string;
 }
@@ -205,28 +198,12 @@ function resolveHarmonyToolchain(): HarmonyToolchain {
   return { hdc, hvigor, ohpm, sdkHome, toolsRoot };
 }
 
-async function resolveHarmonyBuildPlanAsync(
+function createHarmonyBuildPlan(
   projectRoot: string,
-  options: { buildMode?: 'debug' | 'release' } = {}
-): Promise<HarmonyBuildPlan> {
-  const mode = options.buildMode || 'debug';
-  if (!['debug', 'release'].includes(mode)) {
-    throw new HarmonyCliError('ERR_HARMONY_CONFIG_INVALID', `Harmony buildMode must be debug or release, received: ${mode}`, { operation: 'resolve-build' });
-  }
-
-  let build;
-
-  try {
-    build = (await readManifestAsync(projectRoot)).build;
-  } catch (cause) {
-    throw new HarmonyCliError(
-      cause.code || 'ERR_HARMONY_TEMPLATE_INVALID',
-      `Cannot read the generated Harmony build descriptor: ${cause.message}`,
-      { cause, operation: 'resolve-build' }
-    );
-  }
-
-  const resolve = relative => path.join(projectRoot, ...relative.split('/'));
+  build: HarmonyBuildDescriptor,
+  mode: 'debug' | 'release'
+): HarmonyBuildPlan {
+  const resolve = relative => resolveHarmonyBuildPath(projectRoot, relative);
   const variant = build.variants[mode];
 
   return {
@@ -250,8 +227,57 @@ async function resolveHarmonyBuildPlanAsync(
       manifest: resolve(build.nativeInputs.manifest),
     },
     productName: build.identity.productName,
+    projectFiles: Object.fromEntries(
+      Object.entries(build.projectFiles).map(([name, relative]) => [name, resolve(relative)])
+    ) as HarmonyBuildPlan['projectFiles'],
     targetName: build.identity.targetName,
   };
 }
 
-export { resolveHarmonyBuildPlanAsync, resolveHarmonyToolchain };
+async function resolveHarmonyBuildPlanIfPresentAsync(
+  projectRoot: string,
+  options: { buildMode?: 'debug' | 'release' } = {}
+): Promise<HarmonyBuildPlan | null> {
+  const mode = options.buildMode || 'debug';
+  if (!['debug', 'release'].includes(mode)) {
+    throw new HarmonyCliError('ERR_HARMONY_CONFIG_INVALID', `Harmony buildMode must be debug or release, received: ${mode}`, { operation: 'resolve-build' });
+  }
+
+  let manifest;
+
+  try {
+    manifest = await readManifestIfPresentAsync(projectRoot);
+  } catch (cause) {
+    throw new HarmonyCliError(
+      cause.code || 'ERR_HARMONY_TEMPLATE_INVALID',
+      `Cannot read the generated Harmony build descriptor: ${cause.message}`,
+      { cause, operation: 'resolve-build' }
+    );
+  }
+
+  if (!manifest) return null;
+
+  return createHarmonyBuildPlan(projectRoot, manifest.build, mode);
+}
+
+async function resolveHarmonyBuildPlanAsync(
+  projectRoot: string,
+  options: { buildMode?: 'debug' | 'release' } = {}
+): Promise<HarmonyBuildPlan> {
+  const plan = await resolveHarmonyBuildPlanIfPresentAsync(projectRoot, options);
+  if (!plan) {
+    throw new HarmonyCliError(
+      'ERR_HARMONY_MANIFEST_DRIFT',
+      'Cannot read the generated Harmony build descriptor because the CNG manifest is missing.',
+      { operation: 'resolve-build' }
+    );
+  }
+
+  return plan;
+}
+
+export {
+  resolveHarmonyBuildPlanAsync,
+  resolveHarmonyBuildPlanIfPresentAsync,
+  resolveHarmonyToolchain,
+};

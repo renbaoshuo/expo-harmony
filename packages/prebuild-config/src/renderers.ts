@@ -33,7 +33,7 @@ module.exports = require('@react-native-oh/react-native-harmony-cli/react-native
 }
 
 function renderRootHvigor(source, build: HarmonyBuildDescriptor) {
-  source = normalizeSource(source, 'harmony/hvigorfile.ts');
+  source = normalizeSource(source, build.projectFiles.rootHvigor);
 
   return replacePlaceholderExactlyOnce(
     source,

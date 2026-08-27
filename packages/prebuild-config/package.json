@@ -25,6 +25,11 @@
       "require": "./build/check.js",
       "default": "./build/check.js"
     },
+    "./build-descriptor": {
+      "types": "./build/buildDescriptor.d.ts",
+      "require": "./build/buildDescriptor.js",
+      "default": "./build/buildDescriptor.js"
+    },
     "./native-project": {
       "types": "./build/native.d.ts",
       "require": "./build/native.js",

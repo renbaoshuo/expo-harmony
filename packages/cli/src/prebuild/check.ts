@@ -8,7 +8,9 @@ import {
 } from '@expo-harmony/prebuild-config/check';
 
 import { HarmonyCliError } from '../errors';
+import { isInside } from '../path';
 import { spawnAsync } from '../process';
+import { resolveHarmonyBuildPlanAsync, type HarmonyBuildPlan } from '../tools';
 import { resolveExpoCli } from '../expo';
 import { packAsync } from './template';
 
@@ -54,7 +56,12 @@ async function linkModulesAsync(source, target) {
   }
 }
 
-async function copyAsync(project, target, temp = path.dirname(target)) {
+async function copyAsync(
+  project: string,
+  target: string,
+  plan: HarmonyBuildPlan,
+  temp = path.dirname(target)
+) {
   const ignored = new Set(['.expo', '.git', '.hvigor', '.yarn', 'node_modules']);
   const nativeIgnored = new Set(['.cxx', '.git', '.hvigor', 'build', 'node_modules', 'oh_modules']);
 
@@ -65,11 +72,17 @@ async function copyAsync(project, target, temp = path.dirname(target)) {
       if (!relative) return true;
       const segments = relative.split(path.sep);
       if (ignored.has(segments[0])) return false;
-      if (segments[0] === 'harmony'
-        && segments.slice(1).some(segment => nativeIgnored.has(segment))) {
+
+      if (isInside(plan.harmonyRoot, source)) {
+        const native = path.relative(plan.harmonyRoot, source).split(path.sep);
+        if (native.some(segment => nativeIgnored.has(segment))) return false;
+      }
+
+      if (source === plan.exportPaths.bundle) {
         return false;
       }
-      return relative !== path.join('harmony', 'entry', 'src', 'main', 'resources', 'rawfile', 'hermes_bundle.hbc');
+
+      return true;
     },
   });
 
@@ -92,12 +105,13 @@ async function copyAsync(project, target, temp = path.dirname(target)) {
 
 async function checkAsync(project) {
   project = path.resolve(project);
+  const plan = await resolveHarmonyBuildPlanAsync(project);
   const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'expo-harmony-check-'));
   const expected = mirrorRoot(temp, project);
   let packed;
 
   try {
-    await copyAsync(project, expected, temp);
+    await copyAsync(project, expected, plan, temp);
     packed = await packAsync(project);
 
     const expo = resolveExpoCli(project);

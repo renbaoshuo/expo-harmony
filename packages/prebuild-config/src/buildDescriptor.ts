@@ -1,9 +1,11 @@
 import path from 'node:path';
 
-import type { NormalizedHarmonyConfig } from '@expo-harmony/config-plugins';
+import { HarmonyPaths, type NormalizedHarmonyConfig } from '@expo-harmony/config-plugins';
 
-const BuildDescriptorSchemaVersion = 1;
+const BuildDescriptorSchemaVersion = 2;
 const BuildModes = Object.freeze(['debug', 'release'] as const);
+const HarmonyPlatformDirectory = 'harmony';
+const HarmonyTemplateMarker = '.expo-harmony-template';
 
 type HarmonyBuildMode = typeof BuildModes[number];
 
@@ -36,6 +38,16 @@ interface HarmonyBuildDescriptor {
   nativeInputs: {
     lockfile: string;
     manifest: string;
+  };
+  projectFiles: {
+    cmakeWrapper: string;
+    hvigorConfig: string;
+    moduleHvigor: string;
+    moduleJson: string;
+    nativeInputsStamp: string;
+    projectBuildProfile: string;
+    rootHvigor: string;
+    templateMarker: string;
   };
   schemaVersion: typeof BuildDescriptorSchemaVersion;
   variants: Record<HarmonyBuildMode, HarmonyBuildVariantDescriptor>;
@@ -87,11 +99,14 @@ function validateHarmonyBuildDescriptor(value: unknown): HarmonyBuildDescriptor 
     throw new TypeError(`Unsupported Harmony build descriptor schema: ${isRecord(value) ? value.schemaVersion : 'invalid'}.`);
   }
 
-  if (!isSafeRelativePath(value.harmonyRoot)
+  if (value.harmonyRoot !== HarmonyPlatformDirectory
     || !isSafeRelativePath(value.moduleRoot)
     || !isStrictDescendant(value.harmonyRoot, value.moduleRoot)) {
     throw new TypeError('Harmony build descriptor contains invalid project roots.');
   }
+
+  const harmonyRoot = value.harmonyRoot;
+  const moduleRoot = value.moduleRoot;
 
   const identity = value.identity;
   if (!isRecord(identity)
@@ -104,21 +119,37 @@ function validateHarmonyBuildDescriptor(value: unknown): HarmonyBuildDescriptor 
   if (!isRecord(inputs)
     || !isSafeRelativePath(inputs.manifest)
     || !isSafeRelativePath(inputs.lockfile)
-    || !isStrictDescendant(value.harmonyRoot, inputs.manifest)
-    || !isStrictDescendant(value.harmonyRoot, inputs.lockfile)) {
+    || !isStrictDescendant(harmonyRoot, inputs.manifest)
+    || !isStrictDescendant(harmonyRoot, inputs.lockfile)) {
     throw new TypeError('Harmony build descriptor contains invalid native input paths.');
   }
 
   const cache = value.nativeCache;
   if (!isRecord(cache)
     || !isSafeRelativePath(cache.stateFile)
-    || !isStrictDescendant(value.moduleRoot, cache.stateFile)
+    || !isStrictDescendant(moduleRoot, cache.stateFile)
     || !Array.isArray(cache.invalidationRoots)
     || cache.invalidationRoots.length === 0
     || cache.invalidationRoots.some(item => (
-      !isSafeRelativePath(item) || !isStrictDescendant(value.moduleRoot as string, item)
+      !isSafeRelativePath(item) || !isStrictDescendant(moduleRoot, item)
     ))) {
     throw new TypeError('Harmony build descriptor contains invalid native cache paths.');
+  }
+
+  const files = value.projectFiles;
+  const rootFiles = [
+    'hvigorConfig',
+    'nativeInputsStamp',
+    'projectBuildProfile',
+    'rootHvigor',
+    'templateMarker',
+  ];
+  const moduleFiles = ['cmakeWrapper', 'moduleHvigor', 'moduleJson'];
+  if (!isRecord(files)
+    || [...rootFiles, ...moduleFiles].some(field => !isSafeRelativePath(files[field]))
+    || rootFiles.some(field => !isStrictDescendant(harmonyRoot, files[field] as string))
+    || moduleFiles.some(field => !isStrictDescendant(moduleRoot, files[field] as string))) {
+    throw new TypeError('Harmony build descriptor contains invalid project file paths.');
   }
 
   const output = value.export;
@@ -129,7 +160,7 @@ function validateHarmonyBuildDescriptor(value: unknown): HarmonyBuildDescriptor 
   const invalidPath = ['bundle', 'manifest', 'metadataRoot', 'rawfileRoot', 'sourceMap']
     .some(field => !isSafeRelativePath(output[field]));
   if (invalidPath
-    || !isStrictDescendant(value.moduleRoot, output.rawfileRoot as string)
+    || !isStrictDescendant(moduleRoot, output.rawfileRoot as string)
     || !isStrictDescendant(output.rawfileRoot as string, output.bundle as string)
     || !isStrictDescendant(output.metadataRoot as string, output.sourceMap as string)) {
     throw new TypeError('Harmony build descriptor contains invalid export paths.');
@@ -143,7 +174,7 @@ function validateHarmonyBuildDescriptor(value: unknown): HarmonyBuildDescriptor 
 
   for (const mode of BuildModes) {
     const variant = validateVariant(value.variants[mode]);
-    if (!isStrictDescendant(value.moduleRoot, variant.expectedHap)) {
+    if (!isStrictDescendant(moduleRoot, variant.expectedHap)) {
       throw new TypeError(`Harmony ${mode} HAP output must be inside the module root.`);
     }
   }
@@ -155,8 +186,9 @@ function createHarmonyBuildDescriptor(
   config: NormalizedHarmonyConfig,
   signing: string | null
 ): HarmonyBuildDescriptor {
-  const harmony = 'harmony';
-  const module = `${harmony}/entry`;
+  const paths = HarmonyPaths.HARMONY_PATHS;
+  const harmony = HarmonyPlatformDirectory;
+  const module = `${harmony}/${path.posix.dirname(paths.entryBuildProfile)}`;
   const target = 'default';
   const rawfile = `${module}/src/main/resources/rawfile`;
   const suffix = signing ? 'signed' : 'unsigned';
@@ -196,7 +228,17 @@ function createHarmonyBuildDescriptor(
     },
     nativeInputs: {
       lockfile: `${harmony}/oh-package-lock.json5`,
-      manifest: `${harmony}/oh-package.json5`,
+      manifest: `${harmony}/${paths.rootOhPackage}`,
+    },
+    projectFiles: {
+      cmakeWrapper: `${module}/src/main/cpp/generated/CMakeLists.txt`,
+      hvigorConfig: `${harmony}/${paths.hvigorConfig}`,
+      moduleHvigor: `${harmony}/${paths.entryHvigor}`,
+      moduleJson: `${harmony}/${paths.moduleJson}`,
+      nativeInputsStamp: `${harmony}/${paths.nativeInputsStamp}`,
+      projectBuildProfile: `${harmony}/${paths.projectBuildProfile}`,
+      rootHvigor: `${harmony}/${paths.rootHvigor}`,
+      templateMarker: `${harmony}/${HarmonyTemplateMarker}`,
     },
     schemaVersion: BuildDescriptorSchemaVersion,
     variants,
@@ -207,11 +249,18 @@ function harmonyModuleSourcePath(build: HarmonyBuildDescriptor): string {
   return `./${path.posix.relative(build.harmonyRoot, build.moduleRoot)}`;
 }
 
+function resolveHarmonyBuildPath(root: string, relative: string): string {
+  return path.join(root, ...relative.split('/'));
+}
+
 export {
   BuildDescriptorSchemaVersion,
   BuildModes,
+  HarmonyPlatformDirectory,
+  HarmonyTemplateMarker,
   createHarmonyBuildDescriptor,
   harmonyModuleSourcePath,
+  resolveHarmonyBuildPath,
   validateHarmonyBuildDescriptor,
 };
 export type {

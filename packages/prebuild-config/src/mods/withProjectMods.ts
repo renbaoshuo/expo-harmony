@@ -1,13 +1,17 @@
 import path from 'node:path';
 
 import {
-  HarmonyPaths, withAppJson, withHvigorConfig, withProjectBuildProfile,
+  withAppJson, withHvigorConfig, withProjectBuildProfile,
   withNativeInputsStamp, withReactNativeConfig, withRootHvigor, withRootOhPackage,
 } from '@expo-harmony/config-plugins';
 import { loadConfigAsync as loadReactNativeCliConfigAsync } from '@react-native-community/cli-config';
 
 import { readTemplateSource, resolvePackageVersion, resolveRnohHvigorPlugin, toRelativeDependency } from '../dependencies';
-import { createHarmonyBuildDescriptor, harmonyModuleSourcePath } from '../buildDescriptor';
+import {
+  createHarmonyBuildDescriptor,
+  harmonyModuleSourcePath,
+  resolveHarmonyBuildPath,
+} from '../buildDescriptor';
 import { HarmonyPrebuildError } from '../errors';
 import { readRecord, replaceManagedString, upsertManagedNamed, upsertNamed } from '../reconcile';
 import * as render from '../renderers';
@@ -178,23 +182,26 @@ export function withProjectMods(config, normalized) {
     );
 
     value.modResults = render.renderRootHvigor(
-      await readTemplateSource(HarmonyPaths.HARMONY_PATHS.rootHvigor),
+      await readTemplateSource(path.posix.relative(build.harmonyRoot, build.projectFiles.rootHvigor)),
       build
     );
     return value;
   });
 
   config = withNativeInputsStamp(config, async (value) => {
+    const build = createHarmonyBuildDescriptor(normalized, value._internal?.harmonySigningConfig?.name ?? null);
+
     value.modResults = render.renderCanonical(
-      await readTemplateSource(HarmonyPaths.HARMONY_PATHS.nativeInputsStamp),
-      'harmony/native-inputs-stamp.ts'
+      await readTemplateSource(path.posix.relative(build.harmonyRoot, build.projectFiles.nativeInputsStamp)),
+      build.projectFiles.nativeInputsStamp
     );
     return value;
   });
 
   config = withHvigorConfig(config, (value) => {
     const projectRoot = value.modRequest.projectRoot;
-    const hvigorDirectory = path.join(projectRoot, 'harmony/hvigor');
+    const build = createHarmonyBuildDescriptor(normalized, value._internal?.harmonySigningConfig?.name ?? null);
+    const hvigorDirectory = path.dirname(resolveHarmonyBuildPath(projectRoot, build.projectFiles.hvigorConfig));
     const hvigorPlugin = toRelativeDependency(hvigorDirectory, resolveRnohHvigorPlugin(projectRoot));
     value.modResults = {
       ...value.modResults,

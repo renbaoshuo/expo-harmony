@@ -18,6 +18,7 @@ import { PackageMetadata } from './packageMetadata';
 
 const GeneratorVersion = PackageMetadata.version;
 const ManifestSchemaVersion = 2;
+const CngManifestPath = '.expo/harmony/cng-manifest.json';
 const Sha256Pattern = /^[a-f0-9]{64}$/u;
 
 interface ManagedFile {
@@ -220,6 +221,7 @@ async function createCngManifest(
 }
 
 export {
+  CngManifestPath,
   ManifestSchemaVersion,
   createCngManifest,
   hashFile,

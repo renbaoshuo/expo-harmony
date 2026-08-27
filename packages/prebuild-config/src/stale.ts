@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { resolveHarmonyBuildPath } from './buildDescriptor';
 import { HarmonyPrebuildError } from './errors';
-import { validateCngManifest } from './manifest';
+import { CngManifestPath, validateCngManifest } from './manifest';
 
 async function readPreviousCngManifestAsync(projectRoot) {
-  const file = path.join(projectRoot, '.expo/harmony/cng-manifest.json');
+  const file = resolveHarmonyBuildPath(projectRoot, CngManifestPath);
 
   let parsed;
   try {

@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import {
   getHarmonyConfigPlugins,
+  HarmonyPaths,
   withColors,
   withEntryBuildProfile,
   withEntryHvigor,
@@ -13,6 +14,10 @@ import {
   withStrings,
 } from '@expo-harmony/config-plugins';
 
+import {
+  createHarmonyBuildDescriptor,
+  HarmonyPlatformDirectory,
+} from '../buildDescriptor';
 import { readTemplateSource, resolveTemplateFile } from '../dependencies';
 import { HarmonyPrebuildError } from '../errors';
 import {
@@ -125,10 +130,10 @@ function withEntryMods(config, normalized) {
   });
 
   config = withEntryHvigor(config, async (value) => {
-    value.modResults = render.renderCanonical(
-      await readTemplateSource('entry/hvigorfile.ts'),
-      'harmony/entry/hvigorfile.ts'
-    );
+    const build = createHarmonyBuildDescriptor(normalized, value._internal?.harmonySigningConfig?.name ?? null);
+    const relative = path.posix.relative(build.harmonyRoot, build.projectFiles.moduleHvigor);
+
+    value.modResults = render.renderCanonical(await readTemplateSource(relative), build.projectFiles.moduleHvigor);
     return value;
   });
 
@@ -253,12 +258,8 @@ function withEntryMods(config, normalized) {
     const sources = customIcon
       ? { app: customIcon, entry: customIcon }
       : {
-          app: resolveTemplateFile(
-            'harmony/AppScope/resources/base/media/app_icon.svg'
-          ),
-          entry: resolveTemplateFile(
-            'harmony/entry/src/main/resources/base/media/app_icon.svg'
-          ),
+          app: resolveTemplateFile(`${HarmonyPlatformDirectory}/${HarmonyPaths.RESOURCE_PATHS.media.app}/app_icon.svg`),
+          entry: resolveTemplateFile(`${HarmonyPlatformDirectory}/${HarmonyPaths.RESOURCE_PATHS.media.entry}/app_icon.svg`),
         };
 
     for (const [scope, source] of Object.entries(sources)) {

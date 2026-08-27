@@ -8,7 +8,11 @@ import { isRnohAutolinkingDisabled } from '@expo-harmony/prebuild-config/native-
 import { validateHarmonySigningConfigFile } from '@expo-harmony/prebuild-config/signing';
 
 import { spawnAsync } from '../process';
-import { resolveHarmonyBuildPlanAsync, resolveHarmonyToolchain, type HarmonyTool } from '../tools';
+import {
+  resolveHarmonyBuildPlanIfPresentAsync,
+  resolveHarmonyToolchain,
+  type HarmonyTool,
+} from '../tools';
 import { RequiredProjectPackages } from '../upstream';
 
 export interface DoctorCheck {
@@ -180,21 +184,19 @@ async function doctorAsync(projectRoot: string, options: DoctorOptions = {}): Pr
     }
   }
 
-  const harmonyRoot = path.join(projectRoot, 'harmony');
-
-  if (options.validateGeneratedProject !== false && fs.existsSync(harmonyRoot)) {
+  if (options.validateGeneratedProject !== false) {
     try {
-      const plan = await resolveHarmonyBuildPlanAsync(projectRoot);
-      const hvigor = path.join(harmonyRoot, 'hvigorfile.ts');
-      const moduleHvigor = path.join(plan.moduleRoot, 'hvigorfile.ts');
-
-      if (!fs.existsSync(hvigor) || !fs.existsSync(moduleHvigor)) {
-        checks.push(check('hvigor', 'error', 'Generated root and module Hvigor files are required.'));
-      } else {
-        const content = await fs.promises.readFile(moduleHvigor, 'utf8');
-        checks.push(isRnohAutolinkingDisabled(content)
-          ? check('hvigor-autolinking', 'pass', 'RNOH duplicate autolinking is disabled.')
-          : check('hvigor-autolinking', 'error', 'The generated module Hvigor file must disable RNOH autolinking.'));
+      const plan = await resolveHarmonyBuildPlanIfPresentAsync(projectRoot);
+      if (plan && fs.existsSync(plan.harmonyRoot)) {
+        if (!fs.existsSync(plan.projectFiles.rootHvigor)
+          || !fs.existsSync(plan.projectFiles.moduleHvigor)) {
+          checks.push(check('hvigor', 'error', 'Generated root and module Hvigor files are required.'));
+        } else {
+          const content = await fs.promises.readFile(plan.projectFiles.moduleHvigor, 'utf8');
+          checks.push(isRnohAutolinkingDisabled(content)
+            ? check('hvigor-autolinking', 'pass', 'RNOH duplicate autolinking is disabled.')
+            : check('hvigor-autolinking', 'error', 'The generated module Hvigor file must disable RNOH autolinking.'));
+        }
       }
     } catch (error) {
       checks.push(check('harmony-project', 'error', error.message, { code: error.code || 'ERR_HARMONY_TEMPLATE_INVALID' }));

@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import JSON5 from 'json5';
 
+import { HarmonyPlatformDirectory } from './buildDescriptor';
 import { HarmonySigningError } from './errors';
 
 const MaterialFields = [
@@ -68,7 +69,7 @@ function selectSigningConfig(parsed, file) {
 
 async function readSigningConfigFile(projectRoot: string, reference: string): Promise<SigningFile> {
   const file = resolveSigningPath(projectRoot, reference);
-  const harmonyRoot = path.join(projectRoot, 'harmony');
+  const harmonyRoot = path.join(projectRoot, HarmonyPlatformDirectory);
   if (isInside(harmonyRoot, file)) {
     throw new HarmonySigningError('harmony.signingConfigFile must be outside the generated harmony directory so --clean cannot delete it.', { file });
   }

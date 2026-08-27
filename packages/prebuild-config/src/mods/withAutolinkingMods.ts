@@ -5,8 +5,12 @@ import { linkModulesAsync } from '@expo-harmony/expo-modules-autolinking';
 import { getHarmonyConfigPlugins, recordManagedFile, stableHarmonyJson, withCngManifest, withHarmonyAutolinking } from '@expo-harmony/config-plugins';
 
 import { HarmonyPrebuildError } from '../errors';
+import {
+  createHarmonyBuildDescriptor,
+  resolveHarmonyBuildPath,
+} from '../buildDescriptor';
 import { writeExpoCmakeWrapperAsync } from '../generatedFiles';
-import { createCngManifest } from '../manifest';
+import { CngManifestPath, createCngManifest } from '../manifest';
 
 function formatAutolinkingDiagnostics(cause) {
   return Array.isArray(cause.diagnostics)
@@ -19,8 +23,8 @@ export function withAutolinkingMods(config, normalized, options) {
     try {
       const logicalProjectRoot = value.modRequest.projectRoot;
       const physicalProjectRoot = await fs.promises.realpath(logicalProjectRoot);
-      const physicalHarmonyProjectPath = path.join(physicalProjectRoot, 'harmony');
-      const logicalHarmonyProjectPath = path.join(logicalProjectRoot, 'harmony');
+      const build = createHarmonyBuildDescriptor(normalized, value._internal?.harmonySigningConfig?.name ?? null);
+      const physicalHarmonyProjectPath = resolveHarmonyBuildPath(physicalProjectRoot, build.harmonyRoot);
       const buildType = (options.buildType || process.env.EXPO_HARMONY_BUILD_TYPE || 'debug') as 'debug' | 'release';
 
       const result = await linkModulesAsync({
@@ -28,7 +32,7 @@ export function withAutolinkingMods(config, normalized, options) {
         harmonyProjectPath: physicalHarmonyProjectPath,
         buildType,
       });
-      const cmakeWrapper = await writeExpoCmakeWrapperAsync(logicalHarmonyProjectPath);
+      const cmakeWrapper = await writeExpoCmakeWrapperAsync(logicalProjectRoot, build.projectFiles.cmakeWrapper);
 
       value._internal ??= {};
       value._internal.harmonyAutolinkingModules = result.modules;
@@ -38,7 +42,7 @@ export function withAutolinkingMods(config, normalized, options) {
           recordManagedFile(value, target, 'autolinking');
         }
       }
-      recordManagedFile(value, path.join(logicalHarmonyProjectPath, 'oh-package.json5'), 'autolinking');
+      recordManagedFile(value, resolveHarmonyBuildPath(logicalProjectRoot, build.nativeInputs.manifest), 'autolinking');
       recordManagedFile(value, cmakeWrapper, 'autolinking');
       return value;
     } catch (cause) {
@@ -56,7 +60,7 @@ export function withAutolinkingMods(config, normalized, options) {
       value._internal?.harmonySigningConfig?.name ?? null,
       getHarmonyConfigPlugins(value)
     );
-    const file = path.join(value.modRequest.projectRoot, '.expo/harmony/cng-manifest.json');
+    const file = resolveHarmonyBuildPath(value.modRequest.projectRoot, CngManifestPath);
 
     await fs.promises.mkdir(path.dirname(file), { recursive: true });
     await fs.promises.writeFile(file, stableHarmonyJson(manifest));

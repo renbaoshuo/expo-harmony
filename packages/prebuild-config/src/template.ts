@@ -2,6 +2,10 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
+import {
+  HarmonyPlatformDirectory,
+  HarmonyTemplateMarker,
+} from './buildDescriptor';
 import { HarmonyPrebuildError } from './errors';
 
 const PACKAGE = '@expo-harmony/template';
@@ -106,8 +110,8 @@ function read(input: string): Template {
     );
   }
 
-  const harmony = path.join(root, 'harmony');
-  const marker = path.join(harmony, '.expo-harmony-template');
+  const harmony = path.join(root, HarmonyPlatformDirectory);
+  const marker = path.join(harmony, HarmonyTemplateMarker);
   const schemaVersion = readSchema(marker);
 
   return Object.freeze({

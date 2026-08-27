@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { resolveHarmonyBuildPath } from './buildDescriptor';
 import { resolveTemplateFile } from './dependencies';
 
 async function readTextIfExistsAsync(file: string): Promise<string | null> {
@@ -37,10 +38,12 @@ async function ensureGitignoreEntryAsync(file: string, entry: string) {
   await writeFileAtomicAsync(file, next);
 }
 
-async function writeExpoCmakeWrapperAsync(harmonyProjectPath: string) {
-  const file = path.join(harmonyProjectPath, 'entry/src/main/cpp/generated/CMakeLists.txt');
-  const content = await fs.promises.readFile(resolveTemplateFile('harmony/entry/src/main/cpp/generated/CMakeLists.txt'), 'utf8');
+async function writeExpoCmakeWrapperAsync(projectRoot: string, relative: string) {
+  const file = resolveHarmonyBuildPath(projectRoot, relative);
+  const content = await fs.promises.readFile(resolveTemplateFile(relative), 'utf8');
+
   await writeFileIfChangedAsync(file, content);
+
   return file;
 }
 
