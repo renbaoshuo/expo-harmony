@@ -1,0 +1,88 @@
+{
+  "expo": {
+    "name": "Expo Harmony 模块实验室",
+    "slug": "expo-harmony-demo",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/app-icon.svg",
+    "scheme": "expoharmonydemo",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "jsEngine": "hermes",
+    "platforms": ["ios", "android"],
+    "plugins": [
+      "@expo-harmony/expo-constants",
+      "expo-router",
+      "@expo-harmony/expo-font",
+      [
+        "@expo-harmony/expo-splash-screen",
+        {
+          "backgroundColor": "#F2F2F7",
+          "image": "./assets/app-icon.svg",
+          "resizeMode": "contain"
+        }
+      ],
+      "@expo-harmony/expo-system-ui",
+      [
+        "@expo-harmony/expo-navigation-bar",
+        {
+          "backgroundColor": "#F2F2F7",
+          "barStyle": "dark",
+          "position": "relative",
+          "visibility": "visible"
+        }
+      ],
+      "@expo-harmony/expo-sharing",
+      "@expo-harmony/expo-background-fetch",
+      "@expo-harmony/expo-background-task",
+      [
+        "@expo-harmony/expo-audio",
+        {
+          "enableBackgroundPlayback": true,
+          "enableBackgroundRecording": true
+        }
+      ],
+      "./plugins/withAudioFixture",
+      "@expo-harmony/prebuild-config"
+    ],
+    "harmony": {
+      "bundleName": "com.expo.harmony.demo",
+      "label": "Expo Harmony 模块实验室",
+      "versionCode": 1,
+      "targetApiVersion": 24,
+      "compatibleSdkVersion": 23,
+      "permissions": [
+        {
+          "name": "ohos.permission.CAMERA",
+          "reason": "$string:camera_permission_reason",
+          "usedScene": {
+            "abilities": ["EntryAbility"],
+            "when": "inuse"
+          }
+        },
+        {
+          "name": "ohos.permission.MICROPHONE",
+          "reason": "$string:microphone_permission_reason",
+          "usedScene": {
+            "abilities": ["EntryAbility"],
+            "when": "inuse"
+          }
+        },
+        { "name": "ohos.permission.FILE_ACCESS_PERSIST" },
+        { "name": "ohos.permission.GET_NETWORK_INFO" }
+      ],
+      "backgroundColor": "#F2F2F7",
+      "userInterfaceStyle": "light",
+      "fonts": [
+        {
+          "fontFamily": "AntDesign",
+          "fontDefinitions": [
+            {
+              "path": "./node_modules/@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/AntDesign.ttf"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
