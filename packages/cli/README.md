@@ -60,7 +60,7 @@ npx expo-harmony export:embed --check
 npx expo-harmony export:embed --reset-cache
 ```
 
-`export:embed` 使用项目本地的 Expo CLI 和 `hermes-compiler` 生成生产 Hermes 字节码、应用资源及组合后的 Source Map，并写入 HarmonyOS 原生工程。导出文件的哈希记录在 `.expo/harmony/export-manifest.json`；`--check` 仅校验已有导出，不重新构建。
+`export:embed` 使用项目本地的 Expo CLI 生成生产 Hermes 字节码、应用资源及组合后的 Source Map，并写入 HarmonyOS 原生工程。Hermes 编译器解析与 Source Map 合并均由 Expo 负责。导出文件的哈希记录在 `.expo/harmony/export-manifest.json`；`--check` 仅校验已有导出，不重新构建。
 
 ## Run
 

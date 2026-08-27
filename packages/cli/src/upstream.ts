@@ -1,7 +1,6 @@
 const ProjectPackages = Object.freeze({
   expo: 'expo',
   expoAutolinking: '@expo-harmony/expo-modules-autolinking',
-  hermesCompiler: 'hermes-compiler',
   reactNative: 'react-native',
   rnohCli: '@react-native-oh/react-native-harmony-cli',
   rnohRuntime: '@react-native-oh/react-native-harmony',
@@ -46,14 +45,7 @@ const PublicCliOptions = Object.freeze({
   ]),
 });
 
-const HermesCompilerPaths = Object.freeze({
-  darwin: 'hermesc/osx-bin/hermesc',
-  linux: 'hermesc/linux64-bin/hermesc',
-  win32: 'hermesc/win64-bin/hermesc.exe',
-});
-
 export {
-  HermesCompilerPaths,
   ProjectPackages,
   PublicCliOptions,
   RequiredProjectPackages,

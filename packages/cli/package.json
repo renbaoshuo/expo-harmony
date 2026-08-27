@@ -31,12 +31,10 @@
     "@expo-harmony/prebuild-config": "workspace:*",
     "@expo/config": "55.0.17",
     "cross-spawn": "^7.0.6",
-    "json5": "2.2.3",
-    "metro-source-map": "0.83.7"
+    "json5": "2.2.3"
   },
   "peerDependencies": {
-    "expo": "55.0.26",
-    "hermes-compiler": "250829098.0.9"
+    "expo": "55.0.26"
   },
   "peerDependenciesMeta": {
     "expo": {

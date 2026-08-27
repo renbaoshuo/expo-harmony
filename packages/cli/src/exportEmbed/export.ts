@@ -9,7 +9,6 @@ import { resolveHarmonyBuildPlanAsync } from '../tools';
 import { formatDiagnostics, spawnAsync } from '../process';
 import { inspectPublicCliContractsAsync } from '../contract';
 import { resolveExpoCli } from '../expo';
-import { compileHermesAsync } from './hermes';
 import {
   assertHermesBundle, assertSourceMap, exportPaths,
   publishExportAsync, validatePublishedExportAsync,
@@ -27,26 +26,25 @@ export interface ExportOptions {
 export interface ExportTemporary {
   assets: string;
   bundle: string;
-  javascript: string;
-  metroSourceMap: string;
   sourceMap: string;
 }
 
 function createExpoExportEmbedArgs(
   projectRoot: string,
   entryFile: string,
-  temporary: Pick<ExportTemporary, 'assets' | 'javascript' | 'metroSourceMap'>,
+  temporary: ExportTemporary,
   options: ExportOptions = {}
 ) {
   return [
     'export:embed',
     '--platform', 'harmony',
+    '--bytecode',
     '--entry-file', entryFile,
-    '--bundle-output', temporary.javascript,
+    '--bundle-output', temporary.bundle,
     '--assets-dest', temporary.assets,
     '--dev', 'false',
     '--minify', 'true',
-    '--sourcemap-output', temporary.metroSourceMap,
+    '--sourcemap-output', temporary.sourceMap,
     '--sourcemap-sources-root', '.',
     '--unstable-transform-profile', 'hermes-stable',
     ...(options.resetCache ? ['--reset-cache=true'] : []),
@@ -78,8 +76,6 @@ async function exportEmbedAsync(
   const temporary: ExportTemporary = {
     assets: path.join(temporaryRoot, 'assets'),
     bundle: path.join(temporaryRoot, 'hermes_bundle.hbc'),
-    javascript: path.join(temporaryRoot, 'index.js'),
-    metroSourceMap: path.join(temporaryRoot, 'index.js.map'),
     sourceMap: path.join(temporaryRoot, 'hermes_bundle.hbc.map'),
   };
 
@@ -112,8 +108,6 @@ async function exportEmbedAsync(
         { exitCode: result.code || 1, operation: 'expo-export-embed' }
       );
     }
-
-    await compileHermesAsync(projectRoot, temporary, options);
 
     const bytecode = await assertHermesBundle(temporary.bundle);
     await assertSourceMap(temporary.sourceMap);

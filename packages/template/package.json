@@ -31,7 +31,6 @@
     "@react-native-oh/react-native-harmony-cli": "0.84.1",
     "expo": "55.0.26",
     "expo-modules-core": "55.0.25",
-    "hermes-compiler": "250829098.0.9",
     "metro": "0.83.3",
     "metro-config": "0.83.7",
     "react": "19.2.3",

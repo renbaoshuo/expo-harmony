@@ -1367,13 +1367,11 @@ __metadata:
     cross-spawn: "npm:^7.0.6"
     expo: "npm:55.0.26"
     json5: "npm:2.2.3"
-    metro-source-map: "npm:0.83.7"
     react: "npm:19.2.3"
     react-native: "npm:0.84.1"
     typescript: "npm:6.0.3"
   peerDependencies:
     expo: 55.0.26
-    hermes-compiler: 250829098.0.9
   peerDependenciesMeta:
     expo:
       optional: false
@@ -1965,7 +1963,6 @@ __metadata:
     "@react-native-oh/react-native-harmony-cli": "npm:0.84.1"
     expo: "npm:55.0.26"
     expo-modules-core: "npm:55.0.25"
-    hermes-compiler: "npm:250829098.0.9"
     metro: "npm:0.83.3"
     metro-config: "npm:0.83.7"
     react: "npm:19.2.3"
