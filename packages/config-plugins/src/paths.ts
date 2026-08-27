@@ -8,6 +8,7 @@ export interface HarmonyManagedPaths {
   readonly projectBuildProfile: string;
   readonly rootOhPackage: string;
   readonly rootHvigor: string;
+  readonly nativeInputsStamp: string;
   readonly hvigorConfig: string;
   readonly entryBuildProfile: string;
   readonly entryOhPackage: string;
@@ -53,6 +54,7 @@ const ManagedPaths: HarmonyManagedPaths = Object.freeze({
   projectBuildProfile: 'build-profile.json5',
   rootOhPackage: 'oh-package.json5',
   rootHvigor: 'hvigorfile.ts',
+  nativeInputsStamp: 'native-inputs-stamp.ts',
   hvigorConfig: 'hvigor/hvigor-config.json5',
   entryBuildProfile: 'entry/build-profile.json5',
   entryOhPackage: 'entry/oh-package.json5',

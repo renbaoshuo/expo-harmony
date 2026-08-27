@@ -69,7 +69,7 @@ async function exportEmbedAsync(
   if (!options.skipContract) await inspectPublicCliContractsAsync(projectRoot);
 
   const plan = await resolveHarmonyBuildPlanAsync(projectRoot, { buildMode: 'release' });
-  const paths = exportPaths(projectRoot, plan);
+  const paths = exportPaths(plan);
 
   if (options.check) return await validatePublishedExportAsync(paths);
 

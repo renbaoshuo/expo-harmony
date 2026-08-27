@@ -20,6 +20,11 @@
       "require": "./build/index.js",
       "default": "./build/index.js"
     },
+    "./native-inputs": {
+      "types": "./build/nativeInputs.d.ts",
+      "require": "./build/nativeInputs.js",
+      "default": "./build/nativeInputs.js"
+    },
     "./package.json": "./package.json"
   },
   "dependencies": {

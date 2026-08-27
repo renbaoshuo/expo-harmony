@@ -6,11 +6,16 @@ import { normalizeHarmonyConfigPlugins, stableHarmonyJson } from '@expo-harmony/
 import type { HarmonyConfigPluginOwnership } from '@expo-harmony/config-plugins';
 
 import { HarmonyPrebuildError } from './errors';
+import {
+  createHarmonyBuildDescriptor,
+  validateHarmonyBuildDescriptor,
+  type HarmonyBuildDescriptor,
+} from './buildDescriptor';
 import type { NormalizedHarmonyConfig } from './normalizeHarmonyConfig';
 import { PackageMetadata } from './packageMetadata';
 
 const GeneratorVersion = PackageMetadata.version;
-const ManifestSchemaVersion = 1;
+const ManifestSchemaVersion = 2;
 const Sha256Pattern = /^[a-f0-9]{64}$/u;
 
 interface ManagedFile {
@@ -19,6 +24,7 @@ interface ManagedFile {
 }
 
 interface CngManifest {
+  build: HarmonyBuildDescriptor;
   configPlugins: HarmonyConfigPluginOwnership[];
   generatedAt: null;
   generator: {
@@ -37,7 +43,7 @@ interface CngManifest {
     targetName: string;
   };
   modules: Array<{ packageName: string; packageVersion: string }>;
-  schemaVersion: 1;
+  schemaVersion: 2;
   signingConfigName: string | null;
 }
 
@@ -69,6 +75,20 @@ function validateCngManifest(manifest: unknown, options: ValidateCngManifestOpti
     || !isNonEmptyString(manifest.generator.version)) {
     throw new HarmonyPrebuildError('ERR_HARMONY_MANIFEST_INVALID', 'Harmony CNG manifest has an invalid generator.', { file, operation: 'validate-manifest' });
   }
+
+  let build: HarmonyBuildDescriptor;
+
+  try {
+    build = validateHarmonyBuildDescriptor(manifest.build);
+    manifest.build = build;
+  } catch (cause) {
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_MANIFEST_INVALID',
+      `Harmony CNG manifest has an invalid build descriptor: ${cause.message}`,
+      { cause, file, operation: 'validate-manifest' }
+    );
+  }
+
   if (!isRecord(manifest.inputs)
     || typeof manifest.inputs.autolinkingHash !== 'string'
     || typeof manifest.inputs.configHash !== 'string'
@@ -128,6 +148,12 @@ function validateCngManifest(manifest: unknown, options: ValidateCngManifestOpti
       .some(field => !isNonEmptyString(manifest.managedIdentity[field]))) {
     throw new HarmonyPrebuildError('ERR_HARMONY_MANIFEST_INVALID', 'Harmony CNG manifest has an invalid managed identity.', { file, operation: 'validate-manifest' });
   }
+  if (build.identity.abilityName !== manifest.managedIdentity.abilityName
+    || build.identity.moduleName !== manifest.managedIdentity.moduleName
+    || build.identity.productName !== manifest.managedIdentity.productName
+    || build.identity.targetName !== manifest.managedIdentity.targetName) {
+    throw new HarmonyPrebuildError('ERR_HARMONY_MANIFEST_INVALID', 'Harmony CNG manifest build identity does not match its managed identity.', { file, operation: 'validate-manifest' });
+  }
   if (manifest.signingConfigName !== null
     && !isNonEmptyString(manifest.signingConfigName)) {
     throw new HarmonyPrebuildError('ERR_HARMONY_MANIFEST_INVALID', 'Harmony CNG manifest has an invalid signing config name.', { file, operation: 'validate-manifest' });
@@ -152,7 +178,9 @@ async function createCngManifest(
   signingConfigName: string | null = null,
   configPlugins: readonly HarmonyConfigPluginOwnership[] = []
 ): Promise<CngManifest> {
+  const build = createHarmonyBuildDescriptor(normalized, signingConfigName);
   const files = [];
+
   for (const item of managedFiles) {
     const target = path.join(projectRoot, ...item.path.split('/'));
     try {
@@ -161,12 +189,14 @@ async function createCngManifest(
       if (error.code !== 'ENOENT') return Promise.reject(error);
     }
   }
+
   files.sort((left, right) => left.path.localeCompare(right.path, 'en'));
   const autolinkingFile = path.join(projectRoot, '.expo/harmony/autolinking.json');
   const autolinkingHash = await hashFile(autolinkingFile)
     .catch(error => error.code === 'ENOENT' ? hashSha256('') : Promise.reject(error));
 
   return validateCngManifest({
+    build,
     generatedAt: null,
     configPlugins: normalizeHarmonyConfigPlugins(configPlugins),
     generator: { package: '@expo-harmony/prebuild-config', version: GeneratorVersion },
@@ -176,10 +206,10 @@ async function createCngManifest(
     },
     managedFiles: files,
     managedIdentity: {
-      abilityName: normalized.abilityName,
-      moduleName: normalized.moduleName,
-      productName: normalized.productName,
-      targetName: 'default',
+      abilityName: build.identity.abilityName,
+      moduleName: build.identity.moduleName,
+      productName: build.identity.productName,
+      targetName: build.identity.targetName,
     },
     modules: modules.map(module => ({ packageName: module.packageName, packageVersion: module.packageVersion })),
     schemaVersion: ManifestSchemaVersion,

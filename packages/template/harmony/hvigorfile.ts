@@ -14,8 +14,7 @@ const ProjectRoot = path.resolve('..');
 const HarmonyRoot = path.join(ProjectRoot, 'harmony');
 const NodeModules = findNodeModules();
 const ProjectRequire = createRequire(path.join(ProjectRoot, 'package.json'));
-const ModuleName = '__EXPO_HARMONY_MODULE_NAME__';
-const EmbeddedBundle = path.join(HarmonyRoot, ModuleName, 'src/main/resources/rawfile/hermes_bundle.hbc');
+const EmbeddedBundle = path.join(ProjectRoot, '__EXPO_HARMONY_BUNDLE_PATH__');
 const HermesMagic = 'c61fbc03c103191f';
 
 let restoreBundle: (() => void) | null = null;

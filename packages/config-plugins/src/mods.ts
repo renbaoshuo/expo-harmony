@@ -21,6 +21,7 @@ export type HarmonyModName
     | 'projectBuildProfile'
     | 'rootOhPackage'
     | 'rootHvigor'
+    | 'nativeInputsStamp'
     | 'hvigorConfig'
     | 'entryBuildProfile'
     | 'entryOhPackage'
@@ -89,6 +90,7 @@ const JsonMods = new Set<FileModName>([
 const TextMods = new Set<FileModName>([
   'reactNativeConfig',
   'rootHvigor',
+  'nativeInputsStamp',
   'entryHvigor',
   'entryAbility',
   'indexPage',
@@ -108,6 +110,7 @@ export const HarmonyModNames: readonly HarmonyModName[] = Object.freeze([
   'projectBuildProfile',
   'rootOhPackage',
   'rootHvigor',
+  'nativeInputsStamp',
   'hvigorConfig',
   'entryBuildProfile',
   'entryOhPackage',
@@ -446,6 +449,8 @@ export const withRootOhPackage: ConfigPlugin<HarmonyModAction<HarmonyJson>>
   = (config, action) => withHarmonyMod(config, ['rootOhPackage', action]);
 export const withRootHvigor: ConfigPlugin<HarmonyModAction<string>>
   = (config, action) => withHarmonyMod(config, ['rootHvigor', action]);
+export const withNativeInputsStamp: ConfigPlugin<HarmonyModAction<string>>
+  = (config, action) => withHarmonyMod(config, ['nativeInputsStamp', action]);
 export const withHvigorConfig: ConfigPlugin<HarmonyModAction<HarmonyJson>>
   = (config, action) => withHarmonyMod(config, ['hvigorConfig', action]);
 export const withEntryBuildProfile: ConfigPlugin<HarmonyModAction<HarmonyJson>>

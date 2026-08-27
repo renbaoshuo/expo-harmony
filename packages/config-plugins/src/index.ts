@@ -36,6 +36,7 @@ export {
   withIndexPage,
   withMedia,
   withModuleJson,
+  withNativeInputsStamp,
   withProfiles,
   withProjectBuildProfile,
   withReactNativeConfig,

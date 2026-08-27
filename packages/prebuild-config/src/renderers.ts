@@ -1,4 +1,5 @@
 import { isRnohAutolinkingDisabled } from './native';
+import type { HarmonyBuildDescriptor } from './buildDescriptor';
 import { TEMPLATE_PLACEHOLDERS } from './template';
 
 function normalizeSource(source, label) {
@@ -31,13 +32,14 @@ module.exports = require('@react-native-oh/react-native-harmony-cli/react-native
 `;
 }
 
-function renderRootHvigor(source, normalized) {
+function renderRootHvigor(source, build: HarmonyBuildDescriptor) {
   source = normalizeSource(source, 'harmony/hvigorfile.ts');
+
   return replacePlaceholderExactlyOnce(
     source,
-    quoteSingle(TEMPLATE_PLACEHOLDERS.moduleName),
-    quoteSingle(normalized.moduleName),
-    'bundle module name'
+    quoteSingle(TEMPLATE_PLACEHOLDERS.bundlePath),
+    quoteSingle(build.export.bundle),
+    'embedded bundle path'
   );
 }
 

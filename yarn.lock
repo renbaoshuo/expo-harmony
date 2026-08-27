@@ -1359,6 +1359,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@expo-harmony/cli@workspace:packages/cli"
   dependencies:
+    "@expo-harmony/config-plugins": "workspace:*"
     "@expo-harmony/expo-modules-autolinking": "workspace:*"
     "@expo-harmony/prebuild-config": "workspace:*"
     "@expo/config": "npm:55.0.17"
@@ -1957,6 +1958,7 @@ __metadata:
   resolution: "@expo-harmony/template@workspace:packages/template"
   dependencies:
     "@babel/core": "npm:7.29.7"
+    "@expo-harmony/config-plugins": "workspace:*"
     "@expo-harmony/expo-modules-core": "workspace:*"
     "@expo/metro-runtime": "npm:55.0.12"
     "@react-native-oh/react-native-harmony": "npm:0.84.1"
@@ -1964,7 +1966,6 @@ __metadata:
     expo: "npm:55.0.26"
     expo-modules-core: "npm:55.0.25"
     hermes-compiler: "npm:250829098.0.9"
-    json5: "npm:2.2.3"
     metro: "npm:0.83.3"
     metro-config: "npm:0.83.7"
     react: "npm:19.2.3"

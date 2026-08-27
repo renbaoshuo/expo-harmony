@@ -2,11 +2,12 @@ import path from 'node:path';
 
 import {
   HarmonyPaths, withAppJson, withHvigorConfig, withProjectBuildProfile,
-  withReactNativeConfig, withRootHvigor, withRootOhPackage,
+  withNativeInputsStamp, withReactNativeConfig, withRootHvigor, withRootOhPackage,
 } from '@expo-harmony/config-plugins';
 import { loadConfigAsync as loadReactNativeCliConfigAsync } from '@react-native-community/cli-config';
 
 import { readTemplateSource, resolvePackageVersion, resolveRnohHvigorPlugin, toRelativeDependency } from '../dependencies';
+import { createHarmonyBuildDescriptor, harmonyModuleSourcePath } from '../buildDescriptor';
 import { HarmonyPrebuildError } from '../errors';
 import { readRecord, replaceManagedString, upsertManagedNamed, upsertNamed } from '../reconcile';
 import * as render from '../renderers';
@@ -61,6 +62,12 @@ export function withProjectMods(config, normalized) {
   });
 
   config = withProjectBuildProfile(config, (value) => {
+    const build = createHarmonyBuildDescriptor(
+      normalized,
+      value._internal?.harmonySigningConfig?.name ?? null
+    );
+    const { moduleName, productName, targetName } = build.identity;
+
     const profile = value.modResults;
     const app = readRecord(profile.app);
     const signingConfig = value._internal?.harmonySigningConfig;
@@ -68,13 +75,13 @@ export function withProjectMods(config, normalized) {
     const previousIdentity = value._internal?.harmonyPreviousManagedIdentity;
     const products = upsertManagedNamed(
       app.products,
-      normalized.productName,
+      productName,
       previousIdentity?.productName,
       'default',
       (existing) => {
         const product = {
           ...existing,
-          name: normalized.productName,
+          name: productName,
           compatibleSdkVersion: normalized.compatibleSdkVersionString,
           targetSdkVersion: normalized.targetSdkVersionString,
           runtimeOS: 'HarmonyOS',
@@ -90,19 +97,19 @@ export function withProjectMods(config, normalized) {
     );
     const modules = upsertManagedNamed(
       profile.modules,
-      normalized.moduleName,
+      moduleName,
       previousIdentity?.moduleName,
       'entry',
       existing => ({
         ...existing,
-        name: normalized.moduleName,
-        srcPath: './entry',
-        targets: upsertNamed(existing.targets, 'default', target => ({
+        name: moduleName,
+        srcPath: harmonyModuleSourcePath(build),
+        targets: upsertNamed(existing.targets, targetName, target => ({
           ...target,
-          name: 'default',
+          name: targetName,
           applyToProducts: replaceManagedString(
             target.applyToProducts,
-            normalized.productName,
+            productName,
             previousIdentity?.productName,
             'default'
           ),
@@ -165,9 +172,22 @@ export function withProjectMods(config, normalized) {
   });
 
   config = withRootHvigor(config, async (value) => {
+    const build = createHarmonyBuildDescriptor(
+      normalized,
+      value._internal?.harmonySigningConfig?.name ?? null
+    );
+
     value.modResults = render.renderRootHvigor(
       await readTemplateSource(HarmonyPaths.HARMONY_PATHS.rootHvigor),
-      normalized
+      build
+    );
+    return value;
+  });
+
+  config = withNativeInputsStamp(config, async (value) => {
+    value.modResults = render.renderCanonical(
+      await readTemplateSource(HarmonyPaths.HARMONY_PATHS.nativeInputsStamp),
+      'harmony/native-inputs-stamp.ts'
     );
     return value;
   });

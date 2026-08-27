@@ -1,12 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { getConfig } from '@expo/config';
-import { normalizeHarmonyConfig } from '@expo-harmony/prebuild-config/config';
-import JSON5 from 'json5';
+import { readManifestAsync } from '@expo-harmony/prebuild-config/check';
 
 import { HarmonyCliError } from './errors';
-import { isInside } from './path';
 
 export interface HarmonyTool {
   args: string[];
@@ -23,12 +20,29 @@ export interface HarmonyToolchain {
 }
 
 export interface HarmonyBuildPlan {
+  abilityName: string;
   buildMode: 'debug' | 'release';
+  bundleName: string;
   expectedHap: string;
+  exportPaths: {
+    bundle: string;
+    manifest: string;
+    metadataRoot: string;
+    rawfileRoot: string;
+    sourceMap: string;
+  };
   harmonyRoot: string;
   hvigorArgs: string[];
   moduleName: string;
   moduleRoot: string;
+  nativeCache: {
+    invalidationRoots: string[];
+    stateFile: string;
+  };
+  nativeInputs: {
+    lockfile: string;
+    manifest: string;
+  };
   productName: string;
   targetName: string;
 }
@@ -195,91 +209,48 @@ async function resolveHarmonyBuildPlanAsync(
   projectRoot: string,
   options: { buildMode?: 'debug' | 'release' } = {}
 ): Promise<HarmonyBuildPlan> {
-  const buildMode = options.buildMode || 'debug';
-  if (!['debug', 'release'].includes(buildMode)) {
-    throw new HarmonyCliError('ERR_HARMONY_CONFIG_INVALID', `Harmony buildMode must be debug or release, received: ${buildMode}`, { operation: 'resolve-build' });
+  const mode = options.buildMode || 'debug';
+  if (!['debug', 'release'].includes(mode)) {
+    throw new HarmonyCliError('ERR_HARMONY_CONFIG_INVALID', `Harmony buildMode must be debug or release, received: ${mode}`, { operation: 'resolve-build' });
   }
 
-  const config = getConfig(projectRoot, {
-    isModdedConfig: true,
-    skipSDKVersionRequirement: true,
-  }).exp;
-  const normalized = normalizeHarmonyConfig(config);
-  const harmonyRoot = path.join(projectRoot, 'harmony');
-  const profileFile = path.join(harmonyRoot, 'build-profile.json5');
-  let profile;
+  let build;
 
   try {
-    profile = JSON5.parse(await fs.promises.readFile(profileFile, 'utf8'));
+    build = (await readManifestAsync(projectRoot)).build;
   } catch (cause) {
     throw new HarmonyCliError(
-      'ERR_HARMONY_TEMPLATE_INVALID',
-      `Cannot read generated Harmony build profile: ${profileFile}`,
+      cause.code || 'ERR_HARMONY_TEMPLATE_INVALID',
+      `Cannot read the generated Harmony build descriptor: ${cause.message}`,
       { cause, operation: 'resolve-build' }
     );
   }
 
-  const product = (Array.isArray(profile?.app?.products) ? profile.app.products : [])
-    .find(item => item?.name === normalized.productName);
-  const module = (Array.isArray(profile?.modules) ? profile.modules : [])
-    .find(item => item?.name === normalized.moduleName);
-  if (!product || !module) {
-    throw new HarmonyCliError(
-      'ERR_HARMONY_TEMPLATE_INVALID',
-      `Generated build profile is missing product ${normalized.productName} or module ${normalized.moduleName}.`,
-      { operation: 'resolve-build' }
-    );
-  }
-
-  const targetName = 'default';
-  const target = (Array.isArray(module.targets) ? module.targets : [])
-    .find(item => item?.name === targetName);
-  if (!target || !Array.isArray(target.applyToProducts)
-    || !target.applyToProducts.includes(normalized.productName)) {
-    throw new HarmonyCliError(
-      'ERR_HARMONY_TEMPLATE_INVALID',
-      `Harmony module ${normalized.moduleName} is not configured for product ${normalized.productName}.`,
-      { operation: 'resolve-build' }
-    );
-  }
-
-  const moduleRoot = path.resolve(harmonyRoot, module.srcPath || '');
-  if (!isInside(harmonyRoot, moduleRoot) || moduleRoot === harmonyRoot) {
-    throw new HarmonyCliError(
-      'ERR_HARMONY_TEMPLATE_INVALID',
-      `Harmony module ${normalized.moduleName} has an unsafe srcPath.`,
-      { operation: 'resolve-build' }
-    );
-  }
-
-  const signingSuffix = typeof product.signingConfig === 'string' && product.signingConfig
-    ? 'signed'
-    : 'unsigned';
-  const expectedHap = path.join(
-    moduleRoot,
-    'build',
-    targetName,
-    'outputs',
-    targetName,
-    `${normalized.moduleName}-${targetName}-${signingSuffix}.hap`
-  );
+  const resolve = relative => path.join(projectRoot, ...relative.split('/'));
+  const variant = build.variants[mode];
 
   return {
-    buildMode,
-    expectedHap,
-    harmonyRoot,
-    hvigorArgs: [
-      '--mode', 'module',
-      '-p', `module=${normalized.moduleName}@${targetName}`,
-      '-p', `product=${normalized.productName}`,
-      '-p', `buildMode=${buildMode}`,
-      '--no-daemon',
-      'assembleHap',
-    ],
-    moduleName: normalized.moduleName,
-    moduleRoot,
-    productName: normalized.productName,
-    targetName,
+    abilityName: build.identity.abilityName,
+    buildMode: mode,
+    bundleName: build.identity.bundleName,
+    expectedHap: resolve(variant.expectedHap),
+    exportPaths: Object.fromEntries(
+      Object.entries(build.export).map(([name, relative]) => [name, resolve(relative)])
+    ) as HarmonyBuildPlan['exportPaths'],
+    harmonyRoot: resolve(build.harmonyRoot),
+    hvigorArgs: [...variant.hvigorArgs],
+    moduleName: build.identity.moduleName,
+    moduleRoot: resolve(build.moduleRoot),
+    nativeCache: {
+      invalidationRoots: build.nativeCache.invalidationRoots.map(resolve),
+      stateFile: resolve(build.nativeCache.stateFile),
+    },
+    nativeInputs: {
+      lockfile: resolve(build.nativeInputs.lockfile),
+      manifest: resolve(build.nativeInputs.manifest),
+    },
+    productName: build.identity.productName,
+    targetName: build.identity.targetName,
   };
 }
 

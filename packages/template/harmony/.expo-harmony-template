@@ -1,8 +1,8 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "placeholders": {
     "abilityName": "__EXPO_HARMONY_ABILITY_NAME__",
     "appLabel": "__EXPO_HARMONY_APP_LABEL__",
-    "moduleName": "__EXPO_HARMONY_MODULE_NAME__"
+    "bundlePath": "__EXPO_HARMONY_BUNDLE_PATH__"
   }
 }

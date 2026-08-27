@@ -26,17 +26,16 @@ export interface HarmonyExportManifest {
 const HermesMagic = Buffer.from('c61fbc03c103191f', 'hex');
 const ManifestSchemaVersion = 1;
 
-function exportPaths(projectRoot: string, plan: { moduleRoot: string }) {
-  const rawfileRoot = path.join(plan.moduleRoot, 'src/main/resources/rawfile');
-  const metadataRoot = path.join(projectRoot, '.expo/harmony/export');
-
-  return {
-    bundle: path.join(rawfileRoot, 'hermes_bundle.hbc'),
-    manifest: path.join(projectRoot, '.expo/harmony/export-manifest.json'),
-    metadataRoot,
-    rawfileRoot,
-    sourceMap: path.join(metadataRoot, 'hermes_bundle.hbc.map'),
+function exportPaths(plan: {
+  exportPaths: {
+    bundle: string;
+    manifest: string;
+    metadataRoot: string;
+    rawfileRoot: string;
+    sourceMap: string;
   };
+}) {
+  return plan.exportPaths;
 }
 
 async function assertHermesBundle(file) {

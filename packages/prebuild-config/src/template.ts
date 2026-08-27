@@ -6,11 +6,11 @@ import { HarmonyPrebuildError } from './errors';
 
 const PACKAGE = '@expo-harmony/template';
 const ROOT_ENV = 'EXPO_HARMONY_TEMPLATE_ROOT';
-const TEMPLATE_SCHEMA_VERSION = 1;
+const TEMPLATE_SCHEMA_VERSION = 2;
 const TEMPLATE_PLACEHOLDERS = Object.freeze({
   abilityName: '__EXPO_HARMONY_ABILITY_NAME__',
   appLabel: '__EXPO_HARMONY_APP_LABEL__',
-  moduleName: '__EXPO_HARMONY_MODULE_NAME__',
+  bundlePath: '__EXPO_HARMONY_BUNDLE_PATH__',
 });
 const resolveModule = createRequire(__filename).resolve;
 

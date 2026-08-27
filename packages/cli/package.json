@@ -26,6 +26,7 @@
     "expo-harmony": "build/bin/expo-harmony.js"
   },
   "dependencies": {
+    "@expo-harmony/config-plugins": "workspace:*",
     "@expo-harmony/expo-modules-autolinking": "workspace:*",
     "@expo-harmony/prebuild-config": "workspace:*",
     "@expo/config": "55.0.17",

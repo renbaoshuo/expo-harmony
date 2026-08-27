@@ -63,12 +63,13 @@ async function installHarmonyDependenciesAsync(
   toolchain: HarmonyToolchain,
   options: InstallOptions = {}
 ): Promise<HarmonyOhpmInstallLease> {
-  const manifestPath = path.join(plan.harmonyRoot, 'oh-package.json5');
-  const lockPath = path.join(plan.harmonyRoot, 'oh-package-lock.json5');
-  const originalManifest = await fs.promises.readFile(manifestPath);
-  const originalLock = await readOptionalFileAsync(lockPath);
+  const manifest = plan.nativeInputs.manifest;
+  const lockfile = plan.nativeInputs.lockfile;
+  const source = await fs.promises.readFile(manifest);
+  const lock = await readOptionalFileAsync(lockfile);
+
   const args = [...toolchain.ohpm.args, 'install', '--all'];
-  const runInstallAsync = () => spawnAsync(toolchain.ohpm.command, args, {
+  const installAsync = () => spawnAsync(toolchain.ohpm.command, args, {
     capture: true,
     cwd: plan.harmonyRoot,
     operation: 'ohpm-install',
@@ -76,7 +77,7 @@ async function installHarmonyDependenciesAsync(
     timeoutMs: options.timeoutMs || 5 * 60_000,
   });
 
-  const first = await runInstallAsync();
+  const first = await installAsync();
 
   if (first.code === 0 && !first.timedOut) {
     return { fallbackPackages: [], restoreAsync: async () => {}, usedFallback: false };
@@ -88,8 +89,8 @@ async function installHarmonyDependenciesAsync(
 
     fallbackActive = false;
 
-    await restoreFileAsync(manifestPath, originalManifest);
-    await restoreFileAsync(lockPath, originalLock);
+    await restoreFileAsync(manifest, source);
+    await restoreFileAsync(lockfile, lock);
   };
 
   try {
@@ -102,9 +103,9 @@ async function installHarmonyDependenciesAsync(
 
     fallbackActive = true;
 
-    await fs.promises.writeFile(manifestPath, renderFallbackManifest(originalManifest.toString('utf8'), specifiers));
+    await fs.promises.writeFile(manifest, renderFallbackManifest(source.toString('utf8'), specifiers));
 
-    const retry = await runInstallAsync();
+    const retry = await installAsync();
 
     if (retry.code !== 0 || retry.timedOut) {
       throw new HarmonyCliError('ERR_HARMONY_OHPM_FAILED', installMessage(retry, '\nLocal HAR fallback also failed.'), { exitCode: retry.code || 1, operation: 'ohpm-install' });

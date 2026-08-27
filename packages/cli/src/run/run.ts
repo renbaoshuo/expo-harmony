@@ -1,9 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { getConfig } from '@expo/config';
 import { verifyModulesAsync } from '@expo-harmony/expo-modules-autolinking';
-import { normalizeHarmonyConfig } from '@expo-harmony/prebuild-config/config';
 
 import { checkAsync } from '../prebuild/check';
 import {
@@ -16,7 +14,7 @@ import { doctorAsync, type DoctorResult } from '../doctor/doctor';
 import { HarmonyCliError } from '../errors';
 import { exportEmbedAsync } from '../exportEmbed/export';
 import type { HarmonyExportManifest } from '../exportEmbed/manifest';
-import { resolveHarmonyBuildPlanAsync, resolveHarmonyToolchain } from '../tools';
+import { resolveHarmonyBuildPlanAsync, resolveHarmonyToolchain, type HarmonyBuildPlan } from '../tools';
 import { installHarmonyDependenciesAsync } from './install';
 import { requireExistingMetroAsync, startExpoMetroAsync } from './metro';
 import {
@@ -193,28 +191,22 @@ async function ensureGeneratedProjectAsync(
   }
 }
 
-function resolveRunIdentity(projectRoot: string, options: NormalizedRunOptions) {
-  const exp = getConfig(projectRoot, {
-    isModdedConfig: true,
-    skipSDKVersionRequirement: true,
-  }).exp;
-  const normalized = normalizeHarmonyConfig(exp);
-
+function resolveRunIdentity(plan: HarmonyBuildPlan, options: NormalizedRunOptions) {
   if (options.appId && !BundleName.test(options.appId)) {
     throw new HarmonyCliError('ERR_HARMONY_CONFIG_INVALID', '--app-id must contain at least three valid dot-separated segments.', { operation: 'resolve-run' });
   }
 
-  if (options.appId && !options.noInstall && options.appId !== normalized.bundleName) {
+  if (options.appId && !options.noInstall && options.appId !== plan.bundleName) {
     throw new HarmonyCliError(
       'ERR_HARMONY_APP_ID_MISMATCH',
-      `--app-id can differ from the generated bundle name only with --no-install; expected ${normalized.bundleName}.`,
+      `--app-id can differ from the generated bundle name only with --no-install; expected ${plan.bundleName}.`,
       { operation: 'resolve-run' }
     );
   }
 
   return {
-    abilityName: normalized.abilityName,
-    bundleName: options.appId || normalized.bundleName,
+    abilityName: plan.abilityName,
+    bundleName: options.appId || plan.bundleName,
   };
 }
 
@@ -247,7 +239,7 @@ async function runHarmonyAsync(
     projectRoot,
     { buildMode: normalizedOptions.variant }
   ));
-  const identity = resolveRunIdentity(projectRoot, normalizedOptions);
+  const identity = resolveRunIdentity(plan, normalizedOptions);
   const toolchain = resolveHarmonyToolchain();
 
   progress(normalizedOptions, 'Selecting a connected Harmony device');

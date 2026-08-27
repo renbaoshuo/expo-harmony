@@ -8,6 +8,7 @@ import { canonicalizeAutolinkingArtifacts } from '@expo-harmony/expo-modules-aut
 import JSON5 from 'json5';
 
 import { HarmonyPrebuildError } from './errors';
+import { createHarmonyBuildDescriptor } from './buildDescriptor';
 import {
   hashSha256,
   validateCngManifest,
@@ -67,19 +68,29 @@ async function stageAutolinkingAsync(project: string, target: string): Promise<v
 
 async function matchesIdentity(
   project: string,
-  identity: CngManifest['managedIdentity']
+  cng: CngManifest
 ): Promise<boolean> {
+  const identity = cng.managedIdentity;
   let profile;
-  let moduleJson;
+  let module;
 
   try {
     const [profileSource, moduleSource] = await Promise.all([
-      fs.promises.readFile(path.join(project, 'harmony/build-profile.json5'), 'utf8'),
-      fs.promises.readFile(path.join(project, 'harmony/entry/src/main/module.json5'), 'utf8'),
+      fs.promises.readFile(path.join(
+        project,
+        ...cng.build.harmonyRoot.split('/'),
+        'build-profile.json5'
+      ), 'utf8'),
+      fs.promises.readFile(path.join(
+        project,
+        ...cng.build.moduleRoot.split('/'),
+        'src/main/module.json5'
+      ), 'utf8'),
     ]);
+
     profile = JSON5.parse(profileSource);
-    moduleJson = JSON5.parse(moduleSource);
-  } catch (_cause) {
+    module = JSON5.parse(moduleSource);
+  } catch {
     return false;
   }
 
@@ -90,10 +101,10 @@ async function matchesIdentity(
     ? moduleProfile.targets.find(item => item?.name === identity.targetName)
     : null;
   const products = Array.isArray(profile?.app?.products) ? profile.app.products : [];
-  const abilities = Array.isArray(moduleJson?.module?.abilities) ? moduleJson.module.abilities : [];
+  const abilities = Array.isArray(module?.module?.abilities) ? module.module.abilities : [];
 
-  return moduleJson?.module?.name === identity.moduleName
-    && moduleJson?.module?.mainElement === identity.abilityName
+  return module?.module?.name === identity.moduleName
+    && module?.module?.mainElement === identity.abilityName
     && abilities.some(item => item?.name === identity.abilityName)
     && products.some(item => item?.name === identity.productName)
     && Array.isArray(target?.applyToProducts)
@@ -151,6 +162,7 @@ async function stageManifestAsync(project: string, target: string): Promise<void
   const normalized = normalizeHarmonyConfig(config);
   const hash = hashSha256(stableHarmonyJson(normalized));
   let identity = manifest.managedIdentity;
+  let build = manifest.build;
   let signing = manifest.signingConfigName;
 
   if (hash === manifest.inputs.configHash) {
@@ -159,16 +171,17 @@ async function stageManifestAsync(project: string, target: string): Promise<void
     // manifest identity from making isolated prebuild overwrite a user-owned
     // product/module/ability while still allowing --check to report the
     // manifest itself as drifted.
-    identity = {
-      abilityName: normalized.abilityName,
-      moduleName: normalized.moduleName,
-      productName: normalized.productName,
-      targetName: 'default',
-    };
     signing = normalized.signingConfigFile
       ? (await validateHarmonySigningConfigFile(project, normalized.signingConfigFile)).name
       : null;
-  } else if (!await matchesIdentity(project, identity)) {
+    build = createHarmonyBuildDescriptor(normalized, signing);
+    identity = {
+      abilityName: build.identity.abilityName,
+      moduleName: build.identity.moduleName,
+      productName: build.identity.productName,
+      targetName: build.identity.targetName,
+    };
+  } else if (!await matchesIdentity(project, manifest)) {
     throw new HarmonyPrebuildError(
       'ERR_HARMONY_MANIFEST_DRIFT',
       'The CNG manifest identity does not match the generated Harmony project. Run prebuild to repair it before changing Harmony identity fields.',
@@ -180,6 +193,7 @@ async function stageManifestAsync(project: string, target: string): Promise<void
   await fs.promises.mkdir(path.dirname(file), { recursive: true });
   await fs.promises.writeFile(file, stableHarmonyJson({
     ...manifest,
+    build,
     managedIdentity: identity,
     signingConfigName: signing,
   }));
