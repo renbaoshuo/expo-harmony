@@ -8,7 +8,7 @@ import { HarmonyCliError } from '../errors';
 import { resolveHarmonyBuildPlanAsync } from '../tools';
 import { formatDiagnostics, spawnAsync } from '../process';
 import { inspectPublicCliContractsAsync } from '../contract';
-import { resolveExpoCli } from '../expo';
+import { resolveExpoCli, resolveExpoHermesBuilder } from '../expo';
 import {
   assertHermesBundle, assertSourceMap, exportPaths,
   publishExportAsync, validatePublishedExportAsync,
@@ -26,6 +26,8 @@ export interface ExportOptions {
 export interface ExportTemporary {
   assets: string;
   bundle: string;
+  javascript: string;
+  metroSourceMap: string;
   sourceMap: string;
 }
 
@@ -38,13 +40,12 @@ function createExpoExportEmbedArgs(
   return [
     'export:embed',
     '--platform', 'harmony',
-    '--bytecode',
     '--entry-file', entryFile,
-    '--bundle-output', temporary.bundle,
+    '--bundle-output', temporary.javascript,
     '--assets-dest', temporary.assets,
     '--dev', 'false',
-    '--minify', 'true',
-    '--sourcemap-output', temporary.sourceMap,
+    '--minify', 'false',
+    '--sourcemap-output', temporary.metroSourceMap,
     '--sourcemap-sources-root', '.',
     '--unstable-transform-profile', 'hermes-stable',
     ...(options.resetCache ? ['--reset-cache=true'] : []),
@@ -76,6 +77,8 @@ async function exportEmbedAsync(
   const temporary: ExportTemporary = {
     assets: path.join(temporaryRoot, 'assets'),
     bundle: path.join(temporaryRoot, 'hermes_bundle.hbc'),
+    javascript: path.join(temporaryRoot, 'index.js'),
+    metroSourceMap: path.join(temporaryRoot, 'index.js.map'),
     sourceMap: path.join(temporaryRoot, 'hermes_bundle.hbc.map'),
   };
 
@@ -106,6 +109,39 @@ async function exportEmbedAsync(
         'ERR_HARMONY_EXPORT_FAILED',
         `Expo export:embed exited with code ${result.code}${result.timedOut ? ' after timing out' : ''}.${diagnostics ? `\n${diagnostics}` : ''}`,
         { exitCode: result.code || 1, operation: 'expo-export-embed' }
+      );
+    }
+
+    // Expo 55 only infers Hermes for iOS and Android. Keep Harmony bundling in the Expo CLI,
+    // then explicitly hand its JS and source map to Expo's own Hermes exporter.
+    try {
+      const [code, map] = await Promise.all([
+        fs.promises.readFile(temporary.javascript, 'utf8'),
+        fs.promises.readFile(temporary.metroSourceMap, 'utf8'),
+      ]);
+      const buildHermesBundleAsync = resolveExpoHermesBuilder(projectRoot);
+      const output = await buildHermesBundleAsync({
+        code,
+        filename: entryFile,
+        map,
+        minify: true,
+        projectRoot,
+      });
+
+      if (!(output?.hbc instanceof Uint8Array) || typeof output.sourcemap !== 'string') {
+        throw new Error('Expo did not return Hermes bytecode and a composed source map.');
+      }
+
+      await Promise.all([
+        fs.promises.writeFile(temporary.bundle, output.hbc),
+        fs.promises.writeFile(temporary.sourceMap, output.sourcemap),
+      ]);
+    } catch (cause) {
+      if (cause instanceof HarmonyCliError) throw cause;
+      throw new HarmonyCliError(
+        'ERR_HARMONY_EXPORT_HERMES',
+        'Expo failed to compile the Harmony bundle to Hermes bytecode.',
+        { cause, operation: 'expo-hermes-export' }
       );
     }
 

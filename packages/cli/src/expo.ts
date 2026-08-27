@@ -4,6 +4,23 @@ import path from 'node:path';
 
 import { HarmonyCliError } from './errors';
 
+interface ExpoHermesBundleOptions {
+  code: string;
+  filename: string;
+  map: string | null;
+  minify?: boolean;
+  projectRoot: string;
+}
+
+interface ExpoHermesBundleOutput {
+  hbc: Uint8Array;
+  sourcemap: string | null;
+}
+
+type ExpoHermesBuilder = (
+  options: ExpoHermesBundleOptions
+) => Promise<ExpoHermesBundleOutput>;
+
 function resolveExpoCli(projectRoot) {
   const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
   let packageJsonPath;
@@ -30,4 +47,43 @@ function resolveExpoCli(projectRoot) {
   return { cliPath, packageJsonPath };
 }
 
-export { resolveExpoCli };
+function resolveExpoHermesBuilder(projectRoot: string): ExpoHermesBuilder {
+  const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
+  let packageJsonPath;
+
+  try {
+    packageJsonPath = projectRequire.resolve('@expo/metro-config/package.json');
+  } catch (cause) {
+    throw new HarmonyCliError(
+      'ERR_HARMONY_EXPORT_HERMES',
+      'Cannot resolve the project-local @expo/metro-config package required for Hermes export.',
+      { cause, operation: 'resolve-expo-hermes' }
+    );
+  }
+
+  const modulePath = path.join(path.dirname(packageJsonPath), 'build', 'serializer', 'exportHermes.js');
+  let moduleExports;
+
+  try {
+    moduleExports = projectRequire(modulePath);
+  } catch (cause) {
+    throw new HarmonyCliError(
+      'ERR_HARMONY_EXPORT_HERMES',
+      `Cannot load the Expo Hermes exporter: ${modulePath}`,
+      { cause, operation: 'resolve-expo-hermes' }
+    );
+  }
+
+  if (typeof moduleExports?.buildHermesBundleAsync !== 'function') {
+    throw new HarmonyCliError(
+      'ERR_HARMONY_EXPORT_HERMES',
+      'The project-local @expo/metro-config package does not expose buildHermesBundleAsync().',
+      { operation: 'resolve-expo-hermes' }
+    );
+  }
+
+  return moduleExports.buildHermesBundleAsync as ExpoHermesBuilder;
+}
+
+export { resolveExpoCli, resolveExpoHermesBuilder };
+export type { ExpoHermesBuilder };
