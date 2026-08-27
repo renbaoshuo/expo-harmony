@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import {
-  withAppJson, withHvigorConfig, withProjectBuildProfile,
+  HarmonyPaths, withAppJson, withHvigorConfig, withProjectBuildProfile,
   withReactNativeConfig, withRootHvigor, withRootOhPackage,
 } from '@expo-harmony/config-plugins';
 import { loadConfigAsync as loadReactNativeCliConfigAsync } from '@react-native-community/cli-config';
@@ -166,7 +166,7 @@ export function withProjectMods(config, normalized) {
 
   config = withRootHvigor(config, async (value) => {
     value.modResults = render.renderRootHvigor(
-      await readTemplateSource('hvigorfile.ts'),
+      await readTemplateSource(HarmonyPaths.HARMONY_PATHS.rootHvigor),
       normalized
     );
     return value;

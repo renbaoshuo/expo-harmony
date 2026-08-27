@@ -1,5 +1,5 @@
 import {
-  withArkTSPackageProvider, withCMakeLists, withCppPackageProvider,
+  HarmonyPaths, withArkTSPackageProvider, withCMakeLists, withCppPackageProvider,
   withEntryAbility, withIndexPage, withWorker,
 } from '@expo-harmony/config-plugins';
 
@@ -7,12 +7,12 @@ import { readTemplateSource } from '../dependencies';
 import * as render from '../renderers';
 
 const SourceMods = [
-  [withEntryAbility, 'entry/src/main/ets/entryability/EntryAbility.ets', render.renderEntryAbility],
-  [withIndexPage, 'entry/src/main/ets/pages/Index.ets', render.renderIndexPage],
-  [withWorker, 'entry/src/main/ets/workers/RNOHWorker.ets'],
-  [withArkTSPackageProvider, 'entry/src/main/ets/PackageProvider.ets', render.renderArktsPackageProvider],
-  [withCppPackageProvider, 'entry/src/main/cpp/PackageProvider.cpp', render.renderCppPackageProvider],
-  [withCMakeLists, 'entry/src/main/cpp/CMakeLists.txt', render.renderCmakeLists],
+  [withEntryAbility, HarmonyPaths.HARMONY_PATHS.entryAbility, render.renderEntryAbility],
+  [withIndexPage, HarmonyPaths.HARMONY_PATHS.indexPage, render.renderIndexPage],
+  [withWorker, HarmonyPaths.HARMONY_PATHS.worker],
+  [withArkTSPackageProvider, HarmonyPaths.HARMONY_PATHS.arktsPackageProvider, render.renderArktsPackageProvider],
+  [withCppPackageProvider, HarmonyPaths.HARMONY_PATHS.cppPackageProvider, render.renderCppPackageProvider],
+  [withCMakeLists, HarmonyPaths.HARMONY_PATHS.cmakeLists, render.renderCmakeLists],
 ] as const;
 
 export function withSourceMods(config, normalized) {

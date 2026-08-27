@@ -1,4 +1,5 @@
 import { isRnohAutolinkingDisabled } from './native';
+import { TEMPLATE_PLACEHOLDERS } from './template';
 
 function normalizeSource(source, label) {
   if (typeof source !== 'string' || !source.trim()) {
@@ -7,16 +8,12 @@ function normalizeSource(source, label) {
   return source.replace(/\r\n?/gu, '\n');
 }
 
-function replaceExactlyOnce(source, pattern, replace, label) {
-  let replacements = 0;
-  const result = source.replace(pattern, (...args) => {
-    replacements += 1;
-    return replace(...args);
-  });
+function replacePlaceholderExactlyOnce(source, placeholder, replace, label) {
+  const replacements = source.split(placeholder).length - 1;
   if (replacements !== 1) {
-    throw new TypeError(`Canonical Harmony template has ${replacements} ${label} fields; expected exactly one.`);
+    throw new TypeError(`Canonical Harmony template has ${replacements} ${label} placeholders; expected exactly one.`);
   }
-  return result;
+  return source.replace(placeholder, () => replace);
 }
 
 function quoteSingle(value) {
@@ -36,63 +33,32 @@ module.exports = require('@react-native-oh/react-native-harmony-cli/react-native
 
 function renderRootHvigor(source, normalized) {
   source = normalizeSource(source, 'harmony/hvigorfile.ts');
-  return replaceExactlyOnce(
+  return replacePlaceholderExactlyOnce(
     source,
-    /(const ModuleName\s*=\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')(;)/u,
-    (_match, prefix, suffix) => `${prefix}${quoteSingle(normalized.moduleName)}${suffix}`,
+    quoteSingle(TEMPLATE_PLACEHOLDERS.moduleName),
+    quoteSingle(normalized.moduleName),
     'bundle module name'
   );
 }
 
 function renderEntryAbility(source, normalized) {
   source = normalizeSource(source, 'EntryAbility.ets');
-  return replaceExactlyOnce(
+  return replacePlaceholderExactlyOnce(
     source,
-    /(export default class\s+)[A-Za-z_$][A-Za-z0-9_$]*(\s+extends\s+ExpoRNAbility\b)/u,
-    (_match, prefix, suffix) => `${prefix}${normalized.abilityName}${suffix}`,
+    TEMPLATE_PLACEHOLDERS.abilityName,
+    normalized.abilityName,
     'ability class'
   );
 }
 
 function renderIndexPage(source, normalized) {
   source = normalizeSource(source, 'Index.ets');
-  return replaceExactlyOnce(
+  return replacePlaceholderExactlyOnce(
     source,
-    /(\bname:\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')(,\s*\n\s*createRNPackages:)/u,
-    (_match, prefix, suffix) => `${prefix}${JSON.stringify(normalized.label)}${suffix}`,
+    JSON.stringify(TEMPLATE_PLACEHOLDERS.appLabel),
+    JSON.stringify(normalized.label),
     'RN instance name'
   );
-}
-
-function renderCmakeLists(source) {
-  source = normalizeSource(source, 'CMakeLists.txt');
-  source = replaceExactlyOnce(
-    source,
-    /(target_include_directories\(rnoh_app PRIVATE\s*\n\s*"\$\{OH_MODULES_DIR\}\/)@expo-harmony\/expo-modules-core(\/src\/main\/cpp\/package"\))/u,
-    (_match, prefix, suffix) => `${prefix}@expo-harmony/expo-modules-core${suffix}`,
-    'Expo modules core include path'
-  );
-  const nativeInputsBlock = `# Hvigor rewrites this ignored stamp only when the bytes of a linked HAR change.
-# The digest is part of every native compile command, so deterministic archives
-# with normalized old mtimes cannot make Ninja reuse stale objects.
-set(EXPO_HARMONY_NATIVE_INPUTS_STAMP
-  "\${CMAKE_CURRENT_SOURCE_DIR}/../../../../.hvigor/expo-harmony/native-inputs.cmake")
-if(NOT EXISTS "\${EXPO_HARMONY_NATIVE_INPUTS_STAMP}")
-  message(FATAL_ERROR "Harmony native input fingerprint is missing; build through the root Hvigor project.")
-endif()
-include("\${EXPO_HARMONY_NATIVE_INPUTS_STAMP}")`;
-  if (!source.includes('EXPO_HARMONY_NATIVE_INPUTS_STAMP')) {
-    source = replaceExactlyOnce(
-      source,
-      /(set\(CMAKE_CXX_FLAGS "\$\{CMAKE_CXX_FLAGS\} -fstack-protector-strong -Wl,-z,relro,-z,now,-z,noexecstack"\))/u,
-      (_match, flags) => `${flags}\n\n${nativeInputsBlock}`,
-      'native compiler flags anchor'
-    );
-  } else if ((source.match(/EXPO_HARMONY_NATIVE_INPUTS_STAMP/gu) || []).length !== 3
-    || !source.includes(nativeInputsBlock)) {
-    throw new TypeError('CMakeLists.txt has an unmanaged Harmony native input fingerprint block.');
-  }
-  return source;
 }
 
 function renderCanonical(source, label) {
@@ -100,6 +66,7 @@ function renderCanonical(source, label) {
 }
 
 const renderArktsPackageProvider = source => renderCanonical(source, 'PackageProvider.ets');
+const renderCmakeLists = source => renderCanonical(source, 'CMakeLists.txt');
 const renderCppPackageProvider = source => renderCanonical(source, 'PackageProvider.cpp');
 
 export {

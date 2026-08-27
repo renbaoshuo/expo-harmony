@@ -6,7 +6,7 @@ import type { ExpoHarmonyHostProvider } from '@expo-harmony/expo-modules-core';
 import { ExpoRNAbility } from '@expo-harmony/expo-modules-core';
 import { expoHarmonyHostProvider } from '../generated/ExpoHarmonyHostProvider';
 
-export default class EntryAbility extends ExpoRNAbility {
+export default class __EXPO_HARMONY_ABILITY_NAME__ extends ExpoRNAbility {
   override getPagePath(): string {
     return 'pages/Index';
   }

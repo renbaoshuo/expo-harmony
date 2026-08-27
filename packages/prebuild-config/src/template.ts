@@ -6,9 +6,17 @@ import { HarmonyPrebuildError } from './errors';
 
 const PACKAGE = '@expo-harmony/template';
 const ROOT_ENV = 'EXPO_HARMONY_TEMPLATE_ROOT';
+const TEMPLATE_SCHEMA_VERSION = 1;
+const TEMPLATE_PLACEHOLDERS = Object.freeze({
+  abilityName: '__EXPO_HARMONY_ABILITY_NAME__',
+  appLabel: '__EXPO_HARMONY_APP_LABEL__',
+  moduleName: '__EXPO_HARMONY_MODULE_NAME__',
+});
 const resolveModule = createRequire(__filename).resolve;
 
 interface Template {
+  readonly marker: string;
+  readonly schemaVersion: typeof TEMPLATE_SCHEMA_VERSION;
   readonly json: string;
   readonly root: string;
   readonly harmony: string;
@@ -18,6 +26,45 @@ interface Template {
 let bundled: Template | undefined;
 let selected: Template | undefined;
 let selectedRoot: string | undefined;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readSchema(marker: string): typeof TEMPLATE_SCHEMA_VERSION {
+  let schema: unknown;
+  try {
+    schema = JSON.parse(fs.readFileSync(marker, 'utf8'));
+  } catch (cause) {
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_TEMPLATE_INVALID',
+      `Cannot read the Harmony template schema at ${marker}.`,
+      { cause, file: marker, operation: 'resolve-template' }
+    );
+  }
+
+  if (!isRecord(schema) || schema.schemaVersion !== TEMPLATE_SCHEMA_VERSION) {
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_TEMPLATE_INVALID',
+      `Unsupported Harmony template schema: ${isRecord(schema) ? schema.schemaVersion : 'invalid'}.`,
+      { file: marker, operation: 'resolve-template' }
+    );
+  }
+
+  const placeholders = schema.placeholders;
+  const names = Object.keys(TEMPLATE_PLACEHOLDERS) as Array<keyof typeof TEMPLATE_PLACEHOLDERS>;
+  if (!isRecord(placeholders)
+    || Object.keys(placeholders).length !== names.length
+    || names.some(name => placeholders[name] !== TEMPLATE_PLACEHOLDERS[name])) {
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_TEMPLATE_INVALID',
+      'Harmony template schema has an invalid placeholder contract.',
+      { file: marker, operation: 'resolve-template' }
+    );
+  }
+
+  return TEMPLATE_SCHEMA_VERSION;
+}
 
 function read(input: string): Template {
   if (!path.isAbsolute(input)) {
@@ -61,15 +108,11 @@ function read(input: string): Template {
 
   const harmony = path.join(root, 'harmony');
   const marker = path.join(harmony, '.expo-harmony-template');
-  if (!fs.existsSync(marker)) {
-    throw new HarmonyPrebuildError(
-      'ERR_HARMONY_TEMPLATE_INVALID',
-      `Template marker is missing in ${root}.`,
-      { file: marker, operation: 'resolve-template' }
-    );
-  }
+  const schemaVersion = readSchema(marker);
 
   return Object.freeze({
+    marker,
+    schemaVersion,
     json,
     root,
     harmony,
@@ -108,6 +151,8 @@ function resolve(): Template {
 
 export {
   ROOT_ENV,
+  TEMPLATE_PLACEHOLDERS,
+  TEMPLATE_SCHEMA_VERSION,
   resolve,
   resolveBundled,
 };

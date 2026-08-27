@@ -46,7 +46,7 @@ struct Index {
           }
           RNApp({
             rnInstanceConfig: {
-              name: "Expo Harmony App",
+              name: "__EXPO_HARMONY_APP_LABEL__",
               createRNPackages: getRNOHPackages,
               fontResourceByFontFamily: {},
               enableDebugger: this.rnohCoreContext.isDebugModeEnabled,

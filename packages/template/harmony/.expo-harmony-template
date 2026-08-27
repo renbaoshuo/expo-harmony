@@ -1,1 +1,8 @@
-@expo-harmony/template@55.0.0-harmony.0
+{
+  "schemaVersion": 1,
+  "placeholders": {
+    "abilityName": "__EXPO_HARMONY_ABILITY_NAME__",
+    "appLabel": "__EXPO_HARMONY_APP_LABEL__",
+    "moduleName": "__EXPO_HARMONY_MODULE_NAME__"
+  }
+}
