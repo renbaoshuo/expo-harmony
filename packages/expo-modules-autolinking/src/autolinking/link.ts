@@ -56,7 +56,8 @@ async function linkModulesAsync(rawOptions: LinkOptions): Promise<LinkResult> {
   });
 
   let staging;
-  let primaryError;
+  let failure;
+  let cleanupWarning;
   const warnings = [];
 
   try {
@@ -130,24 +131,37 @@ async function linkModulesAsync(rawOptions: LinkOptions): Promise<LinkResult> {
     });
     return result;
   } catch (error) {
-    primaryError = error;
+    failure = error;
     emitLog(rawOptions.logger, 'error', 'Harmony autolinking failed.', {
       code: error.code || 'ERR_EXPO_HARMONY_UNKNOWN',
       stage: error.stage || 'link',
     });
-    throw error;
   } finally {
     if (staging) {
-      const warning = await cleanupStagingProjectAsync(staging);
-      if (warning) {
-        const safeWarning = { ...warning };
-        delete safeWarning.cause;
-        warnings.push(safeWarning);
-        emitLog(rawOptions.logger, 'warn', safeWarning.message, safeWarning);
-        if (primaryError) primaryError.cleanupWarning = safeWarning;
+      const cleanup = await cleanupStagingProjectAsync(staging);
+      if (cleanup) {
+        const warning = { ...cleanup };
+        delete warning.cause;
+        warnings.push(warning);
+        emitLog(rawOptions.logger, 'warn', warning.message, warning);
+        if (failure) cleanupWarning = warning;
       }
     }
   }
+
+  throw new HarmonyAutolinkingError(
+    typeof failure.code === 'string' ? failure.code : 'UNKNOWN',
+    failure.message || 'Harmony autolinking failed.',
+    {
+      cause: failure,
+      stage: failure.stage || 'link',
+      packageName: failure.packageName,
+      diagnostics: failure.diagnostics,
+      details: cleanupWarning
+        ? { ...(failure.details || {}), cleanupWarning }
+        : failure.details,
+    }
+  );
 }
 
 export { linkModulesAsync };

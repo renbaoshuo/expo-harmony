@@ -1,11 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { readManifestAsync } from '@expo-harmony/prebuild-config/check';
+
 import { HarmonyCliError } from '../errors';
 import { formatDiagnostics, spawnAsync } from '../process';
 import { resolveExpoCli } from '../expo';
 import { assertSafeCleanTarget } from './clean';
-import { packTemplateAsync } from './template';
+import { packAsync } from './template';
 
 interface PrebuildOptions {
   buildType?: 'debug' | 'release';
@@ -20,7 +22,7 @@ async function prebuildParsedAsync(
   if (passthrough.includes('--clean')) await assertSafeCleanTarget(projectRoot);
 
   const expo = resolveExpoCli(projectRoot);
-  const packed = await packTemplateAsync(projectRoot);
+  const packed = await packAsync(projectRoot);
 
   try {
     const result = await spawnAsync(process.execPath, [
@@ -32,9 +34,11 @@ async function prebuildParsedAsync(
     ], {
       capture: Boolean(options.capture),
       cwd: projectRoot,
-      env: options.buildType
-        ? { ...process.env, EXPO_HARMONY_BUILD_TYPE: options.buildType }
-        : process.env,
+      env: {
+        ...process.env,
+        ...packed.env,
+        ...(options.buildType ? { EXPO_HARMONY_BUILD_TYPE: options.buildType } : {}),
+      },
       operation: 'expo-prebuild',
       outputLimit: 4 * 1024 * 1024,
     });
@@ -48,11 +52,8 @@ async function prebuildParsedAsync(
     }
 
     const marker = path.join(projectRoot, 'harmony/.expo-harmony-template');
-    const manifest = path.join(projectRoot, '.expo/harmony/cng-manifest.json');
-
     try {
-      const parsed = JSON.parse(await fs.promises.readFile(manifest, 'utf8'));
-      if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.managedFiles)) throw new TypeError('invalid schema');
+      await readManifestAsync(projectRoot);
       await fs.promises.access(marker, fs.constants.R_OK);
     } catch (cause) {
       throw new HarmonyCliError('ERR_HARMONY_TEMPLATE_INVALID', 'Expo prebuild exited successfully but the Harmony marker or CNG manifest is invalid.', { cause, operation: 'verify-prebuild' });

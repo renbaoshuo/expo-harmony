@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { resolveModulesAsync } from '@expo-harmony/expo-modules-autolinking';
 import {
   getHarmonyConfigPlugins,
   recordManagedFile,
@@ -19,12 +18,6 @@ import {
   readPreviousCngManifestAsync,
   removeStalePluginFilesAsync,
 } from '../stale';
-
-function formatAutolinkingDiagnostics(cause) {
-  return Array.isArray(cause.diagnostics)
-    ? ` ${cause.diagnostics.map(item => `[${item.code}] ${item.message}`).join(' ')}`
-    : '';
-}
 
 function withPreparationMod(config, normalized) {
   return withHarmonyDangerousMod(config, async (value) => {
@@ -80,15 +73,6 @@ function withPreparationMod(config, normalized) {
         normalized.signingConfigFile
       );
       value._internal.harmonySigningConfig = signing.config;
-    }
-
-    try {
-      const physicalProjectRoot = await fs.promises.realpath(projectRoot);
-      value._internal.harmonyResolvedModules = await resolveModulesAsync({
-        projectRoot: physicalProjectRoot,
-      });
-    } catch (cause) {
-      throw new HarmonyPrebuildError('ERR_HARMONY_AUTOLINK_FAILED', `Harmony module resolution failed: ${cause.message}${formatAutolinkingDiagnostics(cause)}`, { cause, operation: 'resolve-autolinking' });
     }
     return value;
   });

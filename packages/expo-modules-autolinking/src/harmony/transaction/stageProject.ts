@@ -323,10 +323,11 @@ async function stageProjectAsync(options) {
       stageHarmonyProjectPath: stageHarmony,
     };
   } catch (cause) {
+    let warning;
     try {
       await fs.promises.rm(tmp, { recursive: true, force: true });
     } catch (cleanupCause) {
-      cause.cleanupWarning = {
+      warning = {
         severity: 'warning',
         code: 'ERR_EXPO_HARMONY_STAGING_CLEANUP_FAILED',
         message: 'Unable to remove a partially-created Harmony autolinking staging directory.',
@@ -335,7 +336,19 @@ async function stageProjectAsync(options) {
       };
     }
 
-    throw cause;
+    throw new HarmonyAutolinkingError(
+      typeof cause.code === 'string' ? cause.code : 'STAGING_FAILED',
+      cause.message || 'Unable to stage the Harmony project.',
+      {
+        cause,
+        stage: cause.stage || 'staging',
+        packageName: cause.packageName,
+        diagnostics: cause.diagnostics,
+        details: warning
+          ? { ...(cause.details || {}), cleanupWarning: warning }
+          : cause.details,
+      }
+    );
   }
 }
 

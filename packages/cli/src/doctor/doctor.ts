@@ -3,7 +3,9 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import { getConfig } from '@expo/config';
-import { isRnohAutolinkingDisabled, normalizeHarmonyConfig, validateHarmonySigningConfigFile } from '@expo-harmony/prebuild-config';
+import { normalizeHarmonyConfig } from '@expo-harmony/prebuild-config/config';
+import { isRnohAutolinkingDisabled } from '@expo-harmony/prebuild-config/native-project';
+import { validateHarmonySigningConfigFile } from '@expo-harmony/prebuild-config/signing';
 
 import { spawnAsync } from '../process';
 import { resolveHarmonyBuildPlanAsync, resolveHarmonyToolchain, type HarmonyTool } from '../tools';

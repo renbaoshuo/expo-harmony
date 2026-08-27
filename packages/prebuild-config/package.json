@@ -20,6 +20,31 @@
       "require": "./build/index.js",
       "default": "./build/index.js"
     },
+    "./check": {
+      "types": "./build/check.d.ts",
+      "require": "./build/check.js",
+      "default": "./build/check.js"
+    },
+    "./config": {
+      "types": "./build/api/config.d.ts",
+      "require": "./build/api/config.js",
+      "default": "./build/api/config.js"
+    },
+    "./native-project": {
+      "types": "./build/native.d.ts",
+      "require": "./build/native.js",
+      "default": "./build/native.js"
+    },
+    "./signing": {
+      "types": "./build/api/signing.d.ts",
+      "require": "./build/api/signing.js",
+      "default": "./build/api/signing.js"
+    },
+    "./template": {
+      "types": "./build/template.d.ts",
+      "require": "./build/template.js",
+      "default": "./build/template.js"
+    },
     "./package.json": "./package.json"
   },
   "dependencies": {

@@ -71,7 +71,13 @@ async function readManifestAsync(
   try {
     return validateManifest(JSON.parse(source), { file });
   } catch (cause) {
-    if (cause?.code === 'ERR_EXPO_HARMONY_INVALID_MANIFEST') throw cause;
+    if (cause?.code === 'ERR_EXPO_HARMONY_INVALID_MANIFEST') {
+      throw new HarmonyAutolinkingError('INVALID_MANIFEST', cause.message, {
+        cause,
+        details: cause.details,
+        stage: cause.stage || 'manifest',
+      });
+    }
     throw new HarmonyAutolinkingError('INVALID_MANIFEST', `Cannot parse Harmony autolinking manifest: ${file}`, {
       cause,
       details: { file },

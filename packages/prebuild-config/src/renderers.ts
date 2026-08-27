@@ -1,3 +1,5 @@
+import { isRnohAutolinkingDisabled } from './native';
+
 function normalizeSource(source, label) {
   if (typeof source !== 'string' || !source.trim()) {
     throw new TypeError(`${label} must start from the canonical Harmony template source.`);
@@ -95,10 +97,6 @@ include("\${EXPO_HARMONY_NATIVE_INPUTS_STAMP}")`;
 
 function renderCanonical(source, label) {
   return normalizeSource(source, label);
-}
-
-function isRnohAutolinkingDisabled(source: string): boolean {
-  return /\bautolinking\s*:\s*null\b/u.test(normalizeSource(source, 'module hvigorfile.ts'));
 }
 
 const renderArktsPackageProvider = source => renderCanonical(source, 'PackageProvider.ets');

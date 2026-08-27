@@ -82,7 +82,11 @@ async function acquirePublishLockAsync(lockPath) {
         return handle;
       } catch (cause) {
         await releasePublishLockAsync(handle, lockPath);
-        throw cause;
+        throw new HarmonyAutolinkingError(
+          'PUBLISH_FAILED',
+          'Unable to initialize the Harmony autolinking publish lock.',
+          { cause, stage: 'publish' }
+        );
       }
     } catch (cause) {
       if (cause.code === 'EEXIST' && attempt === 0 && await removeStaleLockAsync(lockPath)) continue;

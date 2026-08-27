@@ -474,14 +474,24 @@ async function linkRnohAsync(linkOptions) {
     ]);
   } catch (error) {
     const roots = [linkOptions.temporaryRoot, linkOptions.stageProjectRoot, linkOptions.projectRoot];
-    error.details = {
+    const details = {
       ...(error.details || {}),
       stdout: sanitizeOutput(result.stdout, roots),
       stderr: sanitizeOutput(result.stderr, roots),
       stdoutTruncated: result.stdoutTruncated,
       stderrTruncated: result.stderrTruncated,
     };
-    throw error;
+    throw new HarmonyAutolinkingError(
+      typeof error.code === 'string' ? error.code : 'RNOH_LINK_FAILED',
+      error.message || 'RNOH generated invalid artifacts.',
+      {
+        cause: error,
+        stage: error.stage || 'rnoh-validate',
+        packageName: error.packageName,
+        diagnostics: error.diagnostics,
+        details,
+      }
+    );
   }
 
   if (linkOptions.modules) {
@@ -496,14 +506,24 @@ async function linkRnohAsync(linkOptions) {
       await fs.promises.writeFile(artifacts.ohPackage.path, artifacts.ohPackage.content);
     } catch (error) {
       const roots = [linkOptions.temporaryRoot, linkOptions.stageProjectRoot, linkOptions.projectRoot];
-      error.details = {
+      const details = {
         ...(error.details || {}),
         stdout: sanitizeOutput(result.stdout, roots),
         stderr: sanitizeOutput(result.stderr, roots),
         stdoutTruncated: result.stdoutTruncated,
         stderrTruncated: result.stderrTruncated,
       };
-      throw error;
+      throw new HarmonyAutolinkingError(
+        typeof error.code === 'string' ? error.code : 'RNOH_LINK_FAILED',
+        error.message || 'Unable to patch RNOH artifacts.',
+        {
+          cause: error,
+          stage: error.stage || 'rnoh-validate',
+          packageName: error.packageName,
+          diagnostics: error.diagnostics,
+          details,
+        }
+      );
     }
   }
 

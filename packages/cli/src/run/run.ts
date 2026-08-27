@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { getConfig } from '@expo/config';
 import { verifyModulesAsync } from '@expo-harmony/expo-modules-autolinking';
-import { normalizeHarmonyConfig } from '@expo-harmony/prebuild-config';
+import { normalizeHarmonyConfig } from '@expo-harmony/prebuild-config/config';
 
 import { checkAsync } from '../prebuild/check';
 import {

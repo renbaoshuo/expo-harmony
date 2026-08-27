@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { getConfig } from '@expo/config';
-import { normalizeHarmonyConfig } from '@expo-harmony/prebuild-config';
+import { normalizeHarmonyConfig } from '@expo-harmony/prebuild-config/config';
 import JSON5 from 'json5';
 
 import { HarmonyCliError } from './errors';

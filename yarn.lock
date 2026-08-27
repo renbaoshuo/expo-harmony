@@ -1359,10 +1359,8 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@expo-harmony/cli@workspace:packages/cli"
   dependencies:
-    "@expo-harmony/config-plugins": "workspace:*"
     "@expo-harmony/expo-modules-autolinking": "workspace:*"
     "@expo-harmony/prebuild-config": "workspace:*"
-    "@expo-harmony/template": "workspace:*"
     "@expo/config": "npm:55.0.17"
     "@types/node": "npm:18.19.0"
     cross-spawn: "npm:^7.0.6"

@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import { HarmonyPrebuildError } from './errors';
+import { resolve as resolveTemplate } from './template';
 
 const resolveModule = createRequire(__filename).resolve;
 
@@ -40,14 +41,7 @@ function resolvePackageVersion(projectRoot, packageName) {
 }
 
 function resolveTemplateFile(relativePath) {
-  let packageJson;
-  try {
-    packageJson = resolveModule('@expo-harmony/template/package.json');
-  } catch (cause) {
-    throw new HarmonyPrebuildError('ERR_HARMONY_DEPENDENCY_MISSING', 'Unable to resolve the declared @expo-harmony/template asset package.', { cause, operation: 'resolve-dependency' });
-  }
-
-  const resolved = path.join(path.dirname(packageJson), relativePath);
+  const resolved = path.join(resolveTemplate().root, relativePath);
   if (!fs.existsSync(resolved)) {
     throw new HarmonyPrebuildError('ERR_HARMONY_DEPENDENCY_MISSING', `@expo-harmony/template is missing ${relativePath}.`, { file: resolved, operation: 'resolve-dependency' });
   }

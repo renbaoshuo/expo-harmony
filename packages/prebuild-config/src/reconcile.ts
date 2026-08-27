@@ -32,10 +32,13 @@ function upsertManagedNamed(items, name, previousName, placeholderName, create, 
   }
 
   const managedNames = new Set([name, previousManagedName]);
-  const existing = previous[0] || named[0];
-  const remaining = values.filter(item => !managedNames.has(item?.name));
-  remaining.push(create(existing && typeof existing === 'object' ? existing : {}));
-  return remaining;
+  const existingIndex = values.findIndex(item => managedNames.has(item?.name));
+  const existing = existingIndex === -1 ? undefined : values[existingIndex];
+  const next = create(existing && typeof existing === 'object' ? existing : {});
+
+  if (existingIndex === -1) return [...values, next];
+
+  return values.map((item, index) => index === existingIndex ? next : item);
 }
 
 function replaceManagedString(items, value, previousValue, placeholderValue) {

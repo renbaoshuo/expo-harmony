@@ -21,17 +21,12 @@ export function withAutolinkingMods(config, normalized, options) {
       const physicalProjectRoot = await fs.promises.realpath(logicalProjectRoot);
       const physicalHarmonyProjectPath = path.join(physicalProjectRoot, 'harmony');
       const logicalHarmonyProjectPath = path.join(logicalProjectRoot, 'harmony');
-      const modules = value._internal?.harmonyResolvedModules;
-      if (!Array.isArray(modules)) {
-        throw new TypeError('Harmony modules must be resolved before native rendering and linking.');
-      }
       const buildType = (options.buildType || process.env.EXPO_HARMONY_BUILD_TYPE || 'debug') as 'debug' | 'release';
 
       const result = await linkModulesAsync({
         projectRoot: physicalProjectRoot,
         harmonyProjectPath: physicalHarmonyProjectPath,
         buildType,
-        modules,
       });
       const cmakeWrapper = await writeExpoCmakeWrapperAsync(logicalHarmonyProjectPath);
 
