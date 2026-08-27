@@ -1,80 +1,10 @@
-import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-
-import { stableHarmonyJson } from '@expo-harmony/config-plugins';
-import JSON5 from 'json5';
 
 import { HarmonyPrebuildError } from './errors';
 import { validateCngManifest } from './manifest';
 
-async function upgradeLegacyCngManifestAsync(projectRoot, normalized, manifest) {
-  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest) || manifest.managedIdentity !== undefined) {
-    return null;
-  }
-
-  let profile;
-  let moduleJson;
-  try {
-    const [profileSource, moduleSource] = await Promise.all([
-      fs.promises.readFile(path.join(projectRoot, 'harmony/build-profile.json5'), 'utf8'),
-      fs.promises.readFile(path.join(projectRoot, 'harmony/entry/src/main/module.json5'), 'utf8'),
-    ]);
-    profile = JSON5.parse(profileSource);
-    moduleJson = JSON5.parse(moduleSource);
-  } catch (_cause) {
-    return null;
-  }
-
-  const currentConfigHash = createHash('sha256').update(stableHarmonyJson(normalized)).digest('hex');
-  const configIsUnchanged = manifest.inputs?.configHash === currentConfigHash;
-  const moduleName = configIsUnchanged ? normalized.moduleName : moduleJson?.module?.name;
-  const abilityName = configIsUnchanged ? normalized.abilityName : moduleJson?.module?.mainElement;
-  const moduleProfiles = Array.isArray(profile?.modules) ? profile.modules.filter(m => m?.name === moduleName) : [];
-  const abilities = Array.isArray(moduleJson?.module?.abilities)
-    ? moduleJson.module.abilities.filter(item => item?.name === abilityName)
-    : [];
-  const targets = Array.isArray(moduleProfiles[0]?.targets)
-    ? moduleProfiles[0].targets.filter(item => item?.name === 'default')
-    : [];
-  const products = Array.isArray(profile?.app?.products) ? profile.app.products : [];
-  const appliedProducts = Array.isArray(targets[0]?.applyToProducts)
-    ? [...new Set(targets[0].applyToProducts)]
-    : [];
-  const candidates = products.filter(item => appliedProducts.includes(item?.name));
-  const product = configIsUnchanged
-    ? candidates.find(item => item?.name === normalized.productName)
-    : candidates.length === 1 ? candidates[0] : null;
-  if (moduleProfiles.length !== 1 || targets.length !== 1 || abilities.length !== 1
-    || moduleJson?.module?.name !== moduleName
-    || moduleJson?.module?.mainElement !== abilityName
-    || !product
-    || products.filter(item => item?.name === product.name).length !== 1) {
-    return null;
-  }
-
-  const signingConfigName = typeof product.signingConfig === 'string' && product.signingConfig ? product.signingConfig : null;
-  if (manifest.signingConfigName !== undefined && manifest.signingConfigName !== signingConfigName) {
-    return null;
-  }
-
-  try {
-    return validateCngManifest({
-      ...manifest,
-      managedIdentity: {
-        abilityName,
-        moduleName,
-        productName: product.name,
-        targetName: 'default',
-      },
-      signingConfigName,
-    });
-  } catch (_cause) {
-    return null;
-  }
-}
-
-async function readPreviousCngManifestAsync(projectRoot, normalized) {
+async function readPreviousCngManifestAsync(projectRoot) {
   const file = path.join(projectRoot, '.expo/harmony/cng-manifest.json');
 
   let parsed;
@@ -85,12 +15,7 @@ async function readPreviousCngManifestAsync(projectRoot, normalized) {
     return Promise.reject(error);
   }
 
-  try {
-    return validateCngManifest(parsed, { file });
-  } catch (error) {
-    if (error.code !== 'ERR_HARMONY_MANIFEST_INVALID') return Promise.reject(error);
-    return upgradeLegacyCngManifestAsync(projectRoot, normalized, parsed);
-  }
+  return validateCngManifest(parsed, { file });
 }
 
 function findStaleConfigPlugins(previousManifest, currentPlugins) {

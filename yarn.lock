@@ -1568,7 +1568,10 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@expo-harmony/expo-constants@workspace:packages/expo-constants"
   dependencies:
+    "@expo-harmony/config-plugins": "workspace:*"
     "@expo-harmony/expo-modules-core": "workspace:*"
+    "@expo-harmony/prebuild-config": "workspace:*"
+    "@expo/config-plugins": "npm:55.0.10"
     "@react-native-oh/react-native-harmony": "npm:0.84.1"
     expo: "npm:55.0.26"
     expo-constants: "npm:55.0.17"
@@ -1577,6 +1580,7 @@ __metadata:
     react-native: "npm:0.84.1"
   peerDependencies:
     "@expo-harmony/expo-modules-core": "workspace:*"
+    "@expo-harmony/prebuild-config": "workspace:*"
     expo-constants: 55.0.17
   languageName: unknown
   linkType: soft

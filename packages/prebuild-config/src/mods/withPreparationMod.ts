@@ -8,10 +8,7 @@ import {
 } from '@expo-harmony/config-plugins';
 
 import { HarmonyPrebuildError } from '../errors';
-import {
-  ensureGitignoreEntryAsync,
-  writeExpoConstantsHeaderAsync,
-} from '../generatedFiles';
+import { ensureGitignoreEntryAsync } from '../generatedFiles';
 import { readSigningConfigFile } from '../signing';
 import {
   findStaleConfigPlugins,
@@ -23,7 +20,7 @@ function withPreparationMod(config, normalized) {
   return withHarmonyDangerousMod(config, async (value) => {
     const projectRoot = value.modRequest.projectRoot;
     const harmonyRoot = value.modRequest.platformProjectRoot;
-    const previousManifest = await readPreviousCngManifestAsync(projectRoot, normalized);
+    const previousManifest = await readPreviousCngManifestAsync(projectRoot);
     const currentPlugins = getHarmonyConfigPlugins(value);
     const stalePlugins = findStaleConfigPlugins(previousManifest, currentPlugins);
 
@@ -59,13 +56,6 @@ function withPreparationMod(config, normalized) {
     }
     await ensureGitignoreEntryAsync(gitignore, '/build-profile.json5');
     recordManagedFile(value, gitignore, 'dangerous');
-
-    const constantsHeader = await writeExpoConstantsHeaderAsync(
-      projectRoot,
-      normalized,
-      config
-    );
-    recordManagedFile(value, constantsHeader, 'dangerous');
 
     if (normalized.signingConfigFile) {
       const signing = await readSigningConfigFile(
