@@ -3,6 +3,7 @@ import {
   ManifestSchemaVersion,
   Platform,
 } from '../../config/constants';
+import type { BuildType, Manifest } from '../../types';
 import { stringifyJson } from '../../utilities/values';
 
 function cloneOhPackageName(value) {
@@ -47,8 +48,8 @@ function createManifestEntry(descriptor, buildType) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function createManifest(modules, options: Record<string, any> = {}) {
-  const buildType = options.buildType || 'debug';
+function createManifest(modules, options: Record<string, any> = {}): Manifest {
+  const buildType: BuildType = options.buildType || 'debug';
 
   return {
     schemaVersion: ManifestSchemaVersion,

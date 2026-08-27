@@ -6,6 +6,8 @@ import {
   resolveOhpmSpecifier,
   normalizeLocalOhpmSpecifier,
 } from '../ohpm/dependencies';
+import { createManifest } from '../manifest/generate';
+import { canonicalizeOhpmManifest } from '../persistence/canonicalize';
 import { normalizeSlashes } from '../../utilities/values';
 import { resolveRnohMetadata } from './packageMetadata';
 
@@ -48,42 +50,16 @@ function assertExactValues(label, expected, actual) {
 }
 
 function syncOhpmVersions(artifacts, descriptors, buildType) {
-  let manifest;
-  try {
-    manifest = JSON5.parse(artifacts.ohPackage.content);
-  } catch (cause) {
-    throw new HarmonyAutolinkingError('GENERATED_ARTIFACT_SET_MISMATCH', 'Generated oh-package.json5 is invalid.', {
-      cause,
+  const manifest = createManifest(descriptors, { buildType });
+  artifacts.ohPackage.content = canonicalizeOhpmManifest(
+    artifacts.ohPackage.content,
+    manifest,
+    {
+      errorCode: 'GENERATED_ARTIFACT_SET_MISMATCH',
+      requireManagedEntries: true,
       stage: 'rnoh-validate',
-    });
-  }
-
-  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)
-    || !manifest.dependencies || typeof manifest.dependencies !== 'object'
-    || Array.isArray(manifest.dependencies)
-    || !manifest.overrides || typeof manifest.overrides !== 'object'
-    || Array.isArray(manifest.overrides)) {
-    throw new HarmonyAutolinkingError('GENERATED_ARTIFACT_SET_MISMATCH', 'Generated oh-package.json5 is invalid.', {
-      stage: 'rnoh-validate',
-    });
-  }
-
-  for (const { descriptor, mapping } of collectOhpmDeps(descriptors, buildType)) {
-    const version = resolveOhpmSpecifier(descriptor, mapping);
-
-    for (const field of ['dependencies', 'overrides']) {
-      if (!Object.hasOwn(manifest[field], mapping.ohPackageName)) {
-        throw new HarmonyAutolinkingError(
-          'GENERATED_ARTIFACT_SET_MISMATCH',
-          `RNOH omitted the managed ${field} entry for ${mapping.ohPackageName}.`,
-          { stage: 'rnoh-validate', details: { packageName: mapping.ohPackageName, field } }
-        );
-      }
-      manifest[field][mapping.ohPackageName] = version;
     }
-  }
-
-  artifacts.ohPackage.content = `${JSON5.stringify(manifest, null, 2)}\n`;
+  ).source;
 }
 
 function verifyOhpmDependencies(artifacts, descriptors, options) {

@@ -123,6 +123,19 @@ export interface Manifest {
   readonly managedArtifacts: ReadonlyArray<string>;
 }
 
+export interface CanonicalizeAutolinkingArtifactsOptions {
+  readonly manifestSource: string;
+  readonly ohPackageSource: string;
+  readonly generatedProjectRoot: string;
+  readonly canonicalProjectRoot: string;
+}
+
+export interface CanonicalizedAutolinkingArtifacts {
+  readonly manifest: Manifest;
+  readonly manifestSource: string;
+  readonly ohPackageSource: string;
+}
+
 export interface Logger {
   debug?(message: string, details?: unknown): void;
   info?(message: string, details?: unknown): void;

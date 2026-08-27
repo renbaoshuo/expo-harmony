@@ -6,7 +6,9 @@ import JSON5 from 'json5';
 import { RnohArtifacts, RnohCliPackage } from '../../config/constants';
 import { HarmonyAutolinkingError } from '../../errors';
 import { resolveProviderSource } from '../providers/source';
-import { collectOhpmDeps, resolveOhpmSpecifier, normalizeLocalOhpmSpecifier } from '../ohpm/dependencies';
+import { createManifest } from '../manifest/generate';
+import { normalizeLocalOhpmSpecifier } from '../ohpm/dependencies';
+import { canonicalizeOhpmManifest } from '../persistence/canonicalize';
 import {
   isPathInside, pathExistsAsync, realpathExistingAsync, resolveInsideAsync,
   resolvePackageFromProject, stringifyJson, sortedUniqueStrings,
@@ -125,44 +127,22 @@ async function stageCuratedPackageAsync(stage, descriptor) {
 }
 
 async function updateOhpmManifestAsync(manifestPath, descriptors, options) {
-  const deps = collectOhpmDeps(descriptors, options.buildType);
-  let manifest;
+  let source;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    manifest = JSON5.parse(await fs.promises.readFile(manifestPath, 'utf8')) as Record<string, any>;
+    source = await fs.promises.readFile(manifestPath, 'utf8');
   } catch (cause) {
-    throw new HarmonyAutolinkingError('INVALID_OPTIONS', 'harmony/oh-package.json5 must contain a JSON5 object.', {
+    throw new HarmonyAutolinkingError('INVALID_OPTIONS', 'Unable to read harmony/oh-package.json5.', {
       cause,
       stage: 'staging',
     });
   }
+  const manifest = createManifest(descriptors, { buildType: options.buildType });
+  const canonical = canonicalizeOhpmManifest(source, manifest, {
+    previousManagedOhpmPackageNames: options.previousManagedOhpmPackageNames,
+    stage: 'staging',
+  });
 
-  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
-    throw new HarmonyAutolinkingError('INVALID_OPTIONS', 'harmony/oh-package.json5 must contain a JSON5 object.', { stage: 'staging' });
-  }
-
-  for (const field of ['dependencies', 'overrides']) {
-    if (manifest[field] !== undefined && (!manifest[field] || typeof manifest[field] !== 'object' || Array.isArray(manifest[field]))) {
-      throw new HarmonyAutolinkingError('INVALID_OPTIONS', `harmony/oh-package.json5 ${field} must be an object.`, { stage: 'staging' });
-    }
-  }
-
-  manifest.dependencies = { ...(manifest.dependencies || {}) };
-  manifest.overrides = { ...(manifest.overrides || {}) };
-  const previous = new Set<string>(options.previousManagedOhpmPackageNames || []);
-
-  for (const packageName of previous) {
-    delete manifest.dependencies[packageName];
-    delete manifest.overrides[packageName];
-  }
-
-  for (const { descriptor, mapping } of deps) {
-    const specifier = resolveOhpmSpecifier(descriptor, mapping);
-    manifest.dependencies[mapping.ohPackageName] = specifier;
-    manifest.overrides[mapping.ohPackageName] = specifier;
-  }
-
-  await fs.promises.writeFile(manifestPath, `${JSON5.stringify(manifest, null, 2)}\n`);
+  await fs.promises.writeFile(manifestPath, canonical.source);
 }
 
 async function stageProjectAsync(options) {

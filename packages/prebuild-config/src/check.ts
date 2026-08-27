@@ -4,10 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 import { getConfig } from '@expo/config';
 import { stableHarmonyJson } from '@expo-harmony/config-plugins';
-import {
-  ohpmDependenciesFromManifest,
-  readManifestAsync as readAutolinkingManifestAsync,
-} from '@expo-harmony/expo-modules-autolinking';
+import { canonicalizeAutolinkingArtifacts } from '@expo-harmony/expo-modules-autolinking';
 import JSON5 from 'json5';
 
 import { HarmonyPrebuildError } from './errors';
@@ -66,46 +63,6 @@ async function stageAutolinkingAsync(project: string, target: string): Promise<v
   const file = path.join(target, '.expo/harmony/autolinking.json');
   await fs.promises.mkdir(path.dirname(file), { recursive: true });
   await fs.promises.writeFile(file, content);
-
-  // RNOH regenerates managed dependency entries but preserves `overrides`.
-  // Drop only overrides owned by the validated previous module set; the
-  // prebuild repair step recreates them while unrelated dependencies stay intact.
-  let manifest;
-
-  try {
-    manifest = await readAutolinkingManifestAsync(source);
-  } catch (_cause) {
-    return;
-  }
-  const packages = new Set(
-    Object.keys(ohpmDependenciesFromManifest(manifest))
-  );
-
-  if (packages.size === 0) return;
-
-  const ohpm = path.join(target, 'harmony/oh-package.json5');
-  let config;
-
-  try {
-    config = JSON5.parse(await fs.promises.readFile(ohpm, 'utf8'));
-  } catch (_cause) {
-    return;
-  }
-
-  if (!config?.dependencies || !config?.overrides) return;
-
-  let changed = false;
-
-  for (const name of Object.keys(config.dependencies)) {
-    if (packages.has(name) && Object.hasOwn(config.overrides, name)) {
-      delete config.overrides[name];
-      changed = true;
-    }
-  }
-
-  if (changed) {
-    await fs.promises.writeFile(ohpm, `${JSON5.stringify(config, null, 2)}\n`);
-  }
 }
 
 async function matchesIdentity(
@@ -273,86 +230,48 @@ async function stageAsync(
   await stageSigningAsync(project, temp);
 }
 
-async function normalizeAutolinkingAsync(
+async function canonicalizeAutolinkingAsync(
   expected: string,
   project: string,
   cng: CngManifest
-) {
-  const file = path.join(expected, '.expo/harmony/autolinking.json');
-  let manifest;
+): Promise<void> {
+  const manifestFile = path.join(expected, '.expo/harmony/autolinking.json');
+  const ohpmFile = path.join(expected, 'harmony/oh-package.json5');
 
   try {
-    manifest = await readAutolinkingManifestAsync(file, { allowMissing: true });
+    const [manifestSource, ohPackageSource, generatedProjectRoot, canonicalProjectRoot]
+      = await Promise.all([
+        fs.promises.readFile(manifestFile, 'utf8'),
+        fs.promises.readFile(ohpmFile, 'utf8'),
+        fs.promises.realpath(expected),
+        fs.promises.realpath(project),
+      ]);
+    const canonical = canonicalizeAutolinkingArtifacts({
+      manifestSource,
+      ohPackageSource,
+      generatedProjectRoot,
+      canonicalProjectRoot,
+    });
+    const manifestHash = hashSha256(canonical.manifestSource);
+    const ohpmHash = hashSha256(canonical.ohPackageSource);
+
+    cng.inputs.autolinkingHash = manifestHash;
+    const manifestDescriptor = cng.managedFiles.find(
+      item => item.path === '.expo/harmony/autolinking.json'
+    );
+    const ohpmDescriptor = cng.managedFiles.find(
+      item => item.path === 'harmony/oh-package.json5'
+    );
+
+    if (manifestDescriptor) manifestDescriptor.sha256 = manifestHash;
+    if (ohpmDescriptor) ohpmDescriptor.sha256 = ohpmHash;
   } catch (error) {
     throw new HarmonyPrebuildError(
       'ERR_HARMONY_MANIFEST_DRIFT',
-      `Cannot normalize the isolated autolinking manifest: ${file}`,
-      { cause: error, file, operation: 'check' }
+      'Cannot canonicalize the isolated autolinking artifacts.',
+      { cause: error, file: manifestFile, operation: 'check' }
     );
   }
-
-  if (!manifest) return null;
-
-  const [expectedPath, projectPath] = await Promise.all([
-    fs.promises.realpath(expected),
-    fs.promises.realpath(project),
-  ]);
-
-  for (const module of manifest.modules) {
-    for (const field of ['packageRoot', 'packageLinkPath'] as const) {
-      const current = module?.[field];
-      if (typeof current === 'string' && path.isAbsolute(current)
-        && isInside(expectedPath, current)) {
-        module[field] = path.join(projectPath, path.relative(expectedPath, current));
-      }
-    }
-  }
-
-  const content = `${JSON.stringify(manifest, null, 2)}\n`;
-  const hash = hashSha256(content);
-  cng.inputs.autolinkingHash = hash;
-  const descriptor = cng.managedFiles.find(
-    item => item.path === '.expo/harmony/autolinking.json'
-  );
-
-  if (descriptor) descriptor.sha256 = hash;
-
-  return manifest;
-}
-
-async function normalizeOhpmAsync(
-  expected: string,
-  cng: CngManifest,
-  autolinking
-): Promise<void> {
-  if (!autolinking) return;
-
-  const file = path.join(expected, 'harmony/oh-package.json5');
-  let config;
-
-  try {
-    config = JSON5.parse(await fs.promises.readFile(file, 'utf8'));
-  } catch (_cause) {
-    return;
-  }
-
-  const specifiers = ohpmDependenciesFromManifest(autolinking);
-
-  for (const field of ['dependencies', 'overrides']) {
-    if (!config?.[field]) continue;
-    for (const name of Object.keys(config[field])) {
-      if (Object.hasOwn(specifiers, name)) {
-        config[field][name] = specifiers[name];
-      }
-    }
-  }
-
-  const content = `${JSON5.stringify(config, null, 2)}\n`;
-  const descriptor = cng.managedFiles.find(
-    item => item.path === 'harmony/oh-package.json5'
-  );
-
-  if (descriptor) descriptor.sha256 = hashSha256(content);
 }
 
 async function compareAsync(
@@ -360,12 +279,11 @@ async function compareAsync(
   expectedRoot: string
 ): Promise<Result> {
   const expected = await readManifestAsync(expectedRoot);
-  const autolinking = await normalizeAutolinkingAsync(
+  await canonicalizeAutolinkingAsync(
     expectedRoot,
     project,
     expected
   );
-  await normalizeOhpmAsync(expectedRoot, expected, autolinking);
 
   const actual = await readManifestAsync(project);
   const expectedFiles = new Map(expected.managedFiles.map(item => [item.path, item]));

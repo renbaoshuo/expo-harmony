@@ -2,12 +2,14 @@ import { HarmonyAutolinkingError } from './src/errors';
 import { writeProviderArtifactsAsync } from './src/harmony/providers/artifacts';
 import { linkModulesAsync } from './src/autolinking/link';
 import { localOhpmDependenciesFromManifest, ohpmDependenciesFromManifest, readManifestAsync, validateManifest } from './src/harmony/manifest';
+import { canonicalizeAutolinkingArtifacts } from './src/harmony/persistence/canonicalize';
 import { resolveModulesAsync } from './src/autolinking/resolve';
 import { searchModulesAsync } from './src/autolinking/search';
 import { verifyModulesAsync } from './src/autolinking/verify';
 
 export {
   HarmonyAutolinkingError,
+  canonicalizeAutolinkingArtifacts,
   writeProviderArtifactsAsync,
   linkModulesAsync,
   localOhpmDependenciesFromManifest,
@@ -22,6 +24,8 @@ export {
 export type {
   AutolinkingErrorJson,
   BuildType,
+  CanonicalizeAutolinkingArtifactsOptions,
+  CanonicalizedAutolinkingArtifacts,
   Diagnostic,
   DiagnosticSource,
   ExpoMetadata,

@@ -1,9 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { ExpoArtifacts, ManifestArtifact, ManifestSchemaVersion, RnohArtifacts } from '../../config/constants';
-import { isValidOhpmPackageName } from '../../metadata/descriptor';
-import { resolveRnohMetadata } from '../rnoh/packageMetadata';
+import { ExpoArtifacts, ManifestArtifact, RnohArtifacts } from '../../config/constants';
+import { ohpmDependenciesFromManifest, validateManifest } from '../manifest';
 import { pathExistsAsync } from '../../utilities/values';
 
 const ManagedSuffixes = [
@@ -35,53 +34,6 @@ function staleManifestWarning(message) {
   };
 }
 
-function ohpmPackageNamesFromManifest(manifest) {
-  if (!Array.isArray(manifest.modules)) throw new TypeError('manifest modules are missing');
-  const names = new Set<string>();
-
-  for (const entry of manifest.modules) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)
-      || typeof entry.packageName !== 'string' || !entry.packageName
-      || !entry.rnoh || typeof entry.rnoh !== 'object' || Array.isArray(entry.rnoh)
-      || !Array.isArray(entry.rnoh.harPaths)
-      || entry.rnoh.harPaths.some(harPath => typeof harPath !== 'string' || !harPath)) {
-      throw new TypeError('manifest contains an invalid module descriptor');
-    }
-    const configured = entry.rnoh.ohPackageName;
-    if (configured !== undefined && typeof configured !== 'string' && !Array.isArray(configured)) {
-      throw new TypeError('manifest contains an invalid OH package mapping');
-    }
-    if (Array.isArray(configured) && configured.some(mapping => (
-      !mapping || typeof mapping !== 'object' || Array.isArray(mapping)
-      || typeof mapping.harName !== 'string' || !mapping.harName
-      || !isValidOhpmPackageName(mapping.packageName)
-    ))) {
-      throw new TypeError('manifest contains an invalid OH package mapping');
-    }
-
-    const rnohMetadata = resolveRnohMetadata(entry);
-    for (const mapping of rnohMetadata.harMappings) {
-      if (!isValidOhpmPackageName(mapping.ohPackageName)) {
-        throw new TypeError('manifest contains an unsafe OH package specifier');
-      }
-      names.add(mapping.ohPackageName);
-    }
-
-    const providerHar = entry.expo?.providerHar;
-    if (providerHar !== undefined) {
-      if (!providerHar || typeof providerHar !== 'object' || Array.isArray(providerHar)
-        || typeof providerHar.harPath !== 'string' || !providerHar.harPath
-        || path.posix.extname(providerHar.harPath) !== '.har'
-        || !isValidOhpmPackageName(providerHar.ohPackageName)) {
-        throw new TypeError('manifest contains an invalid Provider HAR');
-      }
-      names.add(providerHar.ohPackageName);
-    }
-  }
-
-  return [...names].sort((left, right) => left.localeCompare(right, 'en'));
-}
-
 async function readPreviousAutolinkingStateAsync(projectRoot) {
   const manifestPath = path.join(projectRoot, ManifestArtifact);
 
@@ -91,22 +43,18 @@ async function readPreviousAutolinkingStateAsync(projectRoot) {
   try {
     const stat = await fs.promises.lstat(manifestPath);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new TypeError('manifest is not a regular file');
-    const manifest = JSON.parse(await fs.promises.readFile(manifestPath, 'utf8'));
-
-    if (!Number.isInteger(manifest.schemaVersion)
-      || manifest.schemaVersion < 1
-      || manifest.schemaVersion > ManifestSchemaVersion
-      || manifest.platform !== 'harmony'
-      || !Array.isArray(manifest.managedArtifacts)) {
-      throw new TypeError('manifest schema is unsupported');
-    }
+    const manifest = validateManifest(
+      JSON.parse(await fs.promises.readFile(manifestPath, 'utf8')),
+      { file: manifestPath }
+    );
     const normalized: Array<string | null> = manifest.managedArtifacts.map(normalizeManagedArtifactPath);
     if (normalized.some(value => value == null)) throw new TypeError('manifest contains an unsafe path');
     const artifacts = normalized.filter((value): value is string => value !== null);
 
     return {
       artifacts: [...new Set(artifacts)].map(relative => path.join(projectRoot, ...relative.split('/'))),
-      managedOhpmPackageNames: ohpmPackageNamesFromManifest(manifest),
+      managedOhpmPackageNames: Object.keys(ohpmDependenciesFromManifest(manifest))
+        .sort((left, right) => left.localeCompare(right, 'en')),
       warning: null,
     };
   } catch (_cause) {
@@ -120,7 +68,6 @@ async function readPreviousAutolinkingStateAsync(projectRoot) {
 
 export {
   isManagedArtifactPath,
-  ohpmPackageNamesFromManifest,
   normalizeManagedArtifactPath,
   readPreviousAutolinkingStateAsync,
 };
