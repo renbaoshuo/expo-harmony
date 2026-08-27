@@ -20,12 +20,10 @@
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "@expo-harmony/prebuild-config": "workspace:*",
     "expo-constants": "55.0.17"
   },
   "devDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "@expo-harmony/prebuild-config": "workspace:*",
     "@react-native-oh/react-native-harmony": "0.84.1",
     "expo": "55.0.26",
     "expo-constants": "55.0.17",

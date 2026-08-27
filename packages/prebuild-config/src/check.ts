@@ -3,7 +3,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 import { getConfig } from '@expo/config';
-import { stableHarmonyJson } from '@expo-harmony/config-plugins';
+import { normalizeHarmonyConfig, stableHarmonyJson } from '@expo-harmony/config-plugins';
 import { canonicalizeAutolinkingArtifacts } from '@expo-harmony/expo-modules-autolinking';
 import JSON5 from 'json5';
 
@@ -14,7 +14,6 @@ import {
   validateCngManifest,
   type CngManifest,
 } from './manifest';
-import { normalizeHarmonyConfig } from './normalizeHarmonyConfig';
 import { validateHarmonySigningConfigFile } from './signing';
 
 interface Change {

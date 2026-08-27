@@ -25,11 +25,6 @@
       "require": "./build/check.js",
       "default": "./build/check.js"
     },
-    "./config": {
-      "types": "./build/api/config.d.ts",
-      "require": "./build/api/config.js",
-      "default": "./build/api/config.js"
-    },
     "./native-project": {
       "types": "./build/native.d.ts",
       "require": "./build/native.js",

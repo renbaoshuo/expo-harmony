@@ -3,7 +3,10 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { normalizeHarmonyConfigPlugins, stableHarmonyJson } from '@expo-harmony/config-plugins';
-import type { HarmonyConfigPluginOwnership } from '@expo-harmony/config-plugins';
+import type {
+  HarmonyConfigPluginOwnership,
+  NormalizedHarmonyConfig,
+} from '@expo-harmony/config-plugins';
 
 import { HarmonyPrebuildError } from './errors';
 import {
@@ -11,7 +14,6 @@ import {
   validateHarmonyBuildDescriptor,
   type HarmonyBuildDescriptor,
 } from './buildDescriptor';
-import type { NormalizedHarmonyConfig } from './normalizeHarmonyConfig';
 import { PackageMetadata } from './packageMetadata';
 
 const GeneratorVersion = PackageMetadata.version;

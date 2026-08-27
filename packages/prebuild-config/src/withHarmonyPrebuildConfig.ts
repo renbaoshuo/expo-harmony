@@ -1,4 +1,8 @@
-import { withHarmonyBaseMods } from '@expo-harmony/config-plugins';
+import {
+  normalizeHarmonyConfig,
+  withHarmonyBaseMods,
+  type NormalizedHarmonyConfig,
+} from '@expo-harmony/config-plugins';
 import type { ConfigPlugin } from '@expo/config-plugins';
 
 import { HarmonyPrebuildError } from './errors';
@@ -7,10 +11,6 @@ import { withEntryMods } from './mods/withEntryMods';
 import { withPreparationMod } from './mods/withPreparationMod';
 import { withProjectMods } from './mods/withProjectMods';
 import { withSourceMods } from './mods/withSourceMods';
-import {
-  normalizeHarmonyConfig,
-  type NormalizedHarmonyConfig,
-} from './normalizeHarmonyConfig';
 
 interface HarmonyPrebuildOptions {
   autolinking?: boolean;
@@ -32,8 +32,6 @@ const withHarmonyPrebuildConfig: ConfigPlugin<HarmonyPrebuildOptions> = (config,
   }
 
   const normalized = normalizeHarmonyConfig(config);
-  config._internal ??= {};
-  config._internal.harmonyNormalizedConfig = normalized;
   config = applyHarmonyMods(config, normalized, options);
   return withHarmonyBaseMods(config);
 };

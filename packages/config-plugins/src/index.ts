@@ -14,6 +14,8 @@ export type {
 } from './config';
 export { HarmonyConfigPluginError } from './errors';
 export { stableJson as stableHarmonyJson } from './files';
+export { HarmonySdkVersions, normalizeHarmonyConfig } from './normalizeConfig';
+export type { HarmonyExpoConfig, NormalizedHarmonyConfig } from './normalizeConfig';
 export {
   HarmonyModNames as HARMONY_MOD_NAMES,
   recordManagedFile,

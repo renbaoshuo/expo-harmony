@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import { getConfig } from '@expo/config';
-import { normalizeHarmonyConfig } from '@expo-harmony/prebuild-config/config';
+import { normalizeHarmonyConfig } from '@expo-harmony/config-plugins';
 import { isRnohAutolinkingDisabled } from '@expo-harmony/prebuild-config/native-project';
 import { validateHarmonySigningConfigFile } from '@expo-harmony/prebuild-config/signing';
 

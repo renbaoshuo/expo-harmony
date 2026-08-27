@@ -1,6 +1,11 @@
-import type { ExpoConfigWithHarmony, HarmonyConfig, HarmonyDeviceType } from '@expo-harmony/config-plugins';
-
-import { HarmonyPrebuildError } from './errors';
+import type {
+  ExpoConfigWithHarmony,
+  HarmonyConfig,
+  HarmonyDeviceType,
+  HarmonyPermission,
+  HarmonySkill,
+} from './config';
+import { HarmonyConfigPluginError } from './errors';
 
 type HarmonyExpoConfig = ExpoConfigWithHarmony;
 
@@ -49,7 +54,7 @@ const HarmonySdkVersions = new Map([
   [24, '6.1.1(24)'],
 ]);
 
-class HarmonyConfigError extends HarmonyPrebuildError {
+class HarmonyConfigError extends HarmonyConfigPluginError {
   constructor(message: string) {
     super('ERR_HARMONY_CONFIG_INVALID', message, { operation: 'normalize-config' });
     this.name = 'HarmonyConfigError';
@@ -147,7 +152,7 @@ function normalizeStringArray<T extends string = string>(
   return output;
 }
 
-function normalizePermission(permission) {
+function normalizePermission(permission: HarmonyPermission) {
   if (!permission || typeof permission !== 'object') {
     throw new HarmonyConfigError('harmony.permissions entries must be objects.');
   }
@@ -181,7 +186,7 @@ function normalizePermission(permission) {
   return result;
 }
 
-function normalizeSkill(skill) {
+function normalizeSkill(skill: HarmonySkill) {
   if (!skill || typeof skill !== 'object') {
     throw new HarmonyConfigError('harmony.skills entries must be objects.');
   }

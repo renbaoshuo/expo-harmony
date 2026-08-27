@@ -6,11 +6,11 @@ const path = require('node:path');
 const { createRunOncePlugin } = require('@expo/config-plugins');
 const {
   HarmonyConfigPluginError,
+  normalizeHarmonyConfig,
   recordManagedFile,
   registerHarmonyConfigPlugin,
   withHarmonyDangerousMod,
 } = require('@expo-harmony/config-plugins');
-const { normalizeHarmonyConfig } = require('@expo-harmony/prebuild-config/config');
 
 const pkg = require('../package.json');
 

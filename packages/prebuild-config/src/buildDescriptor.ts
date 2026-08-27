@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import type { NormalizedHarmonyConfig } from './normalizeHarmonyConfig';
+import type { NormalizedHarmonyConfig } from '@expo-harmony/config-plugins';
 
 const BuildDescriptorSchemaVersion = 1;
 const BuildModes = Object.freeze(['debug', 'release'] as const);

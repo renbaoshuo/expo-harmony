@@ -11,11 +11,6 @@ export {
 } from './buildDescriptor';
 export { HarmonyPrebuildError } from './errors';
 export { createCngManifest, validateCngManifest, type CngManifest } from './manifest';
-export {
-  normalizeHarmonyConfig,
-  type HarmonyExpoConfig,
-  type NormalizedHarmonyConfig,
-} from './normalizeHarmonyConfig';
 export { isRnohAutolinkingDisabled } from './native';
 export { validateHarmonySigningConfigFile, type HarmonySigningConfig } from './signing';
 export { withHarmonyPrebuildConfig } from './withHarmonyPrebuildConfig';
