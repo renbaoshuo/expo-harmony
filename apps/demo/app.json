@@ -11,9 +11,25 @@
     "jsEngine": "hermes",
     "platforms": ["ios", "android"],
     "plugins": [
-      "@expo-harmony/expo-constants",
       "expo-router",
+      [
+        "expo-font",
+        {
+          "fonts": [
+            "./node_modules/@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/AntDesign.ttf"
+          ]
+        }
+      ],
+      "@expo-harmony/expo-constants",
       "@expo-harmony/expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#F2F2F7",
+          "image": "./assets/app-icon.svg",
+          "resizeMode": "contain"
+        }
+      ],
       [
         "@expo-harmony/expo-splash-screen",
         {
@@ -22,7 +38,15 @@
           "resizeMode": "contain"
         }
       ],
+      "expo-system-ui",
       "@expo-harmony/expo-system-ui",
+      [
+        "expo-navigation-bar",
+        {
+          "barStyle": "dark",
+          "visibility": "visible"
+        }
+      ],
       [
         "@expo-harmony/expo-navigation-bar",
         {
@@ -32,9 +56,19 @@
           "visibility": "visible"
         }
       ],
+      "expo-sharing",
       "@expo-harmony/expo-sharing",
+      "expo-background-fetch",
       "@expo-harmony/expo-background-fetch",
+      "expo-background-task",
       "@expo-harmony/expo-background-task",
+      [
+        "expo-audio",
+        {
+          "enableBackgroundPlayback": true,
+          "enableBackgroundRecording": true
+        }
+      ],
       [
         "@expo-harmony/expo-audio",
         {
@@ -72,17 +106,7 @@
         { "name": "ohos.permission.GET_NETWORK_INFO" }
       ],
       "backgroundColor": "#F2F2F7",
-      "userInterfaceStyle": "light",
-      "fonts": [
-        {
-          "fontFamily": "AntDesign",
-          "fontDefinitions": [
-            {
-              "path": "./node_modules/@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/AntDesign.ttf"
-            }
-          ]
-        }
-      ]
+      "userInterfaceStyle": "light"
     }
   }
 }
