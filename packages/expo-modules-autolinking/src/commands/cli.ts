@@ -4,7 +4,6 @@ import { HarmonyAutolinkingError } from '../errors';
 import { ToolVersion } from '../config/constants';
 import { stringifyJson } from '../utilities/values';
 
-import { registerGenerateModulesProviderCommand } from './generateModulesProvider';
 import { registerLinkCommand } from './link';
 import { registerResolveCommand } from './resolve';
 import { registerSearchCommand } from './search';
@@ -26,7 +25,6 @@ function createProgram(io, state) {
   registerSearchCommand(program, io);
   registerResolveCommand(program, io);
   registerVerifyCommand(program, io, state);
-  registerGenerateModulesProviderCommand(program, io);
   registerLinkCommand(program, io);
   return program;
 }
@@ -55,4 +53,4 @@ async function runCliAsync(argv: string[], io: Record<string, any> = {}): Promis
   }
 }
 
-export { createProgram, runCliAsync };
+export { runCliAsync };

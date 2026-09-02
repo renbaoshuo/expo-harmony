@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/renbaoshuo/expo-harmony/schemas/expo-module-harmony.json",
+  "title": "Expo Module Harmony metadata",
+  "type": "object",
+  "properties": {
+    "modules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/arkTsIdentifier" },
+      "uniqueItems": true,
+      "default": [],
+      "description": "ArkTS Expo Module classes exported by the conventional Harmony library."
+    },
+    "rootViewComponents": { "$ref": "#/$defs/arkTsIdentifiers" }
+  },
+  "$defs": {
+    "arkTsIdentifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_$][A-Za-z0-9_$]*$"
+    },
+    "arkTsIdentifiers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/arkTsIdentifier" },
+      "uniqueItems": true,
+      "default": []
+    }
+  }
+}

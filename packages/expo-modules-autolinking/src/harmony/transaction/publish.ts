@@ -283,7 +283,5 @@ async function publishArtifactsAsync(options) {
 }
 
 export {
-  acquirePublishLockAsync,
-  assertSafeTargetAsync,
   publishArtifactsAsync,
 };

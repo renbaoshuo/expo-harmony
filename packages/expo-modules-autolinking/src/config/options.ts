@@ -169,8 +169,7 @@ async function normalizeOptionsAsync(rawOptions: Record<string, any> = {}) {
   }
 
   const searchPaths = uniqueStrings(paths);
-  const configuredDir = selectConfiguredValue(rawOptions, platform, shared, 'nativeModulesDir', './modules');
-  const rawDir = configuredDir === null ? './modules' : configuredDir;
+  const rawDir = selectConfiguredValue(rawOptions, platform, shared, 'nativeModulesDir', './modules');
   let nativeDir = normalizeNativeModulesDirectory(rawDir, projectRoot);
 
   if (nativeDir && fs.existsSync(nativeDir)) {
@@ -191,7 +190,6 @@ async function normalizeOptionsAsync(rawOptions: Record<string, any> = {}) {
 
 export {
   assertSafeRnohPackageList,
-  normalizeBuildType,
   normalizeOptionsAsync,
   normalizeModuleOverrides,
 };

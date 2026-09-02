@@ -4,7 +4,6 @@ import path from 'node:path';
 const Platform = 'harmony';
 const RnohCliPackage = '@react-native-oh/react-native-harmony-cli';
 const ToolVersion = JSON.parse(readFileSync(path.resolve(__dirname, '../../../package.json'), 'utf8')).version;
-const ExpoModulesCoreCmakeTarget = 'expo_harmony__expo_modules_core';
 const ManifestSchemaVersion = 3;
 
 const RnohArtifacts = Object.freeze({
@@ -15,8 +14,6 @@ const RnohArtifacts = Object.freeze({
 });
 
 const ExpoArtifacts = Object.freeze({
-  provider: 'entry/src/main/cpp/generated/ExpoModulesAutolinkingProvider.cpp',
-  cmake: 'entry/src/main/cpp/generated/expo-modules-autolinking.cmake',
   hostProvider: 'entry/src/main/ets/generated/ExpoHarmonyHostProvider.ets',
 });
 
@@ -37,7 +34,6 @@ const ManagedArtifacts = managedArtifactsForHarmonyRoot('harmony');
 
 export {
   ExpoArtifacts,
-  ExpoModulesCoreCmakeTarget,
   ManagedArtifacts,
   ManifestArtifact,
   ManifestSchemaVersion,

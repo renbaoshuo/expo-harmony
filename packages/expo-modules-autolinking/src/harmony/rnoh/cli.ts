@@ -51,15 +51,9 @@ async function resolveCliAsync(cliOptions) {
     field: 'project-local react-native executable',
     stage: 'rnoh-preflight',
   });
-  return {
-    executable,
-    packageJsonPath: pkg,
-    pluginRoot,
-    projectRoot,
-  };
+  return executable;
 }
 
 export {
   resolveCliAsync,
-  findPackageJson,
 };

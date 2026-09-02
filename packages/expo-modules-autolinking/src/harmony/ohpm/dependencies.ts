@@ -1,11 +1,21 @@
 import path from 'node:path';
 
-import { resolveProviderSources } from '../providers/source';
 import { resolveRnohMetadata } from '../rnoh/packageMetadata';
 import { normalizeSlashes } from '../../utilities/values';
 
-function collectOhpmDeps(descriptors, buildType = 'debug') {
+function collectOhpmDeps(descriptors) {
   const dependencies = new Map();
+
+  for (const descriptor of descriptors) {
+    if (!descriptor.arkTs) continue;
+    dependencies.set(descriptor.arkTs.ohPackageName, {
+      descriptor,
+      mapping: {
+        harPath: descriptor.arkTs.harPath,
+        ohPackageName: descriptor.arkTs.ohPackageName,
+      },
+    });
+  }
 
   for (const descriptor of descriptors.filter(item => item.rnoh.harPaths.length > 0)) {
     for (const mapping of resolveRnohMetadata(descriptor).harMappings) {
@@ -13,29 +23,24 @@ function collectOhpmDeps(descriptors, buildType = 'debug') {
     }
   }
 
-  for (const source of resolveProviderSources(descriptors, buildType)) {
-    const existing = dependencies.get(source.ohPackageName);
-    if (existing
-      && existing.descriptor.packageRoot === source.descriptor.packageRoot
-      && existing.mapping.harPath === source.harPath) {
-      continue;
-    }
-    dependencies.set(source.ohPackageName, {
-      descriptor: source.descriptor,
-      mapping: {
-        harPath: source.harPath,
-        ohPackageName: source.ohPackageName,
-        ...(source.version ? { version: source.version } : {}),
-      },
-    });
-  }
-
   return [...dependencies.values()].sort((left, right) => {
     return left.mapping.ohPackageName.localeCompare(right.mapping.ohPackageName, 'en');
   });
 }
 
-function resolveOhpmSpecifier(descriptor, mapping) {
+function resolveOhpmSpecifier(
+  descriptor,
+  mapping,
+  options: { harmonyProjectPath?: string; nodeModulesPath?: string } = {}
+) {
+  if (options.harmonyProjectPath) {
+    const packageRoot = options.nodeModulesPath
+      ? path.join(options.nodeModulesPath, ...descriptor.packageName.split('/'))
+      : descriptor.packageLinkPath;
+    const target = path.join(packageRoot, ...mapping.harPath.split('/'));
+    const relative = normalizeSlashes(path.relative(options.harmonyProjectPath, target));
+    return relative.startsWith('.') ? relative : `./${relative}`;
+  }
   return mapping.version || descriptor.packageVersion;
 }
 

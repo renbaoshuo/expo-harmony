@@ -5,10 +5,10 @@ import type { VerificationResult, VerifyOptions } from '../types';
 import { HarmonyAutolinkingError } from '../errors';
 import { HostMetadataFields } from '../metadata/host';
 import { createDescriptorFromSearchRecordAsync } from '../metadata/descriptor';
-import { providerAlias } from '../harmony/providers/names';
 import { searchModulesAsync } from './search';
 import { compareModuleDescriptors } from './resolve';
 import { resolveRnohMetadata } from '../harmony/rnoh/packageMetadata';
+import { moduleRegistrationId } from '../harmony/providers/host';
 import { compareText, emitLog, isObject, resolvePackageFromProject, sortedUniqueStrings } from '../utilities/values';
 
 function diagnosticFromError(error, fallback) {
@@ -62,20 +62,11 @@ function conflictDiagnostic(code, label, value, entries, packageName?: string, s
 
 function collectDescriptorConflicts(descriptors) {
   const diagnostics = [];
-  const packages = new Map();
-  const ids = new Map();
-  const classes = new Map();
-  const aliases = new Map();
-  const idCase = new Map();
-  const headerCase = new Map();
+  const registrations = new Map();
   const oh = new Map();
-  const ohCase = new Map();
-  const ets = new Map();
-  const etsCase = new Map();
-  const cpp = new Map();
-  const cppCase = new Map();
-  const cmake = new Map();
-  const cmakeCase = new Map();
+  const rnohCmakeTargets = new Map();
+  const rnohEtsSymbols = new Map();
+  const rnohCppSymbols = new Map();
 
   function push(map, key, source, value = key) {
     const entries = map.get(key) || [];
@@ -84,87 +75,61 @@ function collectDescriptorConflicts(descriptors) {
   }
 
   for (const descriptor of descriptors) {
-    push(packages, descriptor.packageName, diagnosticSource(descriptor));
-    for (const provider of descriptor.expo.providers) {
-      const source = diagnosticSource(descriptor, { field: `provider:${provider.identifier}` });
-      push(ids, provider.identifier, source);
-      push(idCase, provider.identifier.toLowerCase(), source, provider.identifier);
-      push(classes, provider.className, source);
-      push(aliases, providerAlias(provider), source);
-      push(headerCase, provider.header.toLowerCase(), source, provider.header);
-      push(cmake, provider.cmakeTargetName, source);
-      push(cmakeCase, provider.cmakeTargetName.toLowerCase(), source, provider.cmakeTargetName);
+    if (descriptor.arkTs) {
+      const arkTs = descriptor.arkTs;
+      push(oh, arkTs.ohPackageName, diagnosticSource(descriptor, {
+        field: `HAR:${arkTs.harPath}`,
+      }), `${descriptor.packageRoot}\0${arkTs.harPath}`);
+      for (const moduleClass of descriptor.harmony.modules) {
+        const registrationId = moduleRegistrationId(arkTs.ohPackageName, moduleClass);
+        push(registrations, registrationId, diagnosticSource(descriptor, {
+          field: `module:${moduleClass}`,
+        }));
+      }
     }
-
-    if (descriptor.expo.providerHar) {
-      push(oh, descriptor.expo.providerHar.ohPackageName, diagnosticSource(descriptor, {
-        field: `providerHar:${descriptor.expo.providerHar.harPath}`,
-      }), `${descriptor.packageRoot}\0${descriptor.expo.providerHar.harPath}`);
-      push(ohCase, descriptor.expo.providerHar.ohPackageName.toLowerCase(), diagnosticSource(descriptor, {
-        field: `providerHar:${descriptor.expo.providerHar.harPath}`,
-      }), descriptor.expo.providerHar.ohPackageName);
-    }
-
     if (descriptor.rnoh.harPaths.length > 0) {
       const rnohMetadata = resolveRnohMetadata(descriptor);
+      const packageSource = `${descriptor.packageRoot}\0${rnohMetadata.harMappings
+        .map(mapping => mapping.harPath)
+        .join('\0')}`;
       for (const mapping of rnohMetadata.harMappings) {
         push(oh, mapping.ohPackageName, diagnosticSource(descriptor, {
           field: `HAR:${mapping.harPath}`,
         }), `${descriptor.packageRoot}\0${mapping.harPath}`);
-        push(ohCase, mapping.ohPackageName.toLowerCase(), diagnosticSource(descriptor, {
-          field: `HAR:${mapping.harPath}`,
-        }), mapping.ohPackageName);
       }
-      push(ets, rnohMetadata.etsPackageClassName, diagnosticSource(descriptor, { field: 'etsPackageClassName' }));
-      push(etsCase, rnohMetadata.etsPackageClassName.toLowerCase(), diagnosticSource(descriptor, { field: 'etsPackageClassName' }), rnohMetadata.etsPackageClassName);
-      push(cpp, rnohMetadata.cppPackageClassName, diagnosticSource(descriptor, { field: 'cppPackageClassName' }));
-      push(cppCase, rnohMetadata.cppPackageClassName.toLowerCase(), diagnosticSource(descriptor, { field: 'cppPackageClassName' }), rnohMetadata.cppPackageClassName);
-      push(cmake, rnohMetadata.cmakeLibraryTargetName, diagnosticSource(descriptor, { field: 'cmakeLibraryTargetName' }));
-      push(cmakeCase, rnohMetadata.cmakeLibraryTargetName.toLowerCase(), diagnosticSource(descriptor, { field: 'cmakeLibraryTargetName' }), rnohMetadata.cmakeLibraryTargetName);
+      push(rnohEtsSymbols, rnohMetadata.etsPackageClassName, diagnosticSource(descriptor, {
+        field: 'etsPackageClassName',
+      }), packageSource);
+      push(rnohCppSymbols, rnohMetadata.cppPackageClassName, diagnosticSource(descriptor, {
+        field: 'cppPackageClassName',
+      }), packageSource);
+      push(rnohCmakeTargets, rnohMetadata.cmakeLibraryTargetName, diagnosticSource(descriptor, {
+        field: 'cmakeLibraryTargetName',
+      }), packageSource);
     }
   }
 
-  for (const [packageName, entries] of packages) {
-    const revisions = new Set(entries.map(entry => `${entry.source.packageVersion}\0${entry.source.packageRoot}`));
-    if (revisions.size > 1) {
-      diagnostics.push(conflictDiagnostic(
-        'DUPLICATE_MODULE',
-        'npm package',
-        packageName,
-        entries,
-        packageName
-      ));
-    }
-  }
-
-  for (const [value, entries] of ids) {
+  for (const [value, entries] of registrations) {
     if (entries.length > 1) {
-      diagnostics.push(conflictDiagnostic('DUPLICATE_PROVIDER', 'Provider identifier', value, entries));
+      diagnostics.push(conflictDiagnostic('DUPLICATE_MODULE', 'ArkTS module registration', value, entries));
     }
   }
 
-  for (const [value, entries] of classes) {
-    if (entries.length > 1) {
-      diagnostics.push(conflictDiagnostic('DUPLICATE_PROVIDER', 'Provider C++ class', value, entries));
-    }
-  }
-
-  for (const [value, entries] of aliases) {
-    if (entries.length > 1) {
-      diagnostics.push(conflictDiagnostic('DUPLICATE_PROVIDER', 'generated Provider alias', value, entries));
-    }
-  }
-
-  for (const [value, entries] of idCase) {
+  for (const [value, entries] of rnohCmakeTargets) {
     if (new Set(entries.map(entry => entry.value)).size > 1) {
-      diagnostics.push(conflictDiagnostic('DUPLICATE_PROVIDER', 'case-folded Provider identifier', value, entries));
+      diagnostics.push(conflictDiagnostic('DUPLICATE_MODULE', 'CMake target', value, entries));
     }
   }
 
-  for (const [value, entries] of headerCase) {
-    if (new Set(entries.map(entry => entry.value)).size > 1
-      || new Set(entries.map(entry => entry.source.packageRoot)).size > 1) {
-      diagnostics.push(conflictDiagnostic('DUPLICATE_PROVIDER', 'case-folded Provider header', value, entries));
+  for (const [value, entries] of rnohEtsSymbols) {
+    if (new Set(entries.map(entry => entry.value)).size > 1) {
+      diagnostics.push(conflictDiagnostic('DUPLICATE_MODULE', 'ETS Package class', value, entries));
+    }
+  }
+
+  for (const [value, entries] of rnohCppSymbols) {
+    if (new Set(entries.map(entry => entry.value)).size > 1) {
+      diagnostics.push(conflictDiagnostic('DUPLICATE_MODULE', 'C++ Package class', value, entries));
     }
   }
 
@@ -174,41 +139,6 @@ function collectDescriptorConflicts(descriptors) {
     }
   }
 
-  for (const [value, entries] of ohCase) {
-    if (new Set(entries.map(entry => entry.value)).size > 1) {
-      diagnostics.push(conflictDiagnostic('DUPLICATE_MODULE', 'case-folded OH package', value, entries));
-    }
-  }
-
-  for (const [value, entries] of ets) {
-    if (new Set(entries.map(entry => entry.source.packageRoot)).size > 1) {
-      diagnostics.push(conflictDiagnostic('DUPLICATE_MODULE', 'ETS Package class', value, entries));
-    }
-  }
-
-  for (const [value, entries] of cpp) {
-    if (new Set(entries.map(entry => entry.source.packageRoot)).size > 1) {
-      diagnostics.push(conflictDiagnostic('DUPLICATE_MODULE', 'C++ Package class', value, entries));
-    }
-  }
-
-  for (const [value, entries] of cmake) {
-    if (new Set(entries.map(entry => entry.source.packageRoot)).size > 1) {
-      diagnostics.push(conflictDiagnostic('DUPLICATE_MODULE', 'CMake target', value, entries));
-    }
-  }
-
-  for (const [label, values] of [
-    ['case-folded ETS Package class', etsCase],
-    ['case-folded C++ Package class', cppCase],
-    ['case-folded CMake target', cmakeCase],
-  ]) {
-    for (const [value, entries] of values) {
-      if (new Set(entries.map(entry => entry.value)).size > 1) {
-        diagnostics.push(conflictDiagnostic('DUPLICATE_MODULE', label, value, entries));
-      }
-    }
-  }
   return diagnostics;
 }
 
@@ -262,14 +192,8 @@ function searchRecordFromDescriptor(descriptor, declared) {
       stage: 'verify',
     });
   }
-  if (!isObject(descriptor.expo) || !Array.isArray(descriptor.expo.providers)) {
-    throw new HarmonyAutolinkingError('INVALID_METADATA', 'descriptor.expo.providers must be an array.', {
-      packageName: descriptor.packageName,
-      stage: 'verify',
-    });
-  }
-  if ('anchorHeader' in descriptor.expo || 'anchorSymbol' in descriptor.expo) {
-    throw new HarmonyAutolinkingError('INVALID_METADATA', 'descriptor.expo uses the unsupported anchor registration contract.', {
+  if (!isObject(descriptor.expo) || !isObject(descriptor.harmony)) {
+    throw new HarmonyAutolinkingError('INVALID_METADATA', 'descriptor.expo and descriptor.harmony must be objects.', {
       packageName: descriptor.packageName,
       stage: 'verify',
     });
@@ -282,6 +206,9 @@ function searchRecordFromDescriptor(descriptor, declared) {
   }
 
   const host = HostMetadataFields.some(field => descriptor.expo[field]?.length > 0);
+  const modules = Array.isArray(descriptor.harmony.modules)
+    ? [...descriptor.harmony.modules]
+    : [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rnoh: Record<string, any> = {};
   if (descriptor.rnoh.ohPackageName !== undefined) {
@@ -309,24 +236,16 @@ function searchRecordFromDescriptor(descriptor, declared) {
     packageVersion: descriptor.packageVersion,
     packageRoot: descriptor.packageRoot,
     source: descriptor.source,
-    supportsHarmony: descriptor.expo.providers.length > 0 || host,
-    expoModuleConfig: descriptor.expo.providers.length > 0 || host
+    supportsHarmony: modules.length > 0 || host,
+    expoModuleConfig: modules.length > 0 || host
       ? {
           platforms: ['harmony'],
           harmony: {
+            modules,
             ...Object.fromEntries(HostMetadataFields.map(field => [
               field,
               [...(descriptor.expo[field] || [])],
             ])),
-            ...(descriptor.expo.providerHar
-              ? {
-                  providerHar: {
-                    ...descriptor.expo.providerHar,
-                    harPath: String(descriptor.expo.providerHar.harPath).replace(/\\/g, '/'),
-                  },
-                }
-              : {}),
-            providers: descriptor.expo.providers,
           },
         }
       : null,
@@ -337,14 +256,15 @@ function searchRecordFromDescriptor(descriptor, declared) {
   };
 }
 
-async function validateDescriptorAsync(descriptor) {
+async function validateDescriptorAsync(descriptor, buildType) {
   if (!isObject(descriptor) || !isObject(descriptor.rnoh)) {
-    return createDescriptorFromSearchRecordAsync(searchRecordFromDescriptor(descriptor, []));
+    return createDescriptorFromSearchRecordAsync(searchRecordFromDescriptor(descriptor, []), buildType);
   }
 
   const declared = normalizeDescriptorHarPaths(descriptor);
   const normalized = await createDescriptorFromSearchRecordAsync(
-    searchRecordFromDescriptor(descriptor, declared)
+    searchRecordFromDescriptor(descriptor, declared),
+    buildType
   );
 
   if (normalized.rnoh.harPaths.length !== declared.length
@@ -395,11 +315,12 @@ async function verifyModulesAsync(options: VerifyOptions = {}): Promise<Verifica
 
   const descriptors = [];
   const diagnostics = [];
+  const buildType = searchResult?.options.buildType || options.buildType || 'debug';
 
   if (inputs !== undefined) {
     for (const input of inputs) {
       try {
-        descriptors.push(await validateDescriptorAsync(input));
+        descriptors.push(await validateDescriptorAsync(input, buildType));
       } catch (error) {
         diagnostics.push(diagnosticFromError(error, input?.packageName));
       }
@@ -412,7 +333,7 @@ async function verifyModulesAsync(options: VerifyOptions = {}): Promise<Verifica
     });
     for (const record of records) {
       try {
-        descriptors.push(await createDescriptorFromSearchRecordAsync(record));
+        descriptors.push(await createDescriptorFromSearchRecordAsync(record, buildType));
       } catch (error) {
         diagnostics.push(diagnosticFromError(error, record.packageName));
       }
@@ -489,7 +410,6 @@ function assertVerificationSucceeded(result, stage = 'verify') {
 }
 
 export {
-  compareDiagnostics,
   assertVerificationSucceeded,
   verifyModulesAsync,
 };

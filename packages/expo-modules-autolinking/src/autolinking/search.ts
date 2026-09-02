@@ -5,7 +5,6 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type { SearchOptions, SearchResult } from '../types';
 import { Platform } from '../config/constants';
-import { HostMetadataFields } from '../metadata/host';
 import { HarmonyAutolinkingError } from '../errors';
 import { normalizeModuleOverrides, normalizeOptionsAsync } from '../config/options';
 import { compareText, emitLog, isObject, isPathInside, pathExistsAsync, readJsonAsync } from '../utilities/values';
@@ -26,18 +25,14 @@ function supportsHarmony(config) {
 }
 
 function hasHarmonyExpoMetadata(config) {
-  if (!supportsHarmony(config) || !isObject(config.harmony)) return false;
-  return ['providers', 'providerHar', ...HostMetadataFields].some(field => config.harmony[field] !== undefined);
+  return supportsHarmony(config);
 }
 
 async function readExpoModuleConfigAsync(packageRoot) {
-  for (const filename of ['expo-module.config.json', 'unimodule.json']) {
-    const target = path.join(packageRoot, filename);
-    if (await pathExistsAsync(target)) {
-      return readJsonAsync(target, 'INVALID_METADATA', 'search');
-    }
-  }
-  return null;
+  const target = path.join(packageRoot, 'expo-module.config.json');
+  return await pathExistsAsync(target)
+    ? readJsonAsync(target, 'INVALID_METADATA', 'search')
+    : null;
 }
 
 function nodeModulesDepth(originPath) {
@@ -370,8 +365,5 @@ async function searchModulesAsync(rawOptions: SearchOptions = {}): Promise<Searc
 }
 
 export {
-  loadOverridesAsync,
-  loadUpstreamAutolinkingApi,
-  mergeRevisions,
   searchModulesAsync,
 };

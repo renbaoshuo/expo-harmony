@@ -14,6 +14,8 @@ import { isObject, isPathInside, stringifyJson } from '../../utilities/values';
 interface CanonicalizeOhpmManifestOptions {
   previousManagedOhpmPackageNames?: ReadonlyArray<string>;
   requireManagedEntries?: boolean;
+  harmonyProjectPath?: string;
+  nodeModulesPath?: string;
   errorCode?: string;
   stage?: string;
 }
@@ -76,7 +78,10 @@ function canonicalizeOhpmManifest(
     }
   }
 
-  const specifiers = ohpmDependenciesFromManifest(manifest);
+  const specifiers = ohpmDependenciesFromManifest(manifest, {
+    harmonyProjectPath: options.harmonyProjectPath,
+    nodeModulesPath: options.nodeModulesPath,
+  });
   const currentNames = Object.keys(specifiers).sort((left, right) => left.localeCompare(right, 'en'));
   const managedNames = new Set([
     ...(options.previousManagedOhpmPackageNames || []),
@@ -147,6 +152,5 @@ function canonicalizeAutolinkingArtifacts(
 
 export {
   canonicalizeAutolinkingArtifacts,
-  canonicalizeAutolinkingManifest,
   canonicalizeOhpmManifest,
 };

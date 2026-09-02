@@ -1,5 +1,4 @@
 import { createRequire } from 'node:module';
-import * as nodeCrypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -160,10 +159,6 @@ function normalizeStringArray(value, field, options: Record<string, any> = {}) {
   return [...new Set(values)];
 }
 
-function sha256(value) {
-  return nodeCrypto.createHash('sha256').update(value).digest('hex');
-}
-
 function sanitizeOutput(value, roots = [], limit = 8192) {
   let result = String(value || '');
 
@@ -188,7 +183,6 @@ export {
   requireNonEmptyString,
   resolveInsideAsync,
   sanitizeOutput,
-  sha256,
   stringifyJson,
   sortedUniqueStrings,
   normalizeStringArray,

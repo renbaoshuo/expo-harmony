@@ -59,18 +59,9 @@ function resolveHarPackageMappings(descriptor) {
     }));
   }
 
-  if (!Array.isArray(configured)) {
-    throw new HarmonyAutolinkingError(
-      'INVALID_METADATA',
-      'RNOH metadata must declare ohPackageName as a string or a complete HAR mapping array.',
-      { packageName: descriptor.packageName, stage: 'metadata' }
-    );
-  }
-
-  const mappings = new Map(configured.map(mapping => [mapping.harName, mapping]));
   const defaultName = defaultOhPackageNameForNpmPackage(descriptor.packageName);
   return harPaths.map((harPath) => {
-    const mapping = mappings.get(path.basename(harPath));
+    const mapping = configured.find(item => item.harName === path.basename(harPath));
     if (!mapping) return {
       harPath,
       ohPackageName: ohPackageNameForHar(defaultName, harPath, harPaths.length),
@@ -85,6 +76,15 @@ function resolveHarPackageMappings(descriptor) {
 
 function resolveRnohMetadata(descriptor) {
   const pkg = defaultPackageClassName(descriptor.packageName);
+  if ((descriptor.rnoh.etsPackageClassName === undefined
+      || descriptor.rnoh.cppPackageClassName === undefined)
+    && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(pkg)) {
+    throw new HarmonyAutolinkingError(
+      'INVALID_METADATA',
+      'The npm package name cannot produce a valid default RNOH package class; configure the package class names explicitly.',
+      { packageName: descriptor.packageName, stage: 'metadata' }
+    );
+  }
 
   return {
     packageName: descriptor.packageName,
@@ -101,6 +101,5 @@ export {
   defaultCmakeTargetForNpmPackage,
   defaultOhPackageNameForNpmPackage,
   ohPackageNameForHar,
-  resolveHarPackageMappings,
   resolveRnohMetadata,
 };

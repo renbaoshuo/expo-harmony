@@ -11,25 +11,19 @@ function cloneOhPackageName(value) {
   return value;
 }
 
-function createManifestEntry(descriptor, buildType) {
-  const providers = descriptor.expo.providers
-    .filter(provider => buildType !== 'release' || !provider.debugOnly)
-    .map(provider => ({ ...provider }));
-
+function createManifestEntry(descriptor) {
   return {
     packageName: descriptor.packageName,
     packageVersion: descriptor.packageVersion,
     packageRoot: descriptor.packageRoot,
     packageLinkPath: descriptor.packageLinkPath,
     source: descriptor.source,
+    harmony: {
+      modules: [...descriptor.harmony.modules],
+    },
+    ...(descriptor.arkTs ? { arkTs: { ...descriptor.arkTs } } : {}),
     expo: {
-      abilityLifecycleSubscribers: [...descriptor.expo.abilityLifecycleSubscribers],
-      reactInstanceLifecycleListeners: [...descriptor.expo.reactInstanceLifecycleListeners],
       rootViewComponents: [...descriptor.expo.rootViewComponents],
-      ...(providers.length > 0 && descriptor.expo.providerHar
-        ? { providerHar: { ...descriptor.expo.providerHar } }
-        : {}),
-      providers,
     },
     rnoh: {
       ...(descriptor.rnoh.ohPackageName !== undefined
@@ -55,7 +49,7 @@ function createManifest(modules, options: Record<string, any> = {}): Manifest {
     schemaVersion: ManifestSchemaVersion,
     platform: Platform,
     buildType,
-    modules: modules.map(descriptor => createManifestEntry(descriptor, buildType)),
+    modules: modules.map(descriptor => createManifestEntry(descriptor)),
     managedArtifacts: [...(options.managedArtifacts || ManagedArtifacts)],
   };
 }

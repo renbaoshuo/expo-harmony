@@ -1,28 +1,20 @@
-import { HarmonyAutolinkingError } from './src/errors';
-import { writeProviderArtifactsAsync } from './src/harmony/providers/artifacts';
 import { linkModulesAsync } from './src/autolinking/link';
-import { localOhpmDependenciesFromManifest, ohpmDependenciesFromManifest, readManifestAsync, validateManifest } from './src/harmony/manifest';
 import { canonicalizeAutolinkingArtifacts } from './src/harmony/persistence/canonicalize';
 import { resolveModulesAsync } from './src/autolinking/resolve';
 import { searchModulesAsync } from './src/autolinking/search';
 import { verifyModulesAsync } from './src/autolinking/verify';
+import { normalizeHarmonyModuleMetadata } from './src/metadata/schema';
 
 export {
-  HarmonyAutolinkingError,
   canonicalizeAutolinkingArtifacts,
-  writeProviderArtifactsAsync,
   linkModulesAsync,
-  localOhpmDependenciesFromManifest,
-  ohpmDependenciesFromManifest,
-  readManifestAsync,
+  normalizeHarmonyModuleMetadata,
   resolveModulesAsync,
   searchModulesAsync,
-  validateManifest,
   verifyModulesAsync,
 };
 
 export type {
-  AutolinkingErrorJson,
   BuildType,
   CanonicalizeAutolinkingArtifactsOptions,
   CanonicalizedAutolinkingArtifacts,
@@ -30,17 +22,15 @@ export type {
   DiagnosticSource,
   ExpoMetadata,
   HostMetadata,
+  HarmonyModuleMetadata,
   LinkOptions,
   LinkResult,
   Logger,
   Manifest,
   ModuleDescriptor,
+  ModuleArtifactDescriptor,
   ModuleSource,
   Platform,
-  ProviderDescriptor,
-  ProviderHar,
-  ProviderWriteOptions,
-  ProviderWriteResult,
   ResolveOptions,
   RnohMetadata,
   SearchOptions,

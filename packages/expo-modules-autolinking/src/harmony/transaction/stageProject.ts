@@ -5,7 +5,6 @@ import JSON5 from 'json5';
 
 import { RnohArtifacts, RnohCliPackage } from '../../config/constants';
 import { HarmonyAutolinkingError } from '../../errors';
-import { resolveProviderSource } from '../providers/source';
 import { createManifest } from '../manifest/generate';
 import { normalizeLocalOhpmSpecifier } from '../ohpm/dependencies';
 import { canonicalizeOhpmManifest } from '../persistence/canonicalize';
@@ -50,7 +49,6 @@ async function findLocalOhpmDepsAsync(content, harmony) {
       if (packageJson.name !== packageName) continue;
       result.push({
         ohPackageName: name,
-        specifier,
         packageName,
         packageRoot: await fs.promises.realpath(packageRoot),
       });
@@ -108,11 +106,11 @@ async function stageCuratedPackageAsync(stage, descriptor) {
 
   const harPaths = sortedUniqueStrings([
     ...descriptor.rnoh.harPaths,
-    ...(descriptor.expo.providerHar ? [descriptor.expo.providerHar.harPath] : []),
+    ...(descriptor.arkTs ? [descriptor.arkTs.harPath] : []),
   ]);
 
   for (const harPath of harPaths) {
-    const source = await resolveInsideAsync(descriptor.packageRoot, harPath, 'descriptor.rnoh.harPaths', { packageName: descriptor.packageName, type: 'file' });
+    const source = await resolveInsideAsync(descriptor.packageRoot, harPath, 'descriptor HAR path', { packageName: descriptor.packageName, type: 'file' });
     const destination = path.resolve(stage, ...harPath.split('/'));
     if (!isPathInside(stage, destination)) {
       throw new HarmonyAutolinkingError('PATH_OUTSIDE_PACKAGE', 'A curated HAR path escapes its staging package.', {
@@ -139,6 +137,8 @@ async function updateOhpmManifestAsync(manifestPath, descriptors, options) {
   const manifest = createManifest(descriptors, { buildType: options.buildType });
   const canonical = canonicalizeOhpmManifest(source, manifest, {
     previousManagedOhpmPackageNames: options.previousManagedOhpmPackageNames,
+    harmonyProjectPath: options.harmonyProjectPath,
+    nodeModulesPath: options.nodeModulesPath,
     stage: 'staging',
   });
 
@@ -197,18 +197,14 @@ async function stageProjectAsync(options) {
       `module.exports = require(${JSON.stringify(plugin)});\n`
     );
 
-    const roots = [];
     const runtime = [];
-    const allowed = {};
-
     if (options.modules === undefined) {
       await fs.promises.symlink(source, modules, process.platform === 'win32' ? 'junction' : 'dir');
     } else {
       await fs.promises.mkdir(modules, { recursive: true });
-      const staged = options.modules.filter(descriptor =>
-        descriptor.rnoh.harPaths.length > 0
-        || resolveProviderSource(descriptor, options.buildType) !== null
-      );
+      const staged = options.modules.filter(descriptor => (
+        descriptor.rnoh.harPaths.length > 0 || descriptor.arkTs
+      ));
 
       for (const descriptor of staged) {
         const segments = descriptor.packageName.split('/');
@@ -224,7 +220,6 @@ async function stageProjectAsync(options) {
         const stage = path.join(modules, ...segments);
         await fs.promises.mkdir(path.dirname(stage), { recursive: true });
         await stageCuratedPackageAsync(stage, descriptor);
-        roots.push(descriptor.packageRoot);
       }
 
       const actual = path.join(harmony, RnohArtifacts.ohPackage);
@@ -235,7 +230,6 @@ async function stageProjectAsync(options) {
 
         for (const dependency of await findLocalOhpmDepsAsync(content, harmony)) {
           if (previous.has(dependency.ohPackageName)) continue;
-          allowed[dependency.ohPackageName] = dependency.specifier;
           if (verified.has(dependency.packageName)) continue;
           const target = path.join(modules, ...dependency.packageName.split('/'));
           if (!(await pathExistsAsync(target))) {
@@ -295,9 +289,7 @@ async function stageProjectAsync(options) {
       harmonyProjectPath: harmony,
       sourceNodeModulesPath: source,
       nodeModulesPath: modules,
-      rnohPackageRoots: roots,
       rnohRuntimePackages: runtime,
-      allowedUnmanagedDependencies: allowed,
       temporaryRoot: tmp,
       stageProjectRoot: stageRoot,
       stageHarmonyProjectPath: stageHarmony,
@@ -350,6 +342,4 @@ async function cleanupStagingProjectAsync(staging) {
 export {
   cleanupStagingProjectAsync,
   stageProjectAsync,
-  findLocalOhpmDepsAsync,
-  updateOhpmManifestAsync,
 };

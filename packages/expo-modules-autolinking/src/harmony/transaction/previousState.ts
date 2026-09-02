@@ -67,7 +67,5 @@ async function readPreviousAutolinkingStateAsync(projectRoot) {
 }
 
 export {
-  isManagedArtifactPath,
-  normalizeManagedArtifactPath,
   readPreviousAutolinkingStateAsync,
 };

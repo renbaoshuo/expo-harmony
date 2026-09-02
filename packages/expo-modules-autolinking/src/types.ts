@@ -6,34 +6,18 @@ export type ModuleSource
     | 'nativeModulesDir'
     | 'reactNativeProjectConfig';
 
-export interface ProviderDescriptor {
-  readonly identifier: string;
-  readonly header: string;
-  readonly className: string;
-  readonly cmakeTargetName: string;
-  readonly debugOnly: boolean;
-}
-
-export interface ProviderHar {
-  /** Package-relative HAR that exports every declared Provider header and CMake target. */
+export interface ArkTsModulePackage {
+  /** Conventional package-relative HAR exporting the ArkTS module classes. */
   readonly harPath: string;
-  /** OH package name under which the Provider HAR is installed. */
+  /** OHPM package name read from the Harmony library manifest. */
   readonly ohPackageName: string;
 }
 
 export interface HostMetadata {
-  readonly abilityLifecycleSubscribers: ReadonlyArray<string>;
-  readonly reactInstanceLifecycleListeners: ReadonlyArray<string>;
   readonly rootViewComponents: ReadonlyArray<string>;
 }
 
-export type ExpoMetadata = HostMetadata & {
-  readonly providerHar?: undefined;
-  readonly providers: readonly [];
-} | HostMetadata & {
-  readonly providerHar: ProviderHar;
-  readonly providers: readonly [ProviderDescriptor, ...ProviderDescriptor[]];
-};
+export type ExpoMetadata = HostMetadata;
 
 export interface RnohMetadata {
   readonly ohPackageName?: string | ReadonlyArray<{
@@ -49,16 +33,43 @@ export interface RnohMetadata {
   readonly cmakeLibraryTargetName?: string;
 }
 
+export interface HarmonyModuleMetadata extends HostMetadata {
+  /** ArkTS Module classes exported by the conventional Harmony library. */
+  readonly modules: ReadonlyArray<string>;
+}
+
+export interface FixedHvigorBuildDescriptor {
+  readonly executable: 'hvigorw';
+  readonly cwd: string;
+  readonly args: ReadonlyArray<string>;
+}
+
+export type ModuleArtifactDescriptor = {
+  readonly kind: 'bundled';
+  readonly harPaths: ReadonlyArray<string>;
+} | {
+  readonly kind: 'local-source';
+  readonly outputPath: string;
+  readonly materialized: false;
+  readonly build: FixedHvigorBuildDescriptor;
+};
+
 export interface ModuleDescriptor {
   readonly packageName: string;
   readonly packageVersion: string;
   readonly packageRoot: string;
-  /** Reachable npm package path used for build-time local HAR fallback. */
+  /** Reachable package path used to install the bundled HAR during a native build. */
   readonly packageLinkPath: string;
   readonly source: ModuleSource;
-  /** Provider arrays are non-empty only when their source HAR and SPI are present. */
+  /** Host extension declarations consumed by the generated application provider. */
   readonly expo: ExpoMetadata;
+  /** RNOH package metadata read from package.json#harmony.autolinking. */
   readonly rnoh: RnohMetadata;
+  /** Expo module author metadata from expo-module.config.json#harmony. */
+  readonly harmony: HarmonyModuleMetadata;
+  /** Build/package data derived from the conventional Harmony project, never author config. */
+  readonly arkTs?: ArkTsModulePackage;
+  readonly artifact: ModuleArtifactDescriptor;
 }
 
 export interface SearchRecord {
@@ -162,18 +173,6 @@ export interface VerifyOptions extends ResolveOptions {
   modules?: ReadonlyArray<ModuleDescriptor>;
 }
 
-export interface ProviderWriteOptions extends VerifyOptions {
-  target: string;
-  packages?: ReadonlyArray<string>;
-}
-
-export interface ProviderWriteResult {
-  readonly sourcePath: string;
-  readonly cmakePath: string;
-  readonly providerCount: number;
-  readonly buildType: BuildType;
-}
-
 export interface LinkOptions extends VerifyOptions {
   projectRoot: string;
   harmonyProjectPath: string;
@@ -185,10 +184,22 @@ export interface LinkOptions extends VerifyOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+export interface MaterializeLocalSourceOptions {
+  readonly projectRoot: string;
+  readonly module: ModuleDescriptor;
+  readonly timeoutMs?: number;
+  readonly outputLimit?: number;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+export interface MaterializedLocalSource {
+  readonly packageName: string;
+  readonly harPath: string;
+}
+
 export interface LinkResult {
   readonly platform: Platform;
   readonly modules: ReadonlyArray<ModuleDescriptor>;
-  readonly providerCount: number;
   readonly buildType: BuildType;
   readonly managedArtifacts: ReadonlyArray<string>;
   readonly changedArtifacts: ReadonlyArray<string>;

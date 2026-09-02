@@ -33,4 +33,4 @@ function writeVerifyResult(io, result, options: Record<string, any> = {}) {
   }
 }
 
-export { formatResult, writeResult, writeVerifyResult };
+export { writeResult, writeVerifyResult };

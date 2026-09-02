@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-modules-autolinking",
-  "version": "55.0.25-harmony.0",
+  "version": "55.0.25-harmony.1",
   "author": "Baoshuo <i@baoshuo.ren>",
   "license": "MIT",
   "repository": {
@@ -13,7 +13,7 @@
   "main": "build/index.js",
   "types": "build/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf build && tsc -p tsconfig.json && chmod +x build/bin/expo-harmony-autolinking.js",
     "prepare": "yarn build",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
@@ -22,6 +22,9 @@
       "types": "./build/index.d.ts",
       "require": "./build/index.js",
       "default": "./build/index.js"
+    },
+    "./harmony-module.schema.json": {
+      "default": "./harmony-module.schema.json"
     }
   },
   "bin": {

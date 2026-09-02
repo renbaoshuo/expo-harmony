@@ -16,7 +16,7 @@ async function resolveModulesAsync(options: ResolveOptions = {}): Promise<Module
   const descriptors = [];
 
   for (const record of records) {
-    descriptors.push(await createDescriptorFromSearchRecordAsync(record));
+    descriptors.push(await createDescriptorFromSearchRecordAsync(record, searchResult.options.buildType));
   }
 
   const result = descriptors.sort(compareModuleDescriptors);
