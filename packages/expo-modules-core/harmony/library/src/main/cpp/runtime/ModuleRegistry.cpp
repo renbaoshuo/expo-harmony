@@ -3,18 +3,32 @@
 #include <algorithm>
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 
-#include "api/ExpoModule.h"
-#include "api/ExpoModulesProvider.h"
 #include "errors/CodedError.h"
 #include "fabric/ExpoViewComponentRegistry.h"
+#include "modules/ArkTSModuleAdapter.h"
 #include "modules/CoreModule.h"
+#include "modules/internal/ExpoModule.h"
 #include "runtime/Protocol.h"
 #include "runtime/RuntimeContext.h"
 
 namespace expo::harmony {
 
 namespace {
+
+std::vector<std::string> viewComponentNames(
+    const ModuleDefinition &module,
+    const ViewDefinition &view) {
+  std::vector<std::string> names{view.componentName};
+  if (view.defaultView) {
+    auto defaultName = "ViewManagerAdapter_" + module.name;
+    if (defaultName != view.componentName) {
+      names.push_back(std::move(defaultName));
+    }
+  }
+  return names;
+}
 
 void validateClassInheritanceGraph(
     const std::unordered_map<
@@ -92,65 +106,23 @@ void ModuleRegistry::initialize() {
     throw CodedError("ERR_RUNTIME_DESTROYED", "Cannot initialize modules after runtime destruction.");
   }
   registerModule(std::make_shared<CoreModule>(context));
-  registerModule(std::make_shared<NativeModulesProxyModule>(context));
-  for (const auto &registration :
-       ExpoModulesProviderRegistry::shared().createProviders()) {
-    try {
-      for (auto &module : registration.provider->modules(context)) {
-        registerModule(std::move(module));
-      }
-    } catch (const CodedError &error) {
-      throw error.wrapping(
-          "ERR_PROVIDER_INITIALIZATION",
-          "Expo module provider '" + registration.identifier + "' could not initialize.");
-    } catch (const std::exception &error) {
-      throw CodedError(
-          "ERR_PROVIDER_INITIALIZATION",
-          "Expo module provider '" + registration.identifier + "' could not initialize: " + error.what());
-    } catch (...) {
-      throw CodedError(
-          "ERR_PROVIDER_INITIALIZATION",
-          "Expo module provider '" + registration.identifier + "' could not initialize because native code threw an unknown exception.");
-    }
+  // ArkTS modules share one generic native adapter.
+  for (auto &module : ArkTSModuleAdapter::createModules(context)) {
+    registerModule(std::move(module));
   }
   validateClassInheritanceGraph(definitions_);
   initialized_ = true;
 }
 
-void ModuleRegistry::notifyCreated() {
-  if (created_ || destroyed_) {
-    return;
-  }
-  if (!initialized_) {
-    throw CodedError(
-        "ERR_RUNTIME_NOT_INSTALLED",
-        "Cannot create Expo modules before the registry is initialized.");
+void ModuleRegistry::registerModule(std::shared_ptr<ExpoModule> module) {
+  if (!module) {
+    throw CodedError("ERR_INVALID_DEFINITION", "Expo module factory returned null.");
   }
   auto context = context_.lock();
   if (!context || !context->isAlive()) {
     throw CodedError(
         "ERR_RUNTIME_DESTROYED",
-        "Cannot create Expo modules after runtime destruction.");
-  }
-  created_ = true;
-  for (const auto &name : names_) {
-    const auto *definition = find(name);
-    createdNames_.push_back(name);
-    if (definition && definition->onCreate) {
-      definition->onCreate(*context);
-    }
-  }
-  for (const auto &name : names_) {
-    const auto *definition = find(name);
-    if (definition && definition->onRegisterActivityContracts) {
-      definition->onRegisterActivityContracts(*context);
-    }
-  }
-}
-
-void ModuleRegistry::registerModule(std::shared_ptr<ExpoModule> module) {
-  if (!module) {
-    throw CodedError("ERR_INVALID_PROVIDER", "Expo module provider returned null.");
+        "Cannot register an Expo module after runtime destruction.");
   }
   auto definition = module->definition();
   validateModuleDefinition(definition);
@@ -162,57 +134,55 @@ void ModuleRegistry::registerModule(std::shared_ptr<ExpoModule> module) {
     position = std::find(names_.begin(), names_.end(), name);
     if (position == names_.end()) {
       throw CodedError(
-          "ERR_INVALID_PROVIDER",
+          "ERR_INVALID_DEFINITION",
           "Expo module registry lost the ordering entry for '" + name + "'.");
     }
   }
 
-  // Validate the replacement before changing any retained pointers. A module
-  // may replace its own view metadata, but not another module's component.
+  // Validate replacement view ownership before mutating registry state.
   std::unordered_map<std::string, bool> replacementViews;
   if (previous) {
     for (const auto &view : previous->views) {
-      replacementViews.emplace(view.componentName, true);
+      for (const auto &componentName : viewComponentNames(*previous, view)) {
+        replacementViews.emplace(componentName, true);
+      }
     }
   }
   std::unordered_map<std::string, bool> newViews;
   for (const auto &view : retained->views) {
-    if (!ExpoViewComponentRegistry::contains(view.componentName)) {
+    const auto &nativeComponentName = view.usesGenericFabricComponent
+                                        ? protocol::kViewComponentName
+                                        : view.componentName;
+    if (!ExpoViewComponentRegistry::contains(nativeComponentName)) {
       throw CodedError(
           "ERR_VIEW_NOT_REGISTERED",
-          "Fabric component '" + view.componentName + "' was defined by Expo module '" + retained->name +
-              "' but was not registered before React initialized its component registry. "
-              "Register the module's views with EXPO_HARMONY_REGISTER_VIEWS.");
+          "Fabric component '" + nativeComponentName + "' required by Expo module '" + retained->name + "' was not registered before React initialized its component registry.");
     }
-    if (!newViews.emplace(view.componentName, true).second) {
-      throw CodedError(
-          "ERR_DUPLICATE_VIEW",
-          "Fabric component '" + view.componentName + "' is defined twice by Expo module '" + retained->name + "'.");
-    }
-    if (views_.contains(view.componentName) && !replacementViews.contains(view.componentName)) {
-      throw CodedError(
-          "ERR_DUPLICATE_VIEW",
-          "Fabric component '" + view.componentName + "' is registered by more than one Expo module.");
+    for (const auto &componentName : viewComponentNames(*retained, view)) {
+      if (!newViews.emplace(componentName, true).second) {
+        throw CodedError(
+            "ERR_DUPLICATE_VIEW",
+            "Fabric component '" + componentName + "' is defined twice by Expo module '" + retained->name + "'.");
+      }
+      if (views_.contains(componentName) && !replacementViews.contains(componentName)) {
+        throw CodedError(
+            "ERR_DUPLICATE_VIEW",
+            "Fabric component '" + componentName + "' is registered by more than one Expo module.");
+      }
     }
   }
 
-  std::vector<std::pair<std::type_index, std::string>> nativeClasses;
-  nativeClasses.reserve(retained->classes.size());
-  for (const auto &klass : retained->classes) {
-    if (klass.nativeType != std::type_index(typeid(void))) {
-      nativeClasses.emplace_back(klass.nativeType, klass.name);
-    }
-  }
-  if (auto context = context_.lock()) {
-    context->replaceNativeClassesForModule(name, nativeClasses);
-  }
   if (previous) {
     for (const auto &view : previous->views) {
-      views_.erase(view.componentName);
+      for (const auto &componentName : viewComponentNames(*previous, view)) {
+        views_.erase(componentName);
+      }
     }
   }
   for (const auto &view : retained->views) {
-    views_[view.componentName] = &view;
+    for (const auto &componentName : viewComponentNames(*retained, view)) {
+      views_[componentName] = &view;
+    }
   }
   if (previous) {
     modules_[static_cast<size_t>(std::distance(names_.begin(), position))] = std::move(module);
@@ -220,8 +190,7 @@ void ModuleRegistry::registerModule(std::shared_ptr<ExpoModule> module) {
     modules_.push_back(std::move(module));
     names_.push_back(name);
   }
-  // Match the upstream Android registry: the last provider for a module name
-  // wins while retaining the name's original ordering slot.
+  // Preserve the original ordering slot when replacing a module.
   definitions_[name] = std::move(retained);
 }
 
@@ -241,7 +210,8 @@ bool ModuleRegistry::isSharedRefClass(
     const std::string &className) const {
   auto currentModule = moduleName;
   auto currentClass = className;
-  for (size_t depth = 0; depth < 64; ++depth) {
+  std::unordered_set<std::string> visited;
+  while (visited.emplace(currentModule + "\n" + currentClass).second) {
     const auto *module = find(currentModule);
     if (!module) {
       return false;
@@ -272,44 +242,41 @@ bool ModuleRegistry::isSharedRefClass(
   return false;
 }
 
-const std::vector<std::string> &ModuleRegistry::names() const noexcept {
-  return names_;
+SharedObjectClassLineage ModuleRegistry::sharedObjectClassLineage(
+    const std::string &moduleName,
+    const std::string &className) const {
+  SharedObjectClassLineage result;
+  auto currentModule = moduleName;
+  auto currentClass = className;
+  std::unordered_set<std::string> visited;
+  while (visited.emplace(currentModule + "\n" + currentClass).second) {
+    result.push_back({currentModule, currentClass});
+    const auto *module = find(currentModule);
+    if (!module) {
+      break;
+    }
+    const auto definition = std::find_if(
+        module->classes.begin(),
+        module->classes.end(),
+        [&](const ClassDefinition &candidate) {
+          return candidate.name == currentClass;
+        });
+    if (definition == module->classes.end() || definition->baseClassName.empty() || definition->baseClassName == "SharedObject" || definition->baseClassName == "SharedRef") {
+      break;
+    }
+    const auto separator = definition->baseClassName.find('.');
+    if (separator == std::string::npos) {
+      currentClass = definition->baseClassName;
+    } else {
+      currentModule = definition->baseClassName.substr(0, separator);
+      currentClass = definition->baseClassName.substr(separator + 1);
+    }
+  }
+  return result;
 }
 
-void ModuleRegistry::dispatchLifecycle(
-    const std::string &eventName,
-    const folly::dynamic &payload) {
-  auto context = context_.lock();
-  if (!context || destroyed_) {
-    return;
-  }
-  if (eventName == protocol::kLifecycleDestroy) {
-    destroy();
-    return;
-  }
-  for (const auto &name : names_) {
-    const auto *definition = find(name);
-    if (!definition) {
-      continue;
-    }
-    if (eventName == protocol::kLifecycleForeground && definition->onForeground) {
-      definition->onForeground(*context);
-    } else if (eventName == protocol::kLifecycleBackground && definition->onBackground) {
-      definition->onBackground(*context);
-    } else if (eventName == protocol::kLifecycleUserLeaves && definition->onUserLeaves) {
-      definition->onUserLeaves(*context);
-    } else if (eventName == protocol::kLifecycleActivityDestroy && definition->onActivityDestroy) {
-      definition->onActivityDestroy(*context);
-    } else if (eventName == protocol::kLifecycleNewIntent && definition->onNewIntent) {
-      definition->onNewIntent(*context, payload);
-    } else if (eventName == protocol::kLifecycleActivityResult && definition->onActivityResult && payload.isObject()) {
-      definition->onActivityResult(
-          *context,
-          payload.getDefault("requestCode", 0).asInt(),
-          payload.getDefault("resultCode", 0).asInt(),
-          payload.getDefault("data", nullptr));
-    }
-  }
+const std::vector<std::string> &ModuleRegistry::names() const noexcept {
+  return names_;
 }
 
 void ModuleRegistry::destroy() noexcept {
@@ -317,25 +284,7 @@ void ModuleRegistry::destroy() noexcept {
     return;
   }
   destroyed_ = true;
-  auto context = context_.lock();
-  if (context) {
-    for (auto iterator = createdNames_.rbegin();
-         iterator != createdNames_.rend();
-         ++iterator) {
-      const auto *definition = find(*iterator);
-      if (definition && definition->onDestroy) {
-        try {
-          definition->onDestroy(*context);
-        } catch (...) {
-        }
-      }
-    }
-  }
-  // Exported HostFunctions keep non-owning pointers into the immutable
-  // definitions. Keep both definitions and their owning ExpoModule instances
-  // alive until RuntimeContext itself is released. RuntimeContext is marked
-  // dead before its retained JSI objects are cleared, so post-destroy calls
-  // fail deterministically without dereferencing freed native bodies.
+  // Keep definitions alive until RuntimeContext releases exported HostFunctions.
 }
 
 }  // namespace expo::harmony

@@ -3,10 +3,13 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include <jsi/jsi.h>
 
+#include "api/internal/PromiseSettlementState.h"
 #include "errors/CodedError.h"
 
 namespace expo::harmony {
@@ -47,6 +50,8 @@ public:
       std::string message);
 
   void resolve(ValueFactory valueFactory);
+  /** Resolves only when this caller wins the one-shot settlement race. */
+  bool tryResolve(ValueFactory valueFactory);
   void resolveUndefined();
   void reject(std::string code, std::string message);
   void reject(
@@ -56,21 +61,33 @@ public:
   void reject(CodedError error);
   std::shared_ptr<const CancellationToken> cancellationToken() const noexcept;
   bool isSettled() const noexcept;
+  /** Keeps native invocation leases alive through settlement or invalidation. */
+  void retainUntilSettled(std::shared_ptr<void> resource);
 
 private:
   friend class RuntimeContext;
+  using SettlementBody = std::function<void(
+      facebook::jsi::Runtime &,
+      facebook::jsi::Function &resolve,
+      facebook::jsi::Function &reject)>;
   Promise(
       std::shared_ptr<RuntimeContext> context,
       facebook::jsi::Function resolve,
       facebook::jsi::Function reject);
-  void settle(std::function<void(facebook::jsi::Runtime &)> body);
+  bool settle(SettlementBody body);
+  void requestCancellation() noexcept;
+  void cancelAndReject() noexcept;
   void invalidate() noexcept;
+  std::vector<std::shared_ptr<void>> takeRetainedResources() noexcept;
+  void releaseRetainedResources() noexcept;
 
   std::weak_ptr<RuntimeContext> context_;
   std::unique_ptr<facebook::jsi::Function> resolve_;
   std::unique_ptr<facebook::jsi::Function> reject_;
   std::shared_ptr<CancellationToken> cancellationToken_;
-  std::atomic_bool settled_{false};
+  PromiseSettlementState settlementState_;
+  std::mutex retainedResourcesMutex_;
+  std::vector<std::shared_ptr<void>> retainedResources_;
 };
 
 }  // namespace expo::harmony

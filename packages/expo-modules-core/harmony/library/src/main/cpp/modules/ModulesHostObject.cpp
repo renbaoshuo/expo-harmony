@@ -3,15 +3,15 @@
 #include <algorithm>
 #include <unordered_set>
 
-#include "api/ModuleDefinition.h"
 #include "api/Promise.h"
 #include "common/EventEmitter.h"
 #include "common/JSI/JSIUtils.h"
+#include "common/LazyObject.h"
 #include "common/NativeModule.h"
 #include "common/SharedObject.h"
 #include "common/SharedRef.h"
 #include "errors/CodedError.h"
-#include "objects/BridgeCodec.h"
+#include "modules/internal/ModuleDefinition.h"
 #include "runtime/ModuleRegistry.h"
 #include "runtime/RuntimeContext.h"
 
@@ -21,26 +21,67 @@ namespace expo::harmony {
 
 namespace {
 
-ExceptionOrigin originForPath(const std::string &path) {
-  auto separator = path.find('.');
-  return ExceptionOrigin{
-      separator == std::string::npos ? path : path.substr(0, separator),
-      path};
+long requireSharedObjectId(
+    jsi::Runtime &runtime,
+    const jsi::Value &value,
+    const std::string &className) {
+  if (!value.isObject()) {
+    throw CodedError(
+        "ERR_SHARED_OBJECT_TYPE",
+        className + " method called with a non-object receiver.");
+  }
+
+  auto object = value.getObject(runtime);
+  if (!object.hasNativeState<expo::SharedObject::NativeState>(runtime)) {
+    throw CodedError(
+        "ERR_SHARED_OBJECT_TYPE",
+        className + " method called with an incompatible receiver.");
+  }
+
+  const auto objectId = object.getNativeState<expo::SharedObject::NativeState>(runtime)->objectId;
+  if (objectId <= 0) {
+    throw CodedError(
+        "ERR_INVALID_SHARED_OBJECT_ID",
+        className + " method called with an unbound shared object.");
+  }
+
+  return objectId;
 }
 
-template <typename Observer>
-bool shouldNotifyObserver(
-    const Observer &observer,
-    const std::string &eventName,
-    size_t observedEventCount,
-    bool starting) {
-  if (observer.everyEvent) {
-    return true;
+ExceptionOrigin originForPath(const std::string &path) {
+  const auto firstSeparator = path.find('.');
+  const auto lastSeparator = path.rfind('.');
+  if (firstSeparator == std::string::npos) {
+    return ExceptionOrigin{path, "", path};
   }
-  if (observer.eventName) {
-    return *observer.eventName == eventName;
+
+  const auto className = firstSeparator == lastSeparator
+                           ? std::string{}
+                           : path.substr(
+                                 firstSeparator + 1,
+                                 lastSeparator - firstSeparator - 1);
+  return ExceptionOrigin{
+      path.substr(0, firstSeparator),
+      className,
+      path.substr(lastSeparator + 1)};
+}
+
+void requirePublicRuntime(
+    jsi::Runtime &runtime,
+    const std::shared_ptr<RuntimeContext> &context,
+    const std::string &path) {
+  if (context && context->isAlive() && context->isAcceptingTasks()) {
+    return;
   }
-  return starting ? observedEventCount == 1 : observedEventCount == 0;
+
+  throw CodedJSError(
+      runtime,
+      CodedError(
+          "ERR_RUNTIME_DESTROYED",
+          "Cannot invoke Expo module API '" + path + "' while its runtime is being destroyed.",
+          originForPath(path),
+          nullptr,
+          {path}));
 }
 
 std::vector<const ClassDefinition *> orderedClasses(
@@ -92,9 +133,19 @@ jsi::Value translateErrors(
     bool async,
     Body body) {
   try {
+    // Gate authored entry points before invoking cached or native values.
+    requirePublicRuntime(runtime, context, path);
     return body();
   } catch (const CodedError &error) {
-    auto contextual = error.withOrigin(originForPath(path), path);
+    auto stack = error.nativeStack();
+    stack.insert(stack.begin(), path);
+    CodedError contextual(
+        error.code(),
+        error.what(),
+        originForPath(path),
+        error.cause(),
+        std::move(stack));
+
     if (async) {
       return Promise::create(
           runtime,
@@ -104,16 +155,31 @@ jsi::Value translateErrors(
             promise->reject(std::move(contextual));
           });
     }
-    throw makeJSError(runtime, contextual);
-  } catch (const jsi::JSError &) {
-    throw;
+
+    throw CodedJSError(runtime, contextual);
+  } catch (const jsi::JSError &error) {
+    throw jsi::JSError(error);
   } catch (const std::exception &error) {
     if (async) {
       return Promise::rejected(
           runtime, context, "ERR_UNEXPECTED", path + " failed: " + error.what());
     }
-    throw makeJSError(
+
+    throw CodedJSError(
         runtime, "ERR_UNEXPECTED", path + " failed: " + error.what());
+  } catch (...) {
+    if (async) {
+      return Promise::rejected(
+          runtime,
+          context,
+          "ERR_UNEXPECTED",
+          path + " failed because native code threw a non-standard exception.");
+    }
+
+    throw CodedJSError(
+        runtime,
+        "ERR_UNEXPECTED",
+        path + " failed because native code threw a non-standard exception.");
   }
 }
 
@@ -125,6 +191,8 @@ jsi::Value invokeFunction(
     const jsi::Value &thisValue,
     const jsi::Value *arguments,
     size_t argumentCount) {
+  // Reject before Promise::create after invalidation closes admission.
+  requirePublicRuntime(runtime, context, path);
   if (definition.async && definition.asyncBody) {
     auto retainedThis = std::make_shared<jsi::Value>(runtime, thisValue);
     auto retainedArguments = std::make_shared<std::vector<jsi::Value>>();
@@ -155,7 +223,14 @@ jsi::Value invokeFunction(
                 definition->arity);
             definition->asyncBody(invocation, promise);
           } catch (const CodedError &error) {
-            throw error.withOrigin(originForPath(path), path);
+            auto stack = error.nativeStack();
+            stack.insert(stack.begin(), path);
+            throw CodedError(
+                error.code(),
+                error.what(),
+                originForPath(path),
+                error.cause(),
+                std::move(stack));
           }
         });
   }
@@ -283,24 +358,21 @@ void defineConstant(
       &target,
       name.c_str(),
       {.configurable = false, .enumerable = true, .get = [context, path = std::move(path), factory = &factory, cachedValue](jsi::Runtime &rt, jsi::Object) {
-         if (*cachedValue) {
-           return jsi::Value(rt, **cachedValue);
-         }
-         Invocation invocation(
-             context,
-             path,
-             rt,
-             jsi::Value::undefined(),
-             nullptr,
-             0);
-         auto value = translateErrors(
-             rt,
-             context,
-             path,
-             false,
-             [&invocation, factory]() { return (*factory)(invocation); });
-         *cachedValue = std::make_unique<jsi::Value>(rt, value);
-         return value;
+         return translateErrors(rt, context, path, false, [&]() {
+           if (*cachedValue) {
+             return jsi::Value(rt, **cachedValue);
+           }
+           Invocation invocation(
+               context,
+               path,
+               rt,
+               jsi::Value::undefined(),
+               nullptr,
+               0);
+           auto value = (*factory)(invocation);
+           *cachedValue = std::make_unique<jsi::Value>(rt, value);
+           return value;
+         });
        }});
 }
 
@@ -329,6 +401,8 @@ void defineSharedFunction(
               const jsi::Value &thisValue,
               const jsi::Value *arguments,
               size_t argumentCount) {
+            // Reject released SharedObjects before creating a Promise.
+            requirePublicRuntime(rt, context, path);
             if (definition->async && definition->asyncBody) {
               auto objectId = requireSharedObjectId(rt, thisValue, className);
               auto nativeObject = context->getNativeSharedObject(
@@ -363,7 +437,14 @@ void defineSharedFunction(
                           definition->arity);
                       definition->asyncBody(invocation, nativeObject, promise);
                     } catch (const CodedError &error) {
-                      throw error.withOrigin(originForPath(path), path);
+                      auto stack = error.nativeStack();
+                      stack.insert(stack.begin(), path);
+                      throw CodedError(
+                          error.code(),
+                          error.what(),
+                          originForPath(path),
+                          error.cause(),
+                          std::move(stack));
                     }
                   });
             }
@@ -439,6 +520,20 @@ void defineSharedProperty(
         return jsi::Value::undefined();
       });
     };
+  } else {
+    setter = [context, path, moduleName, className](
+                 jsi::Runtime &rt, jsi::Object receiver, jsi::Value) {
+      translateErrors(rt, context, path, false, [&]() -> jsi::Value {
+        auto receiverValue = jsi::Value(rt, receiver);
+        (void)context->getNativeSharedObject(
+            requireSharedObjectId(rt, receiverValue, className),
+            moduleName,
+            className);
+        throw CodedError(
+            "ERR_PROPERTY_READ_ONLY",
+            "Cannot assign to read-only Expo SharedObject property '" + path + "'.");
+      });
+    };
   }
   expo::common::defineProperty(
       runtime,
@@ -461,37 +556,41 @@ jsi::Value ModulesHostObject::get(
     jsi::Runtime &runtime,
     const jsi::PropNameID &property) {
   try {
-    if (!context_->isAlive()) {
+    if (!context_->isAlive() || !context_->isAcceptingTasks()) {
       return jsi::Value::undefined();
     }
+
     auto name = property.utf8(runtime);
     auto cached = context_->getModule(name);
     if (!cached.isUndefined()) {
       return cached;
     }
+
     const auto *definition = context_->moduleRegistry().find(name);
     if (!definition) {
       return jsi::Value::undefined();
     }
 
-    // Keep module lookup lazy, but expose a regular object once a module is
-    // requested. This makes own-property enumeration and object spread use the
-    // module's actual JavaScript descriptors on Harmony.
-    auto object = createModule(runtime, *definition);
+    auto lazyModule = std::make_shared<expo::LazyObject>(
+        [self = shared_from_this(), definition](jsi::Runtime &rt) {
+          return std::make_shared<jsi::Object>(
+              self->createModule(rt, *definition));
+        });
+    auto object = jsi::Object::createFromHostObject(runtime, lazyModule);
     context_->retainModule(name, object);
 
     return jsi::Value(runtime, object);
-  } catch (const jsi::JSError &) {
-    throw;
+  } catch (const jsi::JSError &error) {
+    throw jsi::JSError(error);
   } catch (const CodedError &error) {
-    throw makeJSError(runtime, error);
+    throw CodedJSError(runtime, error);
   } catch (const std::exception &error) {
-    throw makeJSError(
+    throw CodedJSError(
         runtime,
         "ERR_MODULE_GET",
         "Could not access an Expo module: " + std::string(error.what()));
   } catch (...) {
-    throw makeJSError(
+    throw CodedJSError(
         runtime,
         "ERR_MODULE_GET",
         "Could not access an Expo module because native code threw an unknown exception.");
@@ -502,7 +601,7 @@ void ModulesHostObject::set(
     jsi::Runtime &runtime,
     const jsi::PropNameID &name,
     const jsi::Value &) {
-  throw makeJSError(
+  throw CodedJSError(
       runtime,
       "ERR_MODULE_OVERRIDE",
       "Cannot override the native Expo module '" + name.utf8(runtime) + "'.");
@@ -553,7 +652,7 @@ jsi::Object ModulesHostObject::createModule(
   }
 
   if (!definition.startObservers.empty() || !definition.stopObservers.empty()) {
-    auto observedEventCount = std::make_shared<size_t>(0);
+    auto observedEvents = std::make_shared<std::unordered_set<std::string>>();
     auto startName = jsi::PropNameID::forAscii(runtime, "startObserving");
     module.setProperty(
         runtime,
@@ -564,17 +663,56 @@ jsi::Object ModulesHostObject::createModule(
             1,
             [context = context_,
              definition = &definition,
-             observedEventCount](
+             observedEvents](
                 jsi::Runtime &rt,
                 const jsi::Value &,
                 const jsi::Value *arguments,
                 size_t count) {
+              requirePublicRuntime(
+                  rt, context, definition->name + ".startObserving");
               if (count == 1 && arguments[0].isString()) {
                 const auto eventName = arguments[0].getString(rt).utf8(rt);
-                ++*observedEventCount;
-                for (const auto &observer : definition->startObservers) {
-                  if (observer.body && shouldNotifyObserver(observer, eventName, *observedEventCount, true)) {
-                    observer.body(*context, eventName);
+                if (!observedEvents->insert(eventName).second) {
+                  return jsi::Value::undefined();
+                }
+
+                const auto finishObservers = [&](size_t first) noexcept {
+                  for (size_t index = first;
+                       index < definition->startObservers.size() && observedEvents->contains(eventName);
+                       ++index) {
+                    const auto &observer = definition->startObservers[index];
+                    if (!observer) {
+                      continue;
+                    }
+                    try {
+                      observer(*context, eventName);
+                    } catch (...) {
+                    }
+                  }
+                };
+
+                for (size_t index = 0;
+                     index < definition->startObservers.size() && observedEvents->contains(eventName);
+                     ++index) {
+                  const auto &observer = definition->startObservers[index];
+                  if (!observer) {
+                    continue;
+                  }
+                  try {
+                    observer(*context, eventName);
+                  } catch (const CodedError &error) {
+                    finishObservers(index + 1);
+                    throw CodedJSError(rt, error);
+                  } catch (const jsi::JSError &error) {
+                    finishObservers(index + 1);
+                    throw jsi::JSError(error);
+                  } catch (const std::exception &error) {
+                    finishObservers(index + 1);
+                    throw std::runtime_error(error.what());
+                  } catch (...) {
+                    finishObservers(index + 1);
+                    throw std::runtime_error(
+                        definition->name + ".startObserving failed.");
                   }
                 }
               }
@@ -590,47 +728,59 @@ jsi::Object ModulesHostObject::createModule(
             1,
             [context = context_,
              definition = &definition,
-             observedEventCount](
+             observedEvents](
                 jsi::Runtime &rt,
                 const jsi::Value &,
                 const jsi::Value *arguments,
                 size_t count) {
               if (count == 1 && arguments[0].isString()) {
                 const auto eventName = arguments[0].getString(rt).utf8(rt);
-                if (*observedEventCount > 0) {
-                  --*observedEventCount;
+                if (observedEvents->erase(eventName) == 0) {
+                  return jsi::Value::undefined();
                 }
-                for (const auto &observer : definition->stopObservers) {
-                  if (observer.body && shouldNotifyObserver(observer, eventName, *observedEventCount, false)) {
-                    observer.body(*context, eventName);
+
+                const auto finishObservers = [&](size_t first) noexcept {
+                  for (size_t index = first;
+                       index < definition->stopObservers.size();
+                       ++index) {
+                    const auto &observer = definition->stopObservers[index];
+                    if (!observer) {
+                      continue;
+                    }
+                    try {
+                      observer(*context, eventName);
+                    } catch (...) {
+                    }
+                  }
+                };
+
+                for (size_t index = 0;
+                     index < definition->stopObservers.size();
+                     ++index) {
+                  const auto &observer = definition->stopObservers[index];
+                  if (!observer) {
+                    continue;
+                  }
+                  try {
+                    observer(*context, eventName);
+                  } catch (const CodedError &error) {
+                    finishObservers(index + 1);
+                    throw CodedJSError(rt, error);
+                  } catch (const jsi::JSError &error) {
+                    finishObservers(index + 1);
+                    throw jsi::JSError(error);
+                  } catch (const std::exception &error) {
+                    finishObservers(index + 1);
+                    throw std::runtime_error(error.what());
+                  } catch (...) {
+                    finishObservers(index + 1);
+                    throw std::runtime_error(
+                        definition->name + ".stopObserving failed.");
                   }
                 }
               }
               return jsi::Value::undefined();
             }));
-  }
-
-  for (const auto &objectDefinition : definition.objects) {
-    jsi::Object object(runtime);
-    auto objectPath = definition.name + "." + objectDefinition.name;
-    for (const auto &[name, factory] : objectDefinition.constants) {
-      defineConstant(
-          runtime,
-          object,
-          context_,
-          objectPath + "." + name,
-          name,
-          factory);
-    }
-    for (const auto &function : objectDefinition.functions) {
-      defineFunction(
-          runtime, object, context_, objectPath + "." + function.name, function);
-    }
-    for (const auto &property : objectDefinition.properties) {
-      defineProperty(
-          runtime, object, context_, objectPath + "." + property.name, property);
-    }
-    module.setProperty(runtime, objectDefinition.name.c_str(), std::move(object));
   }
 
   for (const auto *classDefinitionPointer : orderedClasses(definition)) {
@@ -652,42 +802,46 @@ jsi::Object ModulesHostObject::createModule(
             thisValue,
             arguments,
             argumentCount);
-        if (classDefinition->constructor || classDefinition->javaScriptConstructor) {
-          invocation.requireArgumentCount(
-              classDefinition->constructorRequiredArity.value_or(
-                  classDefinition->constructorArity),
-              classDefinition->constructorArity);
-        }
-        if (classDefinition->nativeType != std::type_index(typeid(void)) && classDefinition->constructor) {
-          auto nativeObject = classDefinition->constructor(invocation);
-          if (!thisValue.isObject()) {
-            throw CodedError(
-                "ERR_INVALID_ARGUMENT",
-                classPath + ".constructor received a non-object receiver.");
-          }
-          return context->bindNativeSharedObject(
-              moduleName,
-              classDefinition->name,
-              std::move(nativeObject),
-              thisValue.getObject(rt));
-        }
+        invocation.requireArgumentCount(
+            classDefinition->constructorRequiredArity.value_or(
+                classDefinition->constructorArity),
+            classDefinition->constructorArity);
+        auto nativeObject = classDefinition->constructor(invocation);
         if (!thisValue.isObject()) {
           throw CodedError(
               "ERR_INVALID_ARGUMENT",
               classPath + ".constructor received a non-object receiver.");
         }
-        auto receiver = thisValue.getObject(rt);
-        if (classDefinition->javaScriptConstructor) {
-          (void)classDefinition->javaScriptConstructor(invocation);
+        const auto identity = context->captureSharedObjectInvocation(nativeObject);
+        const auto rollback = [&]() noexcept {
+          try {
+            context->releaseSharedObject(identity.objectId);
+          } catch (...) {
+          }
+        };
+        try {
+          return context->bindNativeSharedObject(
+              moduleName,
+              classDefinition->name,
+              std::move(nativeObject),
+              thisValue.getObject(rt));
+        } catch (const CodedError &error) {
+          rollback();
+          throw CodedError(error);
+        } catch (const jsi::JSError &error) {
+          rollback();
+          throw jsi::JSError(error);
+        } catch (const std::exception &error) {
+          rollback();
+          throw std::runtime_error(error.what());
+        } catch (...) {
+          rollback();
+          throw std::runtime_error(
+              classPath + ".constructor failed to bind its shared object.");
         }
-        return jsi::Value(rt, receiver);
       });
     };
     jsi::Function klass = [&]() {
-      if (classDefinition.baseClassName.empty()) {
-        return expo::common::createClass(
-            runtime, classDefinition.name.c_str(), constructor);
-      }
       if (classDefinition.baseClassName == "SharedRef") {
         return expo::SharedRef::createClass(
             runtime, classDefinition.name.c_str(), constructor);
@@ -716,8 +870,7 @@ jsi::Object ModulesHostObject::createModule(
       }
       auto baseValue = context_->getClass(baseModuleName, baseClassName);
       if (!baseValue.isObject() || !baseValue.getObject(runtime).isFunction(runtime)) {
-        throw makeJSError(
-            runtime,
+        throw CodedError(
             "ERR_CLASS_NOT_FOUND",
             "Base class '" + baseModuleName + "." + baseClassName + "' must be registered before '" + classPath + "'.");
       }
@@ -734,10 +887,6 @@ jsi::Object ModulesHostObject::createModule(
       defineFunction(
           runtime, klass, context_, classPath + "." + function.name, function);
     }
-    for (const auto &property : classDefinition.staticProperties) {
-      defineProperty(
-          runtime, klass, context_, classPath + "." + property.name, property);
-    }
     auto prototype = klass.getPropertyAsObject(runtime, "prototype");
     for (const auto &[name, factory] : classDefinition.constants) {
       defineConstant(
@@ -747,22 +896,6 @@ jsi::Object ModulesHostObject::createModule(
           classPath + "." + name,
           name,
           factory);
-    }
-    for (const auto &function : classDefinition.javaScriptFunctions) {
-      defineFunction(
-          runtime,
-          prototype,
-          context_,
-          classPath + "." + function.name,
-          function);
-    }
-    for (const auto &property : classDefinition.javaScriptProperties) {
-      defineProperty(
-          runtime,
-          prototype,
-          context_,
-          classPath + "." + property.name,
-          property);
     }
     for (const auto &function : classDefinition.functions) {
       defineSharedFunction(
@@ -784,8 +917,7 @@ jsi::Object ModulesHostObject::createModule(
           classDefinition.name,
           property);
     }
-    const bool nativeBacked = classDefinition.nativeType != std::type_index(typeid(void));
-    if ((nativeBacked && !classDefinition.events.empty()) || !classDefinition.startObservers.empty() || !classDefinition.stopObservers.empty()) {
+    if (!classDefinition.events.empty()) {
       auto startName = jsi::PropNameID::forAscii(
           runtime, "__expo_onStartListeningToEvent");
       prototype.setProperty(
@@ -802,6 +934,10 @@ jsi::Object ModulesHostObject::createModule(
                   const jsi::Value &thisValue,
                   const jsi::Value *arguments,
                   size_t count) {
+                requirePublicRuntime(
+                    rt,
+                    context,
+                    moduleName + "." + classDefinition->name + ".startObserving");
                 if (count == 1 && arguments[0].isString()) {
                   const auto objectId = requireSharedObjectId(
                       rt, thisValue, classDefinition->name);
@@ -810,12 +946,34 @@ jsi::Object ModulesHostObject::createModule(
                       moduleName,
                       classDefinition->name);
                   const auto eventName = arguments[0].getString(rt).utf8(rt);
-                  const auto observedEventCount = context->beginObservingSharedObject(objectId);
-                  nativeObject->onStartListeningToEvent(eventName);
-                  for (const auto &observer : classDefinition->startObservers) {
-                    if (observer.body && shouldNotifyObserver(observer, eventName, observedEventCount, true)) {
-                      observer.body(*context, nativeObject, eventName);
-                    }
+                  const auto observedEventCount = context->beginObservingSharedObject(
+                      objectId,
+                      eventName,
+                      [nativeObject](
+                          const std::string &stoppedEventName,
+                          size_t remainingEventCount) {
+                        (void)remainingEventCount;
+                        nativeObject->onStopListeningToEvent(stoppedEventName);
+                      });
+                  if (observedEventCount == 0) {
+                    return jsi::Value::undefined();
+                  }
+
+                  try {
+                    nativeObject->onStartListeningToEvent(eventName);
+                  } catch (const CodedError &error) {
+                    throw CodedJSError(rt, error);
+                  } catch (const jsi::JSError &error) {
+                    throw jsi::JSError(error);
+                  } catch (const std::exception &error) {
+                    throw std::runtime_error(error.what());
+                  } catch (...) {
+                    throw std::runtime_error(
+                        moduleName + "." + classDefinition->name + ".startObserving failed.");
+                  }
+
+                  if (!context->isObservingSharedObject(objectId, eventName)) {
+                    return jsi::Value::undefined();
                   }
                 }
                 return jsi::Value::undefined();
@@ -830,7 +988,6 @@ jsi::Object ModulesHostObject::createModule(
               stopName,
               1,
               [context = context_,
-               moduleName = definition.name,
                classDefinition = &classDefinition](
                   jsi::Runtime &rt,
                   const jsi::Value &thisValue,
@@ -839,18 +996,8 @@ jsi::Object ModulesHostObject::createModule(
                 if (count == 1 && arguments[0].isString()) {
                   const auto objectId = requireSharedObjectId(
                       rt, thisValue, classDefinition->name);
-                  auto nativeObject = context->getNativeSharedObject(
-                      objectId,
-                      moduleName,
-                      classDefinition->name);
                   const auto eventName = arguments[0].getString(rt).utf8(rt);
-                  const auto observedEventCount = context->endObservingSharedObject(objectId);
-                  nativeObject->onStopListeningToEvent(eventName);
-                  for (const auto &observer : classDefinition->stopObservers) {
-                    if (observer.body && shouldNotifyObserver(observer, eventName, observedEventCount, false)) {
-                      observer.body(*context, nativeObject, eventName);
-                    }
-                  }
+                  context->endObservingSharedObject(objectId, eventName);
                 }
                 return jsi::Value::undefined();
               }));
@@ -860,17 +1007,24 @@ jsi::Object ModulesHostObject::createModule(
 
   jsi::Object viewPrototypes(runtime);
   for (const auto &view : definition.views) {
-    jsi::Object prototype(runtime);
-    for (const auto &function : view.functions) {
-      defineFunction(
-          runtime,
-          prototype,
-          context_,
-          definition.name + "." + view.name + "." + function.name,
-          function);
-    }
+    const auto createPrototype = [&]() {
+      jsi::Object prototype(runtime);
+      for (const auto &function : view.functions) {
+        defineFunction(
+            runtime,
+            prototype,
+            context_,
+            definition.name + "." + view.name + "." + function.name,
+            function);
+      }
+      return prototype;
+    };
     viewPrototypes.setProperty(
-        runtime, view.prototypeName.c_str(), std::move(prototype));
+        runtime, view.prototypeName.c_str(), createPrototype());
+    if (view.defaultView && view.prototypeName != definition.name) {
+      viewPrototypes.setProperty(
+          runtime, definition.name.c_str(), createPrototype());
+    }
   }
   module.setProperty(runtime, "ViewPrototypes", std::move(viewPrototypes));
   return module;

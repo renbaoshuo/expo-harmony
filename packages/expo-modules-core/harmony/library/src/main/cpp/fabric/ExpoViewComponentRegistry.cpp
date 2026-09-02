@@ -4,12 +4,15 @@
 
 #include <common/fabric/ExpoViewComponentDescriptor.h>
 
+#include "runtime/Protocol.h"
+
 namespace react = facebook::react;
 
 namespace expo::harmony {
 
 std::mutex ExpoViewComponentRegistry::mutex_;
-std::vector<std::shared_ptr<const std::string>> ExpoViewComponentRegistry::names_;
+std::vector<std::shared_ptr<const std::string>> ExpoViewComponentRegistry::names_{
+    std::make_shared<const std::string>(protocol::kViewComponentName)};
 
 void ExpoViewComponentRegistry::registerComponent(std::string componentName) {
   std::scoped_lock lock(mutex_);

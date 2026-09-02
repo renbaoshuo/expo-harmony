@@ -30,12 +30,12 @@ void ExpoViewComponentDescriptor::adopt(facebook::react::ShadowNode &shadowNode)
   if (!isnan(width) || !isnan(height)) {
     auto const &props = *std::static_pointer_cast<const facebook::react::ViewProps>(snode->getProps());
 
-    // The node has width and/or height set as style props, so we should not override it
+    // Preserve dimensions set by style props.
     auto widthProp = props.yogaStyle.dimension(facebook::yoga::Dimension::Width);
     auto heightProp = props.yogaStyle.dimension(facebook::yoga::Dimension::Height);
 
     if (widthProp.value().isDefined()) {
-      // view has fixed dimension size set in props, so we should not autosize it in that axis
+      // Preserve the fixed width.
       width = widthProp.value().unwrap();
     }
     if (heightProp.value().isDefined()) {
@@ -45,7 +45,7 @@ void ExpoViewComponentDescriptor::adopt(facebook::react::ShadowNode &shadowNode)
     snode->setSize({width, height});
   }
 
-  // handle layout style prop update
+  // Apply layout style updates.
   auto styleWidth = state._styleWidth;
   auto styleHeight = state._styleHeight;
 
@@ -65,7 +65,7 @@ void ExpoViewComponentDescriptor::adopt(facebook::react::ShadowNode &shadowNode)
       changedStyle = true;
     }
 
-    // Update yoga props and dirty layout if we changed the style
+    // Mark layout dirty when the style changes.
     if (changedStyle) {
       auto* expoNode = const_cast<ExpoViewShadowNode*>(snode);
       expoNode->updateYogaProps();

@@ -12,13 +12,21 @@ namespace expo::harmony {
 
 struct ExceptionOrigin final {
   std::string moduleName;
+  std::string className;
   std::string functionName;
 };
 
 class CodedError final : public std::runtime_error {
 public:
-  CodedError(std::string code, std::string message)
-      : std::runtime_error(std::move(message)), code_(std::move(code)) {}
+  CodedError(
+      std::string code,
+      std::string message,
+      std::optional<std::string> path = std::nullopt,
+      std::shared_ptr<const CodedError> cause = nullptr)
+      : std::runtime_error(std::move(message)),
+        code_(std::move(code)),
+        path_(std::move(path)),
+        cause_(std::move(cause)) {}
 
   CodedError(
       std::string code,
@@ -40,6 +48,10 @@ public:
     return origin_;
   }
 
+  const std::optional<std::string> &path() const noexcept {
+    return path_;
+  }
+
   const std::shared_ptr<const CodedError> &cause() const noexcept {
     return cause_;
   }
@@ -48,26 +60,24 @@ public:
     return nativeStack_;
   }
 
-  CodedError withOrigin(ExceptionOrigin origin, std::string nativeFrame = {}) const;
-  CodedError wrapping(
-      std::string code,
-      std::string message,
-      ExceptionOrigin origin = {}) const;
-
 private:
   std::string code_;
+  std::optional<std::string> path_;
   std::optional<ExceptionOrigin> origin_;
   std::shared_ptr<const CodedError> cause_;
   std::vector<std::string> nativeStack_;
 };
 
-facebook::jsi::JSError makeJSError(
-    facebook::jsi::Runtime &runtime,
-    const CodedError &error);
+class CodedJSError final : public facebook::jsi::JSError {
+public:
+  CodedJSError(
+      facebook::jsi::Runtime &runtime,
+      const CodedError &error);
 
-facebook::jsi::JSError makeJSError(
-    facebook::jsi::Runtime &runtime,
-    const std::string &code,
-    const std::string &message);
+  CodedJSError(
+      facebook::jsi::Runtime &runtime,
+      std::string code,
+      std::string message);
+};
 
 }  // namespace expo::harmony

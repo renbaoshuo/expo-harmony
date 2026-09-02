@@ -72,14 +72,19 @@ std::shared_ptr<RuntimeContext> RuntimeInstaller::installedContext(
   if (!existing.isObject()) {
     return nullptr;
   }
+
   auto expoObject = existing.getObject(runtime);
   auto marker = expoObject.getProperty(runtime, "__expo_harmony_runtime_context__");
   if (!marker.isBool() || !marker.getBool() || !expoObject.hasNativeState<RuntimeContextNativeState>(runtime)) {
     return nullptr;
   }
+
   auto nativeState = expoObject.getNativeState<RuntimeContextNativeState>(runtime);
   auto context = nativeState ? nativeState->context() : nullptr;
-  return context && context->isAlive() ? context : nullptr;
+
+  return context && context->isAlive() && context->isAcceptingTasks()
+           ? context
+           : nullptr;
 }
 
 bool RuntimeInstaller::install(
@@ -109,6 +114,11 @@ bool RuntimeInstaller::install(
 
   auto global = runtime.global();
   expo::common::defineProperty(runtime, &global, "expo", {.configurable = true, .enumerable = true, .writable = true, .value = jsi::Value(runtime, expoObject)});
+  const auto rollback = [&] {
+    context->invalidate();
+    global.setProperty(runtime, "expo", jsi::Value::undefined());
+  };
+
   try {
     expo::EventEmitter::installClass(runtime);
     expo::NativeModule::installClass(runtime);
@@ -135,11 +145,11 @@ bool RuntimeInstaller::install(
       auto coreValue = expoObject.getPropertyAsObject(runtime, "modules")
                            .getProperty(runtime, "ExpoModulesCore");
       if (!coreValue.isObject()) {
-        throw makeJSError(
-            runtime,
-            "ERR_INVALID_PROVIDER",
+        throw CodedError(
+            "ERR_INVALID_DEFINITION",
             "The native ExpoModulesCore definition was not registered.");
       }
+
       auto core = coreValue.getObject(runtime);
       defineReadOnly(
           runtime,
@@ -161,15 +171,23 @@ bool RuntimeInstaller::install(
         "__expo_harmony_runtime_context__",
         true,
         false);
-    if (!workletRuntime) {
-      context->moduleRegistry().notifyCreated();
-    }
     expo::common::defineProperty(runtime, &global, "expo", {.configurable = false, .enumerable = true, .writable = false, .value = jsi::Value(runtime, expoObject)});
+
     return true;
+  } catch (const CodedError &error) {
+    rollback();
+    throw CodedError(error);
+  } catch (const jsi::JSError &error) {
+    rollback();
+    throw jsi::JSError(error);
+  } catch (const std::exception &error) {
+    rollback();
+    throw std::runtime_error(error.what());
   } catch (...) {
-    context->invalidate();
-    global.setProperty(runtime, "expo", jsi::Value::undefined());
-    throw;
+    rollback();
+    throw CodedError(
+        "ERR_RUNTIME_INSTALLATION",
+        "Expo Modules could not install the native runtime because native code threw an unknown exception.");
   }
 }
 

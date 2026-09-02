@@ -6,10 +6,6 @@
   "author": "Baoshuo",
   "license": "MIT",
   "dependencies": {
-    "@rnoh/react-native-openharmony": "0.84.1",
-    "@react-native-ohos/react-native-worklets": "1.0.0"
-  },
-  "overrides": {
     "@rnoh/react-native-openharmony": "0.84.1"
   }
 }

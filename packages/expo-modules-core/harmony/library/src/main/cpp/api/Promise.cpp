@@ -1,6 +1,7 @@
 #include "Promise.h"
 
 #include "errors/CodedError.h"
+#include "modules/internal/ModuleDefinition.h"
 #include "runtime/RuntimeContext.h"
 
 namespace jsi = facebook::jsi;
@@ -38,20 +39,26 @@ jsi::Value Promise::create(
           const jsi::Value *arguments,
           size_t count) {
         if (count != 2 || !arguments[0].isObject() || !arguments[1].isObject()) {
-          throw makeJSError(
+          throw CodedJSError(
               rt, "ERR_PROMISE_SETUP", "JavaScript Promise supplied invalid callbacks.");
         }
+
         auto promise = std::shared_ptr<Promise>(new Promise(
             context,
             arguments[0].getObject(rt).getFunction(rt),
             arguments[1].getObject(rt).getFunction(rt)));
         context->retainPromise(promise);
+
         try {
           setup(promise);
         } catch (const CodedError &error) {
           promise->reject(error);
         } catch (const std::exception &error) {
           promise->reject("ERR_UNEXPECTED", error.what());
+        } catch (...) {
+          promise->reject(
+              "ERR_UNEXPECTED",
+              "The native Promise setup threw a non-standard exception.");
         }
         return jsi::Value::undefined();
       });
@@ -72,62 +79,70 @@ jsi::Value Promise::rejected(
       });
 }
 
-void Promise::settle(std::function<void(jsi::Runtime &)> body) {
-  if (settled_.exchange(true, std::memory_order_acq_rel)) {
-    // Promise settlement is idempotent on the public JS surface. Throwing
-    // here can escape a worker callback and terminate the native process.
-    return;
+bool Promise::settle(SettlementBody body) {
+  if (!settlementState_.trySettle()) {
+    // Repeated settlement is a no-op.
+    return false;
   }
+
+  auto retainedResources = takeRetainedResources();
   auto context = context_.lock();
   if (!context || !context->isAlive()) {
-    return;
+    return true;
   }
-  auto task = [self = shared_from_this(), body = std::move(body)](
-                  jsi::Runtime &runtime) mutable {
+
+  auto task = [self = shared_from_this(),
+               body = std::move(body),
+               retainedResources = std::move(retainedResources)]() mutable {
+    // Keep invocation leases alive through JS settlement.
+    (void)retainedResources;
+
     auto context = self->context_.lock();
-    if (!context || !context->isAlive()) {
+    // Invalidation may detach this queued callback; do not touch cleared handles.
+    if (!context || !context->isAlive() || !context->isAcceptingTasks() || !self->resolve_ || !self->reject_) {
       return;
     }
-    try {
-      body(runtime);
-    } catch (...) {
-      self->resolve_.reset();
-      self->reject_.reset();
-      context->releasePromise(self.get());
-      throw;
-    }
-    self->resolve_.reset();
-    self->reject_.reset();
+
+    auto resolve = std::move(self->resolve_);
+    auto reject = std::move(self->reject_);
     context->releasePromise(self.get());
+
+    // The invocation lease keeps teardown from racing conversion or callbacks.
+    body(context->runtime(), *resolve, *reject);
   };
-  if (context->isRuntimeThread()) {
-    task(context->runtime());
-  } else {
-    auto jsInvoker = context->jsInvoker();
-    if (!jsInvoker) {
-      return;
-    }
-    jsInvoker->invokeAsync(std::move(task));
+
+  try {
+    context->dispatchToJavaScript(std::move(task));
+  } catch (...) {
+    // Dispatch may fail during invalidation.
   }
+
+  return true;
 }
 
 void Promise::resolve(ValueFactory valueFactory) {
-  settle([self = shared_from_this(), valueFactory = std::move(valueFactory)](
-             jsi::Runtime &runtime) mutable {
+  (void)tryResolve(std::move(valueFactory));
+}
+
+bool Promise::tryResolve(ValueFactory valueFactory) {
+  return settle([valueFactory = std::move(valueFactory)](
+                    jsi::Runtime &runtime,
+                    jsi::Function &resolve,
+                    jsi::Function &reject) mutable {
     try {
-      self->resolve_->call(runtime, valueFactory(runtime));
+      resolve.call(runtime, valueFactory(runtime));
     } catch (const CodedError &error) {
-      self->reject_->call(runtime, makeJSError(runtime, error).value());
+      reject.call(runtime, CodedJSError(runtime, error).value());
     } catch (const jsi::JSError &error) {
-      self->reject_->call(runtime, error.value());
+      reject.call(runtime, error.value());
     } catch (const std::exception &error) {
-      self->reject_->call(
+      reject.call(
           runtime,
-          makeJSError(runtime, "ERR_UNEXPECTED", error.what()).value());
+          CodedJSError(runtime, "ERR_UNEXPECTED", error.what()).value());
     } catch (...) {
-      self->reject_->call(
+      reject.call(
           runtime,
-          makeJSError(
+          CodedJSError(
               runtime,
               "ERR_UNEXPECTED",
               "The native Promise result conversion threw a non-standard exception.")
@@ -148,10 +163,6 @@ void Promise::reject(
     std::string code,
     std::string message,
     std::shared_ptr<const CodedError> cause) {
-  if (cause) {
-    message += "\n→ Caused by: ";
-    message += cause->what();
-  }
   reject(CodedError(
       std::move(code),
       std::move(message),
@@ -160,10 +171,12 @@ void Promise::reject(
 }
 
 void Promise::reject(CodedError codedError) {
-  settle([self = shared_from_this(), codedError = std::move(codedError)](
-             jsi::Runtime &runtime) {
-    auto error = makeJSError(runtime, codedError);
-    self->reject_->call(runtime, error.value());
+  settle([codedError = std::move(codedError)](
+             jsi::Runtime &runtime,
+             jsi::Function &,
+             jsi::Function &reject) {
+    CodedJSError error(runtime, codedError);
+    reject.call(runtime, error.value());
   });
 }
 
@@ -172,14 +185,73 @@ std::shared_ptr<const CancellationToken> Promise::cancellationToken() const noex
 }
 
 bool Promise::isSettled() const noexcept {
-  return settled_.load(std::memory_order_acquire);
+  return settlementState_.isSettled();
+}
+
+void Promise::retainUntilSettled(std::shared_ptr<void> resource) {
+  if (!resource) {
+    return;
+  }
+
+  std::scoped_lock lock(retainedResourcesMutex_);
+  if (!settlementState_.isSettled()) {
+    retainedResources_.push_back(std::move(resource));
+  }
+}
+
+void Promise::requestCancellation() noexcept {
+  cancellationToken_->cancel();
+}
+
+void Promise::cancelAndReject() noexcept {
+  requestCancellation();
+  auto context = context_.lock();
+  if (!context || !context->isAlive() || !context->isRuntimeThread() || !reject_) {
+    invalidate();
+    return;
+  }
+  // Keep promises in the teardown snapshot observable to JS until rejection.
+  settlementState_.markSettled();
+  releaseRetainedResources();
+
+  try {
+    CodedJSError error(
+        context->runtime(),
+        CodedError(
+            "ERR_CANCELLED",
+            "The native asynchronous operation was cancelled because the runtime was destroyed."));
+    reject_->call(context->runtime(), error.value());
+  } catch (...) {
+    // Teardown is noexcept.
+  }
+
+  resolve_.reset();
+  reject_.reset();
 }
 
 void Promise::invalidate() noexcept {
-  cancellationToken_->cancel();
-  settled_.store(true, std::memory_order_release);
+  requestCancellation();
+  settlementState_.markSettled();
+  releaseRetainedResources();
   resolve_.reset();
   reject_.reset();
+}
+
+void Promise::releaseRetainedResources() noexcept {
+  (void)takeRetainedResources();
+}
+
+std::vector<std::shared_ptr<void>> Promise::takeRetainedResources() noexcept {
+  try {
+    std::vector<std::shared_ptr<void>> resources;
+    {
+      std::scoped_lock lock(retainedResourcesMutex_);
+      resources.swap(retainedResources_);
+    }
+    return resources;
+  } catch (...) {
+    return {};
+  }
 }
 
 }  // namespace expo::harmony

@@ -1,14 +1,15 @@
 #include "CoreModule.h"
 
 #include <algorithm>
+#include <string>
 
-#include "api/Promise.h"
-#include "api/TypeConverter.h"
 #include "api/Version.h"
 #include "errors/CodedError.h"
+#include "fabric/ExpoViewComponentRegistry.h"
 #include "modules/ExpoModulesCoreTurboModule.h"
 #include "modules/Uuid.h"
 #include "runtime/ModuleRegistry.h"
+#include "runtime/Protocol.h"
 #include "runtime/RuntimeContext.h"
 #include "worklets/WorkletRuntimeInstaller.h"
 
@@ -58,6 +59,22 @@ std::string platformDirectory(
   return directory;
 }
 
+std::string requireStringArgument(
+    Invocation &invocation,
+    size_t index) {
+  const auto &value = invocation.argument(index);
+  if (!value.isString()) {
+    throw CodedError(
+        "ERR_INVALID_ARGUMENT",
+        invocation.path() + " argument " + std::to_string(index + 1) + " must be a string.");
+  }
+  return value.getString(invocation.runtime()).utf8(invocation.runtime());
+}
+
+jsi::Value stringValue(Invocation &invocation, const std::string &value) {
+  return jsi::String::createFromUtf8(invocation.runtime(), value);
+}
+
 }  // namespace
 
 CoreModule::CoreModule(std::shared_ptr<RuntimeContext> context)
@@ -76,9 +93,7 @@ ModuleDefinition CoreModule::definition() {
                         *cachedCacheDirectory = platformDirectory(
                             requireContext(weakContext), "getCacheDirectory");
                       }
-                      return convertToJS(
-                          invocation.sharedContext(),
-                          **cachedCacheDirectory);
+                      return stringValue(invocation, **cachedCacheDirectory);
                     }});
   builder.property({.name = "documentsDir",
                     .getter = [weakContext, cachedDocumentsDirectory](Invocation &invocation) {
@@ -86,25 +101,30 @@ ModuleDefinition CoreModule::definition() {
                         *cachedDocumentsDirectory = platformDirectory(
                             requireContext(weakContext), "getDocumentsDirectory");
                       }
-                      return convertToJS(
-                          invocation.sharedContext(),
-                          **cachedDocumentsDirectory);
+                      return stringValue(invocation, **cachedDocumentsDirectory);
                     }});
-  builder.function(typedFunction<std::string>("uuidv4", [] { return uuidV4(); }));
-  builder.function(typedFunction<std::string, std::string, std::string>(
-      "uuidv5",
-      [](std::string name, std::string nameSpace) {
-        return uuidV5(name, nameSpace);
-      }));
+  builder.function({.name = "uuidv4",
+                    .arity = 0,
+                    .body = [](Invocation &invocation) {
+                      return stringValue(invocation, uuidV4());
+                    }});
+  builder.function({.name = "uuidv5",
+                    .arity = 2,
+                    .body = [](Invocation &invocation) {
+                      return stringValue(
+                          invocation,
+                          uuidV5(
+                              requireStringArgument(invocation, 0),
+                              requireStringArgument(invocation, 1)));
+                    }});
   builder.function({.name = "getViewConfig",
                     .arity = 2,
                     .requiredArity = 1,
                     .body = [](Invocation &invocation) -> jsi::Value {
-                      ArgumentReader arguments(invocation);
-                      auto moduleName = arguments.get<std::string>(0);
+                      auto moduleName = requireStringArgument(invocation, 0);
                       std::optional<std::string> viewName;
                       if (invocation.argumentCount() > 1 && !invocation.argument(1).isUndefined() && !invocation.argument(1).isNull()) {
-                        viewName = arguments.get<std::string>(1);
+                        viewName = requireStringArgument(invocation, 1);
                       }
                       const auto *module = invocation.context().moduleRegistry().find(moduleName);
                       if (!module) {
@@ -124,6 +144,10 @@ ModuleDefinition CoreModule::definition() {
                       for (const auto &prop : view->props) {
                         validAttributes.setProperty(runtime, prop.name.c_str(), true);
                       }
+                      if (view->usesGenericFabricComponent) {
+                        validAttributes.setProperty(runtime, protocol::kViewModuleNameProp, true);
+                        validAttributes.setProperty(runtime, protocol::kViewNameProp, true);
+                      }
                       jsi::Object directEventTypes(runtime);
                       for (const auto &event : view->events) {
                         auto normalized = event.starts_with("on")
@@ -138,6 +162,13 @@ ModuleDefinition CoreModule::definition() {
                             runtime, normalized.c_str(), std::move(registration));
                       }
                       jsi::Object result(runtime);
+                      if (view->usesGenericFabricComponent) {
+                        result.setProperty(
+                            runtime,
+                            "uiViewClassName",
+                            jsi::String::createFromUtf8(
+                                runtime, protocol::kViewComponentName));
+                      }
                       result.setProperty(runtime, "validAttributes", std::move(validAttributes));
                       result.setProperty(runtime, "directEventTypes", std::move(directEventTypes));
                       return result;
@@ -146,10 +177,7 @@ ModuleDefinition CoreModule::definition() {
                          .arity = 1,
                          .body = [weakContext](Invocation &invocation) {
                            auto context = requireContext(weakContext);
-                           auto reason = convertFromJS<std::string>(
-                               context,
-                               invocation.argument(0),
-                               invocation.path() + " argument 0");
+                           auto reason = requireStringArgument(invocation, 0);
                            auto &runtime = invocation.runtime();
                            jsi::Value argument = jsi::String::createFromUtf8(runtime, reason);
                            return context->turboModule()->callPlatformAsync(
@@ -162,111 +190,6 @@ ModuleDefinition CoreModule::definition() {
                           invocation.runtime(), invocation.sharedContext());
                       return jsi::Value::undefined();
                     }});
-  return std::move(builder).build();
-}
-
-NativeModulesProxyModule::NativeModulesProxyModule(
-    std::shared_ptr<RuntimeContext> context)
-    : context_(std::move(context)) {}
-
-ModuleDefinition NativeModulesProxyModule::definition() {
-  auto weakContext = context_;
-  ModuleDefinitionBuilder builder("NativeModulesProxy");
-  builder.constant("modulesConstants", [weakContext](Invocation &invocation) {
-    auto context = requireContext(weakContext);
-    auto &runtime = invocation.runtime();
-    jsi::Object result(runtime);
-    for (const auto &moduleName : context->moduleRegistry().names()) {
-      if (moduleName == "NativeModulesProxy" || moduleName == "ExpoModulesCore") {
-        continue;
-      }
-      const auto *module = context->moduleRegistry().find(moduleName);
-      jsi::Object constants(runtime);
-      for (const auto &[name, factory] : module->constants) {
-        Invocation constantInvocation(
-            context,
-            moduleName + "." + name,
-            runtime,
-            jsi::Value::undefined(),
-            nullptr,
-            0);
-        try {
-          constants.setProperty(runtime, name.c_str(), factory(constantInvocation));
-        } catch (const CodedError &error) {
-          throw error.wrapping(
-              "ERR_MODULE_CONSTANT",
-              "Failed to read module constant '" + moduleName + "." + name + "'.",
-              {.moduleName = moduleName, .functionName = name});
-        } catch (const std::exception &error) {
-          throw CodedError(
-              "ERR_MODULE_CONSTANT",
-              "Failed to read module constant '" + moduleName + "." + name + "': " + error.what(),
-              {.moduleName = moduleName, .functionName = name});
-        }
-      }
-      result.setProperty(runtime, moduleName.c_str(), std::move(constants));
-    }
-    return result;
-  });
-  builder.constant("exportedMethods", [weakContext](Invocation &invocation) {
-    auto context = requireContext(weakContext);
-    auto &runtime = invocation.runtime();
-    jsi::Object result(runtime);
-    for (const auto &moduleName : context->moduleRegistry().names()) {
-      if (moduleName == "NativeModulesProxy" || moduleName == "ExpoModulesCore") {
-        continue;
-      }
-      const auto *module = context->moduleRegistry().find(moduleName);
-      jsi::Array methods(runtime, module->functions.size());
-      for (size_t index = 0; index < module->functions.size(); ++index) {
-        const auto &function = module->functions[index];
-        jsi::Object info(runtime);
-        info.setProperty(
-            runtime,
-            "name",
-            jsi::String::createFromUtf8(runtime, function.name));
-        info.setProperty(runtime, "key", static_cast<double>(index));
-        info.setProperty(runtime, "argumentsCount", static_cast<double>(function.arity));
-        methods.setValueAtIndex(runtime, index, std::move(info));
-      }
-      result.setProperty(runtime, moduleName.c_str(), std::move(methods));
-    }
-    return result;
-  });
-  builder.asyncFunction({.name = "callMethod",
-                         .arity = 3,
-                         .body = [weakContext](Invocation &invocation) {
-                           auto context = requireContext(weakContext);
-                           ArgumentReader arguments(invocation);
-                           auto moduleName = arguments.get<std::string>(0);
-                           auto methodName = arguments.get<std::string>(1);
-                           auto &runtime = invocation.runtime();
-                           auto values = arguments.get<std::vector<jsi::Value>>(2);
-                           auto moduleValue = context->getModule(moduleName);
-                           if (moduleValue.isUndefined()) {
-                             auto modules = runtime.global()
-                                                .getPropertyAsObject(runtime, "expo")
-                                                .getPropertyAsObject(runtime, "modules");
-                             moduleValue = modules.getProperty(runtime, moduleName.c_str());
-                           }
-                           if (!moduleValue.isObject()) {
-                             throw CodedError(
-                                 "ERR_MODULE_NOT_FOUND", "Cannot find native module '" + moduleName + "'.");
-                           }
-                           auto moduleObject = moduleValue.getObject(runtime);
-                           auto functionValue = moduleObject.getProperty(runtime, methodName.c_str());
-                           if (!functionValue.isObject() || !functionValue.getObject(runtime).isFunction(runtime)) {
-                             throw CodedError(
-                                 "ERR_FUNCTION_NOT_FOUND",
-                                 "Cannot find native function '" + moduleName + "." + methodName + "'.");
-                           }
-                           auto function = functionValue.getObject(runtime).getFunction(runtime);
-                           return function.callWithThis(
-                               runtime,
-                               moduleObject,
-                               static_cast<const jsi::Value *>(values.data()),
-                               values.size());
-                         }});
   return std::move(builder).build();
 }
 

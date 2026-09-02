@@ -1,15 +1,27 @@
 #include "ExpoModulesCoreTurboModule.h"
 
+#include <cmath>
+#include <exception>
+#include <functional>
+#include <limits>
+#include <optional>
+
 #include <jsi/JSIDynamic.h>
+
+#include <RNOH/Performance/RNOHMarker.h>
 
 #include <hilog/log.h>
 
 #include "common/EventEmitter.h"
 #include "common/LazyObject.h"
 #include "errors/CodedError.h"
+#include "modules/ArkTSModuleAdapter.h"
+#include "modules/ArkTSTypedBridge.h"
+#include "runtime/InvalidationBarrier.h"
 #include "runtime/ModuleRegistry.h"
 #include "runtime/Protocol.h"
 #include "runtime/RuntimeContext.h"
+#include "runtime/RuntimeIdentity.h"
 #include "runtime/RuntimeInstaller.h"
 
 namespace jsi = facebook::jsi;
@@ -17,10 +29,86 @@ namespace react = facebook::react;
 
 namespace expo::harmony {
 
+class ContentAppearedMarkerListener final
+    : public rnoh::RNOHMarker::RNOHMarkerListener {
+public:
+  using Handler = std::function<void(size_t)>;
+
+  explicit ContentAppearedMarkerListener(Handler handler)
+      : handler_(std::move(handler)) {}
+
+  void onMarkerReceived(
+      rnoh::RNOHMarker::RNOHMarkerId markerId,
+      size_t rnInstanceId,
+      const std::string &,
+      double,
+      uint64_t) override {
+    if (markerId == rnoh::RNOHMarker::RNOHMarkerId::CONTENT_APPEARED) {
+      handler_(rnInstanceId);
+    }
+  }
+
+private:
+  Handler handler_;
+};
+
 namespace {
 
 constexpr unsigned int kExpoModulesLogDomain = 0xD003900;
 constexpr const char *kExpoModulesLogTag = "ExpoModulesCore";
+constexpr double kMaxSafeTransportInteger = 9007199254740991.0;
+
+std::optional<long> readPositiveTransportLong(const folly::dynamic &value) {
+  if (value.isInt()) {
+    return value.asInt() > 0 ? std::optional<long>(value.asInt()) : std::nullopt;
+  }
+  if (!value.isDouble()) {
+    return std::nullopt;
+  }
+  const auto number = value.asDouble();
+  if (!std::isfinite(number) || std::trunc(number) != number || number <= 0 || number > kMaxSafeTransportInteger || number > static_cast<double>(std::numeric_limits<long>::max())) {
+    return std::nullopt;
+  }
+  return static_cast<long>(number);
+}
+
+std::optional<long> readTypedEventTransportId(
+    const folly::dynamic &payload) {
+  if (!payload.isObject() || !payload.count("transportId")) {
+    return std::nullopt;
+  }
+  return readPositiveTransportLong(payload.at("transportId"));
+}
+
+std::vector<jsi::Value> takeTypedEventArguments(
+    const std::shared_ptr<RuntimeContext> &context,
+    long transportId) {
+  auto &runtime = context->runtime();
+  std::vector<jsi::Value> arguments;
+  arguments.reserve(2);
+  arguments.emplace_back(jsi::String::createFromUtf8(
+      runtime, context->runtimeEpochString()));
+  arguments.emplace_back(static_cast<double>(transportId));
+  auto value = context->callPlatformSyncTyped(
+      "takeExpoTypedEventArguments", std::move(arguments));
+  return ArkTSModuleAdapter::decodeTypedValues(context, value);
+}
+
+void discardTypedEventArguments(
+    const std::shared_ptr<RuntimeContext> &context,
+    long transportId) noexcept {
+  try {
+    auto &runtime = context->runtime();
+    std::vector<jsi::Value> arguments;
+    arguments.reserve(2);
+    arguments.emplace_back(jsi::String::createFromUtf8(
+        runtime, context->runtimeEpochString()));
+    arguments.emplace_back(static_cast<double>(transportId));
+    (void)context->callPlatformSyncTyped(
+        "discardExpoTypedEventArguments", std::move(arguments));
+  } catch (...) {
+  }
+}
 
 jsi::Value installModulesHostFunction(
     jsi::Runtime &runtime,
@@ -29,17 +117,17 @@ jsi::Value installModulesHostFunction(
     size_t) {
   try {
     return static_cast<ExpoModulesCoreTurboModule &>(turboModule).install(runtime);
-  } catch (const jsi::JSError &) {
-    throw;
+  } catch (const jsi::JSError &error) {
+    throw jsi::JSError(error);
   } catch (const CodedError &error) {
-    throw makeJSError(runtime, error);
+    throw CodedJSError(runtime, error);
   } catch (const std::exception &error) {
-    throw makeJSError(
+    throw CodedJSError(
         runtime,
         "ERR_RUNTIME_INSTALLATION",
         "Expo Modules could not install the native runtime: " + std::string(error.what()));
   } catch (...) {
-    throw makeJSError(
+    throw CodedJSError(
         runtime,
         "ERR_RUNTIME_INSTALLATION",
         "Expo Modules could not install the native runtime because native code threw an unknown exception.");
@@ -56,16 +144,23 @@ ExpoModulesCoreTurboModule::ExpoModulesCoreTurboModule(
       jsInvoker_(context.jsInvoker),
       taskExecutor_(context.taskExecutor),
       safeInstance_(context.safeInstance),
-      platformBridge_(
-          std::make_unique<rnoh::ArkTSTurboModule>(std::move(context), name)) {
+      typedPlatformBridge_(std::make_unique<ArkTSTypedBridge>(context)) {
   methodMap_["installModules"] = MethodMetadata{0, installModulesHostFunction};
 }
 
 ExpoModulesCoreTurboModule::~ExpoModulesCoreTurboModule() noexcept {
-  // Runtime-owned native state performs JSI cleanup on the owning JS executor.
-  // The TurboModule must not destroy retained JSI values from RNOH's teardown thread.
-  std::scoped_lock lock(contextsMutex_);
-  contexts_.clear();
+  // Clean up JSI state on the owning JS executor.
+  std::shared_ptr<ContentAppearedMarkerListener> contentAppearedListener;
+  {
+    std::scoped_lock lock(contextsMutex_);
+    contentAppearedListener = std::move(contentAppearedListener_);
+    activeRuntimeContext_.reset();
+    contentAppearedRuntime_.reset();
+    contexts_.clear();
+  }
+  if (contentAppearedListener) {
+    rnoh::RNOHMarker::removeListener(contentAppearedListener);
+  }
 }
 
 std::shared_ptr<RuntimeContext> ExpoModulesCoreTurboModule::runtimeContext(
@@ -74,10 +169,13 @@ std::shared_ptr<RuntimeContext> ExpoModulesCoreTurboModule::runtimeContext(
   auto iterator = contexts_.find(&runtime);
   if (iterator != contexts_.end()) {
     if (auto existing = iterator->second.lock()) {
-      return existing;
+      if (existing->isAlive() && existing->isAcceptingTasks()) {
+        return existing;
+      }
     }
+    contexts_.erase(iterator);
   }
-  auto context = std::make_shared<RuntimeContext>(
+  auto context = RuntimeContext::create(
       runtime, jsInvoker_, taskExecutor_, weak_from_this());
   contexts_[&runtime] = context;
   return context;
@@ -93,18 +191,127 @@ bool ExpoModulesCoreTurboModule::hasRuntimeContext(jsi::Runtime *runtime) {
     return false;
   }
   auto context = iterator->second.lock();
-  if (!context || !context->isAlive()) {
+  if (!context || !context->isAlive() || !context->isAcceptingTasks()) {
     contexts_.erase(iterator);
     return false;
   }
   return true;
 }
 
+bool ExpoModulesCoreTurboModule::isDestroyScheduled() const noexcept {
+  return destroyScheduled_.load(std::memory_order_acquire);
+}
+
 void ExpoModulesCoreTurboModule::registerRuntimeContext(
     jsi::Runtime &runtime,
     const std::shared_ptr<RuntimeContext> &context) {
+  if (!context || !context->isAlive() || !context->isAcceptingTasks()) {
+    throw CodedError(
+        "ERR_RUNTIME_DESTROYED",
+        "Cannot register an Expo RuntimeContext that is being destroyed.");
+  }
   std::scoped_lock lock(contextsMutex_);
   contexts_[&runtime] = context;
+}
+
+void ExpoModulesCoreTurboModule::activateRuntimeContext(
+    jsi::Runtime &runtime,
+    const std::shared_ptr<RuntimeContext> &context) {
+  if (!context || !context->isAlive() || !context->isAcceptingTasks()) {
+    throw CodedError(
+        "ERR_RUNTIME_DESTROYED",
+        "Cannot activate an Expo RuntimeContext that is being destroyed.");
+  }
+  std::scoped_lock lock(contextsMutex_);
+  contexts_[&runtime] = context;
+  activeRuntimeContext_ = context;
+}
+
+void ExpoModulesCoreTurboModule::ensureContentAppearedListener() {
+  std::shared_ptr<ContentAppearedMarkerListener> listener;
+  {
+    std::scoped_lock lock(contextsMutex_);
+    if (contentAppearedListener_) {
+      return;
+    }
+    auto weakSelf = weak_from_this();
+    listener = std::make_shared<ContentAppearedMarkerListener>(
+        [weakSelf](size_t rnInstanceId) {
+          if (auto self = weakSelf.lock()) {
+            self->handleContentAppeared(rnInstanceId);
+          }
+        });
+    contentAppearedListener_ = listener;
+  }
+  rnoh::RNOHMarker::addListener(std::move(listener));
+}
+
+void ExpoModulesCoreTurboModule::handleContentAppeared(size_t rnInstanceId) {
+  auto instance = safeInstance_.lock();
+  if (!instance || instance->getId() != rnInstanceId || isDestroyScheduled() || !jsInvoker_) {
+    return;
+  }
+
+  auto weakSelf = weak_from_this();
+  try {
+    jsInvoker_->invokeAsync([weakSelf](jsi::Runtime &runtime) {
+      auto self = weakSelf.lock();
+      if (!self || self->isDestroyScheduled()) {
+        return;
+      }
+
+      std::shared_ptr<RuntimeContext> context;
+      {
+        std::scoped_lock lock(self->contextsMutex_);
+        context = self->activeRuntimeContext_.lock();
+        if (!context || !context->isAlive() || !context->isAcceptingTasks() || !context->hasModuleRegistry() || &context->runtime() != &runtime) {
+          return;
+        }
+        auto delivered = self->contentAppearedRuntime_.lock();
+        if (delivered && delivered.get() == context.get()) {
+          return;
+        }
+        self->contentAppearedRuntime_ = context;
+      }
+
+      try {
+        self->postMessageToArkTS(
+            protocol::kContentAppeared,
+            folly::dynamic::object(
+                "runtimeEpoch", context->runtimeEpochString()));
+      } catch (const std::exception &error) {
+        OH_LOG_Print(
+            LOG_APP,
+            LOG_ERROR,
+            kExpoModulesLogDomain,
+            kExpoModulesLogTag,
+            "Unable to deliver the content-appeared lifecycle event: %{public}s",
+            error.what());
+      } catch (...) {
+        OH_LOG_Print(
+            LOG_APP,
+            LOG_ERROR,
+            kExpoModulesLogDomain,
+            kExpoModulesLogTag,
+            "Unable to deliver the content-appeared lifecycle event");
+      }
+    });
+  } catch (const std::exception &error) {
+    OH_LOG_Print(
+        LOG_APP,
+        LOG_ERROR,
+        kExpoModulesLogDomain,
+        kExpoModulesLogTag,
+        "Unable to schedule the content-appeared lifecycle event: %{public}s",
+        error.what());
+  } catch (...) {
+    OH_LOG_Print(
+        LOG_APP,
+        LOG_ERROR,
+        kExpoModulesLogDomain,
+        kExpoModulesLogTag,
+        "Unable to schedule the content-appeared lifecycle event");
+  }
 }
 
 jsi::Value ExpoModulesCoreTurboModule::install(jsi::Runtime &runtime) {
@@ -120,20 +327,9 @@ jsi::Value ExpoModulesCoreTurboModule::install(jsi::Runtime &runtime) {
           "Expo Modules found an installed runtime without recoverable native state.");
     }
   }
-  std::vector<PendingLifecycleEvent> pendingEvents;
-  {
-    std::scoped_lock lock(contextsMutex_);
-    pendingEvents.swap(pendingLifecycleEvents_);
-  }
-  if (context->hasModuleRegistry()) {
-    for (auto &event : pendingEvents) {
-      if (event.name == protocol::kLifecycleDestroy) {
-        context->invalidate();
-        break;
-      }
-      context->moduleRegistry().dispatchLifecycle(event.name, event.payload);
-    }
-  }
+  // Only the JS runtime selects the View target.
+  activateRuntimeContext(runtime, context);
+  ensureContentAppearedListener();
   return jsi::Value(true);
 }
 
@@ -142,9 +338,7 @@ jsi::Value ExpoModulesCoreTurboModule::callPlatformSync(
     const std::string &methodName,
     const jsi::Value *arguments,
     size_t argumentCount) {
-  // This boundary is deliberately restricted to JSON-like platform values.
-  // JSI wrappers and module bodies never pass through ArkTSTurboModule.
-  return platformBridge_->call(
+  return typedPlatformBridge_->call(
       runtime, methodName, arguments, argumentCount);
 }
 
@@ -153,7 +347,7 @@ jsi::Value ExpoModulesCoreTurboModule::callPlatformAsync(
     const std::string &methodName,
     const jsi::Value *arguments,
     size_t argumentCount) {
-  return platformBridge_->callAsync(
+  return typedPlatformBridge_->callAsync(
       runtime, methodName, arguments, argumentCount);
 }
 
@@ -172,66 +366,150 @@ void ExpoModulesCoreTurboModule::postMessageToArkTS(
 void ExpoModulesCoreTurboModule::onMessageReceived(
     const rnoh::ArkTSMessage &message) {
   if (message.name == protocol::kViewEvent && message.payload.isObject()) {
-    auto phase = message.payload.getDefault("phase", "").asString();
-    auto componentName = message.payload.getDefault("componentName", "").asString();
-    auto tag = message.payload.getDefault("tag", 0).asInt();
+    const auto encodedPhase = message.payload.getDefault("phase", "");
+    const auto encodedComponentName = message.payload.getDefault("componentName", "");
+    const auto encodedTag = message.payload.getDefault("tag", 0);
     auto props = message.payload.getDefault("props", folly::dynamic::object());
-    std::vector<std::weak_ptr<RuntimeContext>> contexts;
+    if (!encodedPhase.isString() || !encodedComponentName.isString() || !encodedTag.isInt()) {
+      return;
+    }
+    auto phase = encodedPhase.asString();
+    auto componentName = encodedComponentName.asString();
+    auto tag = encodedTag.asInt();
+    std::weak_ptr<RuntimeContext> weakContext;
     {
       std::scoped_lock lock(contextsMutex_);
-      for (const auto &[runtime, context] : contexts_) {
-        contexts.push_back(context);
-      }
+      weakContext = activeRuntimeContext_;
     }
-    for (const auto &weakContext : contexts) {
-      auto context = weakContext.lock();
-      if (!context || !context->isAlive() || !context->hasModuleRegistry()) {
-        continue;
-      }
-      const auto *view = context->moduleRegistry().findView(componentName);
-      if (!view) {
-        continue;
-      }
-      try {
-        if (phase == protocol::kViewPhaseCreate && view->onCreate) {
-          view->onCreate(*context, tag, componentName);
-        } else if (phase == protocol::kViewPhaseProps && props.isObject()) {
-          context->updateViewProps(*view, tag, componentName, props);
-        } else if (phase == protocol::kViewPhaseDestroy) {
-          context->forgetView(tag);
-          if (view->onDestroy) {
-            view->onDestroy(*context, tag, componentName);
+    auto context = weakContext.lock();
+    if (!context || !context->isAlive() || !context->isAcceptingTasks() || !context->hasModuleRegistry()) {
+      return;
+    }
+    const auto *view = context->moduleRegistry().findView(componentName);
+    if (!view) {
+      return;
+    }
+    try {
+      if (phase == protocol::kViewPhaseCreate) {
+        context->mountView(tag, componentName);
+        const auto rollbackCreation = [&] {
+          if (!context->unmountView(tag, componentName) || !view->onDestroy) {
+            return;
           }
+
+          try {
+            view->onDestroy(*context, tag, componentName);
+          } catch (const std::exception &cleanupError) {
+            OH_LOG_Print(
+                LOG_APP,
+                LOG_ERROR,
+                kExpoModulesLogDomain,
+                kExpoModulesLogTag,
+                "Expo view rollback failed for %{public}s#%{public}lld: %{public}s",
+                componentName.c_str(),
+                static_cast<long long>(tag),
+                cleanupError.what());
+          } catch (...) {
+            OH_LOG_Print(
+                LOG_APP,
+                LOG_ERROR,
+                kExpoModulesLogDomain,
+                kExpoModulesLogTag,
+                "Expo view rollback failed for %{public}s#%{public}lld",
+                componentName.c_str(),
+                static_cast<long long>(tag));
+          }
+        };
+
+        try {
+          if (view->onCreate) {
+            view->onCreate(*context, tag, componentName);
+          }
+        } catch (const std::exception &error) {
+          // Roll back mount state if author creation fails.
+          rollbackCreation();
+
+          OH_LOG_Print(
+              LOG_APP,
+              LOG_ERROR,
+              kExpoModulesLogDomain,
+              kExpoModulesLogTag,
+              "Expo view callback failed for %{public}s#%{public}lld in phase %{public}s: %{public}s",
+              componentName.c_str(),
+              static_cast<long long>(tag),
+              phase.c_str(),
+              error.what());
+          return;
+        } catch (...) {
+          rollbackCreation();
+
+          OH_LOG_Print(
+              LOG_APP,
+              LOG_ERROR,
+              kExpoModulesLogDomain,
+              kExpoModulesLogTag,
+              "Expo view callback failed for %{public}s#%{public}lld in phase %{public}s",
+              componentName.c_str(),
+              static_cast<long long>(tag),
+              phase.c_str());
+          return;
         }
-      } catch (const std::exception &error) {
-        OH_LOG_Print(
-            LOG_APP,
-            LOG_ERROR,
-            kExpoModulesLogDomain,
-            kExpoModulesLogTag,
-            "Expo view callback failed for %{public}s#%{public}lld in phase %{public}s: %{public}s",
-            componentName.c_str(),
-            static_cast<long long>(tag),
-            phase.c_str(),
-            error.what());
-      } catch (...) {
-        OH_LOG_Print(
-            LOG_APP,
-            LOG_ERROR,
-            kExpoModulesLogDomain,
-            kExpoModulesLogTag,
-            "Expo view callback failed for %{public}s#%{public}lld in phase %{public}s",
-            componentName.c_str(),
-            static_cast<long long>(tag),
-            phase.c_str());
+      } else if (phase == protocol::kViewPhaseProps && props.isObject()) {
+        context->updateViewProps(*view, tag, componentName, props);
+      } else if (phase == protocol::kViewPhaseDestroy) {
+        if (context->unmountView(tag, componentName) && view->onDestroy) {
+          view->onDestroy(*context, tag, componentName);
+        }
       }
+    } catch (const std::exception &error) {
+      OH_LOG_Print(
+          LOG_APP,
+          LOG_ERROR,
+          kExpoModulesLogDomain,
+          kExpoModulesLogTag,
+          "Expo view callback failed for %{public}s#%{public}lld in phase %{public}s: %{public}s",
+          componentName.c_str(),
+          static_cast<long long>(tag),
+          phase.c_str(),
+          error.what());
+    } catch (...) {
+      OH_LOG_Print(
+          LOG_APP,
+          LOG_ERROR,
+          kExpoModulesLogDomain,
+          kExpoModulesLogTag,
+          "Expo view callback failed for %{public}s#%{public}lld in phase %{public}s",
+          componentName.c_str(),
+          static_cast<long long>(tag),
+          phase.c_str());
     }
     return;
   }
   if (message.name == protocol::kLifecycleEvent && message.payload.isObject()) {
-    auto eventName = message.payload.getDefault("eventName", "").asString();
+    const auto encodedEventName = message.payload.getDefault("eventName", "");
+    if (!encodedEventName.isString()) {
+      return;
+    }
+    if (encodedEventName.asString() != protocol::kLifecycleDestroy) {
+      return;
+    }
     auto payload = message.payload.getDefault("payload", nullptr);
-    std::vector<std::weak_ptr<RuntimeContext>> contexts;
+    std::string destroyRequestId;
+    if (payload.isObject()) {
+      const auto requestId = payload.getDefault("requestId", "");
+      if (requestId.isString()) {
+        destroyRequestId = requestId.asString();
+      }
+    }
+    bool expected = false;
+    if (!destroyScheduled_.compare_exchange_strong(
+            expected,
+            true,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire)) {
+      return;
+    }
+    std::vector<std::shared_ptr<RuntimeContext>> contexts;
     {
       std::scoped_lock lock(contextsMutex_);
       for (auto iterator = contexts_.begin(); iterator != contexts_.end();) {
@@ -243,40 +521,81 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
         contexts.push_back(context);
         ++iterator;
       }
-      if (contexts.empty()) {
-        pendingLifecycleEvents_.push_back(PendingLifecycleEvent{
-            .name = std::move(eventName),
-            .payload = std::move(payload),
-        });
-        return;
-      }
     }
-    jsInvoker_->invokeAsync(
-        [contexts = std::move(contexts),
-         eventName = std::move(eventName),
-         payload = std::move(payload)](
-            jsi::Runtime &runtime) {
-          for (const auto &weakContext : contexts) {
-            auto context = weakContext.lock();
-            if (!context || !context->isAlive()) {
-              continue;
-            }
-            if (eventName == protocol::kLifecycleDestroy) {
-              context->invalidate();
-            } else if (context->hasModuleRegistry() && &context->runtime() == &runtime) {
-              context->moduleRegistry().dispatchLifecycle(eventName, payload);
-            }
+    auto acknowledgeDestroy =
+        [mainJSInvoker = jsInvoker_,
+         safeInstance = safeInstance_,
+         requestId = std::move(destroyRequestId)]() noexcept {
+          if (!mainJSInvoker) {
+            return;
           }
-        });
+          try {
+            mainJSInvoker->invokeAsync(
+                [safeInstance,
+                 requestId](jsi::Runtime &) noexcept {
+                  auto instance = safeInstance.lock();
+                  if (instance && !requestId.empty()) {
+                    try {
+                      instance->postMessageToArkTS(
+                          protocol::kLifecycleDestroyAck,
+                          folly::dynamic::object("requestId", requestId));
+                    } catch (const std::exception &error) {
+                      OH_LOG_Print(
+                          LOG_APP,
+                          LOG_ERROR,
+                          kExpoModulesLogDomain,
+                          kExpoModulesLogTag,
+                          "Unable to acknowledge Expo runtime destruction: %{public}s",
+                          error.what());
+                    } catch (...) {
+                      OH_LOG_Print(
+                          LOG_APP,
+                          LOG_ERROR,
+                          kExpoModulesLogDomain,
+                          kExpoModulesLogTag,
+                          "Unable to acknowledge Expo runtime destruction");
+                    }
+                  }
+                });
+          } catch (...) {
+            OH_LOG_Print(
+                LOG_APP,
+                LOG_ERROR,
+                kExpoModulesLogDomain,
+                kExpoModulesLogTag,
+                "Unable to schedule Expo runtime destruction acknowledgement");
+          }
+        };
+    if (contexts.empty()) {
+      acknowledgeDestroy();
+      return;
+    }
+    auto barrier = InvalidationBarrier::create(
+        contexts.size(), std::move(acknowledgeDestroy));
+    // Close the View gate before asynchronous teardown.
+    for (const auto &context : contexts) {
+      context->invalidate([barrier] { barrier->arrive(); });
+    }
     return;
   }
   if (message.name == protocol::kSharedObjectEvent && message.payload.isObject()) {
-    auto objectId = message.payload.getDefault("objectId", 0).asInt();
-    auto moduleName = message.payload.getDefault("moduleName", "").asString();
-    auto className = message.payload.getDefault("className", "").asString();
-    auto eventName = message.payload.getDefault("eventName", "").asString();
+    auto encodedRuntimeEpoch = message.payload.getDefault("runtimeEpoch", "");
+    auto encodedObjectId = message.payload.getDefault("objectId", 0);
+    auto encodedModuleName = message.payload.getDefault("moduleName", "");
+    auto encodedClassName = message.payload.getDefault("className", "");
+    auto encodedEventName = message.payload.getDefault("eventName", "");
+    const bool hasTypedTransport = message.payload.count("transportId") > 0;
+    auto transportId = readTypedEventTransportId(message.payload);
     auto arguments = message.payload.getDefault("arguments", folly::dynamic::array());
-    if (objectId <= 0 || moduleName.empty() || className.empty() || eventName.empty() || !arguments.isArray()) {
+    if (!encodedRuntimeEpoch.isString() || !readPositiveTransportLong(encodedObjectId) || !encodedModuleName.isString() || !encodedClassName.isString() || !encodedEventName.isString() || (hasTypedTransport && !transportId) || (!hasTypedTransport && !arguments.isArray())) {
+      return;
+    }
+    auto runtimeEpoch = decodeRuntimeEpoch(encodedRuntimeEpoch.asString());
+    auto objectId = *readPositiveTransportLong(encodedObjectId);
+    auto moduleName = encodedModuleName.asString();
+    auto className = encodedClassName.asString();
+    auto eventName = encodedEventName.asString();
+    if (!runtimeEpoch || objectId <= 0 || moduleName.empty() || className.empty() || eventName.empty()) {
       return;
     }
 
@@ -288,31 +607,64 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
         contexts.push_back(context);
       }
     }
-    auto invoker = jsInvoker_;
-    invoker->invokeAsync(
-        [contexts = std::move(contexts),
-         objectId,
-         moduleName = std::move(moduleName),
-         className = std::move(className),
-         eventName = std::move(eventName),
-         arguments = std::move(arguments)](jsi::Runtime &runtime) mutable {
-          for (const auto &weakContext : contexts) {
+    for (const auto &weakContext : contexts) {
+      auto context = weakContext.lock();
+      if (!context || !context->isAlive() || !context->isAcceptingTasks() || context->runtimeEpoch() != *runtimeEpoch) {
+        continue;
+      }
+      auto invoker = context->jsInvoker();
+      invoker->invokeAsync(
+          [weakContext,
+           runtimeEpoch = *runtimeEpoch,
+           objectId,
+           moduleName,
+           className,
+           eventName,
+           transportId,
+           arguments](jsi::Runtime &runtime) mutable {
             auto context = weakContext.lock();
-            if (!context || !context->isAlive() || !context->hasModuleRegistry() || &context->runtime() != &runtime) {
-              continue;
+            if (!context || !context->isAlive() || !context->isAcceptingTasks() || context->runtimeEpoch() != runtimeEpoch || !context->hasModuleRegistry() || &context->runtime() != &runtime) {
+              return;
             }
-            try {
-              (void)context->getNativeSharedObject(objectId, moduleName, className);
-              std::vector<folly::dynamic> values;
-              values.reserve(arguments.size());
-              for (const auto &argument : arguments) {
-                values.push_back(argument);
+            bool valuesHandled = false;
+            auto discardPendingValues = [&] {
+              if (valuesHandled) {
+                return;
               }
-              context->emitSharedObjectEvent(objectId, eventName, std::move(values));
+              valuesHandled = true;
+              if (transportId) {
+                discardTypedEventArguments(context, *transportId);
+              } else {
+                ArkTSModuleAdapter::discardValues(context, arguments);
+              }
+            };
+            try {
+              (void)context->getNativeSharedObject(
+                  objectId, moduleName, className);
+              auto objectValue = context->getSharedObject(objectId);
+              if (!objectValue.isObject()) {
+                discardPendingValues();
+                return;
+              }
+              std::vector<jsi::Value> values;
+              if (transportId) {
+                values = takeTypedEventArguments(context, *transportId);
+                valuesHandled = true;
+              } else {
+                valuesHandled = true;
+                values = ArkTSModuleAdapter::decodeValues(context, arguments);
+              }
+              auto object = objectValue.getObject(runtime);
+              expo::EventEmitter::emitEvent(
+                  runtime,
+                  object,
+                  eventName,
+                  values);
             } catch (const CodedError &) {
-              // The event may arrive after its SharedObject was released or may
-              // belong to a different runtime installed in the same RN instance.
+              discardPendingValues();
+              // Drop events for released or stale runtimes.
             } catch (const std::exception &error) {
+              discardPendingValues();
               OH_LOG_Print(
                   LOG_APP,
                   LOG_ERROR,
@@ -322,6 +674,7 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
                   eventName.c_str(),
                   error.what());
             } catch (...) {
+              discardPendingValues();
               OH_LOG_Print(
                   LOG_APP,
                   LOG_ERROR,
@@ -330,17 +683,26 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
                   "Expo SharedObject event %{public}s failed",
                   eventName.c_str());
             }
-          }
-        });
+          });
+    }
     return;
   }
   if (message.name != protocol::kModuleEvent || !message.payload.isObject()) {
     return;
   }
-  auto moduleName = message.payload.getDefault("moduleName", "").asString();
-  auto eventName = message.payload.getDefault("eventName", "").asString();
+  const auto encodedRuntimeEpoch = message.payload.getDefault("runtimeEpoch", "");
+  const auto encodedModuleName = message.payload.getDefault("moduleName", "");
+  const auto encodedEventName = message.payload.getDefault("eventName", "");
+  const bool hasTypedTransport = message.payload.count("transportId") > 0;
+  auto transportId = readTypedEventTransportId(message.payload);
   auto arguments = message.payload.getDefault("arguments", folly::dynamic::array());
-  if (moduleName.empty() || eventName.empty() || !arguments.isArray()) {
+  if (!encodedRuntimeEpoch.isString() || !encodedModuleName.isString() || !encodedEventName.isString() || (hasTypedTransport && !transportId) || (!hasTypedTransport && !arguments.isArray())) {
+    return;
+  }
+  auto runtimeEpoch = decodeRuntimeEpoch(encodedRuntimeEpoch.asString());
+  auto moduleName = encodedModuleName.asString();
+  auto eventName = encodedEventName.asString();
+  if (!runtimeEpoch || moduleName.empty() || eventName.empty()) {
     return;
   }
 
@@ -352,36 +714,82 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
       contexts.push_back(context);
     }
   }
-  auto invoker = jsInvoker_;
-  invoker->invokeAsync(
-      [contexts = std::move(contexts),
-       moduleName = std::move(moduleName),
-       eventName = std::move(eventName),
-       arguments = std::move(arguments)](jsi::Runtime &runtime) mutable {
-        for (const auto &weakContext : contexts) {
+  for (const auto &weakContext : contexts) {
+    auto context = weakContext.lock();
+    if (!context || !context->isAlive() || !context->isAcceptingTasks() || context->runtimeEpoch() != *runtimeEpoch) {
+      continue;
+    }
+    auto invoker = context->jsInvoker();
+    invoker->invokeAsync(
+        [weakContext,
+         runtimeEpoch = *runtimeEpoch,
+         moduleName,
+         eventName,
+         transportId,
+         arguments](jsi::Runtime &runtime) mutable {
           auto context = weakContext.lock();
-          if (!context || !context->isAlive() || !context->hasModuleRegistry() || &context->runtime() != &runtime) {
-            continue;
+          if (!context || !context->isAlive() || !context->isAcceptingTasks() || context->runtimeEpoch() != runtimeEpoch || !context->hasModuleRegistry() || &context->runtime() != &runtime) {
+            return;
           }
-          auto moduleValue = context->getModule(moduleName);
-          if (!moduleValue.isObject()) {
-            continue;
+          bool valuesHandled = false;
+          auto discardPendingValues = [&] {
+            if (valuesHandled) {
+              return;
+            }
+            valuesHandled = true;
+            if (transportId) {
+              discardTypedEventArguments(context, *transportId);
+            } else {
+              ArkTSModuleAdapter::discardValues(context, arguments);
+            }
+          };
+          try {
+            auto moduleValue = context->getModule(moduleName);
+            if (!moduleValue.isObject()) {
+              discardPendingValues();
+              return;
+            }
+            auto moduleWrapper = moduleValue.getObject(runtime);
+            const auto &unwrappedModule = expo::LazyObject::unwrapObjectIfNecessary(runtime, moduleWrapper);
+            auto module = jsi::Value(runtime, unwrappedModule).getObject(runtime);
+            std::vector<jsi::Value> values;
+            if (transportId) {
+              values = takeTypedEventArguments(context, *transportId);
+              valuesHandled = true;
+            } else {
+              valuesHandled = true;
+              values = ArkTSModuleAdapter::decodeValues(context, arguments);
+            }
+            expo::EventEmitter::emitEvent(
+                runtime,
+                module,
+                eventName,
+                values);
+          } catch (const CodedError &) {
+            discardPendingValues();
+            // Drop events for released or stale runtimes.
+          } catch (const std::exception &error) {
+            discardPendingValues();
+            OH_LOG_Print(
+                LOG_APP,
+                LOG_ERROR,
+                kExpoModulesLogDomain,
+                kExpoModulesLogTag,
+                "Expo module event %{public}s failed: %{public}s",
+                eventName.c_str(),
+                error.what());
+          } catch (...) {
+            discardPendingValues();
+            OH_LOG_Print(
+                LOG_APP,
+                LOG_ERROR,
+                kExpoModulesLogDomain,
+                kExpoModulesLogTag,
+                "Expo module event %{public}s failed",
+                eventName.c_str());
           }
-          auto moduleWrapper = moduleValue.getObject(runtime);
-          const auto &unwrappedModule = expo::LazyObject::unwrapObjectIfNecessary(runtime, moduleWrapper);
-          auto module = jsi::Value(runtime, unwrappedModule).getObject(runtime);
-          std::vector<jsi::Value> values;
-          values.reserve(arguments.size());
-          for (const auto &argument : arguments) {
-            values.push_back(jsi::valueFromDynamic(runtime, argument));
-          }
-          expo::EventEmitter::emitEvent(
-              runtime,
-              module,
-              eventName,
-              values);
-        }
-      });
+        });
+  }
 }
 
 }  // namespace expo::harmony

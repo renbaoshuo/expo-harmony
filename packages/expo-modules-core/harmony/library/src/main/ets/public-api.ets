@@ -1,34 +1,32 @@
-export { ExpoLifecycleDispatcher, ExpoLifecycleSink, HarmonyAbilityResult } from './appcontext/LifecycleDispatcher';
-export { ExpoRNAbility } from './appcontext/ExpoRNAbility';
+export { ExpoViewContentContext } from './views/ExpoViewTypes';
+export { ExpoView, ExpoViewContext, ExpoViewDefinition, ExpoViewPropGroupBody } from './views/ExpoViewDefinition';
 export {
-  ExpoAbilityLifecycleSubscriber,
-  ExpoHarmonyHostProvider,
-  ExpoReactInstanceLifecycleDispatcher,
-  ExpoReactInstanceLifecycleListener,
-} from './appcontext/HarmonyHostLifecycle';
+  ExpoModule,
+  ExpoAppLifecycleState,
+  ExpoPermissionStatus,
+  ExpoModuleContext,
+  ExpoModuleDefinition,
+  ExpoModuleAbilityResult,
+  ExpoModuleActorTask,
+  ExpoBackgroundTask,
+  ExpoBackgroundTaskContext,
+  ExpoBackgroundTaskParams,
+  ExpoBackgroundTaskResult,
+} from './modules/ExpoModule';
+export { ExpoModuleError } from './modules/ExpoModuleError';
+export { ExpoModuleLogger } from './appcontext/ExpoModuleLogger';
 export {
-  EXPO_LIFECYCLE_DESTROY,
-  EXPO_LIFECYCLE_FOREGROUND,
-  EXPO_LIFECYCLE_BACKGROUND,
-  EXPO_LIFECYCLE_USER_LEAVES,
-  EXPO_LIFECYCLE_ACTIVITY_DESTROY,
-  EXPO_LIFECYCLE_NEW_INTENT,
-  EXPO_LIFECYCLE_ACTIVITY_RESULT,
-  EXPO_LIFECYCLE_EVENT,
-  EXPO_MODULE_EVENT,
-  EXPO_SHARED_OBJECT_EVENT,
-  EXPO_VIEW_COMMAND,
-  EXPO_VIEW_EVENT,
-  EXPO_VIEW_EVENT_EMIT,
-  EXPO_VIEW_PHASE_CREATE,
-  EXPO_VIEW_PHASE_DESTROY,
-  EXPO_VIEW_PHASE_PROPS,
-} from './protocol/Protocol';
-export {
-  ExpoPlatformService,
-  ExpoPlatformServiceError,
-  ExpoPlatformServiceFactory,
-  ExpoPlatformServiceResult,
-  ExpoPlatformServiceRegistry,
-} from './services/PlatformService';
-export { ExpoViewAdapter, ExpoViewAdapterRegistry, ExpoViewContentContext } from './views/ExpoViewTypes';
+  ExpoEither,
+  ExpoEitherOfFour,
+  ExpoEitherOfThree,
+  ExpoFunction,
+  ExpoJavaScriptCallback,
+  ExpoNumericTypedArray,
+  ExpoRecordShape,
+  ExpoValueOrUndefined,
+  ExpoValueDecoder,
+  ExpoValueEncoder,
+  ExpoValueType,
+  ExpoValueTypes,
+} from './modules/ExpoValueConverter';
+export { ExpoSharedObject, ExpoSharedObjectTypes, ExpoSharedRef, ExpoSharedObjectClassDefinition } from './modules/ExpoSharedObject';

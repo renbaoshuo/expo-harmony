@@ -15,6 +15,7 @@
 #include <jsi/jsi.h>
 
 #include "EventEmitter.h"
+#include "SharedObjectReleaseState.h"
 
 namespace jsi = facebook::jsi;
 
@@ -51,14 +52,22 @@ jsi::Function createClass(jsi::Runtime &runtime, const char *className, common::
 class JSI_EXPORT NativeState : public EventEmitter::NativeState {
 public:
   const ObjectId objectId = 0;
-  const ObjectReleaser releaser;
 
   /**
    The default constructor that initializes a native state for the shared object with given ID.
    */
   NativeState(ObjectId objectId, ObjectReleaser releaser);
 
-  ~NativeState() override;
+  ~NativeState() override = default;
+
+  /** Releases the native pair once across explicit release and GC. */
+  bool release() noexcept;
+
+  /** True after explicit release or finalizer release closed this JS handle. */
+  bool isReleased() const noexcept;
+
+private:
+  expo::harmony::SharedObjectReleaseState releaseState_;
 }; // class NativeState
 
 } // namespace expo::SharedObject

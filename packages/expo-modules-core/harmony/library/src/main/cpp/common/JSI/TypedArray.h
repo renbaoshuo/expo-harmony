@@ -10,8 +10,7 @@ namespace jsi = facebook::jsi;
 
 namespace expo {
 
-// Please keep it in-sync with the `EXTypedArrayKind` in Objective-C.
-// We need to maintain two implementations to expose this enum to Swift.
+// Keep this enum in sync with the platform TypedArray kinds.
 enum class TypedArrayKind {
   Int8Array = 1,
   Int16Array = 2,

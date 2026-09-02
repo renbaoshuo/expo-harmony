@@ -5,11 +5,48 @@
 #endif
 
 #include "EventEmitter.h"
+#include "EventEmitterArgumentValidator.h"
 #include "LazyObject.h"
+#include "errors/CodedError.h"
 
 #include <cxxreact/ErrorUtils.h>
 
+#include <optional>
+
 namespace expo::EventEmitter {
+
+namespace {
+
+void validateHostArguments(
+    jsi::Runtime &runtime,
+    HostFunction function,
+    size_t count,
+    ArgumentShape shape) {
+  const auto *expectation = validateArguments(function, count, shape);
+  if (!expectation) {
+    return;
+  }
+  throw expo::harmony::CodedJSError(
+      runtime,
+      "ERR_INVALID_ARGUMENT",
+      std::string("EventEmitter.") + hostFunctionName(function) + " " + expectation + ".");
+}
+
+jsi::Object requireEmitterObject(
+    jsi::Runtime &runtime,
+    const jsi::Value &thisValue,
+    const char *functionName) {
+  if (!thisValue.isObject()) {
+    throw expo::harmony::CodedJSError(
+        runtime,
+        "ERR_INVALID_ARGUMENT",
+        std::string("EventEmitter.") + functionName + " must be called on an object.");
+  }
+
+  return thisValue.getObject(runtime);
+}
+
+}  // namespace
 
 #pragma mark - Listeners
 
@@ -18,24 +55,32 @@ void Listeners::add(jsi::Runtime &runtime, const std::string& eventName, const j
 }
 
 void Listeners::remove(jsi::Runtime &runtime, const std::string& eventName, const jsi::Function &listener) noexcept {
-  if (!listenersMap.contains(eventName)) {
+  auto event = listenersMap.find(eventName);
+  if (event == listenersMap.end()) {
     return;
   }
   jsi::Value listenerValue(runtime, listener);
 
-  listenersMap[eventName].remove_if([&](const jsi::Value &item) {
+  event->second.remove_if([&](const jsi::Value &item) {
     return jsi::Value::strictEquals(runtime, listenerValue, item);
   });
+  if (event->second.empty()) {
+    listenersMap.erase(event);
+  }
 }
 
 void Listeners::removeAll(const std::string& eventName) noexcept {
-  if (listenersMap.contains(eventName)) {
-    listenersMap[eventName].clear();
-  }
+  listenersMap.erase(eventName);
 }
 
 void Listeners::clear() noexcept {
   listenersMap.clear();
+}
+
+Listeners::ListenersMap Listeners::takeAll() noexcept {
+  ListenersMap listeners;
+  listeners.swap(listenersMap);
+  return listeners;
 }
 
 size_t Listeners::listenersCount(const std::string& eventName) noexcept {
@@ -78,13 +123,9 @@ void Listeners::call(jsi::Runtime &runtime, const std::string& eventName, const 
     listenersVector.push_back(listener.asObject(runtime).asFunction(runtime));
   }
 
-  // Call listeners from the vector. The list can be modified by the listeners but it will not affect this loop,
-  // i.e. newly added listeners will not be called and removed listeners will be called one last time.
-  // This is compliant with the EventEmitter in Node.js
+  // Iterate a snapshot so listener mutations do not affect this dispatch.
   for (const jsi::Function &listener : listenersVector) {
-    // As opposed to Node.js and fbemitter, when the listener throws an error the behavior is the same as on web.
-    // That is, it doesn't stop the execution of subsequent listeners and the error is not propagated to the `emit` function.
-    // The motivation behind this is that errors thrown from a module or user's code shouldn't affect other modules' behavior.
+    // A listener error must not stop subsequent listeners.
     try {
       listener.callWithThis(runtime, thisObject, args, count);
     } catch (jsi::JSError& error) {
@@ -113,6 +154,34 @@ NativeState::Shared NativeState::get(jsi::Runtime &runtime, const jsi::Object &o
   return nullptr;
 }
 
+void NativeState::closeListenerAdmission() noexcept {
+  acceptsListeners_ = false;
+}
+
+bool NativeState::beginDrainingListeners() noexcept {
+  closeListenerAdmission();
+  if (listenersDrained_) {
+    return false;
+  }
+  listenersDrained_ = true;
+  return true;
+}
+
+bool NativeState::acceptsListeners() const noexcept {
+  return acceptsListeners_;
+}
+
+void closeListenerAdmission(
+    jsi::Runtime &runtime,
+    const jsi::Object &emitter) noexcept {
+  try {
+    if (auto state = NativeState::get(runtime, emitter, false)) {
+      state->closeListenerAdmission();
+    }
+  } catch (...) {
+  }
+}
+
 #pragma mark - Utils
 
 void callObservingFunction(jsi::Runtime &runtime, const jsi::Object &object, const char* functionName, const std::string& eventName) {
@@ -131,13 +200,108 @@ void callObservingFunction(jsi::Runtime &runtime, const jsi::Object &object, con
     });
 }
 
+namespace {
+
+void callStopObservingFunctions(
+    jsi::Runtime &runtime,
+    const jsi::Object &emitter,
+    const std::string &eventName,
+    bool callNative,
+    bool callJavaScript) {
+  if (!callNative) {
+    if (callJavaScript) {
+      callObservingFunction(runtime, emitter, "stopObserving", eventName);
+    }
+    return;
+  }
+
+  const auto finishJavaScript = [&]() noexcept {
+    if (!callJavaScript) {
+      return;
+    }
+    try {
+      callObservingFunction(runtime, emitter, "stopObserving", eventName);
+    } catch (...) {
+    }
+  };
+
+  try {
+    callObservingFunction(
+        runtime, emitter, "__expo_onStopListeningToEvent", eventName);
+  } catch (const expo::harmony::CodedError &error) {
+    finishJavaScript();
+    throw expo::harmony::CodedJSError(runtime, error);
+  } catch (const jsi::JSError &error) {
+    finishJavaScript();
+    throw jsi::JSError(error);
+  } catch (const std::exception &error) {
+    finishJavaScript();
+    throw std::runtime_error(error.what());
+  } catch (...) {
+    finishJavaScript();
+    throw std::runtime_error(
+        "EventEmitter failed to stop observing '" + eventName + "'.");
+  }
+
+  if (callJavaScript) {
+    callObservingFunction(runtime, emitter, "stopObserving", eventName);
+  }
+}
+
+}  // namespace
+
 void addListener(jsi::Runtime &runtime, const jsi::Object &emitter, const std::string &eventName, const jsi::Function &listener) {
   if (NativeState::Shared state = NativeState::get(runtime, emitter, true)) {
+    if (!state->acceptsListeners()) {
+      throw expo::harmony::CodedJSError(
+          runtime,
+          "ERR_EVENT_EMITTER_RELEASED",
+          "Cannot add a listener while its EventEmitter is being released.");
+    }
     state->listeners.add(runtime, eventName, listener);
 
     if (state->listeners.listenersCount(eventName) == 1) {
-      callObservingFunction(runtime, emitter, "__expo_onStartListeningToEvent", eventName);
-      callObservingFunction(runtime, emitter, "startObserving", eventName);
+      bool nativeStartAttempted = false;
+      bool javaScriptStartAttempted = false;
+      const auto rollback = [&]() noexcept {
+        // Detach first so rollback hooks can safely re-enter remove/add APIs.
+        state->listeners.remove(runtime, eventName, listener);
+        try {
+          callStopObservingFunctions(
+              runtime,
+              emitter,
+              eventName,
+              nativeStartAttempted,
+              javaScriptStartAttempted);
+        } catch (...) {
+        }
+      };
+
+      try {
+        nativeStartAttempted = true;
+        callObservingFunction(
+            runtime, emitter, "__expo_onStartListeningToEvent", eventName);
+        // A native start hook may synchronously remove or release the emitter.
+        if (!state->acceptsListeners() ||
+            state->listeners.listenersCount(eventName) == 0) {
+          return;
+        }
+        javaScriptStartAttempted = true;
+        callObservingFunction(runtime, emitter, "startObserving", eventName);
+      } catch (const expo::harmony::CodedError &error) {
+        rollback();
+        throw expo::harmony::CodedJSError(runtime, error);
+      } catch (const jsi::JSError &error) {
+        rollback();
+        throw jsi::JSError(error);
+      } catch (const std::exception &error) {
+        rollback();
+        throw std::runtime_error(error.what());
+      } catch (...) {
+        rollback();
+        throw std::runtime_error(
+            "EventEmitter failed to start observing '" + eventName + "'.");
+      }
     }
   }
 }
@@ -149,8 +313,7 @@ void removeListener(jsi::Runtime &runtime, const jsi::Object &emitter, const std
     state->listeners.remove(runtime, eventName, listener);
 
     if (listenersCountBefore >= 1 && state->listeners.listenersCount(eventName) == 0) {
-      callObservingFunction(runtime, emitter, "__expo_onStopListeningToEvent", eventName);
-      callObservingFunction(runtime, emitter, "stopObserving", eventName);
+      callStopObservingFunctions(runtime, emitter, eventName, true, true);
     }
   }
 }
@@ -162,10 +325,181 @@ void removeAllListeners(jsi::Runtime &runtime, const jsi::Object &emitter, const
     state->listeners.removeAll(eventName);
 
     if (listenersCountBefore >= 1) {
-      callObservingFunction(runtime, emitter, "__expo_onStopListeningToEvent", eventName);
-      callObservingFunction(runtime, emitter, "stopObserving", eventName);
+      callStopObservingFunctions(runtime, emitter, eventName, true, true);
     }
   }
+}
+
+std::optional<expo::harmony::CodedError> drainListeners(
+    jsi::Runtime &runtime,
+    const jsi::Object &emitter,
+    const ListenerDrainCallback &callback) noexcept {
+  std::optional<expo::harmony::CodedError> firstError;
+
+  try {
+    auto state = NativeState::get(runtime, emitter, false);
+    if (!state || !state->beginDrainingListeners()) {
+      return firstError;
+    }
+
+    // Detach listeners before invoking hooks.
+    auto listeners = state->listeners.takeAll();
+    for (const auto &listenerEntry : listeners) {
+      const std::string eventName = listenerEntry.first;
+      const auto &eventListeners = listenerEntry.second;
+      if (eventListeners.empty()) {
+        continue;
+      }
+
+      if (callback) {
+        try {
+          callback(eventName);
+        } catch (const expo::harmony::CodedError &error) {
+          if (!firstError) {
+            try {
+              firstError.emplace(error);
+            } catch (...) {
+            }
+          }
+        } catch (const jsi::JSError &error) {
+          if (!firstError) {
+            try {
+              firstError.emplace(
+                  "ERR_EVENT_EMITTER",
+                  error.getMessage().empty() ? error.what() : error.getMessage());
+            } catch (...) {
+            }
+          }
+        } catch (const std::exception &error) {
+          if (!firstError) {
+            try {
+              firstError.emplace("ERR_EVENT_EMITTER", error.what());
+            } catch (...) {
+            }
+          }
+        } catch (...) {
+          if (!firstError) {
+            try {
+              firstError.emplace(
+                  "ERR_EVENT_EMITTER",
+                  "EventEmitter listener cleanup failed.");
+            } catch (...) {
+            }
+          }
+        }
+      } else {
+        try {
+          callObservingFunction(
+              runtime,
+              emitter,
+              "__expo_onStopListeningToEvent",
+              eventName);
+        } catch (const expo::harmony::CodedError &error) {
+          if (!firstError) {
+            try {
+              firstError.emplace(error);
+            } catch (...) {
+            }
+          }
+        } catch (const jsi::JSError &error) {
+          if (!firstError) {
+            try {
+              firstError.emplace(
+                  "ERR_EVENT_EMITTER",
+                  error.getMessage().empty() ? error.what() : error.getMessage());
+            } catch (...) {
+            }
+          }
+        } catch (const std::exception &error) {
+          if (!firstError) {
+            try {
+              firstError.emplace("ERR_EVENT_EMITTER", error.what());
+            } catch (...) {
+            }
+          }
+        } catch (...) {
+          if (!firstError) {
+            try {
+              firstError.emplace(
+                  "ERR_EVENT_EMITTER",
+                  "EventEmitter listener cleanup failed.");
+            } catch (...) {
+            }
+          }
+        }
+      }
+
+      try {
+        callObservingFunction(runtime, emitter, "stopObserving", eventName);
+      } catch (const expo::harmony::CodedError &error) {
+        if (!firstError) {
+          try {
+            firstError.emplace(error);
+          } catch (...) {
+          }
+        }
+      } catch (const jsi::JSError &error) {
+        if (!firstError) {
+          try {
+            firstError.emplace(
+                "ERR_EVENT_EMITTER",
+                error.getMessage().empty() ? error.what() : error.getMessage());
+          } catch (...) {
+          }
+        }
+      } catch (const std::exception &error) {
+        if (!firstError) {
+          try {
+            firstError.emplace("ERR_EVENT_EMITTER", error.what());
+          } catch (...) {
+          }
+        }
+      } catch (...) {
+        if (!firstError) {
+          try {
+            firstError.emplace(
+                "ERR_EVENT_EMITTER",
+                "EventEmitter listener cleanup failed.");
+          } catch (...) {
+          }
+        }
+      }
+    }
+  } catch (const expo::harmony::CodedError &error) {
+    if (!firstError) {
+      try {
+        firstError.emplace(error);
+      } catch (...) {
+      }
+    }
+  } catch (const jsi::JSError &error) {
+    if (!firstError) {
+      try {
+        firstError.emplace(
+            "ERR_EVENT_EMITTER",
+            error.getMessage().empty() ? error.what() : error.getMessage());
+      } catch (...) {
+      }
+    }
+  } catch (const std::exception &error) {
+    if (!firstError) {
+      try {
+        firstError.emplace("ERR_EVENT_EMITTER", error.what());
+      } catch (...) {
+      }
+    }
+  } catch (...) {
+    if (!firstError) {
+      try {
+        firstError.emplace(
+            "ERR_EVENT_EMITTER",
+            "EventEmitter listener cleanup failed.");
+      } catch (...) {
+      }
+    }
+  }
+
+  return firstError;
 }
 
 void emitEvent(jsi::Runtime &runtime, const jsi::Object &emitter, const std::string &eventName, const jsi::Value *args, size_t count) {
@@ -183,19 +517,22 @@ size_t getListenerCount(jsi::Runtime &runtime, const jsi::Object &emitter, const
 
 jsi::Value createEventSubscription(jsi::Runtime &runtime, const std::string &eventName, const jsi::Object &emitter, const jsi::Function &listener) {
   jsi::Object subscription(runtime);
-  jsi::PropNameID removeProp = jsi::PropNameID::forAscii(runtime, "remove", 6);
-  std::shared_ptr<jsi::Value> emitterValue = std::make_shared<jsi::Value>(runtime, emitter);
-  std::shared_ptr<jsi::Value> listenerValue = std::make_shared<jsi::Value>(runtime, listener);
+  auto removeName = jsi::PropNameID::forAscii(runtime, "remove", 6);
+  auto emitterHandle = std::make_shared<jsi::Value>(runtime, emitter);
+  auto listenerHandle = std::make_shared<jsi::Value>(runtime, listener);
 
-  jsi::HostFunctionType removeSubscription = [eventName, emitterValue, listenerValue](jsi::Runtime &runtime, const jsi::Value &thisValue, const jsi::Value *args, size_t count) -> jsi::Value {
-    jsi::Object emitter = emitterValue->getObject(runtime);
-    jsi::Function listener = listenerValue->getObject(runtime).getFunction(runtime);
+  jsi::HostFunctionType remove = [eventName, emitterHandle, listenerHandle](jsi::Runtime &runtime, const jsi::Value &, const jsi::Value *, size_t) -> jsi::Value {
+    auto emitter = emitterHandle->getObject(runtime);
+    auto listener = listenerHandle->getObject(runtime).getFunction(runtime);
 
     removeListener(runtime, emitter, eventName, listener);
     return jsi::Value::undefined();
   };
 
-  subscription.setProperty(runtime, removeProp, jsi::Function::createFromHostFunction(runtime, removeProp, 0, removeSubscription));
+  subscription.setProperty(
+      runtime,
+      removeName,
+      jsi::Function::createFromHostFunction(runtime, removeName, 0, remove));
 
   return jsi::Value(runtime, subscription);
 }
@@ -213,12 +550,15 @@ jsi::Function getClass(jsi::Runtime &runtime) {
 
 void installClass(jsi::Runtime &runtime) {
   jsi::Function eventEmitterClass = common::createClass(runtime, "EventEmitter", [](jsi::Runtime &runtime, const jsi::Value &thisValue, const jsi::Value *args, size_t count) -> jsi::Value {
-    // To provide backwards compatibility with the old EventEmitter where the native module object was passed as an argument.
-    // We're checking if the argument is already an instance of the new emitter and if so, just return it without unnecessarily wrapping it.
+    // Preserve compatibility with the legacy emitter shape.
     if (count > 0) {
-      // We need the tmp object to correctly unwrap the lazy object.
-      // For some reason, if we inline the retrieval of the first argument, the instanceOf check fails on Android.
-      // This is probably because the object is copied somewhere in the process.
+      if (!args[0].isObject()) {
+        throw expo::harmony::CodedJSError(
+            runtime,
+            "ERR_INVALID_ARGUMENT",
+            "EventEmitter constructor expected its optional argument to be an object.");
+      }
+      // Keep a temporary object so LazyObject unwrapping works reliably.
       const jsi::Object &tmp = args[0].asObject(runtime);
       const jsi::Object &firstArg = LazyObject::unwrapObjectIfNecessary(runtime, tmp);
 
@@ -233,12 +573,23 @@ void installClass(jsi::Runtime &runtime) {
   jsi::Object prototype = eventEmitterClass.getPropertyAsObject(runtime, "prototype");
 
   jsi::HostFunctionType addListenerHost = [](jsi::Runtime &runtime, const jsi::Value &thisValue, const jsi::Value *args, size_t count) -> jsi::Value {
-    std::string eventName = args[0].asString(runtime).utf8(runtime);
-    jsi::Function listener = args[1].asObject(runtime).asFunction(runtime);
-    jsi::Object thisObject = thisValue.getObject(runtime);
+    const bool secondIsFunction =
+        count > 1 && args[1].isObject() && args[1].getObject(runtime).isFunction(runtime);
+    validateHostArguments(
+        runtime,
+        HostFunction::AddListener,
+        count,
+        ArgumentShape{
+            .firstIsString = count > 0 && args[0].isString(),
+            .secondIsFunction = secondIsFunction,
+        });
 
-    // `this` might be an object that is representing a host object, in which case it's not possible to get the native state.
-    // For native modules we need to unwrap it to get the object used under the hood by `LazyObject` host object.
+    auto eventName = args[0].asString(runtime).utf8(runtime);
+    auto listener = args[1].asObject(runtime).asFunction(runtime);
+    auto thisObject = requireEmitterObject(
+        runtime, thisValue, "addListener");
+
+    // Unwrap LazyObject host objects before reading native state.
     const jsi::Object &emitter = LazyObject::unwrapObjectIfNecessary(runtime, thisObject);
 
     addListener(runtime, emitter, eventName, listener);
@@ -246,9 +597,21 @@ void installClass(jsi::Runtime &runtime) {
   };
 
   jsi::HostFunctionType removeListenerHost = [](jsi::Runtime &runtime, const jsi::Value &thisValue, const jsi::Value *args, size_t count) -> jsi::Value {
-    std::string eventName = args[0].asString(runtime).utf8(runtime);
-    jsi::Function listener = args[1].asObject(runtime).asFunction(runtime);
-    jsi::Object thisObject = thisValue.getObject(runtime);
+    const bool secondIsFunction =
+        count > 1 && args[1].isObject() && args[1].getObject(runtime).isFunction(runtime);
+    validateHostArguments(
+        runtime,
+        HostFunction::RemoveListener,
+        count,
+        ArgumentShape{
+            .firstIsString = count > 0 && args[0].isString(),
+            .secondIsFunction = secondIsFunction,
+        });
+
+    auto eventName = args[0].asString(runtime).utf8(runtime);
+    auto listener = args[1].asObject(runtime).asFunction(runtime);
+    auto thisObject = requireEmitterObject(
+        runtime, thisValue, "removeListener");
 
     // Unwrap `this` object if it's a lazy object (e.g. native module).
     const jsi::Object &emitter = LazyObject::unwrapObjectIfNecessary(runtime, thisObject);
@@ -258,8 +621,17 @@ void installClass(jsi::Runtime &runtime) {
   };
 
   jsi::HostFunctionType removeAllListenersHost = [](jsi::Runtime &runtime, const jsi::Value &thisValue, const jsi::Value *args, size_t count) -> jsi::Value {
-    std::string eventName = args[0].asString(runtime).utf8(runtime);
-    jsi::Object thisObject = thisValue.getObject(runtime);
+    validateHostArguments(
+        runtime,
+        HostFunction::RemoveAllListeners,
+        count,
+        ArgumentShape{
+            .firstIsString = count > 0 && args[0].isString(),
+        });
+
+    auto eventName = args[0].asString(runtime).utf8(runtime);
+    auto thisObject = requireEmitterObject(
+        runtime, thisValue, "removeAllListeners");
 
     // Unwrap `this` object if it's a lazy object (e.g. native module).
     const jsi::Object &emitter = LazyObject::unwrapObjectIfNecessary(runtime, thisObject);
@@ -269,8 +641,16 @@ void installClass(jsi::Runtime &runtime) {
   };
 
   jsi::HostFunctionType emit = [](jsi::Runtime &runtime, const jsi::Value &thisValue, const jsi::Value *args, size_t count) -> jsi::Value {
-    std::string eventName = args[0].asString(runtime).utf8(runtime);
-    jsi::Object thisObject = thisValue.getObject(runtime);
+    validateHostArguments(
+        runtime,
+        HostFunction::Emit,
+        count,
+        ArgumentShape{
+            .firstIsString = count > 0 && args[0].isString(),
+        });
+
+    auto eventName = args[0].asString(runtime).utf8(runtime);
+    auto thisObject = requireEmitterObject(runtime, thisValue, "emit");
 
     // Unwrap `this` object if it's a lazy object (e.g. native module).
     const jsi::Object &emitter = LazyObject::unwrapObjectIfNecessary(runtime, thisObject);
@@ -283,8 +663,17 @@ void installClass(jsi::Runtime &runtime) {
   };
 
   jsi::HostFunctionType listenerCountHost = [](jsi::Runtime &runtime, const jsi::Value &thisValue, const jsi::Value *args, size_t count) -> jsi::Value {
-    std::string eventName = args[0].asString(runtime).utf8(runtime);
-    jsi::Object thisObject = thisValue.getObject(runtime);
+    validateHostArguments(
+        runtime,
+        HostFunction::ListenerCount,
+        count,
+        ArgumentShape{
+            .firstIsString = count > 0 && args[0].isString(),
+        });
+
+    auto eventName = args[0].asString(runtime).utf8(runtime);
+    auto thisObject = requireEmitterObject(
+        runtime, thisValue, "listenerCount");
 
     // Unwrap `this` object if it's a lazy object (e.g. native module).
     const jsi::Object &emitter = LazyObject::unwrapObjectIfNecessary(runtime, thisObject);
@@ -294,12 +683,28 @@ void installClass(jsi::Runtime &runtime) {
 
   // Added for compatibility with the old EventEmitter API.
   jsi::HostFunctionType removeSubscriptionHost = [](jsi::Runtime &runtime, const jsi::Value &thisValue, const jsi::Value *args, size_t count) -> jsi::Value {
-    jsi::Object subscription = args[0].asObject(runtime);
+    validateHostArguments(
+        runtime,
+        HostFunction::RemoveSubscription,
+        count,
+        ArgumentShape{
+            .firstIsObject = count > 0 && args[0].isObject(),
+        });
 
-    subscription.getProperty(runtime, "remove")
-      .asObject(runtime)
-      .asFunction(runtime)
-      .callWithThis(runtime, subscription, {});
+    auto subscription = args[0].asObject(runtime);
+    auto removeValue = subscription.getProperty(runtime, "remove");
+    if (!removeValue.isObject() ||
+        !removeValue.getObject(runtime).isFunction(runtime)) {
+      throw expo::harmony::CodedJSError(
+          runtime,
+          "ERR_INVALID_ARGUMENT",
+          "EventEmitter.removeSubscription expected an object with a remove function.");
+    }
+
+    removeValue
+        .getObject(runtime)
+        .asFunction(runtime)
+        .callWithThis(runtime, subscription, {});
 
     return jsi::Value::undefined();
   };

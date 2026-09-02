@@ -5,9 +5,6 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-set(EXPO_REACT_NATIVE_MINOR_VERSION 84)
-set(EXPO_HERMES_V1 ON)
-
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../../oh-package.json5" EXPO_MODULE_PACKAGE_JSON)
 string(JSON EXPO_MODULE_HAR_VERSION GET "${EXPO_MODULE_PACKAGE_JSON}" version)
 string(REGEX REPLACE "-harmony\\..*$" "" EXPO_MODULES_CORE_VERSION_VALUE "${EXPO_MODULE_HAR_VERSION}")
@@ -21,6 +18,17 @@ else()
   set(EXPO_OH_MODULES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../oh_modules")
 endif()
 
+set(EXPO_RNOH_PACKAGE_JSON_PATH
+  "${EXPO_OH_MODULES_DIR}/@rnoh/react-native-openharmony/oh-package.json5")
+if(NOT EXISTS "${EXPO_RNOH_PACKAGE_JSON_PATH}")
+  message(FATAL_ERROR "Unable to locate the RNOH package manifest")
+endif()
+file(READ "${EXPO_RNOH_PACKAGE_JSON_PATH}" EXPO_RNOH_PACKAGE_JSON)
+string(JSON EXPO_RNOH_VERSION GET "${EXPO_RNOH_PACKAGE_JSON}" version)
+if(NOT EXPO_RNOH_VERSION MATCHES "^0\\.([0-9]+)\\.")
+  message(FATAL_ERROR "Unable to derive the React Native minor from RNOH ${EXPO_RNOH_VERSION}")
+endif()
+set(EXPO_REACT_NATIVE_MINOR_VERSION "${CMAKE_MATCH_1}")
 if(NOT TARGET rnoh)
   set(ENABLE_COMPILE_OPTIMIZATIONS OFF CACHE BOOL "" FORCE)
 
@@ -34,26 +42,12 @@ if(NOT TARGET rnoh)
     "${CMAKE_CURRENT_BINARY_DIR}/rnoh")
 endif()
 
-if(NOT TARGET rnoh_worklets)
-  add_subdirectory(
-    "${EXPO_OH_MODULES_DIR}/@react-native-ohos/react-native-worklets/src/main/cpp"
-    "${CMAKE_CURRENT_BINARY_DIR}/worklets")
+set(EXPO_WORKLETS_ENABLED OFF)
+set(EXPO_WORKLETS_SOURCE_PATH
+  "${EXPO_OH_MODULES_DIR}/@react-native-ohos/react-native-worklets/src/main/cpp")
+if(TARGET rnoh_worklets)
+  set(EXPO_WORKLETS_ENABLED ON)
 endif()
-
-target_compile_definitions(rnoh_worklets PRIVATE
-  HERMES_V1_ENABLED=$<BOOL:${EXPO_HERMES_V1}>)
-
-get_target_property(EXPO_WORKLETS_SOURCE_DIR rnoh_worklets SOURCE_DIR)
-get_target_property(EXPO_WORKLETS_SOURCES rnoh_worklets SOURCES)
-foreach(EXPO_WORKLETS_SOURCE IN LISTS EXPO_WORKLETS_SOURCES)
-  if(EXPO_WORKLETS_SOURCE MATCHES "/WorkletRuntime/WorkletRuntime\\.cpp$")
-    set_source_files_properties(
-      "${EXPO_WORKLETS_SOURCE}"
-      DIRECTORY "${EXPO_WORKLETS_SOURCE_DIR}"
-      PROPERTIES COMPILE_DEFINITIONS REACT_NATIVE_MINOR_VERSION=${EXPO_REACT_NATIVE_MINOR_VERSION})
-  endif()
-endforeach()
-set_property(TARGET rnoh_worklets PROPERTY INTERFACE_SOURCES "")
 
 file(GLOB_RECURSE EXPO_COMMON_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/common/*.cpp")
@@ -61,6 +55,7 @@ file(GLOB_RECURSE EXPO_HARMONY_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/api/*.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/errors/*.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/fabric/*.cpp"
+  # Includes the single common ArkTSModuleAdapter; modules never add C++ here.
   "${CMAKE_CURRENT_SOURCE_DIR}/modules/*.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/objects/*.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/package/*.cpp"
@@ -73,12 +68,12 @@ add_library(expo_harmony__expo_modules_core SHARED
   ${EXPO_HARMONY_SOURCES})
 
 target_compile_definitions(expo_harmony__expo_modules_core PUBLIC
-  EXPO_MODULES_CORE_VERSION="${EXPO_MODULES_CORE_VERSION_VALUE}")
+  EXPO_MODULES_CORE_VERSION="${EXPO_MODULES_CORE_VERSION_VALUE}"
+  WORKLETS_ENABLED=$<BOOL:${EXPO_WORKLETS_ENABLED}>)
 
 target_compile_definitions(expo_harmony__expo_modules_core PRIVATE
   EXPO_HARMONY=1
-  REACT_NATIVE_MINOR_VERSION=${EXPO_REACT_NATIVE_MINOR_VERSION}
-  WORKLETS_ENABLED=1)
+  REACT_NATIVE_MINOR_VERSION=${EXPO_REACT_NATIVE_MINOR_VERSION})
 
 target_include_directories(expo_harmony__expo_modules_core PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -88,6 +83,10 @@ target_include_directories(expo_harmony__expo_modules_core PUBLIC
 
 target_link_libraries(expo_harmony__expo_modules_core PUBLIC
   rnoh
-  rnoh_worklets
   libace_napi.z.so
   libhilog_ndk.z.so)
+
+if(EXPO_WORKLETS_ENABLED)
+  target_link_libraries(expo_harmony__expo_modules_core PRIVATE
+    rnoh_worklets)
+endif()

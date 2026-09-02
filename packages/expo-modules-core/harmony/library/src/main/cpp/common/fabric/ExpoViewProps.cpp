@@ -14,8 +14,7 @@ namespace expo {
 std::unordered_map<std::string, folly::dynamic> propsMapFromProps(const ExpoViewProps &sourceProps, const react::RawProps &rawProps) {
   std::unordered_map<std::string, folly::dynamic> propsMap = sourceProps.propsMap;
 
-  // Iterate over values in the raw props object.
-  // Note that it contains only updated props.
+  // Raw props contain only updated values.
   const auto& dynamicRawProps = static_cast<folly::dynamic>(rawProps);
   for (const auto& propsPair : dynamicRawProps.items()) {
     const auto &propName = propsPair.first.getString();

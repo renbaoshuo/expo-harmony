@@ -17,7 +17,6 @@
 #include "common/fabric/ExpoViewShadowNode.h"
 #include "fabric/ExpoViewComponentRegistry.h"
 #include "modules/ExpoModulesCoreTurboModule.h"
-#include "modules/NativeUnimoduleProxyTurboModule.h"
 
 namespace expo::harmony {
 
@@ -141,10 +140,6 @@ ExpoModulesCoreTurboModuleFactoryDelegate::createTurboModule(
   if (name == "ExpoModulesCore") {
     return std::make_shared<ExpoModulesCoreTurboModule>(std::move(context), name);
   }
-  if (name == "NativeUnimoduleProxy") {
-    return std::make_shared<NativeUnimoduleProxyTurboModule>(
-        std::move(context), name);
-  }
   return nullptr;
 }
 
@@ -174,9 +169,7 @@ rnoh::ComponentInstance::Shared ExpoModulesCorePackage::createComponentInstance(
   if (!ExpoViewComponentRegistry::contains(context.componentName)) {
     return nullptr;
   }
-  // Registered Expo components are rendered by the ArkTS wrapped builder.
-  // RNOH creates its FallbackComponentInstance after the owning package
-  // declines a C-API instance here.
+  // Let RNOH create the fallback instance for ArkTS-wrapped builders.
   return nullptr;
 }
 

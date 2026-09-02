@@ -2,13 +2,21 @@
 
 #ifdef __cplusplus
 
-#include <unordered_map>
+#include <functional>
 #include <list>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
 #include <jsi/jsi.h>
+
+#include "errors/CodedError.h"
 
 namespace jsi = facebook::jsi;
 
 namespace expo::EventEmitter {
+
+using ListenerDrainCallback = std::function<void(const std::string &eventName)>;
 
 /**
  Class containing and managing listeners of the event emitter.
@@ -21,6 +29,10 @@ private:
   friend void removeAllListeners(jsi::Runtime &runtime, const jsi::Object &emitter, const std::string &eventName);
   friend void emitEvent(jsi::Runtime &runtime, const jsi::Object &emitter, const std::string &eventName, const jsi::Value *args, size_t count);
   friend size_t getListenerCount(jsi::Runtime &runtime, const jsi::Object &emitter, const std::string &eventName);
+  friend std::optional<expo::harmony::CodedError> drainListeners(
+      jsi::Runtime &runtime,
+      const jsi::Object &emitter,
+      const ListenerDrainCallback &callback) noexcept;
 
   /**
    Type of the list containing listeners for the specific event name.
@@ -57,6 +69,9 @@ private:
    */
   void clear() noexcept;
 
+  /** Detaches all listeners before cleanup hooks are invoked. */
+  ListenersMap takeAll() noexcept;
+
   /**
    Returns a number of listeners added for the given event name.
    */
@@ -88,13 +103,37 @@ public:
    If `createIfMissing` is set to `true`, the state will be automatically created.
    */
   static Shared get(jsi::Runtime &runtime, const jsi::Object &object, bool createIfMissing = false);
+
+  /** Prevents re-entrant cleanup hooks from attaching orphan listeners. */
+  void closeListenerAdmission() noexcept;
+  bool beginDrainingListeners() noexcept;
+  bool acceptsListeners() const noexcept;
+
+private:
+  bool acceptsListeners_{true};
+  bool listenersDrained_{false};
 };
+
+/** Closes addListener admission without detaching live listener state. */
+void closeListenerAdmission(
+    jsi::Runtime &runtime,
+    const jsi::Object &emitter) noexcept;
 
 /**
  Emits an event with the given name and arguments to the emitter object.
  Does nothing if the given object is not an instance of the EventEmitter class.
  */
 void emitEvent(jsi::Runtime &runtime, jsi::Object &emitter, const std::string &eventName, const std::vector<jsi::Value> &arguments);
+
+/**
+ Drains every active event before invoking its native and JavaScript stop hooks.
+ Listener state is detached first, all hooks are attempted, and the first error
+ is returned to the owner so release can finish before reporting it.
+ */
+std::optional<expo::harmony::CodedError> drainListeners(
+    jsi::Runtime &runtime,
+    const jsi::Object &emitter,
+    const ListenerDrainCallback &callback) noexcept;
 
 /**
  Gets `expo.EventEmitter` class from the given runtime.

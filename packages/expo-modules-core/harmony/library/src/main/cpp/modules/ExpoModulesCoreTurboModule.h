@@ -1,10 +1,10 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include <vector>
 
 #include <jsi/jsi.h>
 
@@ -17,6 +17,8 @@
 namespace expo::harmony {
 
 class RuntimeContext;
+class ArkTSTypedBridge;
+class ContentAppearedMarkerListener;
 
 class ExpoModulesCoreTurboModule final
     : public rnoh::ArkTSMessageHub::Observer,
@@ -32,6 +34,7 @@ public:
   std::shared_ptr<RuntimeContext> runtimeContext(
       facebook::jsi::Runtime &runtime);
   bool hasRuntimeContext(facebook::jsi::Runtime *runtime);
+  bool isDestroyScheduled() const noexcept;
   void registerRuntimeContext(
       facebook::jsi::Runtime &runtime,
       const std::shared_ptr<RuntimeContext> &context);
@@ -53,21 +56,25 @@ public:
   void onMessageReceived(const rnoh::ArkTSMessage &message) override;
 
 private:
-  struct PendingLifecycleEvent final {
-    std::string name;
-    folly::dynamic payload;
-  };
+  void activateRuntimeContext(
+      facebook::jsi::Runtime &runtime,
+      const std::shared_ptr<RuntimeContext> &context);
+  void ensureContentAppearedListener();
+  void handleContentAppeared(size_t rnInstanceId);
 
   std::shared_ptr<facebook::react::CallInvoker> jsInvoker_;
   rnoh::TaskExecutor::Shared taskExecutor_;
   rnoh::RNInstance::SafeWeak safeInstance_;
-  std::unique_ptr<rnoh::ArkTSTurboModule> platformBridge_;
+  std::atomic_bool destroyScheduled_{false};
+  std::unique_ptr<ArkTSTypedBridge> typedPlatformBridge_;
   std::mutex contextsMutex_;
   std::unordered_map<
       facebook::jsi::Runtime *,
       std::weak_ptr<RuntimeContext>>
       contexts_;
-  std::vector<PendingLifecycleEvent> pendingLifecycleEvents_;
+  std::weak_ptr<RuntimeContext> activeRuntimeContext_;
+  std::weak_ptr<RuntimeContext> contentAppearedRuntime_;
+  std::shared_ptr<ContentAppearedMarkerListener> contentAppearedListener_;
 };
 
 }  // namespace expo::harmony

@@ -4,55 +4,68 @@ import { window } from '@kit.ArkUI';
 import { RNAbility } from '@rnoh/react-native-openharmony';
 
 import type { ExpoHarmonyHostProvider } from './HarmonyHostLifecycle';
-import { ExpoLifecycleDispatcher } from './LifecycleDispatcher';
+import {
+  EXPO_LIFECYCLE_MEMORY_LEVEL,
+  EXPO_LIFECYCLE_NEW_INTENT,
+  EXPO_LIFECYCLE_WINDOW_STAGE_SETUP,
+  EXPO_LIFECYCLE_WINDOW_STAGE_WILL_DESTROY,
+} from '../protocol/Protocol';
 
 export abstract class ExpoRNAbility extends RNAbility {
   protected abstract getExpoHarmonyHostProvider(): ExpoHarmonyHostProvider;
 
-  override onCreate(want: Want, launchParam?: AbilityConstant.LaunchParam): void {
-    for (const subscriber of this.getExpoHarmonyHostProvider().abilityLifecycleSubscribers) {
-      subscriber.onCreate?.(this.context, want, launchParam);
+  /** Application-owned RNOH worker entrypoint used by ExpoModuleContext.runInBackground. */
+  protected abstract getExpoHarmonyWorkerScriptUrl(): string;
+
+  /** Enables the RNOH worker used by ExpoModuleContext.runInBackground. */
+  protected override getRNOHWorkerScriptUrl(): string {
+    const workerScriptUrl: string = this.getExpoHarmonyWorkerScriptUrl();
+    if (workerScriptUrl.length === 0) {
+      throw new Error('ExpoRNAbility requires a non-empty RNOH worker script URL.');
     }
+    return workerScriptUrl;
+  }
+
+  override onCreate(want: Want, launchParam?: AbilityConstant.LaunchParam): void {
+    const provider = this.getExpoHarmonyHostProvider();
+
+    provider.hostState.beginAbility(this.context, want);
     super.onCreate(want, launchParam);
   }
 
   override onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    let shouldForwardToRNOH: boolean = true;
-    for (const subscriber of this.getExpoHarmonyHostProvider().abilityLifecycleSubscribers) {
-      if (subscriber.onNewWant?.(this.context, want, launchParam) === false) {
-        shouldForwardToRNOH = false;
-      }
+    // Filter RNOH's invalid Linking event while preserving lifecycle delivery.
+    if (want.uri !== undefined && want.uri.length > 0) {
+      super.onNewWant(want, launchParam);
     }
-    if (shouldForwardToRNOH) super.onNewWant(want, launchParam);
-    ExpoLifecycleDispatcher.onNewWant(want);
-  }
-
-  override onBackground(): void {
-    ExpoLifecycleDispatcher.onUserLeavesAbility();
-    super.onBackground();
+    this.getExpoHarmonyHostProvider().hostState.dispatch(this.context, EXPO_LIFECYCLE_NEW_INTENT, want);
   }
 
   protected override async onWindowStageSetup(windowStage: window.WindowStage): Promise<void> {
-    for (const subscriber of this.getExpoHarmonyHostProvider().abilityLifecycleSubscribers) {
-      if (subscriber.onWindowStageSetup !== undefined) {
-        await subscriber.onWindowStageSetup(this.context, windowStage);
-      }
-    }
     await super.onWindowStageSetup(windowStage);
+    this.getExpoHarmonyHostProvider().hostState.dispatch(this.context, EXPO_LIFECYCLE_WINDOW_STAGE_SETUP, windowStage);
   }
 
   override onWindowStageWillDestroy(): void {
-    for (const subscriber of this.getExpoHarmonyHostProvider().abilityLifecycleSubscribers) {
-      subscriber.onWindowStageWillDestroy?.(this.context);
-    }
+    const provider = this.getExpoHarmonyHostProvider();
+
+    provider.hostState.dispatch(this.context, EXPO_LIFECYCLE_WINDOW_STAGE_WILL_DESTROY);
+
     super.onWindowStageWillDestroy();
   }
 
   override onDestroy(): void {
-    for (const subscriber of this.getExpoHarmonyHostProvider().abilityLifecycleSubscribers) {
-      subscriber.onDestroy?.(this.context);
+    const provider = this.getExpoHarmonyHostProvider();
+
+    try {
+      provider.hostState.finishAbility(this.context);
+    } finally {
+      super.onDestroy();
     }
-    ExpoLifecycleDispatcher.onAbilityDestroy();
-    super.onDestroy();
+  }
+
+  override onMemoryLevel(level: AbilityConstant.MemoryLevel): void {
+    this.getExpoHarmonyHostProvider().hostState.dispatch(this.context, EXPO_LIFECYCLE_MEMORY_LEVEL, level);
+    super.onMemoryLevel(level);
   }
 }

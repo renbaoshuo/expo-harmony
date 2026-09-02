@@ -13,10 +13,16 @@ namespace expo::SharedObject {
 #pragma mark - NativeState
 
 NativeState::NativeState(ObjectId objectId, ObjectReleaser releaser)
-: EventEmitter::NativeState(), objectId(objectId), releaser(std::move(releaser)) {}
+: EventEmitter::NativeState(),
+  objectId(objectId),
+  releaseState_(objectId, std::move(releaser)) {}
 
-NativeState::~NativeState() {
-  releaser(objectId);
+bool NativeState::release() noexcept {
+  return releaseState_.release();
+}
+
+bool NativeState::isReleased() const noexcept {
+  return releaseState_.isReleased();
 }
 
 #pragma mark - Utils
@@ -36,16 +42,14 @@ void installBaseClass(jsi::Runtime &runtime, const ObjectReleaser& releaser) {
       if (thisObject.hasNativeState<NativeState>(runtime)) {
         auto nativeState = thisObject.getNativeState<NativeState>(runtime);
 
-        releaser(nativeState->objectId);
-
-        // Should we reset the native state?
-        thisObject.setNativeState(runtime, nullptr);
+        // Close listener admission before native cleanup.
+        nativeState->closeListenerAdmission();
+        nativeState->release();
       }
       return jsi::Value::undefined();
     });
 
-  // Implements a JSON serializer for shared objects, whose properties are defined in the prototype instead of the instance itself.
-  // By default `JSON.stringify` visits only enumerable own properties.
+  // Serialize prototype properties; JSON.stringify only visits enumerable own properties.
   jsi::Function toJSONFunction = jsi::Function::createFromHostFunction(
     runtime,
     jsi::PropNameID::forAscii(runtime, "toJSON"),
@@ -69,12 +73,15 @@ void installBaseClass(jsi::Runtime &runtime, const ObjectReleaser& releaser) {
   prototype.setProperty(runtime, "release", releaseFunction);
   prototype.setProperty(runtime, "toJSON", toJSONFunction);
 
-  // This property should be deprecated, but it's still used when passing as a view prop.
+  // Kept for view-prop compatibility.
   defineProperty(runtime, &prototype, "__expo_shared_object_id__", common::PropertyDescriptor {
     .get = [](jsi::Runtime &runtime, jsi::Object thisObject) {
       if (thisObject.hasNativeState<NativeState>(runtime)) {
         auto nativeState = thisObject.getNativeState<NativeState>(runtime);
-        return jsi::Value((int)nativeState->objectId);
+        return jsi::Value(
+            nativeState->isReleased()
+                ? 0
+                : static_cast<double>(nativeState->objectId));
       }
       return jsi::Value(0);
     }

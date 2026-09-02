@@ -4,6 +4,9 @@
 
 #ifdef __cplusplus
 
+#include <cmath>
+#include <limits>
+
 #include <folly/dynamic.h>
 #ifdef ANDROID
 #include <react/renderer/mapbuffer/MapBuffer.h>
@@ -45,14 +48,30 @@ public:
   }
 
   ExpoViewState(ExpoViewState const &previousState, folly::dynamic data)
-  : _width(isNonnullProperty(data, "width") ? (float)data["width"].getDouble() : std::numeric_limits<float>::quiet_NaN()),
-    _height(isNonnullProperty(data, "height") ? (float)data["height"].getDouble() : std::numeric_limits<float>::quiet_NaN()),
-    _styleWidth(isNonnullProperty(data, "styleWidth") ? (float)data["styleWidth"].getDouble() : std::numeric_limits<float>::quiet_NaN()),
-    _styleHeight(isNonnullProperty(data, "styleHeight") ? (float)data["styleHeight"].getDouble() : std::numeric_limits<float>::quiet_NaN()) {
+  : _width(decodeDimension(data, "width")),
+    _height(decodeDimension(data, "height")),
+    _styleWidth(decodeDimension(data, "styleWidth")),
+    _styleHeight(decodeDimension(data, "styleHeight")) {
   }
 
   static inline bool isNonnullProperty(const folly::dynamic &value, const std::string &name) {
     return value.isObject() && value.count(name) && !value[name].isNull();
+  }
+
+  static inline float decodeDimension(
+      const folly::dynamic &value,
+      const std::string &name) noexcept {
+    if (!isNonnullProperty(value, name) || !value[name].isNumber()) {
+      return std::numeric_limits<float>::quiet_NaN();
+    }
+
+    const auto dimension = value[name].asDouble();
+    if (!std::isfinite(dimension) || dimension < 0 ||
+        dimension > std::numeric_limits<float>::max()) {
+      return std::numeric_limits<float>::quiet_NaN();
+    }
+
+    return static_cast<float>(dimension);
   }
 
 #ifdef ANDROID

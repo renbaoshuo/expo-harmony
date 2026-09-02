@@ -9,21 +9,17 @@ namespace expo::common {
 jsi::Function createClass(jsi::Runtime &runtime, const char *name, ClassConstructor constructor) {
   std::string nativeConstructorKey("__native_constructor__");
 
-  // Create a string buffer of the source code to evaluate.
   std::stringstream source;
   source << "(function " << name << "(...args) { return this." << nativeConstructorKey << "(...args); })";
   std::shared_ptr<jsi::StringBuffer> sourceBuffer = std::make_shared<jsi::StringBuffer>(source.str());
 
-  // Evaluate the code and obtain returned value (the constructor function).
   jsi::Object klass = runtime.evaluateJavaScript(sourceBuffer, "").asObject(runtime);
 
-  // Set the native constructor in the prototype.
   jsi::Object prototype = klass.getPropertyAsObject(runtime, "prototype");
   jsi::PropNameID nativeConstructorPropId = jsi::PropNameID::forAscii(runtime, nativeConstructorKey);
   jsi::Function nativeConstructor = jsi::Function::createFromHostFunction(
     runtime,
     nativeConstructorPropId,
-    // The paramCount is not obligatory to match, it only affects the `length` property of the function.
     0,
     [constructor = std::move(constructor)](jsi::Runtime &runtime, const jsi::Value &thisValue, const jsi::Value *args, size_t count) -> jsi::Value {
       if (constructor) {
@@ -55,12 +51,10 @@ jsi::Function createInheritingClass(jsi::Runtime &runtime, const char *className
 }
 
 jsi::Object createObjectWithPrototype(jsi::Runtime &runtime, jsi::Object *prototype) {
-  // Get the "Object" class.
   jsi::Object objectClass = runtime
     .global()
     .getPropertyAsObject(runtime, "Object");
 
-  // Call "Object.create(prototype)" to create an object with the given prototype without calling the constructor.
   jsi::Object object = objectClass
     .getPropertyAsFunction(runtime, "create")
     .callWithThis(runtime, objectClass, {
@@ -87,7 +81,6 @@ std::vector<jsi::PropNameID> jsiArrayToPropNameIdsVector(jsi::Runtime &runtime, 
 void defineProperty(jsi::Runtime &runtime, jsi::Object *object, const char *name, const PropertyDescriptor& descriptor) {
   jsi::Object jsDescriptor(runtime);
 
-  // These three flags are all `false` by default, so set the property only when `true`.
   if (descriptor.configurable) {
     jsDescriptor.setProperty(runtime, "configurable", jsi::Value(true));
   }
@@ -136,7 +129,6 @@ void defineProperty(jsi::Runtime &runtime, jsi::Object *object, const char *name
   jsi::Object objectClass = global.getPropertyAsObject(runtime, "Object");
   jsi::Function definePropertyFunction = objectClass.getPropertyAsFunction(runtime, "defineProperty");
 
-  // This call is basically the same as `Object.defineProperty(object, name, descriptor)` in JS
   definePropertyFunction.callWithThis(runtime, objectClass, {
     jsi::Value(runtime, *object),
     jsi::String::createFromUtf8(runtime, name),
