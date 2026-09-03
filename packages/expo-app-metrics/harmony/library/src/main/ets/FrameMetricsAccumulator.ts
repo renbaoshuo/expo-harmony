@@ -49,6 +49,11 @@ export class FrameMetricsAccumulator {
     this.active = true;
   }
 
+  pause(): FrameMetricsRecord {
+    this.active = false;
+    return this.snapshot();
+  }
+
   isActive(): boolean {
     return this.active;
   }

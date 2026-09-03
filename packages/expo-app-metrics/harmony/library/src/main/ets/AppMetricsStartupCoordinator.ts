@@ -186,6 +186,17 @@ export class StartupCoordinator {
     this.finalFrames = this.frameRecorder.stop();
   }
 
+  onUIContextAvailable(): void {
+    if (
+      this.shutdown
+      || !this.foregroundSeen
+      || this.foregroundClients.size === 0
+    ) {
+      return;
+    }
+    this.ensureFrameRecorderStarted();
+  }
+
   markFirstRender(): void {
     if (this.interrupted || this.interactiveRecorded || this.renderRecorded) return;
 

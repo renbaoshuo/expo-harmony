@@ -1,29 +1,27 @@
 import type common from '@ohos.app.ability.common';
 import util from '@ohos.util';
 import { preferences } from '@kit.ArkData';
-import { ExpoPlatformServiceError } from '@expo-harmony/expo-modules-core';
-
-import { DEBUG } from '../../../BuildProfile';
 import { AppMetadata, Metric, Session, SessionWithMetrics } from './AppMetricsModels';
+import { ExpoAppMetricsError } from './ExpoAppMetricsError';
 import { retentionCutoffTimestamp } from './AppMetricsSemantics';
 import { copyEntry, decodeEntry } from './AppMetricsStorageCodec';
 
 const PREFERENCES_NAME: string = 'dev.expo.app-metrics';
 const SESSIONS_KEY: string = 'sessions';
 const PENDING_SESSIONS_KEY: string = 'sessions.pending';
-const ENVIRONMENT_KEY: string = 'environment';
 const DEFAULT_DEBUG_ENVIRONMENT: string = 'development';
+// Preferences values are limited to 16 MiB. The code-unit bound remains below
+// that limit even when every UTF-16 code unit expands to four UTF-8 bytes.
+const MAX_PREFERENCES_PAYLOAD_CODE_UNITS: number = 3_500_000;
 
-const storages: WeakMap<common.UIAbilityContext, AppMetricsStorage> = new WeakMap<common.UIAbilityContext, AppMetricsStorage>();
+let processStorage: AppMetricsStorage | undefined = undefined;
 
 export function appMetricsStorage(context: common.UIAbilityContext): AppMetricsStorage {
-  let storage = storages.get(context);
-  if (storage === undefined) {
-    storage = new AppMetricsStorage(context);
-    storages.set(context, storage);
+  if (processStorage === undefined) {
+    processStorage = new AppMetricsStorage(context, context.applicationInfo.debug);
   }
 
-  return storage;
+  return processStorage;
 }
 
 export class AppMetricsStorage {
@@ -31,12 +29,21 @@ export class AppMetricsStorage {
   private readonly ready: Promise<void>;
   private sessions: SessionWithMetrics[] = [];
   private environment?: string;
-  private failure?: ExpoPlatformServiceError;
+  private failure?: ExpoAppMetricsError;
   private queue: Promise<void> = Promise.resolve();
 
-  constructor(context: common.UIAbilityContext) {
-    this.store = preferences.getPreferences(context, { name: PREFERENCES_NAME }).catch((error: Object): preferences.Preferences | null => {
-      this.failure = new ExpoPlatformServiceError('ERR_APP_METRICS_STORAGE', `Unable to open Expo App Metrics preferences: ${String(error)}`);
+  constructor(context: common.UIAbilityContext, debug: boolean) {
+    this.environment = debug ? DEFAULT_DEBUG_ENVIRONMENT : undefined;
+    let store: Promise<preferences.Preferences | null>;
+    try {
+      store = preferences.getPreferences(context, { name: PREFERENCES_NAME });
+    } catch (error) {
+      this.failure = new ExpoAppMetricsError('ERR_APP_METRICS_STORAGE', `Unable to open Expo App Metrics preferences: ${String(error)}`);
+      console.warn(this.failure.message);
+      store = Promise.resolve(null);
+    }
+    this.store = store.catch((error: Object): preferences.Preferences | null => {
+      this.failure = new ExpoAppMetricsError('ERR_APP_METRICS_STORAGE', `Unable to open Expo App Metrics preferences: ${String(error)}`);
       console.warn(this.failure.message);
 
       return null;
@@ -110,7 +117,7 @@ export class AppMetricsStorage {
     await this.runMutation(async (): Promise<void> => {
       const entry = this.findSession(sessionId);
       if (entry === undefined) {
-        throw new ExpoPlatformServiceError('ERR_APP_METRICS_SESSION_NOT_FOUND', `No app metrics session exists for '${sessionId}'.`);
+        throw new ExpoAppMetricsError('ERR_APP_METRICS_SESSION_NOT_FOUND', `No app metrics session exists for '${sessionId}'.`);
       }
 
       entry.metrics.push(...metrics);
@@ -130,9 +137,16 @@ export class AppMetricsStorage {
 
   async clear(): Promise<void> {
     await this.runMutation(async (): Promise<void> => {
-      await this.persistEntries([]);
+      const active = this.sessions
+        .filter((entry: SessionWithMetrics): boolean => entry.session.isActive)
+        .map((entry: SessionWithMetrics): SessionWithMetrics => {
+          const copy = copyEntry(entry);
+          copy.metrics = [];
+          return copy;
+        });
+      await this.persistEntries(active);
 
-      this.sessions = [];
+      this.sessions = active;
       this.failure = undefined;
     }, true);
   }
@@ -156,18 +170,12 @@ export class AppMetricsStorage {
         } catch (error) {
           this.sessions = snapshot;
 
-          if (error instanceof ExpoPlatformServiceError) {
-            if (error.code === 'ERR_APP_METRICS_STORAGE') {
-              this.failure = new ExpoPlatformServiceError(error.code, error.message);
-            }
-
-            throw new ExpoPlatformServiceError(error.code, error.message);
+          if (error instanceof ExpoAppMetricsError) {
+            throw new ExpoAppMetricsError(error.code, error.message);
           }
           const message = `Unable to update Expo App Metrics preferences: ${String(error)}`;
 
-          this.failure = new ExpoPlatformServiceError('ERR_APP_METRICS_STORAGE', message);
-
-          throw new ExpoPlatformServiceError('ERR_APP_METRICS_STORAGE', message);
+          throw new ExpoAppMetricsError('ERR_APP_METRICS_STORAGE', message);
         }
       });
 
@@ -182,23 +190,19 @@ export class AppMetricsStorage {
 
   private assertStorageAvailable(): void {
     if (this.failure !== undefined) {
-      throw new ExpoPlatformServiceError(this.failure.code, this.failure.message);
+      throw new ExpoAppMetricsError(this.failure.code, this.failure.message);
     }
   }
 
   private async load(): Promise<void> {
     const store = await this.store;
-    this.environment = DEBUG ? DEFAULT_DEBUG_ENVIRONMENT : undefined;
     if (store === null) return;
 
     try {
-      const environment = await store.get(ENVIRONMENT_KEY, '');
-      if (typeof environment === 'string' && environment.length > 0) this.environment = environment;
-
       const primary = await store.get(SESSIONS_KEY, '');
       const pending = await store.get(PENDING_SESSIONS_KEY, '');
       if (typeof primary !== 'string' || typeof pending !== 'string') {
-        this.failure = new ExpoPlatformServiceError(
+        this.failure = new ExpoAppMetricsError(
           'ERR_APP_METRICS_STORAGE',
           'Unable to decode Expo App Metrics preferences: Stored sessions are not a JSON string.',
         );
@@ -206,13 +210,42 @@ export class AppMetricsStorage {
 
         return;
       }
-      const recovering = pending.length > 0;
-      const raw = recovering ? pending : primary;
+      let recovering = pending.length > 0;
+      let raw = recovering ? pending : primary;
       if (raw.length === 0) return;
 
-      const decoded: ESObject = JSON.parse(raw);
+      let decoded: ESObject;
+      try {
+        decoded = JSON.parse(raw) as ESObject;
+      } catch (error) {
+        if (!recovering || primary.length === 0) {
+          throw new ExpoAppMetricsError('ERR_APP_METRICS_STORAGE', `Unable to decode Expo App Metrics preferences: ${String(error)}`);
+        }
+
+        console.warn(`Ignoring an invalid Expo App Metrics recovery record: ${String(error)}`);
+        raw = primary;
+        recovering = false;
+        decoded = JSON.parse(raw) as ESObject;
+        try {
+          await store.delete(PENDING_SESSIONS_KEY);
+          await store.flush();
+        } catch (cleanupError) {
+          console.warn(`Unable to remove an invalid Expo App Metrics recovery record: ${String(cleanupError)}`);
+        }
+      }
+      if (!Array.isArray(decoded) && recovering && primary.length > 0) {
+        console.warn('Ignoring an invalid Expo App Metrics recovery record: Stored sessions are not a JSON array.');
+        recovering = false;
+        decoded = JSON.parse(primary) as ESObject;
+        try {
+          await store.delete(PENDING_SESSIONS_KEY);
+          await store.flush();
+        } catch (cleanupError) {
+          console.warn(`Unable to remove an invalid Expo App Metrics recovery record: ${String(cleanupError)}`);
+        }
+      }
       if (!Array.isArray(decoded)) {
-        this.failure = new ExpoPlatformServiceError(
+        this.failure = new ExpoAppMetricsError(
           'ERR_APP_METRICS_STORAGE',
           'Unable to decode Expo App Metrics preferences: Stored sessions are not a JSON array.',
         );
@@ -284,37 +317,52 @@ export class AppMetricsStorage {
       if (changed) await this.persist();
     } catch (error) {
       this.failure =
-        error instanceof ExpoPlatformServiceError
-          ? new ExpoPlatformServiceError(error.code, error.message)
-          : new ExpoPlatformServiceError('ERR_APP_METRICS_STORAGE', `Unable to read Expo App Metrics preferences: ${String(error)}`);
+        error instanceof ExpoAppMetricsError
+          ? new ExpoAppMetricsError(error.code, error.message)
+          : new ExpoAppMetricsError('ERR_APP_METRICS_STORAGE', `Unable to read Expo App Metrics preferences: ${String(error)}`);
       console.warn(this.failure.message);
     }
   }
 
   private async persist(): Promise<void> {
     const cutoff = retentionCutoffTimestamp(Date.now());
-    const sessions = this.sessions.map((entry: SessionWithMetrics): SessionWithMetrics => {
-      const copy = copyEntry(entry);
+    const sessions = this.sessions
+      .map((entry: SessionWithMetrics): SessionWithMetrics => {
+        const copy = copyEntry(entry);
+        copy.metrics = copy.metrics.filter((metric: Metric): boolean => Date.parse(metric.timestamp) >= cutoff);
+        return copy;
+      })
+      .filter((entry: SessionWithMetrics): boolean => entry.session.isActive || entry.metrics.length > 0);
 
-      copy.metrics = copy.metrics.filter((metric: Metric): boolean => Date.parse(metric.timestamp) >= cutoff);
+    let payload = JSON.stringify(sessions);
+    while (payload.length > MAX_PREFERENCES_PAYLOAD_CODE_UNITS) {
+      const removable = sessions.findIndex((entry: SessionWithMetrics): boolean => !entry.session.isActive);
+      if (removable < 0) {
+        throw new ExpoAppMetricsError(
+          'ERR_APP_METRICS_STORAGE_CAPACITY',
+          'Active Expo App Metrics sessions exceed the safe Harmony Preferences capacity.',
+        );
+      }
 
-      return copy;
-    });
+      sessions.splice(removable, 1);
+      payload = JSON.stringify(sessions);
+    }
 
-    await this.persistEntries(sessions);
+    await this.persistEntries(sessions, payload);
+    this.sessions = sessions;
   }
 
-  private async persistEntries(sessions: SessionWithMetrics[]): Promise<void> {
+  private async persistEntries(sessions: SessionWithMetrics[], encoded?: string): Promise<void> {
     const store = await this.store;
     if (store === null) {
-      throw new ExpoPlatformServiceError(
+      throw new ExpoAppMetricsError(
         this.failure?.code ?? 'ERR_APP_METRICS_STORAGE',
         this.failure?.message ?? 'Unable to open Expo App Metrics preferences: Preferences are unavailable.',
       );
     }
 
     try {
-      const payload = JSON.stringify(sessions);
+      const payload = encoded ?? JSON.stringify(sessions);
 
       await store.put(PENDING_SESSIONS_KEY, payload);
       await store.flush();
@@ -322,7 +370,7 @@ export class AppMetricsStorage {
       await store.put(SESSIONS_KEY, payload);
       await store.flush();
     } catch (error) {
-      throw new ExpoPlatformServiceError('ERR_APP_METRICS_STORAGE', `Unable to persist Expo App Metrics sessions: ${String(error)}`);
+      throw new ExpoAppMetricsError('ERR_APP_METRICS_STORAGE', `Unable to persist Expo App Metrics sessions: ${String(error)}`);
     }
 
     try {

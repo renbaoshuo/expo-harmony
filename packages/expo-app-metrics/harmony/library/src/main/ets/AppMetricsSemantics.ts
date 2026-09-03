@@ -80,15 +80,25 @@ export function frameIntervalMilliseconds(
     return undefined;
   }
 
-  const actualMs = (timestampNs - previousTimestampNs) / 1_000_000;
-  const expectedMs = (previousTargetTimestampNs - previousTimestampNs) / 1_000_000;
+  let actualMs = (timestampNs - previousTimestampNs) / 1_000_000;
+  const previousExpectedMs = (previousTargetTimestampNs - previousTimestampNs) / 1_000_000;
+  const expectedMs = (targetTimestampNs - previousTargetTimestampNs) / 1_000_000;
   if (
     !Number.isFinite(actualMs)
     || !Number.isFinite(expectedMs)
+    || !Number.isFinite(previousExpectedMs)
     || actualMs < 0
+    || previousExpectedMs <= 0
     || expectedMs <= 0
   ) {
     return undefined;
+  }
+
+  if (
+    Math.abs(previousExpectedMs - expectedMs) <= FRAME_DURATION_TOLERANCE_MS
+    && actualMs < expectedMs * 2 + FRAME_DURATION_TOLERANCE_MS
+  ) {
+    actualMs = expectedMs;
   }
 
   return { actualMs, expectedMs };
@@ -123,7 +133,7 @@ export function applyFrameInterval(
   }
 
   const delayed = actualMs > expectedMs + FRAME_DURATION_TOLERANCE_MS;
-  const expectedFrames = delayed ? Math.max(1, Math.floor(actualMs / expectedMs)) : 1;
+  const expectedFrames = delayed ? Math.max(1, Math.round(actualMs / expectedMs)) : 1;
 
   record.renderedFrames += 1;
   record.expectedFrames += expectedFrames;

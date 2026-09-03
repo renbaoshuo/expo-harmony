@@ -1,14 +1,6 @@
 {
   "platforms": ["harmony"],
   "harmony": {
-    "providers": [
-      {
-        "identifier": "expo-app-metrics:ExpoAppMetricsProvider",
-        "header": "ExpoAppMetricsProvider.h",
-        "className": "expo::harmony::appmetrics::ExpoAppMetricsProvider",
-        "cmakeTargetName": "expo_harmony__expo_app_metrics",
-        "debugOnly": false
-      }
-    ]
+    "modules": ["ExpoAppMetricsModule"]
   }
 }

@@ -1,1 +1,1 @@
-export { ExpoAppMetricsPackage as default, ExpoAppMetricsPackage } from './src/main/ets/ExpoAppMetricsPackage';
+export { ExpoAppMetricsModule } from './src/main/ets/ExpoAppMetricsModule';

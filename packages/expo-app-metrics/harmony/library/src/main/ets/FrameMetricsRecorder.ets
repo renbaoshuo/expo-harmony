@@ -13,6 +13,7 @@ export class FrameMetricsRecorder {
   private readonly callback: (info: displaySync.IntervalInfo) => void;
   private observer?: displaySync.DisplaySync;
   private uiContext?: UIContext;
+  private started: boolean = false;
 
   constructor(getUIContext: () => UIContext | null, warn: (message: string) => void) {
     this.getUIContext = getUIContext;
@@ -49,13 +50,14 @@ export class FrameMetricsRecorder {
       this.uiContext = context;
       this.frames.begin();
       context.runScopedTask((): void => current.start());
+      this.started = true;
 
       return true;
     } catch (error) {
       this.observer = undefined;
       this.uiContext = undefined;
       this.baseline.reset();
-      this.frames.finish();
+      this.frames.pause();
       cleanupObserver(observer, this.callback, this.warn);
       this.warn(`Unable to start HarmonyOS frame interval monitoring: ${String(error)}`);
 
@@ -65,6 +67,23 @@ export class FrameMetricsRecorder {
 
   stop(): FrameMetricsRecord {
     const result = this.frames.finish();
+    this.detachObserver();
+
+    return result;
+  }
+
+  pause(): FrameMetricsRecord {
+    const result = this.frames.pause();
+    this.detachObserver();
+
+    return result;
+  }
+
+  hasStarted(): boolean {
+    return this.started;
+  }
+
+  private detachObserver(): void {
     this.baseline.reset();
     const observer = this.observer;
     const context = this.uiContext;
@@ -89,8 +108,6 @@ export class FrameMetricsRecorder {
         this.warn(`Unable to remove HarmonyOS frame interval monitoring: ${String(error)}`);
       }
     }
-
-    return result;
   }
 
   snapshot(): FrameMetricsRecord {
