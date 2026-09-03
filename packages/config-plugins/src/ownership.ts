@@ -30,15 +30,16 @@ function normalizeStringList(value: unknown, field: string): string[] {
     throw new TypeError(`Invalid Harmony config-plugin ownership: ${field} must be an array.`);
   }
 
-  const result: string[] = [];
+  const items: string[] = [];
   for (const item of value) {
     if (typeof item !== 'string' || !item || !ResourceName.test(item) || item.includes('..')) {
       throw new TypeError(`Invalid Harmony config-plugin ownership: ${field} contains an invalid resource name.`);
     }
-    if (!result.includes(item)) result.push(item);
+
+    if (!items.includes(item)) items.push(item);
   }
 
-  return result.sort((left, right) => left.localeCompare(right, 'en'));
+  return items.sort((left, right) => left.localeCompare(right, 'en'));
 }
 
 function normalizeResources(value: unknown): NonNullable<HarmonyConfigPluginOwnership['resources']> {
@@ -60,10 +61,12 @@ function normalizeResources(value: unknown): NonNullable<HarmonyConfigPluginOwne
 
     const allowed = ResourceScopes[kind as keyof typeof ResourceScopes];
     resources[kind] = {};
+
     for (const scope of Object.keys(scopes).sort()) {
       if (!allowed.has(scope)) {
         throw new TypeError(`Invalid Harmony config-plugin ownership: resources.${kind}.${scope} is not a supported scope.`);
       }
+
       resources[kind][scope] = normalizeStringList(scopes[scope], `resources.${kind}.${scope}`);
     }
   }
@@ -85,6 +88,7 @@ function normalizeAbility(value: unknown): NonNullable<HarmonyConfigPluginOwners
     if (typeof value[field] !== 'string' || !value[field]) {
       throw new TypeError(`Invalid Harmony config-plugin ownership: ability.${field} must be a non-empty string.`);
     }
+
     ability[field] = value[field];
   }
 
@@ -98,26 +102,27 @@ export function normalizeHarmonyConfigPlugins(value: unknown): readonly HarmonyC
   }
 
   const owners = new Set<string>();
-  const result = value.map((descriptor: unknown, index) => {
-    if (!isRecord(descriptor)) {
+  const plugins = value.map((plugin: unknown, index) => {
+    if (!isRecord(plugin)) {
       throw new TypeError(`Invalid Harmony config-plugin ownership: plugin ${index} must be an object.`);
     }
-    if (typeof descriptor.owner !== 'string' || !descriptor.owner.trim()) {
+    if (typeof plugin.owner !== 'string' || !plugin.owner.trim()) {
       throw new TypeError(`Invalid Harmony config-plugin ownership: plugin ${index}.owner must be a non-empty string.`);
     }
-    if (owners.has(descriptor.owner)) {
-      throw new TypeError(`Invalid Harmony config-plugin ownership: owner ${descriptor.owner} is duplicated.`);
+    if (owners.has(plugin.owner)) {
+      throw new TypeError(`Invalid Harmony config-plugin ownership: owner ${plugin.owner} is duplicated.`);
     }
-    owners.add(descriptor.owner);
+
+    owners.add(plugin.owner);
 
     return {
-      ability: normalizeAbility(descriptor.ability),
-      owner: descriptor.owner,
-      resources: normalizeResources(descriptor.resources),
+      ability: normalizeAbility(plugin.ability),
+      owner: plugin.owner,
+      resources: normalizeResources(plugin.resources),
     };
   });
 
-  return result.sort((left, right) => left.owner.localeCompare(right.owner, 'en'));
+  return plugins.sort((left, right) => left.owner.localeCompare(right.owner, 'en'));
 }
 
 export function registerHarmonyConfigPlugin(
@@ -125,12 +130,13 @@ export function registerHarmonyConfigPlugin(
   owner: string,
   claims: Omit<HarmonyConfigPluginOwnership, 'owner'> = {}
 ): ExpoConfig {
-  const descriptor = normalizeHarmonyConfigPlugins([{ ...claims, owner }])[0];
+  const plugin = normalizeHarmonyConfigPlugins([{ ...claims, owner }])[0];
+
   config._internal ??= {};
-  const current = normalizeHarmonyConfigPlugins(config._internal.harmonyConfigPlugins);
+  const plugins = normalizeHarmonyConfigPlugins(config._internal.harmonyConfigPlugins);
   config._internal.harmonyConfigPlugins = normalizeHarmonyConfigPlugins([
-    ...current.filter(item => item.owner !== owner),
-    descriptor,
+    ...plugins.filter(item => item.owner !== owner),
+    plugin,
   ]);
 
   return config;

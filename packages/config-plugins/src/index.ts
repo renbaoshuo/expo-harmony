@@ -13,7 +13,7 @@ export type {
   HarmonySkill,
 } from './config';
 export { HarmonyConfigPluginError } from './errors';
-export { stableJson as stableHarmonyJson } from './files';
+export { atomicWrite, stableJson as stableHarmonyJson } from './files';
 export { HarmonySdkVersions, normalizeHarmonyConfig } from './normalizeConfig';
 export type { HarmonyExpoConfig, NormalizedHarmonyConfig } from './normalizeConfig';
 export {

@@ -109,23 +109,30 @@ export function isInside(root: string, target: string): boolean {
 
 export async function assertNoExternalSymlink(root: string, target: string): Promise<void> {
   const absoluteRoot = path.resolve(root);
-  const rootReal = await fs.promises.realpath(absoluteRoot).catch(() => absoluteRoot);
+  const realRoot = await fs.promises.realpath(absoluteRoot).catch(() => absoluteRoot);
   const relative = path.relative(absoluteRoot, target);
   let cursor = absoluteRoot;
 
   for (const segment of relative.split(path.sep).filter(Boolean)) {
     cursor = path.join(cursor, segment);
+
     let stat: fs.Stats;
     try {
       stat = await fs.promises.lstat(cursor);
     } catch (cause) {
       if ((cause as NodeJS.ErrnoException).code === 'ENOENT') break;
 
-      return Promise.reject(cause);
+      throw new HarmonyConfigPluginError(
+        'ERR_HARMONY_PATH_INVALID',
+        `Cannot inspect managed Harmony path ${cursor}: ${(cause as Error).message}`,
+        { cause, file: cursor, operation: 'resolve-path' }
+      );
     }
+
     if (stat.isSymbolicLink()) {
       const real = await fs.promises.realpath(cursor);
-      if (!isInside(rootReal, real)) {
+
+      if (!isInside(realRoot, real)) {
         throw new HarmonyConfigPluginError(
           'ERR_HARMONY_PATH_ESCAPE',
           `Refusing to follow a symlink outside the Harmony project: ${cursor}`,
@@ -150,8 +157,13 @@ export async function resolveHarmonyPath(
 
   const root = path.resolve(platformProjectRoot);
   const target = path.resolve(root, relativePath);
+
   if (!isInside(root, target)) {
-    throw new HarmonyConfigPluginError('ERR_HARMONY_PATH_ESCAPE', `Managed path escapes the Harmony project: ${relativePath}`, { file: target, operation: 'resolve-path' });
+    throw new HarmonyConfigPluginError(
+      'ERR_HARMONY_PATH_ESCAPE',
+      `Managed path escapes the Harmony project: ${relativePath}`,
+      { file: target, operation: 'resolve-path' }
+    );
   }
 
   await assertNoExternalSymlink(root, target);
@@ -159,10 +171,14 @@ export async function resolveHarmonyPath(
   return target;
 }
 
-export async function resolveProjectPath(projectRoot: string, modName: keyof HarmonyProjectPaths): Promise<string> {
+export async function resolveProjectPath(
+  projectRoot: string,
+  modName: keyof HarmonyProjectPaths
+): Promise<string> {
   const candidates = ProjectPathCandidates[modName] || [ProjectPaths[modName]];
   const resolved = await Promise.all(candidates.map(candidate => resolveHarmonyPath(projectRoot, candidate)));
   const existing = resolved.filter(file => fs.existsSync(file));
+
   if (existing.length > 1) {
     throw new HarmonyConfigPluginError(
       'ERR_HARMONY_CONFIG_INVALID',

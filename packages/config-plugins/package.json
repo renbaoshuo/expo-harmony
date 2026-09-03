@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/config-plugins",
-  "version": "55.0.10-harmony.0",
+  "version": "55.0.10-harmony.1",
   "license": "MIT",
   "author": "Baoshuo <i@baoshuo.ren>",
   "repository": {
@@ -12,6 +12,7 @@
   "types": "build/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "yarn build",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "exports": {
