@@ -1,0 +1,27 @@
+{
+  "name": "@expo-harmony/expo-module-scripts",
+  "version": "55.0.0-harmony.0",
+  "license": "MIT",
+  "author": "Baoshuo <i@baoshuo.ren>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renbaoshuo/expo-harmony.git",
+    "directory": "packages/expo-module-scripts"
+  },
+  "type": "module",
+  "main": "./src/index.mjs",
+  "bin": {
+    "expo-harmony-module": "bin/expo-harmony-module.js"
+  },
+  "dependencies": {
+    "@expo-harmony/expo-modules-autolinking": "workspace:*",
+    "json5": "2.2.3",
+    "tar": "6.2.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
