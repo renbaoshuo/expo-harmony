@@ -14,6 +14,7 @@ export interface ProcessOptions {
   operation?: string;
   outputLimit?: number;
   signal?: AbortSignal;
+  stdio?: 'inherit' | 'pipe';
   stopGraceMs?: number;
   timeoutMs?: number;
 }
@@ -168,11 +169,12 @@ function spawnAsync(command: string, args: string[], options: ProcessOptions = {
 
 function startManagedProcess(command: string, args: string[], options: ProcessOptions = {}) {
   const outputLimit = options.outputLimit || DefaultOutputLimit;
+  const piped = options.stdio !== 'inherit';
   const child = spawn(command, args, {
     cwd: options.cwd,
     env: options.env || process.env,
     shell: false,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: piped ? ['ignore', 'pipe', 'pipe'] : 'inherit',
     windowsHide: true,
   });
 
@@ -180,15 +182,18 @@ function startManagedProcess(command: string, args: string[], options: ProcessOp
   const stderr = new BoundedCapture(outputLimit);
   let spawnError: HarmonyCliError | null = null;
   let closed = false;
+  let stopRequested = false;
 
-  child.stdout.on('data', (chunk) => {
-    stdout.append(chunk);
-    options.onStdout?.(chunk);
-  });
-  child.stderr.on('data', (chunk) => {
-    stderr.append(chunk);
-    options.onStderr?.(chunk);
-  });
+  if (piped) {
+    child.stdout.on('data', (chunk) => {
+      stdout.append(chunk);
+      options.onStdout?.(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr.append(chunk);
+      options.onStderr?.(chunk);
+    });
+  }
 
   const forwardSigint = () => {
     void stop('SIGINT');
@@ -234,6 +239,7 @@ function startManagedProcess(command: string, args: string[], options: ProcessOp
   async function stop(signal: NodeJS.Signals = 'SIGTERM', graceMs = DefaultStopGraceMs) {
     if (closed) return completion;
 
+    stopRequested = true;
     child.kill(signal);
     let timer: NodeJS.Timeout | undefined;
 
@@ -262,6 +268,7 @@ function startManagedProcess(command: string, args: string[], options: ProcessOp
     getStderr: () => stderr.toString(),
     getStdout: () => stdout.toString(),
     stop,
+    wasStopped: () => stopRequested,
   };
 }
 

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 
 import { HarmonyCliError } from '../errors';
 import { formatDiagnostics, spawnAsync } from '../process';
+import { withHarmonyProjectLockAsync } from '../projectLock';
 import { resolveExpoCli } from '../expo';
 import { resolveHarmonyBuildPlanAsync } from '../tools';
 import { assertSafeCleanTarget } from './clean';
@@ -12,7 +13,7 @@ interface PrebuildOptions {
   capture?: boolean;
 }
 
-async function prebuildParsedAsync(
+async function prebuildParsedUnlockedAsync(
   projectRoot: string,
   passthrough: string[],
   options: PrebuildOptions = {}
@@ -62,6 +63,18 @@ async function prebuildParsedAsync(
   } finally {
     await packed.cleanup();
   }
+}
+
+async function prebuildParsedAsync(
+  projectRoot: string,
+  passthrough: string[],
+  options: PrebuildOptions = {}
+) {
+  return withHarmonyProjectLockAsync(
+    projectRoot,
+    'prebuild',
+    () => prebuildParsedUnlockedAsync(projectRoot, passthrough, options)
+  );
 }
 
 export { prebuildParsedAsync };

@@ -61,7 +61,6 @@ function parsePrebuildArgs(argv: string[], options: { allowProject?: boolean } =
     check: Boolean(values.check),
     clean: Boolean(values.clean),
     help: Boolean(values.help),
-    json: Boolean(values.json),
     passthrough,
     project: positionals[0],
   };

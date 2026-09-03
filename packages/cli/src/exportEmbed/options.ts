@@ -17,7 +17,6 @@ function parseExportEmbedArgs(argv: string[]) {
   return {
     check: Boolean(values.check),
     help: Boolean(values.help),
-    json: Boolean(values.json),
     project: positionals[0],
     resetCache: Boolean(values['reset-cache']),
   };

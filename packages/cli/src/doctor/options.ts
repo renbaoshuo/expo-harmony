@@ -10,7 +10,6 @@ function parseDoctorArgs(argv: string[]) {
 
   return {
     help: Boolean(values.help),
-    json: Boolean(values.json),
     project: positionals[0],
   };
 }

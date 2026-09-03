@@ -5,9 +5,9 @@ import path from 'node:path';
 import { doctorAsync, type DoctorResult } from '../doctor/doctor';
 import { resolveHarmonyEntryPoint } from '../entry';
 import { HarmonyCliError } from '../errors';
+import { withHarmonyProjectLockAsync } from '../projectLock';
 import { resolveHarmonyBuildPlanAsync } from '../tools';
 import { formatDiagnostics, spawnAsync } from '../process';
-import { inspectPublicCliContractsAsync } from '../contract';
 import { resolveExpoCli, resolveExpoHermesBuilder } from '../expo';
 import {
   assertHermesBundle, assertSourceMap, exportPaths,
@@ -18,7 +18,6 @@ import {
 export interface ExportOptions {
   check?: boolean;
   resetCache?: boolean;
-  skipContract?: boolean;
   skipDoctor?: boolean;
   timeoutMs?: number;
 }
@@ -60,12 +59,11 @@ function assertDoctor(result: DoctorResult) {
   throw new HarmonyCliError('ERR_HARMONY_EXPORT_DOCTOR', `Harmony doctor found blocking checks: ${failing.join(', ') || 'unknown'}.`, { operation: 'doctor' });
 }
 
-async function exportEmbedAsync(
+async function exportEmbedUnlockedAsync(
   projectRoot: string,
   options: ExportOptions = {}
 ): Promise<HarmonyExportManifest> {
   if (!options.skipDoctor) assertDoctor(await doctorAsync(projectRoot));
-  if (!options.skipContract) await inspectPublicCliContractsAsync(projectRoot);
 
   const plan = await resolveHarmonyBuildPlanAsync(projectRoot, { buildMode: 'release' });
   const paths = exportPaths(plan);
@@ -152,6 +150,17 @@ async function exportEmbedAsync(
   } finally {
     await fs.promises.rm(temporaryRoot, { force: true, recursive: true });
   }
+}
+
+async function exportEmbedAsync(
+  projectRoot: string,
+  options: ExportOptions = {}
+): Promise<HarmonyExportManifest> {
+  return withHarmonyProjectLockAsync(
+    projectRoot,
+    'export:embed',
+    () => exportEmbedUnlockedAsync(projectRoot, options)
+  );
 }
 
 export {

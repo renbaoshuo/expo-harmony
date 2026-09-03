@@ -35,7 +35,9 @@ function parseHdcTargets(output: string): Device[] {
     }
 
     return {
-      aliases: [...new Set(fields)],
+      // Only the first HDC column is a selectable target name. The remaining
+      // verbose columns describe transport, state, location and connect tool.
+      aliases: [fields[0]],
       connectTool: fields[4] || null,
       id: fields[0],
       location: fields[3] || null,

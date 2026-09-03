@@ -7,8 +7,10 @@ import { resolveExpoCli } from '../expo';
 type MetroStatus = 'free' | 'metro' | 'occupied';
 
 interface MetroOptions {
+  interactive?: boolean;
   port: number;
   readyTimeoutMs?: number;
+  resetCache?: boolean;
 }
 
 export interface MetroSession {
@@ -16,6 +18,7 @@ export interface MetroSession {
   port: number;
   process?: ReturnType<typeof startManagedProcess>;
   stop(): Promise<unknown>;
+  waitAsync(): Promise<void>;
 }
 
 function delay(milliseconds) {
@@ -73,7 +76,14 @@ function probeMetroAsync(
 async function requireExistingMetroAsync(port: number): Promise<MetroSession> {
   const status = await probeMetroAsync(port);
 
-  if (status === 'metro') return { owner: 'existing', port, stop: async () => {} };
+  if (status === 'metro') {
+    return {
+      owner: 'existing',
+      port,
+      stop: async () => {},
+      waitAsync: async () => {},
+    };
+  }
 
   const code = status === 'free' ? 'ERR_HARMONY_METRO_UNAVAILABLE' : 'ERR_HARMONY_METRO_PORT_IN_USE';
   const message = status === 'free'
@@ -89,7 +99,14 @@ async function startExpoMetroAsync(
 ): Promise<MetroSession> {
   const before = await probeMetroAsync(options.port);
 
-  if (before === 'metro') return { owner: 'existing', port: options.port, stop: async () => {} };
+  if (before === 'metro') {
+    return {
+      owner: 'existing',
+      port: options.port,
+      stop: async () => {},
+      waitAsync: async () => {},
+    };
+  }
 
   if (before === 'occupied') {
     throw new HarmonyCliError(
@@ -106,6 +123,7 @@ async function startExpoMetroAsync(
     projectRoot,
     '--dev-client',
     '--port', String(options.port),
+    ...(options.resetCache ? ['--clear'] : []),
   ], {
     cwd: projectRoot,
     env: {
@@ -114,6 +132,7 @@ async function startExpoMetroAsync(
     },
     operation: 'expo-metro',
     outputLimit: 1024 * 1024,
+    stdio: options.interactive ? 'inherit' : 'pipe',
   });
   let exitResult: ProcessResult | null = null;
   let exitError: unknown = null;
@@ -169,6 +188,19 @@ async function startExpoMetroAsync(
           port: options.port,
           process: managed,
           stop: () => managed.stop(),
+          async waitAsync() {
+            const result = await managed.completion;
+            if (managed.wasStopped()) return;
+            const interrupted = result.signal === 'SIGINT' || result.signal === 'SIGTERM';
+            if (result.code === 0 || interrupted) return;
+
+            const diagnostics = formatDiagnostics(result);
+            throw new HarmonyCliError(
+              'ERR_HARMONY_METRO_EXITED',
+              `Expo Metro exited with code ${result.code}.${diagnostics ? `\n${diagnostics}` : ''}`,
+              { exitCode: result.code || 1, operation: 'expo-metro' }
+            );
+          },
         };
       }
 
@@ -199,4 +231,7 @@ async function startExpoMetroAsync(
   }
 }
 
-export { requireExistingMetroAsync, startExpoMetroAsync };
+export {
+  requireExistingMetroAsync,
+  startExpoMetroAsync,
+};

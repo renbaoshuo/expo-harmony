@@ -12,41 +12,7 @@ const RequiredProjectPackages = Object.freeze([
   ProjectPackages.expoAutolinking,
 ]);
 
-const PublicCliOptions = Object.freeze({
-  expoExportEmbed: Object.freeze([
-    '--assets-dest',
-    '--bundle-output',
-    '--bytecode',
-    '--dev',
-    '--entry-file',
-    '--minify',
-    '--platform',
-    '--sourcemap-output',
-    '--sourcemap-sources-root',
-    '--unstable-transform-profile',
-  ]),
-  rnohLinkHarmony: Object.freeze([
-    '--cmake-autolink-path-relative-to-harmony',
-    '--cpp-rnoh-packages-factory-path-relative-to-harmony',
-    '--ets-rnoh-packages-factory-path-relative-to-harmony',
-    '--harmony-project-path',
-    '--node-modules-path',
-    '--oh-package-path-relative-to-harmony',
-  ]),
-  rnohRunHarmony: Object.freeze([
-    '--ability',
-    '--build-mode',
-    '--harmony-project-path',
-    '--module',
-    '--no-packager',
-    '--port',
-    '--product',
-    '--simulator',
-  ]),
-});
-
 export {
   ProjectPackages,
-  PublicCliOptions,
   RequiredProjectPackages,
 };

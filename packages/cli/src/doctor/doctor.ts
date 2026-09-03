@@ -4,10 +4,12 @@ import path from 'node:path';
 
 import { getConfig } from '@expo/config';
 import { normalizeHarmonyConfig } from '@expo-harmony/config-plugins';
+import { verifyModulesAsync } from '@expo-harmony/expo-modules-autolinking';
 import { isRnohAutolinkingDisabled } from '@expo-harmony/prebuild-config/native-project';
 import { validateHarmonySigningConfigFile } from '@expo-harmony/prebuild-config/signing';
 
 import { spawnAsync } from '../process';
+import { withHarmonyProjectLockAsync } from '../projectLock';
 import {
   resolveHarmonyBuildPlanIfPresentAsync,
   resolveHarmonyToolchain,
@@ -30,7 +32,9 @@ export interface DoctorResult {
 
 interface DoctorOptions {
   requireBuildTools?: boolean;
+  requireDeviceTools?: boolean;
   validateGeneratedProject?: boolean;
+  validateModules?: boolean;
 }
 
 function hasPlugin(plugins, packageName) {
@@ -101,7 +105,7 @@ async function validateMetroConfigAsync(projectRoot) {
   }
 }
 
-async function doctorAsync(projectRoot: string, options: DoctorOptions = {}): Promise<DoctorResult> {
+async function doctorUnlockedAsync(projectRoot: string, options: DoctorOptions = {}): Promise<DoctorResult> {
   const checks: DoctorCheck[] = [];
   const unavailableToolStatus = options.requireBuildTools ? 'error' : 'warn';
   let config;
@@ -152,6 +156,39 @@ async function doctorAsync(projectRoot: string, options: DoctorOptions = {}): Pr
     }
   }
 
+  if (options.validateModules !== false) {
+    try {
+      const result = await verifyModulesAsync({ platform: 'harmony', projectRoot });
+      const errors = result.diagnostics.filter(item => item.severity === 'error');
+      const warnings = result.diagnostics.filter(item => item.severity === 'warning');
+
+      if (errors.length > 0) {
+        checks.push(check(
+          'expo-modules',
+          'error',
+          `Harmony Expo Modules verification found ${errors.length} error(s). Run 'expo-harmony modules verify' for details.`,
+          { diagnostics: result.diagnostics }
+        ));
+      } else if (warnings.length > 0) {
+        checks.push(check(
+          'expo-modules',
+          'warn',
+          `Verified ${result.modules.length} Harmony native module(s) with ${warnings.length} warning(s).`,
+          { diagnostics: warnings }
+        ));
+      } else {
+        checks.push(check('expo-modules', 'pass', `Verified ${result.modules.length} Harmony native module(s).`));
+      }
+    } catch (error) {
+      checks.push(check(
+        'expo-modules',
+        'error',
+        `Harmony Expo Modules verification failed: ${error.message}`,
+        { code: error.code || 'ERR_HARMONY_AUTOLINKING_FAILED' }
+      ));
+    }
+  }
+
   const toolchain = resolveHarmonyToolchain();
   let sdkCheck;
 
@@ -163,12 +200,14 @@ async function doctorAsync(projectRoot: string, options: DoctorOptions = {}): Pr
 
   checks.push(sdkCheck);
 
-  const tools: Array<[string, HarmonyTool, string[]]> = [
-    ['hdc', toolchain.hdc, ['-v']],
-    ['ohpm', toolchain.ohpm, ['--version']],
-    ['hvigor-command', toolchain.hvigor, ['--version']],
+  const tools: Array<[string, HarmonyTool, string[], DoctorCheck['status']]> = [
+    ['ohpm', toolchain.ohpm, ['--version'], unavailableToolStatus],
+    ['hvigor-command', toolchain.hvigor, ['--version'], unavailableToolStatus],
   ];
-  for (const [id, tool, versionArgs] of tools) {
+  if (options.requireDeviceTools !== false) {
+    tools.unshift(['hdc', toolchain.hdc, ['-v'], unavailableToolStatus]);
+  }
+  for (const [id, tool, versionArgs, unavailableStatus] of tools) {
     try {
       const result = await spawnAsync(tool.command, [...tool.args, ...versionArgs], {
         capture: true,
@@ -178,9 +217,9 @@ async function doctorAsync(projectRoot: string, options: DoctorOptions = {}): Pr
       });
       checks.push(result.code === 0 && !result.timedOut
         ? check(id, 'pass', `${tool.command} is available through ${tool.source}.`)
-        : check(id, unavailableToolStatus, `${tool.command} is unavailable or unhealthy; HAP build cannot be verified.`));
+        : check(id, unavailableStatus, `${tool.command} is unavailable or unhealthy; HAP build cannot be verified.`));
     } catch {
-      checks.push(check(id, unavailableToolStatus, `${tool.command} is unavailable; generation remains available.`));
+      checks.push(check(id, unavailableStatus, `${tool.command} is unavailable; generation remains available.`));
     }
   }
 
@@ -208,6 +247,14 @@ async function doctorAsync(projectRoot: string, options: DoctorOptions = {}): Pr
     ok: checks.every(item => item.status !== 'error'),
     projectRoot,
   };
+}
+
+async function doctorAsync(projectRoot: string, options: DoctorOptions = {}): Promise<DoctorResult> {
+  return withHarmonyProjectLockAsync(
+    projectRoot,
+    'doctor',
+    () => doctorUnlockedAsync(projectRoot, options)
+  );
 }
 
 function formatDoctor(result: DoctorResult): string {

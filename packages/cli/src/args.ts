@@ -16,7 +16,6 @@ type Values<T extends Options> = {
 
 const CommonOptions = {
   help: { short: 'h', type: 'boolean' },
-  json: { type: 'boolean' },
 } as const satisfies Options;
 
 function parseArgs<T extends Options>(

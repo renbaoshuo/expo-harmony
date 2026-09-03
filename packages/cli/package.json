@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/cli",
-  "version": "55.0.26-harmony.0",
+  "version": "55.0.26-harmony.1",
   "license": "MIT",
   "author": "Baoshuo <i@baoshuo.ren>",
   "repository": {
@@ -11,7 +11,9 @@
   "main": "build/index.js",
   "types": "build/index.d.ts",
   "scripts": {
+    "prebuild": "yarn workspace @expo-harmony/prebuild-config build",
     "build": "tsc -p tsconfig.json",
+    "prepare": "yarn build",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "exports": {

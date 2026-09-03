@@ -10,11 +10,22 @@ import {
 import { HarmonyCliError } from '../errors';
 import { isInside } from '../path';
 import { spawnAsync } from '../process';
+import { withHarmonyProjectLockAsync } from '../projectLock';
 import { resolveHarmonyBuildPlanAsync, type HarmonyBuildPlan } from '../tools';
 import { resolveExpoCli } from '../expo';
 import { packAsync } from './template';
 
 export type { Change as CheckChange } from '@expo-harmony/prebuild-config/check';
+
+const IgnoredProjectDirectories = new Set(['.expo', '.git', '.hvigor', '.yarn', 'node_modules']);
+const IgnoredHarmonyGeneratedDirectories = new Set([
+  '.cxx',
+  '.git',
+  '.hvigor',
+  'build',
+  'node_modules',
+  'oh_modules',
+]);
 
 function mirrorRoot(temp, project) {
   const absolute = path.resolve(project);
@@ -56,34 +67,48 @@ async function linkModulesAsync(source, target) {
   }
 }
 
+function isAppLocalHarmonyPath(project: string, source: string): boolean {
+  const segments = path.relative(project, source).split(path.sep);
+
+  return segments.length >= 3
+    && segments[0] === 'modules'
+    && segments[1] !== ''
+    && segments[2] === 'harmony';
+}
+
+function shouldCopyPrebuildCheckPath(
+  project: string,
+  source: string,
+  plan: HarmonyBuildPlan
+): boolean {
+  const relative = path.relative(project, source);
+  if (!relative) return true;
+
+  const segments = relative.split(path.sep);
+  if (IgnoredProjectDirectories.has(segments[0])) return false;
+
+  const nativeRoot = isInside(plan.harmonyRoot, source)
+    ? plan.harmonyRoot
+    : isAppLocalHarmonyPath(project, source)
+      ? path.join(project, ...segments.slice(0, 3))
+      : null;
+  if (nativeRoot) {
+    const native = path.relative(nativeRoot, source).split(path.sep);
+    if (native.some(segment => IgnoredHarmonyGeneratedDirectories.has(segment))) return false;
+  }
+
+  return source !== plan.exportPaths.bundle;
+}
+
 async function copyAsync(
   project: string,
   target: string,
   plan: HarmonyBuildPlan,
   temp = path.dirname(target)
 ) {
-  const ignored = new Set(['.expo', '.git', '.hvigor', '.yarn', 'node_modules']);
-  const nativeIgnored = new Set(['.cxx', '.git', '.hvigor', 'build', 'node_modules', 'oh_modules']);
-
   await fs.promises.cp(project, target, {
     recursive: true,
-    filter(source) {
-      const relative = path.relative(project, source);
-      if (!relative) return true;
-      const segments = relative.split(path.sep);
-      if (ignored.has(segments[0])) return false;
-
-      if (isInside(plan.harmonyRoot, source)) {
-        const native = path.relative(plan.harmonyRoot, source).split(path.sep);
-        if (native.some(segment => nativeIgnored.has(segment))) return false;
-      }
-
-      if (source === plan.exportPaths.bundle) {
-        return false;
-      }
-
-      return true;
-    },
+    filter: source => shouldCopyPrebuildCheckPath(project, source, plan),
   });
 
   const modules = path.join(project, 'node_modules');
@@ -103,7 +128,7 @@ async function copyAsync(
   await stageAsync(project, target, temp);
 }
 
-async function checkAsync(project) {
+async function checkUnlockedAsync(project) {
   project = path.resolve(project);
   const plan = await resolveHarmonyBuildPlanAsync(project);
   const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'expo-harmony-check-'));
@@ -146,6 +171,14 @@ async function checkAsync(project) {
     if (packed) await packed.cleanup();
     await fs.promises.rm(temp, { recursive: true, force: true });
   }
+}
+
+async function checkAsync(project) {
+  return withHarmonyProjectLockAsync(
+    project,
+    'prebuild-check',
+    () => checkUnlockedAsync(project)
+  );
 }
 
 export { checkAsync };

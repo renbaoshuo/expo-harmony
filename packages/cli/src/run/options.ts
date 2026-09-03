@@ -8,6 +8,7 @@ const RunOptions = {
   'no-bundler': { type: 'boolean' },
   'no-install': { type: 'boolean' },
   'port': { type: 'string' },
+  'reset-cache': { type: 'boolean' },
   'sync': { type: 'boolean' },
   'variant': { type: 'string' },
 } as const;
@@ -57,11 +58,11 @@ function parseRunArgs(argv: string[]) {
     appId,
     device,
     help: Boolean(values.help),
-    json: Boolean(values.json),
     noBundler: Boolean(values['no-bundler']),
     noInstall: Boolean(values['no-install']),
     port,
     project: positionals[0],
+    resetCache: Boolean(values['reset-cache']),
     sync: Boolean(values.sync),
     variant: variant as 'debug' | 'release',
   };
