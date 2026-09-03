@@ -8,7 +8,6 @@ set(OH_MODULES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../oh_modules")
 set(RNOH_CPP_DIR "${OH_MODULES_DIR}/@rnoh/react-native-openharmony/src/main/cpp")
 set(RNOH_CODEGEN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/rnoh_codegen")
 set(RNOH_GENERATED_DIR "${RNOH_CODEGEN_ROOT}/generated")
-set(EXPO_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated")
 set(LOG_VERBOSITY_LEVEL 1)
 set(CMAKE_ASM_FLAGS "-Wno-error=unused-command-line-argument -Qunused-arguments")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fstack-protector-strong -Wl,-z,relro,-z,now,-z,noexecstack")
@@ -22,10 +21,6 @@ if(NOT EXISTS "${EXPO_HARMONY_NATIVE_INPUTS_STAMP}")
   message(FATAL_ERROR "Harmony native input fingerprint is missing; build through the root Hvigor project.")
 endif()
 include("${EXPO_HARMONY_NATIVE_INPUTS_STAMP}")
-
-add_library(expo_harmony_app_config INTERFACE)
-add_library(expo_harmony::app_config ALIAS expo_harmony_app_config)
-target_include_directories(expo_harmony_app_config INTERFACE "${EXPO_GENERATED_DIR}")
 
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND DEFINED OHOS_SDK_NATIVE)
   set(CMAKE_CXX_FLAGS
@@ -46,5 +41,3 @@ target_include_directories(rnoh_app PRIVATE "${RNOH_CODEGEN_ROOT}")
 target_include_directories(rnoh_app PRIVATE
   "${OH_MODULES_DIR}/@expo-harmony/expo-modules-core/src/main/cpp/package")
 autolink_libraries(rnoh_app)
-
-add_subdirectory("${EXPO_GENERATED_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/expo-autolinking")

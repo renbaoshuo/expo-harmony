@@ -10,10 +10,8 @@ import {
   RNOHErrorDialog,
   ResourceJSBundleProvider,
 } from '@rnoh/react-native-openharmony';
-import type { RNInstance } from '@rnoh/react-native-openharmony';
-import { ExpoReactInstanceLifecycleDispatcher } from '@expo-harmony/expo-modules-core';
 import { getRNOHPackages } from '../PackageProvider';
-import { expoHarmonyHostProvider, ExpoHarmonyRootView } from '../generated/ExpoHarmonyHostProvider';
+import { ExpoHarmonyRootView } from '../generated/ExpoHarmonyHostProvider';
 
 class InMemoryResourceJSBundleProvider extends ResourceJSBundleProvider {
   private readonly ownedResourceManager: resmgr.ResourceManager;
@@ -52,13 +50,6 @@ struct Index {
               enableDebugger: this.rnohCoreContext.isDebugModeEnabled,
             },
             appKey: 'main',
-            onSetUp: async (rnInstance: RNInstance): Promise<void> => {
-              await ExpoReactInstanceLifecycleDispatcher.onSetUp(
-                expoHarmonyHostProvider,
-                this.rnohCoreContext!.uiAbilityContext,
-                rnInstance,
-              );
-            },
             jsBundleProvider: this.rnohCoreContext.isDebugModeEnabled
               ? new MetroJSBundleProvider()
               : new InMemoryResourceJSBundleProvider(

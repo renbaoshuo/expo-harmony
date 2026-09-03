@@ -20,6 +20,21 @@ const HermesMagic = 'c61fbc03c103191f';
 let restoreBundle: (() => void) | null = null;
 
 writeStamp(ProjectRoot, HarmonyRoot);
+hvigor.nodesEvaluated(async () => {
+  await refreshExpoConstantsResource();
+});
+
+async function refreshExpoConstantsResource(): Promise<void> {
+  let plugin: { refreshExpoConstantsResourceAsync?: (projectRoot: string, harmonyRoot: string) => Promise<string> };
+  try {
+    plugin = ProjectRequire('@expo-harmony/expo-constants/plugin/withConstants');
+  } catch (error: unknown) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'MODULE_NOT_FOUND') return;
+    throw error;
+  }
+
+  await plugin.refreshExpoConstantsResourceAsync?.(ProjectRoot, HarmonyRoot);
+}
 
 function findNodeModules(): string {
   let directory = ProjectRoot;
