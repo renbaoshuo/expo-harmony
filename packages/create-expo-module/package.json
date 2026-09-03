@@ -1,0 +1,24 @@
+{
+  "name": "@expo-harmony/create-expo-module",
+  "version": "55.0.0-harmony.0",
+  "license": "MIT",
+  "author": "Baoshuo <i@baoshuo.ren>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renbaoshuo/expo-harmony.git",
+    "directory": "packages/create-expo-module"
+  },
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/create-expo-module#readme",
+  "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
+  "type": "module",
+  "main": "src/generator.mjs",
+  "bin": {
+    "create-expo-harmony-module": "src/bin/create-expo-harmony-module.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
