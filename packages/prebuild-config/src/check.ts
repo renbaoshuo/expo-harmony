@@ -48,6 +48,7 @@ function mirrorPath(temp: string, source: string): string {
 
 async function stageAutolinkingAsync(project: string, target: string): Promise<void> {
   const source = path.join(project, '.expo/harmony/autolinking.json');
+
   let stat;
 
   try {
@@ -65,6 +66,7 @@ async function stageAutolinkingAsync(project: string, target: string): Promise<v
 
   const content = await fs.promises.readFile(source, 'utf8');
   const file = path.join(target, '.expo/harmony/autolinking.json');
+
   await fs.promises.mkdir(path.dirname(file), { recursive: true });
   await fs.promises.writeFile(file, content);
 }
@@ -114,6 +116,7 @@ async function matchesIdentity(
 
 async function readManifestIfPresentAsync(project: string): Promise<CngManifest | null> {
   const file = resolveHarmonyBuildPath(project, CngManifestPath);
+
   let source;
 
   try {
@@ -141,6 +144,7 @@ async function readManifestIfPresentAsync(project: string): Promise<CngManifest 
 
 async function readManifestAsync(project: string): Promise<CngManifest> {
   const manifest = await readManifestIfPresentAsync(project);
+
   if (!manifest) {
     const file = resolveHarmonyBuildPath(project, CngManifestPath);
     throw new HarmonyPrebuildError(
@@ -155,6 +159,7 @@ async function readManifestAsync(project: string): Promise<CngManifest> {
 
 async function stageManifestAsync(project: string, target: string): Promise<void> {
   const source = resolveHarmonyBuildPath(project, CngManifestPath);
+
   let stat;
 
   try {
@@ -170,10 +175,10 @@ async function stageManifestAsync(project: string, target: string): Promise<void
 
   if (!stat.isFile() || stat.isSymbolicLink()) return;
 
-  let manifest;
+  let cng;
 
   try {
-    manifest = validateCngManifest(JSON.parse(await fs.promises.readFile(source, 'utf8')), {
+    cng = validateCngManifest(JSON.parse(await fs.promises.readFile(source, 'utf8')), {
       file: source,
     });
   } catch (cause) {
@@ -188,29 +193,27 @@ async function stageManifestAsync(project: string, target: string): Promise<void
     isModdedConfig: true,
     skipSDKVersionRequirement: true,
   }).exp;
-  const normalized = normalizeHarmonyConfig(config);
-  const hash = hashSha256(stableHarmonyJson(normalized));
-  let identity = manifest.managedIdentity;
-  let build = manifest.build;
-  let signing = manifest.signingConfigName;
 
-  if (hash === manifest.inputs.configHash) {
-    // A matching input hash lets us reconstruct these two pieces of mutable
-    // re-entry state from authoritative inputs. This prevents a corrupted
-    // manifest identity from making isolated prebuild overwrite a user-owned
-    // product/module/ability while still allowing --check to report the
-    // manifest itself as drifted.
-    signing = normalized.signingConfigFile
-      ? (await validateHarmonySigningConfigFile(project, normalized.signingConfigFile)).name
+  const harmony = normalizeHarmonyConfig(config);
+  const hash = hashSha256(stableHarmonyJson(harmony));
+  let identity = cng.managedIdentity;
+  let build = cng.build;
+  let signing = cng.signingConfigName;
+
+  if (hash === cng.inputs.configHash) {
+    // Reconstruct mutable re-entry state from authoritative inputs so a corrupt
+    // manifest cannot make isolated prebuild overwrite user-owned identities.
+    signing = harmony.signingConfigFile
+      ? (await validateHarmonySigningConfigFile(project, harmony.signingConfigFile)).name
       : null;
-    build = createHarmonyBuildDescriptor(normalized, signing);
+    build = createHarmonyBuildDescriptor(harmony, signing);
     identity = {
       abilityName: build.identity.abilityName,
       moduleName: build.identity.moduleName,
       productName: build.identity.productName,
       targetName: build.identity.targetName,
     };
-  } else if (!await matchesIdentity(project, manifest)) {
+  } else if (!await matchesIdentity(project, cng)) {
     throw new HarmonyPrebuildError(
       'ERR_HARMONY_MANIFEST_DRIFT',
       'The CNG manifest identity does not match the generated Harmony project. Run prebuild to repair it before changing Harmony identity fields.',
@@ -219,9 +222,10 @@ async function stageManifestAsync(project: string, target: string): Promise<void
   }
 
   const file = resolveHarmonyBuildPath(target, CngManifestPath);
+
   await fs.promises.mkdir(path.dirname(file), { recursive: true });
   await fs.promises.writeFile(file, stableHarmonyJson({
-    ...manifest,
+    ...cng,
     build,
     managedIdentity: identity,
     signingConfigName: signing,
@@ -236,6 +240,7 @@ async function stageSigningAsync(
     isModdedConfig: true,
     skipSDKVersionRequirement: true,
   }).exp;
+
   const reference = (config as typeof config & {
     harmony?: { signingConfigFile?: string };
   }).harmony?.signingConfigFile;
@@ -283,32 +288,34 @@ async function canonicalizeAutolinkingAsync(
   const ohpmFile = resolveHarmonyBuildPath(expected, ohpmPath);
 
   try {
-    const [manifestSource, ohPackageSource, generatedProjectRoot, canonicalProjectRoot]
+    const [manifest, ohpm, generatedRoot, projectRoot]
       = await Promise.all([
         fs.promises.readFile(manifestFile, 'utf8'),
         fs.promises.readFile(ohpmFile, 'utf8'),
         fs.promises.realpath(expected),
         fs.promises.realpath(project),
       ]);
-    const canonical = canonicalizeAutolinkingArtifacts({
-      manifestSource,
-      ohPackageSource,
-      generatedProjectRoot,
-      canonicalProjectRoot,
+
+    const result = canonicalizeAutolinkingArtifacts({
+      manifestSource: manifest,
+      ohPackageSource: ohpm,
+      generatedProjectRoot: generatedRoot,
+      canonicalProjectRoot: projectRoot,
     });
-    const manifestHash = hashSha256(canonical.manifestSource);
-    const ohpmHash = hashSha256(canonical.ohPackageSource);
+    const manifestHash = hashSha256(result.manifestSource);
+    const ohpmHash = hashSha256(result.ohPackageSource);
 
     cng.inputs.autolinkingHash = manifestHash;
-    const manifestDescriptor = cng.managedFiles.find(
+
+    const manifestEntry = cng.managedFiles.find(
       item => item.path === '.expo/harmony/autolinking.json'
     );
-    const ohpmDescriptor = cng.managedFiles.find(
+    const ohpmEntry = cng.managedFiles.find(
       item => item.path === ohpmPath
     );
 
-    if (manifestDescriptor) manifestDescriptor.sha256 = manifestHash;
-    if (ohpmDescriptor) ohpmDescriptor.sha256 = ohpmHash;
+    if (manifestEntry) manifestEntry.sha256 = manifestHash;
+    if (ohpmEntry) ohpmEntry.sha256 = ohpmHash;
   } catch (error) {
     throw new HarmonyPrebuildError(
       'ERR_HARMONY_MANIFEST_DRIFT',
@@ -320,11 +327,12 @@ async function canonicalizeAutolinkingAsync(
 
 async function compareAsync(
   project: string,
-  expectedRoot: string
+  generated: string
 ): Promise<Result> {
-  const expected = await readManifestAsync(expectedRoot);
+  const expected = await readManifestAsync(generated);
+
   await canonicalizeAutolinkingAsync(
-    expectedRoot,
+    generated,
     project,
     expected
   );
@@ -336,10 +344,10 @@ async function compareAsync(
 
   for (const [relative, descriptor] of expectedFiles) {
     const file = path.join(project, ...relative.split('/'));
-    let currentHash = null;
+    let hash = null;
 
     try {
-      currentHash = hashSha256(Uint8Array.from(await fs.promises.readFile(file)));
+      hash = hashSha256(Uint8Array.from(await fs.promises.readFile(file)));
     } catch (error) {
       if (error.code !== 'ENOENT') {
         throw new HarmonyPrebuildError(
@@ -350,8 +358,8 @@ async function compareAsync(
       }
     }
 
-    if (currentHash === null) changes.push({ path: relative, type: 'added' });
-    else if (currentHash !== descriptor.sha256) changes.push({ path: relative, type: 'changed' });
+    if (hash === null) changes.push({ path: relative, type: 'added' });
+    else if (hash !== descriptor.sha256) changes.push({ path: relative, type: 'changed' });
   }
 
   for (const relative of actualFiles.keys()) {

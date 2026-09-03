@@ -30,17 +30,20 @@ import * as render from '../renderers';
 import { removeStaleResources } from '../stale';
 
 function setResource(items, name, value) {
-  const filtered = (Array.isArray(items) ? items : [])
+  const resources = (Array.isArray(items) ? items : [])
     .filter(item => item?.name !== name);
-  filtered.push({ name, value });
-  filtered.sort((left, right) => left.name.localeCompare(right.name, 'en'));
-  return filtered;
+
+  resources.push({ name, value });
+  resources.sort((left, right) => left.name.localeCompare(right.name, 'en'));
+
+  return resources;
 }
 
 function replaceMediaBase(files, base, descriptor?) {
   for (const name of Object.keys(files)) {
     if (path.parse(name).name === base) delete files[name];
   }
+
   if (descriptor) {
     files[descriptor.name] = { source: descriptor.source, replaceBase: true };
   }
@@ -50,9 +53,9 @@ function reconcileRuntimeMetadata(items) {
   const names = new Set([
     'OPTLazyForEach',
     'can_preview_text',
-    'expo.harmony.minApiVersion',
     'halfLeading',
   ]);
+
   return (Array.isArray(items) ? items : [])
     .filter(item => !names.has(item?.name))
     .concat([
@@ -62,50 +65,68 @@ function reconcileRuntimeMetadata(items) {
     ]);
 }
 
-function isAbilityValueClaimed(configPlugins, field, value) {
-  return configPlugins.some(plugin => plugin.ability?.[field] === value);
+function isAbilityValueClaimed(plugins, field, value) {
+  return plugins.some(plugin => plugin.ability?.[field] === value);
 }
 
 function getSourceExtension(value) {
   const extension = path.extname(value || '').toLowerCase();
+
   if (!['.png', '.jpg', '.jpeg', '.svg', '.webp'].includes(extension)) {
-    throw new HarmonyPrebuildError('ERR_HARMONY_CONFIG_INVALID', `Unsupported Harmony icon format: ${extension || '(none)'}`, { file: value, operation: 'render-icons' });
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_CONFIG_INVALID',
+      `Unsupported Harmony icon format: ${extension || '(none)'}`,
+      { file: value, operation: 'render-icons' }
+    );
   }
+
   return extension;
 }
 
-function resolveInputFile(projectRoot, value) {
-  const file = path.resolve(projectRoot, value);
+function resolveInputFile(root, value) {
+  const file = path.resolve(root, value);
 
   let stat;
+
   try {
     stat = fs.statSync(file);
   } catch (cause) {
-    throw new HarmonyPrebuildError('ERR_HARMONY_CONFIG_INVALID', `Harmony input file does not exist: ${file}`, { cause, file, operation: 'render-icons' });
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_CONFIG_INVALID',
+      `Harmony input file does not exist: ${file}`,
+      { cause, file, operation: 'render-icons' }
+    );
   }
+
   if (!stat.isFile()) {
-    throw new HarmonyPrebuildError('ERR_HARMONY_CONFIG_INVALID', `Harmony input is not a file: ${file}`, { file, operation: 'render-icons' });
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_CONFIG_INVALID',
+      `Harmony input is not a file: ${file}`,
+      { file, operation: 'render-icons' }
+    );
   }
+
   return file;
 }
 
-function withEntryMods(config, normalized) {
-  config = withEntryBuildProfile(config, (value) => {
-    const buildOption = readRecord(value.modResults.buildOption);
-    const externalNativeOptions = readRecord(buildOption.externalNativeOptions);
-    value.modResults = {
-      ...value.modResults,
+function withEntryMods(config, harmony) {
+  config = withEntryBuildProfile(config, (mod) => {
+    const build = readRecord(mod.modResults.buildOption);
+    const native = readRecord(build.externalNativeOptions);
+
+    mod.modResults = {
+      ...mod.modResults,
       apiType: 'stageMode',
       buildOption: {
-        ...buildOption,
+        ...build,
         externalNativeOptions: {
-          ...externalNativeOptions,
+          ...native,
           path: './src/main/cpp/CMakeLists.txt',
-          abiFilters: normalized.abiFilters,
+          abiFilters: harmony.abiFilters,
         },
       },
       targets: upsertNamed(
-        upsertNamed(value.modResults.targets, 'default', existing => ({
+        upsertNamed(mod.modResults.targets, 'default', existing => ({
           ...existing,
           name: 'default',
           runtimeOS: 'HarmonyOS',
@@ -114,58 +135,65 @@ function withEntryMods(config, normalized) {
         existing => ({ ...existing, name: 'ohosTest' })
       ),
     };
-    return value;
+
+    return mod;
   });
 
-  config = withEntryOhPackage(config, (value) => {
-    value.modResults = {
-      ...value.modResults,
-      name: normalized.moduleName,
-      version: normalized.versionName,
-      description: `${normalized.label} Harmony entry module`,
-      license: value.modResults.license || 'MIT',
-      dependencies: value.modResults.dependencies || {},
+  config = withEntryOhPackage(config, (mod) => {
+    mod.modResults = {
+      ...mod.modResults,
+      name: harmony.moduleName,
+      version: harmony.versionName,
+      description: `${harmony.label} Harmony entry module`,
+      license: mod.modResults.license || 'MIT',
+      dependencies: mod.modResults.dependencies || {},
     };
-    return value;
+
+    return mod;
   });
 
-  config = withEntryHvigor(config, async (value) => {
-    const build = createHarmonyBuildDescriptor(normalized, value._internal?.harmonySigningConfig?.name ?? null);
+  config = withEntryHvigor(config, async (mod) => {
+    const build = createHarmonyBuildDescriptor(harmony, mod._internal?.harmonySigningConfig?.name ?? null);
     const relative = path.posix.relative(build.harmonyRoot, build.projectFiles.moduleHvigor);
 
-    value.modResults = render.renderCanonical(await readTemplateSource(relative), build.projectFiles.moduleHvigor);
-    return value;
+    mod.modResults = render.renderCanonical(
+      await readTemplateSource(relative),
+      build.projectFiles.moduleHvigor
+    );
+
+    return mod;
   });
 
-  config = withModuleJson(config, (value) => {
-    const homeSkill = {
+  config = withModuleJson(config, (mod) => {
+    const home = {
       entities: ['entity.system.home'],
       actions: ['action.system.home'],
     };
-    const moduleValue = readRecord(value.modResults.module);
-    const previousIdentity = value._internal?.harmonyPreviousManagedIdentity;
-    const configPlugins = getHarmonyConfigPlugins(value);
+    const module = readRecord(mod.modResults.module);
+    const previous = mod._internal?.harmonyPreviousManagedIdentity;
+    const plugins = getHarmonyConfigPlugins(mod);
+
     const abilities = upsertManagedNamed(
-      moduleValue.abilities,
-      normalized.abilityName,
-      previousIdentity?.abilityName,
+      module.abilities,
+      harmony.abilityName,
+      previous?.abilityName,
       'EntryAbility',
       existing => ({
         ...existing,
-        name: normalized.abilityName,
+        name: harmony.abilityName,
         srcEntry: './ets/entryability/EntryAbility.ets',
         description: '$string:expo_harmony_ability_desc',
         icon: '$media:app_icon',
         label: '$string:expo_harmony_ability_label',
         startWindowIcon: isAbilityValueClaimed(
-          configPlugins,
+          plugins,
           'startWindowIcon',
           existing.startWindowIcon
         )
           ? existing.startWindowIcon
           : '$media:app_icon',
         startWindowBackground: isAbilityValueClaimed(
-          configPlugins,
+          plugins,
           'startWindowBackground',
           existing.startWindowBackground
         )
@@ -173,112 +201,122 @@ function withEntryMods(config, normalized) {
           : '$color:expo_harmony_start_window_background',
         exported: true,
         visible: true,
-        orientation: normalized.nativeOrientation,
-        skills: appendUnique([homeSkill], normalized.skills),
+        orientation: harmony.nativeOrientation,
+        skills: appendUnique([home], harmony.skills),
       }),
       'abilityName'
     );
-    const metadata = reconcileRuntimeMetadata(moduleValue.metadata);
-    value.modResults = {
-      ...value.modResults,
+    const metadata = reconcileRuntimeMetadata(module.metadata);
+
+    mod.modResults = {
+      ...mod.modResults,
       module: {
-        ...moduleValue,
-        name: normalized.moduleName,
+        ...module,
+        name: harmony.moduleName,
         type: 'entry',
         description: '$string:expo_harmony_module_desc',
-        mainElement: normalized.abilityName,
-        deviceTypes: normalized.deviceTypes,
+        mainElement: harmony.abilityName,
+        deviceTypes: harmony.deviceTypes,
         deliveryWithInstall: true,
         installationFree: false,
         pages: '$profile:main_pages',
-        requestPermissions: normalized.permissions,
-        querySchemes: normalized.querySchemes,
+        requestPermissions: harmony.permissions,
+        querySchemes: harmony.querySchemes,
         metadata,
         abilities,
       },
     };
-    return value;
+
+    return mod;
   });
 
-  config = withStrings(config, (value) => {
-    value.modResults = removeStaleResources(
-      value.modResults,
+  config = withStrings(config, (mod) => {
+    mod.modResults = removeStaleResources(
+      mod.modResults,
       'strings',
-      value._internal?.harmonyStaleConfigPlugins || []
+      mod._internal?.harmonyStaleConfigPlugins || []
     );
-    value.modResults.app ??= {};
-    value.modResults.entry ??= {};
-    value.modResults.app.string = setResource(
-      value.modResults.app.string,
+    mod.modResults.app ??= {};
+    mod.modResults.entry ??= {};
+
+    mod.modResults.app.string = setResource(
+      mod.modResults.app.string,
       'app_name',
-      normalized.label
+      harmony.label
     );
 
-    let strings = value.modResults.entry.string || [];
+    let strings = mod.modResults.entry.string || [];
+
     strings = setResource(
       strings,
       'expo_harmony_ability_desc',
-      `${normalized.label} main ability`
+      `${harmony.label} main ability`
     );
-    strings = setResource(strings, 'expo_harmony_ability_label', normalized.label);
+    strings = setResource(strings, 'expo_harmony_ability_label', harmony.label);
     strings = setResource(
       strings,
       'expo_harmony_module_desc',
-      `${normalized.label} entry module`
+      `${harmony.label} entry module`
     );
-    value.modResults.entry.string = strings;
-    return value;
+    mod.modResults.entry.string = strings;
+
+    return mod;
   });
 
-  config = withColors(config, (value) => {
-    value.modResults = removeStaleResources(
-      value.modResults,
+  config = withColors(config, (mod) => {
+    mod.modResults = removeStaleResources(
+      mod.modResults,
       'colors',
-      value._internal?.harmonyStaleConfigPlugins || []
+      mod._internal?.harmonyStaleConfigPlugins || []
     );
-    value.modResults.entry ??= {};
-    value.modResults.entryDark ??= {};
-    value.modResults.entry.color = setResource(
-      value.modResults.entry.color,
+    mod.modResults.entry ??= {};
+    mod.modResults.entryDark ??= {};
+
+    mod.modResults.entry.color = setResource(
+      mod.modResults.entry.color,
       'expo_harmony_start_window_background',
-      normalized.backgroundColor
+      harmony.backgroundColor
     );
-    return value;
+
+    return mod;
   });
 
-  config = withMedia(config, (value) => {
-    value.modResults = removeStaleResources(
-      value.modResults,
+  config = withMedia(config, (mod) => {
+    mod.modResults = removeStaleResources(
+      mod.modResults,
       'media',
-      value._internal?.harmonyStaleConfigPlugins || []
+      mod._internal?.harmonyStaleConfigPlugins || []
     );
-    const customIcon = normalized.icon
-      ? resolveInputFile(value.modRequest.projectRoot, normalized.icon)
+
+    const icon = harmony.icon
+      ? resolveInputFile(mod.modRequest.projectRoot, harmony.icon)
       : null;
-    const sources = customIcon
-      ? { app: customIcon, entry: customIcon }
+    const sources = icon
+      ? { app: icon, entry: icon }
       : {
           app: resolveTemplateFile(`${HarmonyPlatformDirectory}/${HarmonyPaths.RESOURCE_PATHS.media.app}/app_icon.svg`),
           entry: resolveTemplateFile(`${HarmonyPlatformDirectory}/${HarmonyPaths.RESOURCE_PATHS.media.entry}/app_icon.svg`),
         };
 
     for (const [scope, source] of Object.entries(sources)) {
-      value.modResults[scope] ??= {};
-      replaceMediaBase(value.modResults[scope], 'app_icon', {
+      mod.modResults[scope] ??= {};
+      replaceMediaBase(mod.modResults[scope], 'app_icon', {
         name: `app_icon${getSourceExtension(source)}`,
         source,
       });
-      replaceMediaBase(value.modResults[scope], 'app_icon_round');
+      replaceMediaBase(mod.modResults[scope], 'app_icon_round');
     }
-    return value;
+
+    return mod;
   });
 
-  config = withProfiles(config, (value) => {
-    value.modResults = {
-      ...value.modResults,
-      src: appendUnique(value.modResults.src, ['pages/Index']),
+  config = withProfiles(config, (mod) => {
+    mod.modResults = {
+      ...mod.modResults,
+      src: appendUnique(mod.modResults.src, ['pages/Index']),
     };
-    return value;
+
+    return mod;
   });
 
   return config;

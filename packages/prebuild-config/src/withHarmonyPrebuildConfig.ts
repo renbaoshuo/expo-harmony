@@ -17,22 +17,29 @@ interface HarmonyPrebuildOptions {
   buildType?: 'debug' | 'release';
 }
 
-function applyHarmonyMods(config, harmonyConfig: NormalizedHarmonyConfig, options: HarmonyPrebuildOptions) {
-  config = withPreparationMod(config, harmonyConfig);
-  config = withProjectMods(config, harmonyConfig);
-  config = withEntryMods(config, harmonyConfig);
-  config = withSourceMods(config, harmonyConfig);
-  config = withAutolinkingMods(config, harmonyConfig, options);
+function applyHarmonyMods(config, harmony: NormalizedHarmonyConfig, options: HarmonyPrebuildOptions) {
+  config = withPreparationMod(config, harmony);
+  config = withProjectMods(config, harmony);
+  config = withEntryMods(config, harmony);
+  config = withSourceMods(config, harmony);
+  config = withAutolinkingMods(config, harmony, options);
+
   return config;
 }
 
 const withHarmonyPrebuildConfig: ConfigPlugin<HarmonyPrebuildOptions> = (config, options = {}) => {
   if (options.autolinking === false) {
-    throw new HarmonyPrebuildError('ERR_HARMONY_CONFIG_INVALID', 'Harmony autolinking cannot be disabled because the generated RNOH and Expo native project requires its outputs.', { operation: 'configure-autolinking' });
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_CONFIG_INVALID',
+      'Harmony autolinking cannot be disabled because the generated RNOH and Expo native project requires its outputs.',
+      { operation: 'configure-autolinking' }
+    );
   }
 
-  const normalized = normalizeHarmonyConfig(config);
-  config = applyHarmonyMods(config, normalized, options);
+  const harmony = normalizeHarmonyConfig(config);
+
+  config = applyHarmonyMods(config, harmony, options);
+
   return withHarmonyBaseMods(config);
 };
 

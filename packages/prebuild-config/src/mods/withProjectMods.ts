@@ -1,17 +1,27 @@
 import path from 'node:path';
 
 import {
-  withAppJson, withHvigorConfig, withProjectBuildProfile,
-  withNativeInputsStamp, withReactNativeConfig, withRootHvigor, withRootOhPackage,
+  withAppJson,
+  withHvigorConfig,
+  withNativeInputsStamp,
+  withProjectBuildProfile,
+  withReactNativeConfig,
+  withRootHvigor,
+  withRootOhPackage,
 } from '@expo-harmony/config-plugins';
 import { loadConfigAsync as loadReactNativeCliConfigAsync } from '@react-native-community/cli-config';
 
-import { readTemplateSource, resolvePackageVersion, resolveRnohHvigorPlugin, toRelativeDependency } from '../dependencies';
 import {
   createHarmonyBuildDescriptor,
   harmonyModuleSourcePath,
   resolveHarmonyBuildPath,
 } from '../buildDescriptor';
+import {
+  readTemplateSource,
+  resolvePackageVersion,
+  resolveRnohHvigorPlugin,
+  toRelativeDependency,
+} from '../dependencies';
 import { HarmonyPrebuildError } from '../errors';
 import { readRecord, replaceManagedString, upsertManagedNamed, upsertNamed } from '../reconcile';
 import * as render from '../renderers';
@@ -21,80 +31,98 @@ function hasRnohLinkCommand(config) {
   return names.has('link-harmony');
 }
 
-async function loadReactNativeConfigAsync(projectRoot, file) {
+async function loadReactNativeConfigAsync(root, file) {
   try {
-    return await loadReactNativeCliConfigAsync({ projectRoot });
+    return await loadReactNativeCliConfigAsync({ projectRoot: root });
   } catch (cause) {
-    throw new HarmonyPrebuildError('ERR_HARMONY_CONFIG_INVALID', `Cannot load the existing React Native CLI config: ${file}`, { cause, file, operation: 'react-native-config' });
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_CONFIG_INVALID',
+      `Cannot load the existing React Native CLI config: ${file}`,
+      { cause, file, operation: 'react-native-config' }
+    );
   }
 }
 
-export function withProjectMods(config, normalized) {
-  config = withReactNativeConfig(config, async (value) => {
-    const projectRoot = value.modRequest.projectRoot;
-    const request = value.modRequest as typeof value.modRequest & {
+export function withProjectMods(config, harmony) {
+  config = withReactNativeConfig(config, async (mod) => {
+    const root = mod.modRequest.projectRoot;
+    const request = mod.modRequest as typeof mod.modRequest & {
       modFile: string;
       modFileExists: boolean;
     };
-    const configFile = request.modFile;
+    const file = request.modFile;
+
     if (request.modFileExists) {
-      if (!hasRnohLinkCommand(await loadReactNativeConfigAsync(projectRoot, configFile))) {
-        throw new HarmonyPrebuildError('ERR_HARMONY_CONFIG_INVALID', 'The React Native CLI config must expose the RNOH link-harmony command.', { file: configFile, operation: 'react-native-config' });
+      if (!hasRnohLinkCommand(await loadReactNativeConfigAsync(root, file))) {
+        throw new HarmonyPrebuildError(
+          'ERR_HARMONY_CONFIG_INVALID',
+          'The React Native CLI config must expose the RNOH link-harmony command.',
+          { file, operation: 'react-native-config' }
+        );
       }
-      return value;
+
+      return mod;
     }
 
-    value.modResults = render.renderReactNativeConfig();
-    return value;
+    mod.modResults = render.renderReactNativeConfig();
+
+    return mod;
   });
 
-  config = withAppJson(config, (value) => {
-    const app = value.modResults.app && typeof value.modResults.app === 'object' ? value.modResults.app : {};
-    value.modResults = {
-      ...value.modResults,
+  config = withAppJson(config, (mod) => {
+    const app = mod.modResults.app && typeof mod.modResults.app === 'object'
+      ? mod.modResults.app
+      : {};
+
+    mod.modResults = {
+      ...mod.modResults,
       app: {
         ...app,
-        bundleName: normalized.bundleName,
+        bundleName: harmony.bundleName,
         icon: '$media:app_icon',
         label: '$string:app_name',
-        vendor: normalized.vendor,
-        versionCode: normalized.versionCode,
-        versionName: normalized.versionName,
+        vendor: harmony.vendor,
+        versionCode: harmony.versionCode,
+        versionName: harmony.versionName,
       },
     };
-    return value;
+
+    return mod;
   });
 
-  config = withProjectBuildProfile(config, (value) => {
+  config = withProjectBuildProfile(config, (mod) => {
     const build = createHarmonyBuildDescriptor(
-      normalized,
-      value._internal?.harmonySigningConfig?.name ?? null
+      harmony,
+      mod._internal?.harmonySigningConfig?.name ?? null
     );
     const { moduleName, productName, targetName } = build.identity;
 
-    const profile = value.modResults;
+    const profile = mod.modResults;
     const app = readRecord(profile.app);
-    const signingConfig = value._internal?.harmonySigningConfig;
-    const previousSigningConfigName = value._internal?.harmonyPreviousSigningConfigName;
-    const previousIdentity = value._internal?.harmonyPreviousManagedIdentity;
+    const signing = mod._internal?.harmonySigningConfig;
+    const previousSigning = mod._internal?.harmonyPreviousSigningConfigName;
+    const previous = mod._internal?.harmonyPreviousManagedIdentity;
+
     const products = upsertManagedNamed(
       app.products,
       productName,
-      previousIdentity?.productName,
+      previous?.productName,
       'default',
       (existing) => {
         const product = {
           ...existing,
           name: productName,
-          compatibleSdkVersion: normalized.compatibleSdkVersionString,
-          targetSdkVersion: normalized.targetSdkVersionString,
+          compatibleSdkVersion: harmony.compatibleSdkVersionString,
+          targetSdkVersion: harmony.targetSdkVersionString,
           runtimeOS: 'HarmonyOS',
           buildOption: { ...(existing.buildOption || {}), nativeCompiler: 'BiSheng' },
-          ...(signingConfig ? { signingConfig: signingConfig.name } : {}),
+          ...(signing ? { signingConfig: signing.name } : {}),
         };
-        if (!signingConfig && product.signingConfig === previousSigningConfigName) {
+
+        if (!signing && product.signingConfig === previousSigning) {
           delete product.signingConfig;
         }
+
         return product;
       },
       'productName'
@@ -102,7 +130,7 @@ export function withProjectMods(config, normalized) {
     const modules = upsertManagedNamed(
       profile.modules,
       moduleName,
-      previousIdentity?.moduleName,
+      previous?.moduleName,
       'entry',
       existing => ({
         ...existing,
@@ -114,7 +142,7 @@ export function withProjectMods(config, normalized) {
           applyToProducts: replaceManagedString(
             target.applyToProducts,
             productName,
-            previousIdentity?.productName,
+            previous?.productName,
             'default'
           ),
         })),
@@ -122,22 +150,23 @@ export function withProjectMods(config, normalized) {
       'moduleName'
     );
 
-    let signingConfigs = app.signingConfigs;
-    if (signingConfig) {
-      signingConfigs = upsertManagedNamed(
-        signingConfigs,
-        signingConfig.name,
-        previousSigningConfigName,
+    let configs = app.signingConfigs;
+
+    if (signing) {
+      configs = upsertManagedNamed(
+        configs,
+        signing.name,
+        previousSigning,
         '',
-        () => signingConfig,
+        () => signing,
         'signingConfigName'
       );
-    } else if (previousSigningConfigName) {
-      signingConfigs = (Array.isArray(signingConfigs) ? signingConfigs : [])
-        .filter(item => item?.name !== previousSigningConfigName);
+    } else if (previousSigning) {
+      configs = (Array.isArray(configs) ? configs : [])
+        .filter(item => item?.name !== previousSigning);
     }
 
-    value.modResults = {
+    mod.modResults = {
       ...profile,
       app: {
         ...app,
@@ -147,74 +176,82 @@ export function withProjectMods(config, normalized) {
           'release',
           existing => ({ ...existing, name: 'release' })
         ),
-        ...(signingConfigs === undefined ? {} : { signingConfigs }),
+        ...(configs === undefined ? {} : { signingConfigs: configs }),
       },
       modules,
     };
-    return value;
+
+    return mod;
   });
 
-  config = withRootOhPackage(config, (value) => {
-    const rnohVersion = resolvePackageVersion(value.modRequest.projectRoot, '@react-native-oh/react-native-harmony');
-    const dependencies = { ...readRecord(value.modResults.dependencies) };
-    const overrides = { ...readRecord(value.modResults.overrides) };
-    value.modResults = {
-      ...value.modResults,
-      name: normalized.bundleName,
-      version: normalized.versionName,
-      license: value.modResults.license || 'MIT',
+  config = withRootOhPackage(config, (mod) => {
+    const version = resolvePackageVersion(
+      mod.modRequest.projectRoot,
+      '@react-native-oh/react-native-harmony'
+    );
+    const dependencies = { ...readRecord(mod.modResults.dependencies) };
+    const overrides = { ...readRecord(mod.modResults.overrides) };
+
+    mod.modResults = {
+      ...mod.modResults,
+      name: harmony.bundleName,
+      version: harmony.versionName,
+      license: mod.modResults.license || 'MIT',
       dependencies: {
         ...dependencies,
-        '@rnoh/react-native-openharmony': rnohVersion,
+        '@rnoh/react-native-openharmony': version,
       },
       overrides: {
         ...overrides,
-        '@rnoh/react-native-openharmony': rnohVersion,
+        '@rnoh/react-native-openharmony': version,
       },
     };
-    return value;
+
+    return mod;
   });
 
-  config = withRootHvigor(config, async (value) => {
+  config = withRootHvigor(config, async (mod) => {
     const build = createHarmonyBuildDescriptor(
-      normalized,
-      value._internal?.harmonySigningConfig?.name ?? null
+      harmony,
+      mod._internal?.harmonySigningConfig?.name ?? null
     );
+    const relative = path.posix.relative(build.harmonyRoot, build.projectFiles.rootHvigor);
+    const source = await readTemplateSource(relative);
 
-    value.modResults = render.renderRootHvigor(
-      await readTemplateSource(path.posix.relative(build.harmonyRoot, build.projectFiles.rootHvigor)),
-      build
-    );
-    return value;
+    mod.modResults = render.renderRootHvigor(source, build);
+
+    return mod;
   });
 
-  config = withNativeInputsStamp(config, async (value) => {
-    const build = createHarmonyBuildDescriptor(normalized, value._internal?.harmonySigningConfig?.name ?? null);
+  config = withNativeInputsStamp(config, async (mod) => {
+    const build = createHarmonyBuildDescriptor(harmony, mod._internal?.harmonySigningConfig?.name ?? null);
+    const relative = path.posix.relative(build.harmonyRoot, build.projectFiles.nativeInputsStamp);
+    const source = await readTemplateSource(relative);
 
-    value.modResults = render.renderCanonical(
-      await readTemplateSource(path.posix.relative(build.harmonyRoot, build.projectFiles.nativeInputsStamp)),
-      build.projectFiles.nativeInputsStamp
-    );
-    return value;
+    mod.modResults = render.renderCanonical(source, build.projectFiles.nativeInputsStamp);
+
+    return mod;
   });
 
-  config = withHvigorConfig(config, (value) => {
-    const projectRoot = value.modRequest.projectRoot;
-    const build = createHarmonyBuildDescriptor(normalized, value._internal?.harmonySigningConfig?.name ?? null);
-    const hvigorDirectory = path.dirname(resolveHarmonyBuildPath(projectRoot, build.projectFiles.hvigorConfig));
-    const hvigorPlugin = toRelativeDependency(hvigorDirectory, resolveRnohHvigorPlugin(projectRoot));
-    value.modResults = {
-      ...value.modResults,
+  config = withHvigorConfig(config, (mod) => {
+    const root = mod.modRequest.projectRoot;
+    const build = createHarmonyBuildDescriptor(harmony, mod._internal?.harmonySigningConfig?.name ?? null);
+    const directory = path.dirname(resolveHarmonyBuildPath(root, build.projectFiles.hvigorConfig));
+    const plugin = toRelativeDependency(directory, resolveRnohHvigorPlugin(root));
+
+    mod.modResults = {
+      ...mod.modResults,
       dependencies: {
-        ...readRecord(value.modResults.dependencies),
-        '@rnoh/hvigor-plugin': hvigorPlugin,
+        ...readRecord(mod.modResults.dependencies),
+        '@rnoh/hvigor-plugin': plugin,
       },
-      execution: value.modResults.execution || {},
-      logging: value.modResults.logging || {},
-      debugging: value.modResults.debugging || {},
-      nodeOptions: value.modResults.nodeOptions || {},
+      execution: mod.modResults.execution || {},
+      logging: mod.modResults.logging || {},
+      debugging: mod.modResults.debugging || {},
+      nodeOptions: mod.modResults.nodeOptions || {},
     };
-    return value;
+
+    return mod;
   });
 
   return config;

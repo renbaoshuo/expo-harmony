@@ -9,12 +9,16 @@ function normalizeSource(source, label) {
   return source.replace(/\r\n?/gu, '\n');
 }
 
-function replacePlaceholderExactlyOnce(source, placeholder, replace, label) {
-  const replacements = source.split(placeholder).length - 1;
-  if (replacements !== 1) {
-    throw new TypeError(`Canonical Harmony template has ${replacements} ${label} placeholders; expected exactly one.`);
+function replacePlaceholder(source, placeholder, value, label) {
+  const count = source.split(placeholder).length - 1;
+
+  if (count !== 1) {
+    throw new TypeError(
+      `Canonical Harmony template has ${count} ${label} placeholders; expected exactly one.`
+    );
   }
-  return source.replace(placeholder, () => replace);
+
+  return source.replace(placeholder, () => value);
 }
 
 function quoteSingle(value) {
@@ -35,7 +39,7 @@ module.exports = require('@react-native-oh/react-native-harmony-cli/react-native
 function renderRootHvigor(source, build: HarmonyBuildDescriptor) {
   source = normalizeSource(source, build.projectFiles.rootHvigor);
 
-  return replacePlaceholderExactlyOnce(
+  return replacePlaceholder(
     source,
     quoteSingle(TEMPLATE_PLACEHOLDERS.bundlePath),
     quoteSingle(build.export.bundle),
@@ -43,22 +47,24 @@ function renderRootHvigor(source, build: HarmonyBuildDescriptor) {
   );
 }
 
-function renderEntryAbility(source, normalized) {
+function renderEntryAbility(source, harmony) {
   source = normalizeSource(source, 'EntryAbility.ets');
-  return replacePlaceholderExactlyOnce(
+
+  return replacePlaceholder(
     source,
     TEMPLATE_PLACEHOLDERS.abilityName,
-    normalized.abilityName,
+    harmony.abilityName,
     'ability class'
   );
 }
 
-function renderIndexPage(source, normalized) {
+function renderIndexPage(source, harmony) {
   source = normalizeSource(source, 'Index.ets');
-  return replacePlaceholderExactlyOnce(
+
+  return replacePlaceholder(
     source,
     JSON.stringify(TEMPLATE_PLACEHOLDERS.appLabel),
-    JSON.stringify(normalized.label),
+    JSON.stringify(harmony.label),
     'RN instance name'
   );
 }

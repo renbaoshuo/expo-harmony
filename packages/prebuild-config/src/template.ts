@@ -37,6 +37,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readSchema(marker: string): typeof TEMPLATE_SCHEMA_VERSION {
   let schema: unknown;
+
   try {
     schema = JSON.parse(fs.readFileSync(marker, 'utf8'));
   } catch (cause) {
@@ -57,6 +58,7 @@ function readSchema(marker: string): typeof TEMPLATE_SCHEMA_VERSION {
 
   const placeholders = schema.placeholders;
   const names = Object.keys(TEMPLATE_PLACEHOLDERS) as Array<keyof typeof TEMPLATE_PLACEHOLDERS>;
+
   if (!isRecord(placeholders)
     || Object.keys(placeholders).length !== names.length
     || names.some(name => placeholders[name] !== TEMPLATE_PLACEHOLDERS[name])) {
@@ -80,6 +82,7 @@ function read(input: string): Template {
   }
 
   let root: string;
+
   try {
     root = fs.realpathSync(input);
   } catch (cause) {
@@ -91,7 +94,9 @@ function read(input: string): Template {
   }
 
   const json = path.join(root, 'package.json');
+
   let pkg;
+
   try {
     pkg = JSON.parse(fs.readFileSync(json, 'utf8'));
   } catch (cause) {
@@ -128,6 +133,7 @@ function resolveBundled(): Template {
   if (bundled) return bundled;
 
   let json: string;
+
   try {
     json = resolveModule(`${PACKAGE}/package.json`);
   } catch (cause) {
@@ -139,17 +145,20 @@ function resolveBundled(): Template {
   }
 
   bundled = read(path.dirname(json));
+
   return bundled;
 }
 
 function resolve(): Template {
   const root = process.env[ROOT_ENV];
+
   if (!root) return resolveBundled();
 
   if (selected && selectedRoot === root) return selected;
 
   selected = read(root);
   selectedRoot = root;
+
   return selected;
 }
 

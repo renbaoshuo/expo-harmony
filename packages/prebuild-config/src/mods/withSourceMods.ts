@@ -15,13 +15,18 @@ const SourceMods = [
   [withCMakeLists, HarmonyPaths.HARMONY_PATHS.cmakeLists, render.renderCmakeLists],
 ] as const;
 
-export function withSourceMods(config, normalized) {
+export function withSourceMods(config, harmony) {
   for (const [plugin, relative, renderer] of SourceMods) {
-    config = plugin(config, async (value) => {
+    config = plugin(config, async (mod) => {
       const source = await readTemplateSource(relative);
-      value.modResults = renderer ? renderer(source, normalized) : render.renderCanonical(source, `harmony/${relative}`);
-      return value;
+
+      mod.modResults = renderer
+        ? renderer(source, harmony)
+        : render.renderCanonical(source, `harmony/${relative}`);
+
+      return mod;
     });
   }
+
   return config;
 }

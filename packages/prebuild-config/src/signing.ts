@@ -4,7 +4,7 @@ import path from 'node:path';
 import JSON5 from 'json5';
 
 import { HarmonyPlatformDirectory } from './buildDescriptor';
-import { HarmonySigningError } from './errors';
+import { HarmonyPrebuildError } from './errors';
 
 const MaterialFields = [
   'certpath', 'storePassword', 'keyAlias', 'keyPassword',
@@ -37,126 +37,207 @@ function isInside(root, target) {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
-function mirrorAbsolutePath(temporaryRoot, source) {
+function mirrorAbsolutePath(temp, source) {
   const absolute = path.resolve(source);
   const parsed = path.parse(absolute);
   const volume = parsed.root.replace(/[^A-Za-z0-9]+/gu, '') || 'root';
   const segments = absolute.slice(parsed.root.length).split(path.sep).filter(Boolean);
-  return path.join(temporaryRoot, 'filesystem', volume, ...segments);
+
+  return path.join(temp, 'filesystem', volume, ...segments);
 }
 
 function resolveSigningPath(base, reference) {
   const resolved = path.resolve(base, reference);
-  const mirrorRoot = process.env.EXPO_HARMONY_CHECK_MIRROR_ROOT;
-  return mirrorRoot && path.isAbsolute(reference)
-    ? mirrorAbsolutePath(path.resolve(mirrorRoot), resolved)
+  const mirror = process.env.EXPO_HARMONY_CHECK_MIRROR_ROOT;
+
+  return mirror && path.isAbsolute(reference)
+    ? mirrorAbsolutePath(path.resolve(mirror), resolved)
     : resolved;
 }
 
 function selectSigningConfig(parsed, file) {
   const source = parsed?.app?.signingConfigs ?? parsed?.signingConfigs ?? parsed;
   const candidates = Array.isArray(source) ? source : [source];
-  const objects = candidates.filter(item => item && typeof item === 'object' && !Array.isArray(item));
-  if (objects.length !== candidates.length || objects.length === 0) {
-    throw new HarmonySigningError('Signing config file must contain a signing config object or a non-empty signingConfigs array.', { file });
+  const configs = candidates.filter(item => item && typeof item === 'object' && !Array.isArray(item));
+
+  if (configs.length !== candidates.length || configs.length === 0) {
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_SIGNING_INVALID',
+      'Signing config file must contain a signing config object or a non-empty signingConfigs array.',
+      { file, operation: 'validate-signing' }
+    );
   }
-  const selected = objects.find(item => item.name === 'default') || (objects.length === 1 ? objects[0] : null);
-  if (!selected) {
-    throw new HarmonySigningError('Signing config file contains multiple entries but none is named default.', { file });
+
+  const config = configs.find(item => item.name === 'default') || (configs.length === 1 ? configs[0] : null);
+
+  if (!config) {
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_SIGNING_INVALID',
+      'Signing config file contains multiple entries but none is named default.',
+      { file, operation: 'validate-signing' }
+    );
   }
-  return selected;
+
+  return config;
 }
 
-async function readSigningConfigFile(projectRoot: string, reference: string): Promise<SigningFile> {
-  const file = resolveSigningPath(projectRoot, reference);
-  const harmonyRoot = path.join(projectRoot, HarmonyPlatformDirectory);
-  if (isInside(harmonyRoot, file)) {
-    throw new HarmonySigningError('harmony.signingConfigFile must be outside the generated harmony directory so --clean cannot delete it.', { file });
+async function readSigningConfigFile(root: string, reference: string): Promise<SigningFile> {
+  const file = resolveSigningPath(root, reference);
+  const harmony = path.join(root, HarmonyPlatformDirectory);
+
+  if (isInside(harmony, file)) {
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_SIGNING_INVALID',
+      'harmony.signingConfigFile must be outside the generated harmony directory so --clean cannot delete it.',
+      { file, operation: 'validate-signing' }
+    );
   }
 
-  let source;
+  let content;
+
   try {
     const stat = await fs.stat(file);
     if (!stat.isFile()) {
-      throw new HarmonySigningError('Harmony signing config reference must be a regular file.', { file });
+      throw new HarmonyPrebuildError(
+        'ERR_HARMONY_SIGNING_INVALID',
+        'Harmony signing config reference must be a regular file.',
+        { file, operation: 'validate-signing' }
+      );
     }
-    source = await fs.readFile(file, 'utf8');
+
+    content = await fs.readFile(file, 'utf8');
   } catch (cause) {
     if (cause?.code === 'ERR_HARMONY_SIGNING_INVALID') return Promise.reject(cause);
-    throw new HarmonySigningError('Cannot read harmony.signingConfigFile.', { cause, file });
+
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_SIGNING_INVALID',
+      'Cannot read harmony.signingConfigFile.',
+      { cause, file, operation: 'validate-signing' }
+    );
   }
 
   let parsed;
+
   try {
-    parsed = JSON5.parse(source);
+    parsed = JSON5.parse(content);
   } catch (cause) {
-    throw new HarmonySigningError('Cannot parse harmony.signingConfigFile as JSON5.', { cause, file });
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_SIGNING_INVALID',
+      'Cannot parse harmony.signingConfigFile as JSON5.',
+      { cause, file, operation: 'validate-signing' }
+    );
   }
 
-  const selected = selectSigningConfig(parsed, file);
-  if (typeof selected.name !== 'string' || !selected.name.trim()) {
-    throw new HarmonySigningError('Harmony signing config name must be a non-empty string.', { file });
+  const config = selectSigningConfig(parsed, file);
+
+  if (typeof config.name !== 'string' || !config.name.trim()) {
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_SIGNING_INVALID',
+      'Harmony signing config name must be a non-empty string.',
+      { file, operation: 'validate-signing' }
+    );
   }
-  if (selected.type !== undefined && selected.type !== 'HarmonyOS') {
-    throw new HarmonySigningError('Harmony signing config type must be HarmonyOS.', { file });
+  if (config.type !== undefined && config.type !== 'HarmonyOS') {
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_SIGNING_INVALID',
+      'Harmony signing config type must be HarmonyOS.',
+      { file, operation: 'validate-signing' }
+    );
   }
-  if (!selected.material || typeof selected.material !== 'object' || Array.isArray(selected.material)) {
-    throw new HarmonySigningError('Harmony signing config material must be an object.', { file });
+  if (!config.material || typeof config.material !== 'object' || Array.isArray(config.material)) {
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_SIGNING_INVALID',
+      'Harmony signing config material must be an object.',
+      { file, operation: 'validate-signing' }
+    );
   }
 
-  const material = { ...selected.material };
-  const materialFiles: Partial<Record<MaterialPathField, string>> = {};
+  const material = { ...config.material };
+  const files: Partial<Record<MaterialPathField, string>> = {};
+
   for (const field of MaterialFields) {
     const value = material[field];
     if (typeof value !== 'string' || !value.trim()) {
-      throw new HarmonySigningError(`Harmony signing material field ${field} must be a non-empty string.`, { file });
+      throw new HarmonyPrebuildError(
+        'ERR_HARMONY_SIGNING_INVALID',
+        `Harmony signing material field ${field} must be a non-empty string.`,
+        { file, operation: 'validate-signing' }
+      );
     }
+
     if (MaterialPathFields.has(field)) {
       const resolved = resolveSigningPath(path.dirname(file), value);
-      if (isInside(harmonyRoot, resolved)) {
-        throw new HarmonySigningError(`Harmony signing material field ${field} must be outside the generated harmony directory so --clean cannot delete it.`, { file });
+
+      if (isInside(harmony, resolved)) {
+        throw new HarmonyPrebuildError(
+          'ERR_HARMONY_SIGNING_INVALID',
+          `Harmony signing material field ${field} must be outside the generated harmony directory so --clean cannot delete it.`,
+          { file, operation: 'validate-signing' }
+        );
       }
+
       try {
         const stat = await fs.stat(resolved);
         if (!stat.isFile()) {
-          throw new HarmonySigningError(`Harmony signing material field ${field} must reference a regular file.`, { file });
+          throw new HarmonyPrebuildError(
+            'ERR_HARMONY_SIGNING_INVALID',
+            `Harmony signing material field ${field} must reference a regular file.`,
+            { file, operation: 'validate-signing' }
+          );
         }
       } catch (cause) {
         if (cause?.code === 'ERR_HARMONY_SIGNING_INVALID') return Promise.reject(cause);
-        throw new HarmonySigningError(`Cannot read the file referenced by Harmony signing material field ${field}.`, { cause, file });
+
+        throw new HarmonyPrebuildError(
+          'ERR_HARMONY_SIGNING_INVALID',
+          `Cannot read the file referenced by Harmony signing material field ${field}.`,
+          { cause, file, operation: 'validate-signing' }
+        );
       }
-      const serialized = path.relative(harmonyRoot, resolved);
-      if (!serialized || path.isAbsolute(serialized)) {
-        throw new HarmonySigningError(`Harmony signing material field ${field} must be on the same filesystem volume as the project.`, { file });
+
+      const relative = path.relative(harmony, resolved);
+
+      if (!relative || path.isAbsolute(relative)) {
+        throw new HarmonyPrebuildError(
+          'ERR_HARMONY_SIGNING_INVALID',
+          `Harmony signing material field ${field} must be on the same filesystem volume as the project.`,
+          { file, operation: 'validate-signing' }
+        );
       }
-      material[field] = serialized.split(path.sep).join('/');
-      materialFiles[field as MaterialPathField] = resolved;
+
+      material[field] = relative.split(path.sep).join('/');
+      files[field as MaterialPathField] = resolved;
     }
   }
+
   if (material.signAlg !== 'SHA256withECDSA') {
-    throw new HarmonySigningError('Harmony signing material signAlg must be SHA256withECDSA.', { file });
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_SIGNING_INVALID',
+      'Harmony signing material signAlg must be SHA256withECDSA.',
+      { file, operation: 'validate-signing' }
+    );
   }
 
   return {
     config: {
-      ...selected,
-      name: selected.name.trim(),
+      ...config,
+      name: config.name.trim(),
       type: 'HarmonyOS',
       material,
     },
     file,
-    materialFiles,
+    materialFiles: files,
   };
 }
 
-async function validateHarmonySigningConfigFile(projectRoot: string, reference: string): Promise<HarmonySigningConfig> {
-  const result = await readSigningConfigFile(projectRoot, reference);
+async function validateHarmonySigningConfigFile(root: string, reference: string): Promise<HarmonySigningConfig> {
+  const signing = await readSigningConfigFile(root, reference);
 
   return {
-    file: result.file,
-    materialFiles: result.materialFiles,
-    name: result.config.name,
-    type: result.config.type,
+    file: signing.file,
+    materialFiles: signing.materialFiles,
+    name: signing.config.name,
+    type: signing.config.type,
   };
 }
 
