@@ -1,7 +1,7 @@
 import type { InputConfigT } from 'metro-config';
 
 import { HarmonyPlatform } from './constants';
-import { HarmonyMetroTypeError } from './errors';
+import { ExpoHarmonyMetroError } from './errors';
 import type { BootstrapModules, PathNormalizer } from './runtime';
 
 type MetroSerializer = NonNullable<InputConfigT['serializer']>;
@@ -32,7 +32,7 @@ export function composeSerializer(
     composed.getPolyfills = function getHarmonyPolyfills(options) {
       const polyfills = typeof getPolyfills === 'function' ? getPolyfills.call(this, options) : [];
       if (!Array.isArray(polyfills)) {
-        throw new HarmonyMetroTypeError(
+        throw new ExpoHarmonyMetroError(
           'ERR_EXPO_HARMONY_INVALID_BOOTSTRAP',
           'A Metro serializer getPolyfills hook returned a non-array value; '
           + 'the required Harmony runtime installer cannot be preserved.'
@@ -50,7 +50,7 @@ export function composeSerializer(
       for (const hook of moduleHooks) {
         const result = hook.call(this, entryFilePath);
         if (!Array.isArray(result)) {
-          throw new HarmonyMetroTypeError(
+          throw new ExpoHarmonyMetroError(
             'ERR_EXPO_HARMONY_INVALID_BOOTSTRAP',
             'A Metro serializer getModulesRunBeforeMainModule hook returned a non-array value; '
             + 'the required Harmony bootstrap cannot be preserved.'

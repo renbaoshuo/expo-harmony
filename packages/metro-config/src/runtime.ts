@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
-import { HarmonyMetroError } from './errors';
+import { ExpoHarmonyMetroError } from './errors';
 
 export type PathNormalizer = (file: string) => string;
 
@@ -34,7 +34,11 @@ function isFile(file: string): boolean {
     const code = getErrorCode(cause);
     if (code === 'ENOENT' || code === 'ENOTDIR') return false;
 
-    throw new Error(`Failed to inspect ${file}.`, { cause });
+    throw new ExpoHarmonyMetroError(
+      'ERR_EXPO_HARMONY_FS_ERROR',
+      `Failed to inspect ${file}.`,
+      { cause }
+    );
   }
 }
 
@@ -44,7 +48,11 @@ function getPackageRoot(packageName: string, projectRoot: string): string | null
   } catch (cause) {
     const code = getErrorCode(cause);
     if (code !== 'MODULE_NOT_FOUND' && code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
-      throw new Error(`Failed to resolve ${packageName} from ${projectRoot}.`, { cause });
+      throw new ExpoHarmonyMetroError(
+        'ERR_EXPO_HARMONY_RESOLVE_ERROR',
+        `Failed to resolve ${packageName} from ${projectRoot}.`,
+        { cause }
+      );
     }
 
     return null;
@@ -86,19 +94,19 @@ export function createHarmonyPathNormalizer(harmonyPackage: string, projectRoot:
 }
 
 export function getBootstrapModules(harmonyPackage: string, projectRoot: string): BootstrapModules {
-  const reactNativeHarmonyRoot = getPackageRoot(harmonyPackage, projectRoot);
-  const expoModulesCoreRoot = getPackageRoot('@expo-harmony/expo-modules-core', projectRoot);
+  const harmonyRoot = getPackageRoot(harmonyPackage, projectRoot);
+  const coreRoot = getPackageRoot('@expo-harmony/expo-modules-core', projectRoot);
   const expoRoot = getPackageRoot('expo', projectRoot);
-  const metroRuntimeRoot = getPackageRoot('@expo/metro-runtime', projectRoot);
+  const runtimeRoot = getPackageRoot('@expo/metro-runtime', projectRoot);
   const packages: [string, string | null][] = [
-    [harmonyPackage, reactNativeHarmonyRoot],
-    ['@expo-harmony/expo-modules-core', expoModulesCoreRoot],
+    [harmonyPackage, harmonyRoot],
+    ['@expo-harmony/expo-modules-core', coreRoot],
     ['expo', expoRoot],
-    ['@expo/metro-runtime', metroRuntimeRoot],
+    ['@expo/metro-runtime', runtimeRoot],
   ];
   const missingPackage = packages.find(([, root]) => root === null);
   if (missingPackage) {
-    throw new HarmonyMetroError(
+    throw new ExpoHarmonyMetroError(
       'ERR_EXPO_HARMONY_MISSING_BOOTSTRAP',
       `@expo-harmony/metro-config cannot compose the Harmony bootstrap because `
       + `${missingPackage[0]} is not resolvable from ${projectRoot}.`
@@ -106,14 +114,14 @@ export function getBootstrapModules(harmonyPackage: string, projectRoot: string)
   }
 
   const files = {
-    runtimeInstaller: path.join(expoModulesCoreRoot!, 'install-runtime.js'),
-    initializeCore: path.join(reactNativeHarmonyRoot!, 'Libraries/Core/InitializeCore.js'),
+    runtimeInstaller: path.join(coreRoot!, 'install-runtime.js'),
+    initializeCore: path.join(harmonyRoot!, 'Libraries/Core/InitializeCore.js'),
     expoWinter: path.join(expoRoot!, 'src/winter/index.ts'),
-    metroRuntime: path.join(metroRuntimeRoot!, 'src/index.ts'),
+    metroRuntime: path.join(runtimeRoot!, 'src/index.ts'),
   };
   const missingFile = Object.entries(files).find(([, file]) => !isFile(file));
   if (missingFile) {
-    throw new HarmonyMetroError(
+    throw new ExpoHarmonyMetroError(
       'ERR_EXPO_HARMONY_MISSING_BOOTSTRAP',
       `@expo-harmony/metro-config cannot compose the Harmony bootstrap because `
       + `${missingFile[0]} is missing at ${missingFile[1]}.`

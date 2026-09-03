@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 
 import type { InputConfigT } from 'metro-config';
 
 import { HarmonyPlatform } from './constants';
+import { ExpoHarmonyMetroError } from './errors';
 import type { PathNormalizer } from './runtime';
 
 type MetroResolver = NonNullable<NonNullable<InputConfigT['resolver']>['resolveRequest']>;
@@ -88,7 +90,15 @@ interface ResolverOptions {
 }
 
 const NoResolution = Symbol('NoResolution');
-const DirectoryHarmonyAliases = new Map<string, string | null>();
+interface OriginPackage {
+  harmonyAlias: string | null;
+  name: string | null;
+}
+const DirectoryOriginPackages = new Map<string, OriginPackage | null>();
+function getExpoNativeViewManagerAdapterPath(projectRoot: string): string {
+  const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
+  return projectRequire.resolve('@expo-harmony/expo-modules-core/NativeViewManagerAdapter.js');
+}
 
 function getPackageName(moduleName: string): string | null {
   if (moduleName.startsWith('.') || moduleName.startsWith('/')) return null;
@@ -101,14 +111,14 @@ function getPackageName(moduleName: string): string | null {
   return parts[0] || null;
 }
 
-function getOriginHarmonyAlias(originModulePath: string): string | null {
+function getOriginPackage(originModulePath: string): OriginPackage | null {
   let directory = path.dirname(originModulePath);
   const visited: string[] = [];
 
   while (true) {
-    const cached = DirectoryHarmonyAliases.get(directory);
+    const cached = DirectoryOriginPackages.get(directory);
     if (cached !== undefined) {
-      visited.forEach(item => DirectoryHarmonyAliases.set(item, cached));
+      visited.forEach(item => DirectoryOriginPackages.set(item, cached));
       return cached;
     }
 
@@ -118,16 +128,20 @@ function getOriginHarmonyAlias(originModulePath: string): string | null {
     if (fs.existsSync(manifestPath)) {
       try {
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+          name?: unknown;
           harmony?: { alias?: unknown };
         };
-        const alias = typeof manifest.harmony?.alias === 'string'
-          ? manifest.harmony.alias
-          : null;
+        const originPackage: OriginPackage = {
+          harmonyAlias: typeof manifest.harmony?.alias === 'string'
+            ? manifest.harmony.alias
+            : null,
+          name: typeof manifest.name === 'string' ? manifest.name : null,
+        };
 
-        visited.forEach(item => DirectoryHarmonyAliases.set(item, alias));
-        return alias;
+        visited.forEach(item => DirectoryOriginPackages.set(item, originPackage));
+        return originPackage;
       } catch {
-        visited.forEach(item => DirectoryHarmonyAliases.set(item, null));
+        visited.forEach(item => DirectoryOriginPackages.set(item, null));
         return null;
       }
     }
@@ -138,15 +152,23 @@ function getOriginHarmonyAlias(originModulePath: string): string | null {
     directory = parent;
   }
 
-  visited.forEach(item => DirectoryHarmonyAliases.set(item, null));
+  visited.forEach(item => DirectoryOriginPackages.set(item, null));
   return null;
+}
+
+function isExpoNativeViewManagerAdapterRequest(
+  context: HarmonyResolutionContext,
+  moduleName: string
+): boolean {
+  return moduleName === './NativeViewManagerAdapter'
+    && getOriginPackage(context.originModulePath)?.name === 'expo-modules-core';
 }
 
 function isUpstreamAliasRequest(request: HarmonyResolverRequest): boolean {
   const packageName = getPackageName(request.moduleName);
   if (!packageName) return false;
 
-  return packageName === getOriginHarmonyAlias(request.context.originModulePath);
+  return packageName === getOriginPackage(request.context.originModulePath)?.harmonyAlias;
 }
 
 export function getEntries<T = unknown>(value: unknown, name: string): [string, T][] {
@@ -157,7 +179,7 @@ export function getEntries<T = unknown>(value: unknown, name: string): [string, 
   }
 
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new TypeError(`${name} must be an object.`);
+    throw new ExpoHarmonyMetroError('ERR_EXPO_HARMONY_INVALID_OPTIONS', `${name} must be an object.`);
   }
 
   return Object.entries(value) as [string, T][];
@@ -180,7 +202,10 @@ function matchesModule(matcher: HarmonyModuleMatcher, request: HarmonyResolverRe
 
   if (typeof matcher === 'function') return matcher(request);
 
-  throw new TypeError('emptyModules entries must be strings, regular expressions, or functions.');
+  throw new ExpoHarmonyMetroError(
+    'ERR_EXPO_HARMONY_INVALID_OPTIONS',
+    'emptyModules entries must be strings, regular expressions, or functions.'
+  );
 }
 
 function getRedirect(collection: HarmonyResolverOptions['redirects'], moduleName: string): HarmonyRedirect | typeof NoResolution {
@@ -213,7 +238,10 @@ function resolveTarget(target: HarmonyRedirect, req: HarmonyResolverRequest): Ha
   if (typeof result === 'string') return req.resolve(result);
   if (typeof result === 'object') return result;
 
-  throw new TypeError('A resolver hook must return a Metro resolution, a module name, false, null, or undefined.');
+  throw new ExpoHarmonyMetroError(
+    'ERR_EXPO_HARMONY_INVALID_REDIRECT',
+    'A resolver hook must return a Metro resolution, a module name, false, null, or undefined.'
+  );
 }
 
 function resolveConfiguredRequest(
@@ -273,6 +301,16 @@ export function createResolver({
     };
 
     if (platform !== HarmonyPlatform) return resolveBase(moduleName, platform);
+
+    // Expo's public JS API stays unchanged. Harmony uses one generic Fabric
+    // component and routes the module/view identity through internal props, so
+    // module names can remain authored exclusively in ModuleDefinition code.
+    if (isExpoNativeViewManagerAdapterRequest(context, moduleName)) {
+      return {
+        type: 'sourceFile',
+        filePath: getExpoNativeViewManagerAdapterPath(projectRoot),
+      };
+    }
 
     const resolveHarmony = (
       targetModuleName: string = moduleName,

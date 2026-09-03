@@ -1,6 +1,7 @@
 import type { InputConfigT } from 'metro-config';
 
 import { DefaultReactNativeHarmonyPackage, HarmonyPlatform } from './constants';
+import { ExpoHarmonyMetroError } from './errors';
 import { createResolver, getEntries, type HarmonyResolverOptions } from './resolver';
 import { createHarmonyPathNormalizer, getBootstrapModules } from './runtime';
 import { composeSerializer } from './serializer';
@@ -58,7 +59,7 @@ const ExpoVirtualEntryPath = '/.expo/.virtual-metro-entry.bundle';
 
 function assertObject(value: unknown, name: string): asserts value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new TypeError(`${name} must be an object.`);
+    throw new ExpoHarmonyMetroError('ERR_EXPO_HARMONY_INVALID_OPTIONS', `${name} must be an object.`);
   }
 }
 
@@ -66,41 +67,66 @@ function validateOptions(value: unknown): asserts value is WithHarmonyConfigOpti
   assertObject(value, 'options');
 
   if (value.resolveRequest !== undefined && typeof value.resolveRequest !== 'function') {
-    throw new TypeError('options.resolveRequest must be a function.');
+    throw new ExpoHarmonyMetroError(
+      'ERR_EXPO_HARMONY_INVALID_OPTIONS',
+      'options.resolveRequest must be a function.'
+    );
   }
+
   if (value.emptyModules !== undefined && !Array.isArray(value.emptyModules)) {
-    throw new TypeError('options.emptyModules must be an array.');
+    throw new ExpoHarmonyMetroError(
+      'ERR_EXPO_HARMONY_INVALID_OPTIONS',
+      'options.emptyModules must be an array.'
+    );
   }
   if (Array.isArray(value.emptyModules)
     && value.emptyModules.some(matcher => typeof matcher !== 'string' && !(matcher instanceof RegExp) && typeof matcher !== 'function')) {
-    throw new TypeError('options.emptyModules entries must be strings, regular expressions, or functions.');
+    throw new ExpoHarmonyMetroError(
+      'ERR_EXPO_HARMONY_INVALID_OPTIONS',
+      'options.emptyModules entries must be strings, regular expressions, or functions.'
+    );
   }
 
   if (value.conditions !== undefined
     && (!Array.isArray(value.conditions)
       || value.conditions.some(condition => typeof condition !== 'string'))) {
-    throw new TypeError('options.conditions must be an array of strings.');
+    throw new ExpoHarmonyMetroError(
+      'ERR_EXPO_HARMONY_INVALID_OPTIONS',
+      'options.conditions must be an array of strings.'
+    );
   }
 
   for (const [alias, target] of getEntries(value.aliases, 'options.aliases')) {
     if (typeof alias !== 'string' || typeof target !== 'string') {
-      throw new TypeError('options.aliases must map strings to strings.');
+      throw new ExpoHarmonyMetroError(
+        'ERR_EXPO_HARMONY_INVALID_OPTIONS',
+        'options.aliases must map strings to strings.'
+      );
     }
   }
 
   for (const [moduleName, target] of getEntries(value.redirects, 'options.redirects')) {
     if (typeof moduleName !== 'string') {
-      throw new TypeError('options.redirects keys must be strings.');
+      throw new ExpoHarmonyMetroError(
+        'ERR_EXPO_HARMONY_INVALID_OPTIONS',
+        'options.redirects keys must be strings.'
+      );
     }
     if (!['string', 'function', 'object', 'undefined'].includes(typeof target) && target !== false) {
-      throw new TypeError(`Unsupported redirect target for "${moduleName}".`);
+      throw new ExpoHarmonyMetroError(
+        'ERR_EXPO_HARMONY_INVALID_REDIRECT',
+        `Unsupported redirect target for "${moduleName}".`
+      );
     }
   }
 
   if (value.env !== undefined && value.env !== false) {
-    for (const [name, envValue] of getEntries(value.env, 'options.env')) {
-      if (typeof envValue !== 'string') {
-        throw new TypeError(`options.env["${name}"] must be a string.`);
+    for (const [name, entry] of getEntries(value.env, 'options.env')) {
+      if (typeof entry !== 'string') {
+        throw new ExpoHarmonyMetroError(
+          'ERR_EXPO_HARMONY_INVALID_OPTIONS',
+          `options.env["${name}"] must be a string.`
+        );
       }
     }
   }
@@ -124,7 +150,7 @@ function wrapRequestUrl(
     // RNOH requests index.bundle by convention. Expo's native clients request
     // this virtual entry so Metro can resolve package.json "main" correctly.
     if (url.pathname === '/index.bundle' && url.searchParams.get('platform') === HarmonyPlatform) {
-      url.pathname = ExpoVirtualEntryPath;
+      url = new URL(`${ExpoVirtualEntryPath}${url.search}${url.hash}`, url);
       requestUrl = relative ? `${url.pathname}${url.search}${url.hash}` : url.toString();
     }
 
@@ -168,7 +194,10 @@ export function createWithHarmonyConfig({
   mergeConfig,
 }: ConfigFactories) {
   if (typeof createHarmonyMetroConfig !== 'function' || typeof mergeConfig !== 'function') {
-    throw new TypeError('createWithHarmonyConfig requires Metro configuration functions.');
+    throw new ExpoHarmonyMetroError(
+      'ERR_EXPO_HARMONY_INVALID_FACTORIES',
+      'createWithHarmonyConfig requires Metro configuration functions.'
+    );
   }
 
   return function withHarmonyConfig<T extends InputConfigT>(
@@ -189,11 +218,14 @@ export function createWithHarmonyConfig({
     const baseResolver = config.resolver?.resolveRequest;
     const harmonyResolver = mergedConfig.resolver?.resolveRequest;
     if (typeof harmonyResolver !== 'function') {
-      throw new TypeError('createHarmonyMetroConfig() did not return a resolver.resolveRequest function.');
+      throw new ExpoHarmonyMetroError(
+        'ERR_EXPO_HARMONY_INCOMPATIBLE_PEER_DEPENDENCY',
+        'createHarmonyMetroConfig() did not return a resolver.resolveRequest function.'
+      );
     }
 
     const conditions = options.conditions ?? ['harmony', 'react-native'];
-    const existingConditions = mergedConfig.resolver?.unstable_conditionsByPlatform?.[HarmonyPlatform] ?? [];
+    const existing = mergedConfig.resolver?.unstable_conditionsByPlatform?.[HarmonyPlatform] ?? [];
     const blockList = mergeBlockLists(config.resolver?.blockList, harmonyConfig.resolver?.blockList);
     const projectRoot = options.projectRoot ?? mergedConfig.projectRoot ?? process.cwd();
     const normalizePath = createHarmonyPathNormalizer(harmonyPackage, projectRoot);
@@ -226,7 +258,7 @@ export function createWithHarmonyConfig({
         ])],
         unstable_conditionsByPlatform: {
           ...mergedConfig.resolver?.unstable_conditionsByPlatform,
-          [HarmonyPlatform]: [...new Set([...existingConditions, ...conditions])],
+          [HarmonyPlatform]: [...new Set([...existing, ...conditions])],
         },
         resolveRequest: createResolver({
           baseResolver,

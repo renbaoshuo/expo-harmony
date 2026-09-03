@@ -10,7 +10,7 @@ import {
   type MergeConfig,
   type WithHarmonyConfigOptions,
 } from './createWithHarmonyConfig';
-import { HarmonyMetroError } from './errors';
+import { ExpoHarmonyMetroError } from './errors';
 
 interface MetroConfigPeer {
   mergeConfig?: MergeConfig;
@@ -28,7 +28,7 @@ function loadPeer<T>(projectRequire: NodeRequire, moduleName: string): T {
   try {
     return projectRequire(moduleName) as T;
   } catch (cause) {
-    throw new HarmonyMetroError(
+    throw new ExpoHarmonyMetroError(
       'ERR_EXPO_HARMONY_MISSING_PEER_DEPENDENCY',
       `@expo-harmony/metro-config could not load its peer dependency "${moduleName}". `
       + 'Install it in the app that owns the Metro configuration.',
@@ -56,14 +56,14 @@ function getImplementation(projectRoot: string, harmonyPackage: string): WithHar
   const harmony = loadPeer<HarmonyMetroConfigPeer>(projectRequire, `${harmonyPackage}/metro.config`);
 
   if (typeof metro.mergeConfig !== 'function') {
-    throw new HarmonyMetroError(
+    throw new ExpoHarmonyMetroError(
       'ERR_EXPO_HARMONY_INCOMPATIBLE_PEER_DEPENDENCY',
       '@expo-harmony/metro-config requires metro-config to expose mergeConfig(); '
       + `the project resolved version ${getPeerVersion(projectRequire, 'metro-config')}.`
     );
   }
   if (typeof harmony.createHarmonyMetroConfig !== 'function') {
-    throw new HarmonyMetroError(
+    throw new ExpoHarmonyMetroError(
       'ERR_EXPO_HARMONY_INCOMPATIBLE_PEER_DEPENDENCY',
       `@expo-harmony/metro-config requires ${harmonyPackage} to expose `
       + 'the /metro.config createHarmonyMetroConfig() export; '
