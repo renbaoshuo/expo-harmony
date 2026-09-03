@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-modules-core",
-  "version": "55.0.25-harmony.0",
+  "version": "55.0.25-harmony.1",
   "description": "HarmonyOS native runtime for Expo Modules Core",
   "main": "Index.ets",
   "author": "Baoshuo",
