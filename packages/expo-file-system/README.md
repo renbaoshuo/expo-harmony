@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-file-system)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo FileSystem 的原生实现，用于读写和管理文件与目录，并支持文件选择、下载和上传，与官方同版本的 expo-file-system 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo FileSystem 的原生实现，与官方同版本的 `expo-file-system` 配套使用。
 
 ## Author
 

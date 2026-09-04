@@ -1,1 +1,1 @@
-export { ExpoFileSystemPackage as default, ExpoFileSystemPackage } from './src/main/ets/ExpoFileSystemPackage';
+export { ExpoFileSystemModule, ExponentFileSystemModule } from './src/main/ets/ExpoFileSystemModule';

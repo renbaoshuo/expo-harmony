@@ -1,12 +1,14 @@
 {
   "modelVersion": "5.0.0",
   "name": "expo-file-system-harmony",
-  "version": "55.0.24-harmony.0",
+  "version": "55.0.24-harmony.1",
   "license": "MIT",
   "dependencies": {
     "@expo-harmony/expo-file-system": "./library"
   },
   "overrides": {
+    "@ppd/ffrt": "1.1.5",
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.1",
     "@rnoh/react-native-openharmony": "0.84.1"
   }
 }
