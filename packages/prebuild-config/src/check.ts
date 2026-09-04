@@ -301,6 +301,7 @@ async function canonicalizeAutolinkingAsync(
       ohPackageSource: ohpm,
       generatedProjectRoot: generatedRoot,
       canonicalProjectRoot: projectRoot,
+      harmonyProjectPath: resolveHarmonyBuildPath(projectRoot, cng.build.harmonyRoot),
     });
     const manifestHash = hashSha256(result.manifestSource);
     const ohpmHash = hashSha256(result.ohPackageSource);

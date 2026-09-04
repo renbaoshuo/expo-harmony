@@ -76,6 +76,8 @@ function createPackagePathNormalizer(
       if (markerIndex < 0) continue;
       const suffix = file.slice(markerIndex + marker.length);
       if (suffix.length > 0 && !suffix.startsWith(path.sep)) continue;
+      // Nested dependencies belong to their own package, not to the aliased runtime.
+      if (suffix.includes(`${path.sep}node_modules${path.sep}`)) continue;
 
       return path.join(packageRoot, suffix);
     }

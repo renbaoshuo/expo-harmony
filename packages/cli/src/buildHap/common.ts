@@ -124,7 +124,7 @@ async function ensureGeneratedProjectAsync(
     return;
   }
   progress(options, 'Checking CNG ownership and drift');
-  const check = await timed(steps, 'cngCheck', () => checkAsync(projectRoot));
+  const check = await timed(steps, 'cngCheck', () => checkAsync(projectRoot, { buildType: options.variant }));
   if (!check.clean) {
     const summary = check.changes.slice(0, 8).map(change => `${change.type}:${change.path}`).join(', ');
     throw new HarmonyCliError(

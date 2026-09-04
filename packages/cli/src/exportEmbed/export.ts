@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -118,12 +119,20 @@ async function exportEmbedUnlockedAsync(
         fs.promises.readFile(temporary.metroSourceMap, 'utf8'),
       ]);
       const buildHermesBundleAsync = resolveExpoHermesBuilder(projectRoot);
+      // Expo resolves hermes-compiler from react-native. For Harmony, resolve it
+      // from RNOH instead of the app's Android/iOS React Native installation.
+      const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
+      const harmonyRuntime = path.dirname(projectRequire.resolve('@react-native-oh/react-native-harmony/package.json'));
+      const compilerModules = path.join(temporaryRoot, 'node_modules');
+      await fs.promises.mkdir(compilerModules);
+      await fs.promises.symlink(harmonyRuntime, path.join(compilerModules, 'react-native'),
+        process.platform === 'win32' ? 'junction' : 'dir');
       const output = await buildHermesBundleAsync({
         code,
         filename: entryFile,
         map,
         minify: true,
-        projectRoot,
+        projectRoot: temporaryRoot,
       });
 
       if (!(output?.hbc instanceof Uint8Array) || typeof output.sourcemap !== 'string') {

@@ -139,6 +139,7 @@ export interface CanonicalizeAutolinkingArtifactsOptions {
   readonly ohPackageSource: string;
   readonly generatedProjectRoot: string;
   readonly canonicalProjectRoot: string;
+  readonly harmonyProjectPath?: string;
 }
 
 export interface CanonicalizedAutolinkingArtifacts {

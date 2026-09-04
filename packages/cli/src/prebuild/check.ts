@@ -27,6 +27,10 @@ const IgnoredHarmonyGeneratedDirectories = new Set([
   'oh_modules',
 ]);
 
+interface CheckOptions {
+  buildType?: 'debug' | 'release';
+}
+
 function mirrorRoot(temp, project) {
   const absolute = path.resolve(project);
   const parsed = path.parse(absolute);
@@ -128,7 +132,7 @@ async function copyAsync(
   await stageAsync(project, target, temp);
 }
 
-async function checkUnlockedAsync(project) {
+async function checkUnlockedAsync(project, options: CheckOptions) {
   project = path.resolve(project);
   const plan = await resolveHarmonyBuildPlanAsync(project);
   const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'expo-harmony-check-'));
@@ -153,6 +157,7 @@ async function checkUnlockedAsync(project) {
       env: {
         ...process.env,
         ...packed.env,
+        ...(options.buildType ? { EXPO_HARMONY_BUILD_TYPE: options.buildType } : {}),
         EXPO_HARMONY_CHECK_MIRROR_ROOT: temp,
       },
       operation: 'check-prebuild',
@@ -173,11 +178,11 @@ async function checkUnlockedAsync(project) {
   }
 }
 
-async function checkAsync(project) {
+async function checkAsync(project, options: CheckOptions = {}) {
   return withHarmonyProjectLockAsync(
     project,
     'prebuild-check',
-    () => checkUnlockedAsync(project)
+    () => checkUnlockedAsync(project, options)
   );
 }
 

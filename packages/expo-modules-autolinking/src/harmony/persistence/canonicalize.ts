@@ -140,7 +140,7 @@ function canonicalizeAutolinkingArtifacts(
   const canonicalOhpm = canonicalizeOhpmManifest(
     options.ohPackageSource,
     canonicalManifest.manifest,
-    { requireManagedEntries: true }
+    { requireManagedEntries: true, harmonyProjectPath: options.harmonyProjectPath }
   );
 
   return {
