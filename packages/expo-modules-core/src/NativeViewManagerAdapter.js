@@ -2,9 +2,7 @@
 
 const React = require('react');
 const ReactNative = require('react-native');
-const NativeComponentRegistry = require(
-  'react-native/Libraries/NativeComponent/NativeComponentRegistry'
-);
+const NativeComponentRegistry = require('react-native/Libraries/NativeComponent/NativeComponentRegistry');
 
 const EXPO_VIEW_COMPONENT_NAME = 'ViewManagerAdapter_ExpoModulesCore';
 const nativeComponentsCache = new Map();
@@ -62,9 +60,7 @@ function requireExpoViewComponent(moduleName, viewName) {
   const nativeComponent = NativeComponentRegistry.get(registryName, () => {
     const viewConfig = getExpoGlobal()?.getViewConfig?.(moduleName, viewName);
     if (!viewConfig) {
-      throw new Error(
-        `Unable to get the view config for ${viewName ?? 'default view'} from module ${moduleName}.`
-      );
+      throw new Error(`Unable to get the view config for ${viewName ?? 'default view'} from module ${moduleName}.`);
     }
 
     return {
@@ -82,7 +78,6 @@ function requireExpoViewComponent(moduleName, viewName) {
   return nativeComponent;
 }
 
-/** Harmony implementation of Expo's public requireNativeViewManager API. */
 function requireNativeViewManager(moduleName, viewName) {
   ensureNativeModulesAreInstalled();
   const ReactNativeComponent = requireExpoViewComponent(moduleName, viewName);

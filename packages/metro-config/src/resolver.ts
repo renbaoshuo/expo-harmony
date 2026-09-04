@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
 
 import type { InputConfigT } from 'metro-config';
 
@@ -95,10 +94,6 @@ interface OriginPackage {
   name: string | null;
 }
 const DirectoryOriginPackages = new Map<string, OriginPackage | null>();
-function getExpoNativeViewManagerAdapterPath(projectRoot: string): string {
-  const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
-  return projectRequire.resolve('@expo-harmony/expo-modules-core/NativeViewManagerAdapter.js');
-}
 
 function getPackageName(moduleName: string): string | null {
   if (moduleName.startsWith('.') || moduleName.startsWith('/')) return null;
@@ -154,14 +149,6 @@ function getOriginPackage(originModulePath: string): OriginPackage | null {
 
   visited.forEach(item => DirectoryOriginPackages.set(item, null));
   return null;
-}
-
-function isExpoNativeViewManagerAdapterRequest(
-  context: HarmonyResolutionContext,
-  moduleName: string
-): boolean {
-  return moduleName === './NativeViewManagerAdapter'
-    && getOriginPackage(context.originModulePath)?.name === 'expo-modules-core';
 }
 
 function isUpstreamAliasRequest(request: HarmonyResolverRequest): boolean {
@@ -301,16 +288,6 @@ export function createResolver({
     };
 
     if (platform !== HarmonyPlatform) return resolveBase(moduleName, platform);
-
-    // Expo's public JS API stays unchanged. Harmony uses one generic Fabric
-    // component and routes the module/view identity through internal props, so
-    // module names can remain authored exclusively in ModuleDefinition code.
-    if (isExpoNativeViewManagerAdapterRequest(context, moduleName)) {
-      return {
-        type: 'sourceFile',
-        filePath: getExpoNativeViewManagerAdapterPath(projectRoot),
-      };
-    }
 
     const resolveHarmony = (
       targetModuleName: string = moduleName,
