@@ -7,6 +7,7 @@ const path = require('node:path');
 const { createRunOncePlugin } = require('@expo/config-plugins');
 const {
   HarmonyConfigPluginError,
+  atomicWrite,
   recordManagedFile,
   registerHarmonyConfigPlugin,
   stableHarmonyJson,
@@ -105,7 +106,7 @@ function fontEntries(config, props) {
 
       if (face.weight !== undefined || face.style !== undefined) {
         throw new ExpoFontPluginError(
-          `Font family '${font.fontFamily}' uses weight/style variants, but RNOH 0.84.1 only provides one registered face per family. Use a distinct fontFamily for each Harmony face.`
+          `Font family '${font.fontFamily}' uses weight/style variants, but the Harmony font registry currently supports one face per family. Use a distinct fontFamily for each Harmony face.`
         );
       }
 
@@ -146,7 +147,10 @@ async function expandFontEntriesAsync(root, entries) {
 
       for (const child of children) {
         const file = path.join(source, child.name);
-        fonts.push({ family: fontFamilyFromFilename(file), source: file });
+        fonts.push({
+          family: fontFamilyFromFilename(file),
+          source: await fs.promises.realpath(file),
+        });
       }
 
       continue;
@@ -158,10 +162,22 @@ async function expandFontEntriesAsync(root, entries) {
       });
     }
 
-    fonts.push({ ...font, family: font.family ?? fontFamilyFromFilename(source), source });
+    fonts.push({
+      ...font,
+      family: font.family ?? fontFamilyFromFilename(source),
+      source: await fs.promises.realpath(source),
+    });
   }
 
-  return fonts;
+  const unique = new Map();
+  for (const font of fonts) {
+    const key = `${font.family}\0${font.source}`;
+    if (!unique.has(key)) unique.set(key, font);
+  }
+  return [...unique.values()].sort((left, right) => {
+    return left.family.localeCompare(right.family, 'en')
+      || left.source.localeCompare(right.source, 'en');
+  });
 }
 
 async function writeFontResourcesAsync(project, config, props) {
@@ -175,7 +191,7 @@ async function writeFontResourcesAsync(project, config, props) {
     const source = sources.get(entry.family);
     if (source !== undefined && source !== entry.source) {
       throw new ExpoFontPluginError(
-        `Harmony font family '${entry.family}' resolves to more than one face. RNOH 0.84.1 would silently keep only the last registration; assign distinct family names instead.`,
+        `Harmony font family '${entry.family}' resolves to more than one face. The Harmony registry supports one face per family; assign distinct family names instead.`,
         { file: entry.source }
       );
     }
@@ -184,7 +200,7 @@ async function writeFontResourcesAsync(project, config, props) {
   }
 
   const records = [];
-  for (const [index, entry] of entries.entries()) {
+  for (const entry of entries) {
     const ext = path.extname(entry.source).toLowerCase();
     if (!['.ttf', '.otf'].includes(ext)) {
       throw new ExpoFontPluginError(`Unsupported Harmony font file: ${entry.source}`, {
@@ -199,15 +215,20 @@ async function writeFontResourcesAsync(project, config, props) {
       });
     }
 
-    const hash = createHash('sha256').update(data).digest('hex').slice(0, 16);
+    const digest = createHash('sha256').update(data).digest('hex');
     const stem = entry.family.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-|-$/g, '')
       || 'font';
-    const name = `${stem}-${index}-${hash}${ext}`;
+    const name = `${stem}-${digest.slice(0, 16)}${ext}`;
 
     await fs.promises.mkdir(directory, { recursive: true });
-    await fs.promises.writeFile(path.join(directory, name), data);
+    await atomicWrite(path.join(directory, name), data);
 
-    records.push({ family: entry.family, file: `fonts/${name}` });
+    records.push({
+      family: entry.family,
+      file: `fonts/${name}`,
+      sha256: digest,
+      size: data.length,
+    });
   }
 
   let stale = [];
@@ -225,7 +246,7 @@ async function writeFontResourcesAsync(project, config, props) {
   }
 
   await fs.promises.mkdir(root, { recursive: true });
-  await fs.promises.writeFile(manifest, stableHarmonyJson({ fonts: records }));
+  await atomicWrite(manifest, stableHarmonyJson({ fonts: records }));
 
   const current = new Set(records.map(record => record.file));
   for (const relative of stale) {
@@ -266,6 +287,3 @@ const withHarmonyFonts = (config, props) => {
 };
 
 module.exports = createRunOncePlugin(withHarmonyFonts, pkg.name, pkg.version);
-module.exports.fontEntries = fontEntries;
-module.exports.withHarmonyFonts = withHarmonyFonts;
-module.exports.writeFontResourcesAsync = writeFontResourcesAsync;

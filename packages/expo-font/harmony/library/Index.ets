@@ -1,4 +1,4 @@
 export {
-  ExpoHarmonyExpoFontPackage as default,
-  ExpoHarmonyExpoFontPackage,
+  ExpoFontLoaderModule,
+  ExpoFontUtilsModule,
 } from './src/main/ets/ExpoFontPackage';
