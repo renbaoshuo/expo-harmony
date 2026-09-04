@@ -1,4 +1,1 @@
-export {
-  ExpoLinearGradientPackage as default,
-  ExpoLinearGradientPackage,
-} from './src/main/ets/ExpoLinearGradientPackage';
+export { ExpoLinearGradientModule } from './src/main/ets/ExpoLinearGradientModule';
