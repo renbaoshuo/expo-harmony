@@ -2,13 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-blur)
 
-为 HarmonyOS 上的 React Native 应用提供 `expo-blur` 原生实现。
-
-## 平台说明
-
-- `intensity` 会限制在 `0...100`，并作为 HarmonyOS 原生模糊材质的强度比例；它不是 Android 的像素模糊半径。
-- `tint` 会映射到 HarmonyOS 的原生 `BlurStyle` 与亮色/暗色模式。
-- `blurMethod`、`blurReductionFactor`、`blurTarget` 是上游 `expo-blur` 标注的 Android 专属能力，在 HarmonyOS 上不生效。
+为 HarmonyOS 上的 React Native 应用提供 `expo-blur` 的原生实现，与官方同版本的 `expo-blur` 配套使用。
 
 ## Author
 
