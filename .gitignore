@@ -22,5 +22,25 @@ oh-package-lock.json5
 *.app
 *.hsp
 
-# local build artifacts
-local/
+# Generated Expo state and native projects at an app root. This deliberately
+# does not match app-local module sources under apps/*/modules/*/harmony.
+apps/*/.expo/
+apps/*/harmony/
+
+# Signing keys, certificates, and provisioning profiles must remain external.
+*.cer
+*.crt
+*.der
+*.jks
+*.key
+*.keystore
+*.mobileprovision
+*.p12
+*.p7b
+*.p7c
+*.p8
+*.pem
+*.pfx
+*.pkcs12
+*.profile
+*.provisionprofile
