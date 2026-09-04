@@ -1,1 +1,4 @@
-export { ExpoCryptoPackage as default, ExpoCryptoPackage } from './src/main/ets/ExpoCryptoPackage';
+export {
+  ExpoCryptoAESModule,
+  ExpoCryptoModule,
+} from './src/main/ets/ExpoCryptoModule';
