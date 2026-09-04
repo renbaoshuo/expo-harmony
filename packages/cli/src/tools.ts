@@ -198,6 +198,24 @@ function resolveHarmonyToolchain(): HarmonyToolchain {
   return { hdc, hvigor, ohpm, sdkHome, toolsRoot };
 }
 
+function resolveHarmonyEmulator(toolchain: HarmonyToolchain): HarmonyTool {
+  if (process.env.HARMONY_EMULATOR) {
+    return { args: [], command: process.env.HARMONY_EMULATOR, source: 'override' };
+  }
+
+  const executable = process.platform === 'win32' ? 'Emulator.exe' : 'Emulator';
+  const roots = [
+    toolchain.toolsRoot,
+    ...(toolchain.sdkHome ? devEcoLayouts(toolchain.sdkHome).map(layout => layout.toolsRoot) : []),
+    ...(process.platform === 'darwin' ? ['/Applications/DevEco-Studio.app/Contents/tools'] : []),
+  ].filter(Boolean);
+  const command = existingFile(roots.map(root => path.join(root, 'emulator', executable)));
+
+  return command
+    ? { args: [], command, source: 'deveco' }
+    : { args: [], command: executable, source: 'path' };
+}
+
 function createHarmonyBuildPlan(
   projectRoot: string,
   build: HarmonyBuildDescriptor,
@@ -279,5 +297,6 @@ async function resolveHarmonyBuildPlanAsync(
 export {
   resolveHarmonyBuildPlanAsync,
   resolveHarmonyBuildPlanIfPresentAsync,
+  resolveHarmonyEmulator,
   resolveHarmonyToolchain,
 };

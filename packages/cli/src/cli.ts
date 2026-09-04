@@ -30,7 +30,7 @@ Options:
                         Select the package manager used by prebuild dependency install
   --skip-dependency-update <packages>
                         Preserve comma-separated dependency versions
-  --device <id-or-name> Select one connected HDC target for run
+  --device <id-or-name> Select an HDC target or start a local emulator by name
   --variant <mode>      Build debug or release (default: debug)
   --no-bundler          Use an already-running Expo Metro server
   --app-id <bundleName>

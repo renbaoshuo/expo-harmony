@@ -108,7 +108,7 @@ npx expo-harmony run \
 常用选项：
 
 - `--variant debug|release`：选择构建模式，默认为 `debug`。Release 构建会先执行生产导出，不启动 Metro。
-- `--device <id-or-name>`：选择 HDC 设备；连接多台设备时必须指定。
+- `--device <id-or-name>`：选择已连接的 HDC 设备，或按完整名称启动本地模拟器，例如 `--device "Pura 90 Pro"`。存在多个候选目标时必须指定。
 - `--port <number>`：设置 Metro 端口及设备反向映射端口，默认为 `8081`。
 - `--no-bundler`：连接已经运行的 Expo Metro，不启动新的服务；端口空闲或被其他进程占用时会报错。不加此选项时，若端口上已有 Metro 在运行则直接复用。
 - `--reset-cache`：Debug 模式下启动 Metro 时清除 Metro 缓存；Release 模式下清除生产导出缓存。
@@ -118,9 +118,13 @@ npx expo-harmony run \
 
 Debug 模式下由 CLI 启动的 Metro 会接管终端输出日志，按 Ctrl+C 退出。
 
+未指定 `--device` 时，优先使用已连接的设备；没有连接的设备时，优先等待正在启动的模拟器，否则自动启动唯一的本地模拟器。存在多个候选模拟器时会列出名称，使用 `--device "模拟器名称"` 选择。通过模拟器名称选择或自动拉起时，等待 HDC 连接并确认该实例开机完成后才继续构建、安装和启动应用，最多等待 120 秒；退出 CLI 或 Metro 后模拟器继续运行。
+
+自动启动需要 DevEco Studio 6.1.0 或更新版本，并已在 Device Manager 中创建模拟器。CLI 按[华为模拟器命令行文档](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/ide-emulator-command-line)调用 `Emulator -list -details` 和 `Emulator -start <name>`，使用 DevEco Studio 配置的实例和镜像路径。启动日志保存在项目的 `.expo/harmony/emulator.log`。若启动失败，请先在 DevEco Studio 中处理首次使用协议或登录要求；文档注明需要登录开发者账号的模拟器版本无法通过命令行启动。
+
 ## 工具链与环境变量
 
-工具链按「环境变量覆盖 → DevEco Studio 安装布局 → PATH」的顺序解析。`HARMONY_HDC`、`HARMONY_OHPM`、`HARMONY_HVIGORW` 和 `HARMONY_NODE` 可覆盖对应工具的路径，SDK 根目录可通过 `DEVECO_SDK_HOME`、`HARMONY_HOME` 或 `OHOS_SDK_HOME` 指定。原生构建回调 CLI 时使用的 Node.js 可通过 `EXPO_HARMONY_NODE` 显式指定。
+工具链按「环境变量覆盖 → DevEco Studio 安装布局 → PATH」的顺序解析。`HARMONY_HDC`、`HARMONY_EMULATOR`、`HARMONY_OHPM`、`HARMONY_HVIGORW` 和 `HARMONY_NODE` 可覆盖对应工具的路径，SDK 根目录可通过 `DEVECO_SDK_HOME`、`HARMONY_HOME` 或 `OHOS_SDK_HOME` 指定。Emulator 同时支持 DevEco Studio 的 `tools/emulator` 和 Command Line Tools 的 `emulator` 布局，仅在需要模拟器时调用。原生构建回调 CLI 时使用的 Node.js 可通过 `EXPO_HARMONY_NODE` 显式指定。
 
 ## Author
 

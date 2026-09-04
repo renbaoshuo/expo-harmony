@@ -11,6 +11,7 @@ import { exportEmbedAsync } from '../exportEmbed/export';
 import type { HarmonyExportManifest } from '../exportEmbed/manifest';
 import {
   resolveHarmonyBuildPlanAsync,
+  resolveHarmonyEmulator,
   resolveHarmonyToolchain,
   type HarmonyBuildPlan,
 } from '../tools';
@@ -126,11 +127,16 @@ async function runHarmonyUnlockedAsync(
   const identity = resolveRunIdentity(plan, normalizedOptions);
   const toolchain = resolveHarmonyToolchain();
 
-  progress(normalizedOptions, 'Selecting a connected Harmony device');
+  progress(normalizedOptions, 'Selecting a Harmony device or emulator');
   const device = await timed(steps, 'device', () => selectDeviceAsync(
     toolchain.hdc,
     normalizedOptions.device,
-    { cwd: plan.harmonyRoot }
+    {
+      cwd: plan.harmonyRoot,
+      emulator: resolveHarmonyEmulator(toolchain),
+      emulatorLogFile: path.join(projectRoot, '.expo', 'harmony', 'emulator.log'),
+      onProgress: message => progress(normalizedOptions, message),
+    }
   ));
 
   let exportManifest: HarmonyExportManifest | null = null;

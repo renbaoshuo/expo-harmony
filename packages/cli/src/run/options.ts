@@ -48,8 +48,8 @@ function parseRunArgs(argv: string[]) {
 
   const device = values.device;
 
-  if (device !== undefined && (!device || device.trim() !== device || device.includes('\0'))) {
-    throw new HarmonyCliError('ERR_HARMONY_CONFIG_INVALID', '--device must be a non-empty HDC id or exact target name.', {
+  if (device !== undefined && (!device || device.trim() !== device || /[\0\r\n]/u.test(device))) {
+    throw new HarmonyCliError('ERR_HARMONY_CONFIG_INVALID', '--device must be a non-empty HDC id or exact emulator name.', {
       operation: 'parse-arguments',
     });
   }
