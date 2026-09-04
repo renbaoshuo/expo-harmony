@@ -1,14 +1,6 @@
 {
   "platforms": ["harmony"],
   "harmony": {
-    "providers": [
-      {
-        "identifier": "expo-network:ExpoNetworkProvider",
-        "header": "ExpoNetworkProvider.h",
-        "className": "expo::harmony::network::ExpoNetworkProvider",
-        "cmakeTargetName": "expo_harmony__expo_network",
-        "debugOnly": false
-      }
-    ]
+    "modules": ["ExpoNetworkModule"]
   }
 }

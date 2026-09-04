@@ -1,1 +1,1 @@
-export { ExpoNetworkPackage as default, ExpoNetworkPackage } from './src/main/ets/ExpoNetworkPackage';
+export { ExpoNetworkModule } from './src/main/ets/ExpoNetworkModule';
