@@ -1,12 +1,13 @@
 {
   "modelVersion": "5.0.0",
   "name": "expo-keep-awake-harmony",
-  "version": "55.0.8-harmony.0",
+  "version": "55.0.8-harmony.1",
   "license": "MIT",
   "dependencies": {
-    "@expo-harmony/expo-keep-awake": "./library"
+    "@expo-harmony/expo-keep-awake": "55.0.8-harmony.1"
   },
   "overrides": {
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.1",
     "@rnoh/react-native-openharmony": "0.84.1"
   }
 }

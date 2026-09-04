@@ -1,1 +1,1 @@
-export { ExpoKeepAwakePackage as default, ExpoKeepAwakePackage } from './src/main/ets/ExpoKeepAwakePackage';
+export { ExpoKeepAwakeModule } from './src/main/ets/ExpoKeepAwakeModule';
