@@ -1,1 +1,1 @@
-export { ExpoAudioPackage as default, ExpoAudioPackage } from './src/main/ets/ExpoAudioPackage';
+export { ExpoAudioModule } from './src/main/ets/ExpoAudioPackage';

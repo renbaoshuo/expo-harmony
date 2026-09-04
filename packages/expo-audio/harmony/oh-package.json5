@@ -1,7 +1,7 @@
 {
   "modelVersion": "5.0.0",
   "name": "expo-audio-harmony",
-  "version": "55.0.14-harmony.0",
+  "version": "55.0.14-harmony.1",
   "license": "MIT",
   "dependencies": {
     "@expo-harmony/expo-audio": "./library"

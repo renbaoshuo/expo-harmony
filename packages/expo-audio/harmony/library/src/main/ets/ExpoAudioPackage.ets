@@ -1,6 +1,14 @@
-import { RNOHPackage } from '@rnoh/react-native-openharmony';
-import type { RNPackageContext, UITurboModuleContext } from '@rnoh/react-native-openharmony';
-import { EXPO_SHARED_OBJECT_EVENT, ExpoPlatformServiceError, ExpoPlatformServiceRegistry } from '@expo-harmony/expo-modules-core';
+import {
+  ExpoFunction,
+  ExpoModule,
+  ExpoModuleContext,
+  ExpoModuleDefinition,
+  ExpoModuleError,
+  ExpoSharedObject,
+  ExpoSharedObjectClassDefinition,
+  ExpoValueType,
+  ExpoValueTypes,
+} from '@expo-harmony/expo-modules-core';
 import { abilityAccessCtrl, Permissions, wantAgent, WantAgent } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { audio } from '@kit.AudioKit';
@@ -23,7 +31,6 @@ import {
   seekTargetMilliseconds,
 } from './ExpoAudioSemantics';
 
-const SERVICE_NAME: string = 'ExpoAudioService';
 const MODULE_NAME: string = 'ExpoAudio';
 const PLAYER_CLASS_NAME: string = 'AudioPlayer';
 const RECORDER_CLASS_NAME: string = 'AudioRecorder';
@@ -32,7 +39,6 @@ const PLAYBACK_STATUS_EVENT: string = 'playbackStatusUpdate';
 const RECORDING_STATUS_EVENT: string = 'recordingStatusUpdate';
 const PLAYLIST_STATUS_EVENT: string = 'playlistStatusUpdate';
 const TRACK_CHANGED_EVENT: string = 'trackChanged';
-const RELEASE_OBJECT_MESSAGE: string = 'EXPO_AUDIO_RELEASE_OBJECT';
 const MICROPHONE_PERMISSION: Permissions = 'ohos.permission.MICROPHONE';
 const BACKGROUND_PLAYBACK_MODE: string = 'audioPlayback';
 const BACKGROUND_RECORDING_MODE: string = 'audioRecording';
@@ -52,10 +58,9 @@ const FILE_URI_PREFIX: string = 'file://';
 const DUCKING_VOLUME: number = 0.5;
 const SOURCE_INITIALIZATION_TIMEOUT_MS: number = 15_000;
 const FILE_CLOSE_ATTEMPTS: number = 3;
-let registered: boolean = false;
+const MAX_DATA_URI_PAYLOAD_BYTES: number = 32 * 1024 * 1024;
 let sequence: number = 0;
 
-type AudioObjectKind = 'player' | 'recorder' | 'playlist';
 type PlaylistLoopMode = 'none' | 'single' | 'all';
 type InterruptionMode = 'mixWithOthers' | 'doNotMix' | 'duckOthers';
 
@@ -155,7 +160,7 @@ interface LockScreenOptionsInput {
   showSeekBackward?: boolean;
 }
 
-class ExpoAudioError extends ExpoPlatformServiceError {
+class ExpoAudioError extends ExpoModuleError {
   constructor(code: string, message: string) {
     super(code, message);
     this.name = 'ExpoAudioError';
@@ -306,33 +311,6 @@ class TrackChangedRecord {
   }
 }
 
-class SharedObjectEventMessage {
-  objectId: number;
-  moduleName: string = MODULE_NAME;
-  className: string;
-  eventName: string;
-  arguments: ESObject[];
-
-  constructor(objectId: number, className: string, eventName: string, payload: ESObject) {
-    this.objectId = objectId;
-    this.className = className;
-    this.eventName = eventName;
-    this.arguments = [payload];
-  }
-}
-
-class SharedObjectEventDispatcher {
-  private readonly context: UITurboModuleContext;
-
-  constructor(context: UITurboModuleContext) {
-    this.context = context;
-  }
-
-  emit(objectId: number, className: string, eventName: string, payload: ESObject): void {
-    this.context.rnInstance.postMessageToCpp(EXPO_SHARED_OBJECT_EVENT, new SharedObjectEventMessage(objectId, className, eventName, payload));
-  }
-}
-
 abstract class OperationQueue {
   private tail: Promise<void> = Promise.resolve();
 
@@ -354,11 +332,16 @@ abstract class OperationQueue {
   protected abstract onScheduledError(label: string, error: Object): void;
 }
 
+interface AudioObjectEventSink {
+  emit(eventName: string, payload: ESObject): void;
+}
+
 interface PlaybackDelegate {
-  readonly context: UITurboModuleContext;
+  readonly context: ExpoModuleContext;
   readonly cacheDir: string;
   takePreloaded(source: AudioSource): Promise<PreparedPlayer | undefined>;
   beforePlay(): Promise<boolean>;
+  playbackUsage(): audio.StreamUsage;
   playbackStateChanged(controller: PlaybackController): void;
   lockScreenStateChanged(controller: AudioPlayerController): void;
   setLockScreenPlayer(controller: AudioPlayerController, active: boolean, metadata?: AudioMetadataInput, options?: LockScreenOptionsInput): void;
@@ -388,20 +371,6 @@ function cleanError(cause: Object): string {
   } catch (_) {
     return 'The HarmonyOS media operation failed.';
   }
-}
-
-function requireObjectId(value: ESObject): number {
-  const id = finiteNumber(value, 0);
-  if (!Number.isSafeInteger(id) || id <= 0) {
-    throw new ExpoAudioError('ERR_AUDIO_INVALID_OBJECT', 'Expo Audio received an invalid SharedObject identifier.');
-  }
-
-  return id;
-}
-
-function requireObjectKind(value: ESObject): AudioObjectKind {
-  if (value === 'player' || value === 'recorder' || value === 'playlist') return value;
-  throw new ExpoAudioError('ERR_AUDIO_INVALID_OBJECT', `Unknown Expo Audio object kind '${String(value)}'.`);
 }
 
 function readSource(value: ESObject): AudioSource | null {
@@ -549,7 +518,7 @@ function openSourceFile(path: string, temporary: boolean): SourceFile {
   }
 }
 
-function openPackagedSource(context: UITurboModuleContext, uri: string): SourceFile {
+function openPackagedSource(context: ExpoModuleContext, uri: string): SourceFile {
   let name: string;
   try {
     name = packagedAudioResourceName(uri);
@@ -619,6 +588,9 @@ function writeDataUri(uri: string, cacheDir: string): string {
   if (payload.length === 0) {
     throw new ExpoAudioError('ERR_AUDIO_INVALID_DATA_URI', 'The audio data URI has an empty payload.');
   }
+  if (payload.length > Math.ceil((MAX_DATA_URI_PAYLOAD_BYTES * 4) / 3) + 4) {
+    throw new ExpoAudioError('ERR_AUDIO_DATA_URI_TOO_LARGE', `HarmonyOS audio data URIs are limited to ${MAX_DATA_URI_PAYLOAD_BYTES} decoded bytes.`);
+  }
 
   let bytes: Uint8Array;
   try {
@@ -646,9 +618,17 @@ function writeDataUri(uri: string, cacheDir: string): string {
     throw new ExpoAudioError('ERR_AUDIO_DATA_URI_WRITE', `The audio data URI could not be cached: ${cleanError(error as Object)}`);
   }
 
-  try {
-    fs.closeSync(file.fd);
-  } catch (_) {}
+  let closed: boolean = false;
+  for (let attempt: number = 0; attempt < FILE_CLOSE_ATTEMPTS && !closed; attempt += 1) {
+    try {
+      fs.closeSync(file.fd);
+      closed = true;
+    } catch (_) {}
+  }
+  if (!closed) {
+    deleteFile(path);
+    throw new ExpoAudioError('ERR_AUDIO_DATA_URI_CLOSE', 'The cached audio data URI file could not be closed safely.');
+  }
 
   return path;
 }
@@ -657,7 +637,7 @@ async function assignSource(
   player: media.AVPlayer,
   source: AudioSource,
   cacheDir: string,
-  context: UITurboModuleContext,
+  context: ExpoModuleContext,
 ): Promise<SourceFile | undefined> {
   const uri = source.uri;
   if (uri === undefined || uri.length === 0) {
@@ -832,8 +812,8 @@ function normalizeLoopMode(value: ESObject): PlaylistLoopMode {
 }
 
 function normalizeInterruptionMode(value: ESObject): InterruptionMode {
-  if (value === 'doNotMix' || value === 'duckOthers') return value;
-  return 'mixWithOthers';
+  if (value === 'mixWithOthers' || value === 'doNotMix' || value === 'duckOthers') return value;
+  throw new ExpoAudioError('ERR_AUDIO_INVALID_INTERRUPTION_MODE', `Unsupported audio interruption mode '${String(value)}'.`);
 }
 
 function nearestLegacySpeed(rate: number): media.PlaybackSpeed {
@@ -876,7 +856,7 @@ abstract class PlaybackController extends OperationQueue {
   readonly objectId: number;
   readonly id: string;
   readonly keepsAudioSessionActive: boolean;
-  protected readonly dispatcher: SharedObjectEventDispatcher;
+  protected readonly dispatcher: AudioObjectEventSink;
   protected readonly delegate: PlaybackDelegate;
   protected player?: media.AVPlayer;
   protected sourceFile?: SourceFile;
@@ -909,7 +889,7 @@ abstract class PlaybackController extends OperationQueue {
     updateInterval: number,
     keepsAudioSessionActive: boolean,
     preferredBufferDuration: number,
-    dispatcher: SharedObjectEventDispatcher,
+    dispatcher: AudioObjectEventSink,
     delegate: PlaybackDelegate,
   ) {
     super();
@@ -942,6 +922,7 @@ abstract class PlaybackController extends OperationQueue {
     return this.bufferingValue;
   }
   get currentTimeSeconds(): number {
+    this.refreshPosition();
     return this.currentTimeMs / 1000;
   }
   get durationSeconds(): number {
@@ -976,104 +957,59 @@ abstract class PlaybackController extends OperationQueue {
     if (observing && eventName === this.statusEventName()) this.emitStatus();
   }
 
-  getProperty(name: string): ESObject {
+  get currentStatus(): ESObject {
     this.refreshPosition();
-
-    if (name === 'id') return this.id;
-    if (name === 'playing') return this.playing;
-    if (name === 'muted') return this.mutedValue;
-    if (name === 'loop') return this.loopValue;
-    if (name === 'paused') return !this.playing;
-    if (name === 'isLoaded') return this.loadedValue;
-    if (name === 'isAudioSamplingSupported') return false;
-    if (name === 'isBuffering') return this.bufferingValue;
-    if (name === 'currentTime') return this.currentTimeSeconds;
-    if (name === 'duration') return this.durationSeconds;
-    if (name === 'volume') return this.volumeValue;
-    if (name === 'playbackRate') return this.rateValue;
-    if (name === 'shouldCorrectPitch') return this.correctPitchValue;
-    if (name === 'currentStatus') return this.statusPayload(false);
-    throw new ExpoAudioError('ERR_AUDIO_UNKNOWN_PROPERTY', `Unknown audio property '${name}'.`);
+    return this.statusPayload(false);
   }
 
-  setProperty(name: string, value: ESObject): void {
-    if (name === 'muted') {
-      this.mutedValue = value === true;
-      this.schedule('set muted', async (): Promise<void> => this.applyVolume());
-      this.emitStatus();
-      return;
-    }
-    if (name === 'loop') {
-      this.loopValue = value === true;
-      this.schedule('set loop', async (): Promise<void> => {
-        if (this.player !== undefined && this.isPreparedState(this.player.state)) this.player.loop = this.loopValue;
-      });
-      this.emitStatus();
-      return;
-    }
-    if (name === 'volume') {
-      this.volumeValue = bounded(finiteNumber(value, 1), 0, 1);
-      this.schedule('set volume', async (): Promise<void> => this.applyVolume());
-      this.emitStatus();
-      return;
-    }
-    if (name === 'shouldCorrectPitch') {
-      if (value === false) {
-        throw new ExpoAudioError(
-          'ERR_AUDIO_PITCH_CORRECTION_UNSUPPORTED',
-          'HarmonyOS AVPlayer does not expose a control for disabling pitch correction.',
-        );
-      }
-
-      this.correctPitchValue = true;
-      this.emitStatus();
-      return;
-    }
-    throw new ExpoAudioError('ERR_AUDIO_READ_ONLY_PROPERTY', `Audio property '${name}' is read-only.`);
+  setMuted(value: boolean): void {
+    this.mutedValue = value;
+    this.schedule('set muted', async (): Promise<void> => this.applyVolume());
+    this.emitStatus();
   }
 
-  callSync(operation: string, args: ESObject[]): ESObject {
-    if (operation === 'play') {
-      this.play();
-      return null;
-    }
-    if (operation === 'pause') {
-      this.pause();
-      return null;
-    }
-    if (operation === 'replace') {
-      const source = readSource(args[0]);
-
-      this.schedule('replace source', async (): Promise<void> => this.replacePlayer(source, this.intendedPlaying));
-
-      return null;
-    }
-    if (operation === 'setPlaybackRate') {
-      this.setPlaybackRate(finiteNumber(args[0], 1));
-      return null;
-    }
-    if (operation === 'setAudioSamplingEnabled') {
-      if (args[0] === true) {
-        throw new ExpoAudioError('ERR_AUDIO_SAMPLING_UNSUPPORTED', 'HarmonyOS AVPlayer does not expose decoded PCM frames for audio sampling.');
-      }
-
-      return null;
-    }
-    if (operation === 'remove') {
-      this.destroy();
-      return null;
-    }
-    throw new ExpoAudioError('ERR_AUDIO_UNKNOWN_METHOD', `Unknown audio method '${operation}'.`);
+  setLooping(value: boolean): void {
+    this.loopValue = value;
+    this.schedule('set loop', async (): Promise<void> => {
+      if (this.player !== undefined && this.isPreparedState(this.player.state)) this.player.loop = this.loopValue;
+    });
+    this.emitStatus();
   }
 
-  async callAsync(operation: string, args: ESObject[]): Promise<ESObject> {
-    if (operation === 'seekTo') {
-      await this.enqueue(async (): Promise<void> => this.seek(finiteNumber(args[0], 0)));
+  setVolume(value: number): void {
+    this.volumeValue = bounded(value, 0, 1);
+    this.schedule('set volume', async (): Promise<void> => this.applyVolume());
+    this.emitStatus();
+  }
 
-      return null;
+  setShouldCorrectPitch(value: boolean): void {
+    if (!value) {
+      throw new ExpoAudioError(
+        'ERR_AUDIO_PITCH_CORRECTION_UNSUPPORTED',
+        'HarmonyOS AVPlayer does not expose a control for disabling pitch correction.',
+      );
     }
 
-    return this.callSync(operation, args);
+    this.correctPitchValue = true;
+    this.emitStatus();
+  }
+
+  replace(source: AudioSource | null): void {
+    this.schedule('replace source', async (): Promise<void> => this.replacePlayer(source, this.intendedPlaying));
+  }
+
+  refreshAudioRendererUsage(): void {
+    this.schedule('replace source', async (): Promise<void> => this.replacePlayer(this.source, this.intendedPlaying));
+  }
+
+  async seekTo(seconds: number): Promise<void> {
+    await this.enqueue(async (): Promise<void> => this.seek(seconds));
+  }
+
+  setAudioSamplingEnabled(enabled: boolean): void {
+    if (enabled) {
+      throw new ExpoAudioError('ERR_AUDIO_SAMPLING_UNSUPPORTED', 'HarmonyOS AVPlayer does not expose decoded PCM frames for audio sampling.');
+    }
   }
 
   play(): void {
@@ -1156,7 +1092,14 @@ abstract class PlaybackController extends OperationQueue {
   }
 
   setPlaybackRate(rate: number): void {
-    this.rateValue = bounded(rate, MIN_PLAYBACK_RATE, MAX_PLAYBACK_RATE);
+    const requested: number = bounded(rate, MIN_PLAYBACK_RATE, MAX_PLAYBACK_RATE);
+    if (!deviceInfo.apiAvailable(20)) {
+      const effective: number = legacySpeedValue(nearestLegacySpeed(requested));
+      if (Math.abs(effective - requested) > 0.000001) {
+        throw new ExpoAudioError('ERR_AUDIO_PLAYBACK_RATE_UNSUPPORTED', `HarmonyOS below API 20 cannot represent playback rate ${requested}.`);
+      }
+    }
+    this.rateValue = requested;
     this.schedule('set playback rate', async (): Promise<void> => this.applyPlaybackRate());
     this.emitStatus();
   }
@@ -1166,6 +1109,7 @@ abstract class PlaybackController extends OperationQueue {
 
     this.destroyed = true;
     this.cancelSuspensions();
+    this.observedEvents.clear();
     this.stopStatusTimer();
 
     this.schedule('release', async (): Promise<void> => {
@@ -1196,7 +1140,7 @@ abstract class PlaybackController extends OperationQueue {
 
     this.refreshPosition();
 
-    this.dispatcher.emit(this.objectId, this.className(), this.statusEventName(), this.statusPayload(finished));
+    this.dispatcher.emit(this.statusEventName(), this.statusPayload(finished));
   }
 
   protected async replacePlayer(source: AudioSource | null, resume: boolean): Promise<void> {
@@ -1249,7 +1193,7 @@ abstract class PlaybackController extends OperationQueue {
           }
 
           next.audioRendererInfo = {
-            usage: audio.StreamUsage.STREAM_USAGE_MUSIC,
+            usage: this.delegate.playbackUsage(),
             rendererFlags: 0,
           };
           await next.prepare();
@@ -1311,6 +1255,19 @@ abstract class PlaybackController extends OperationQueue {
 
     console.error(`Expo Audio ${label} failed for ${this.id}: ${cleanError(error)}`);
 
+    if (
+      label !== 'initialize' &&
+      label !== 'replace source' &&
+      label !== 'change playlist track' &&
+      label !== 'remove current track' &&
+      label !== 'advance after completion' &&
+      label !== 'player state' &&
+      label !== 'player callback'
+    ) {
+      this.emitStatus();
+      return;
+    }
+
     const wasPlaying = this.playing;
     const player = this.player;
     const file = this.sourceFile;
@@ -1332,6 +1289,22 @@ abstract class PlaybackController extends OperationQueue {
   }
 
   private attachPlayerCallbacks(target: media.AVPlayer): void {
+    if (!deviceInfo.apiAvailable(20)) {
+      target.on('audioInterrupt', (event: audio.InterruptEvent): void => {
+        if (this.destroyed || this.player !== target) return;
+        if (event.hintType === audio.InterruptHint.INTERRUPT_HINT_PAUSE) {
+          this.suspendForInterruption();
+        } else if (event.hintType === audio.InterruptHint.INTERRUPT_HINT_RESUME) {
+          this.resumeFromInterruption();
+        } else if (event.hintType === audio.InterruptHint.INTERRUPT_HINT_DUCK) {
+          this.setDucked(true);
+        } else if (event.hintType === audio.InterruptHint.INTERRUPT_HINT_UNDUCK) {
+          this.setDucked(false);
+        } else if (event.hintType === audio.InterruptHint.INTERRUPT_HINT_STOP) {
+          this.pause();
+        }
+      });
+    }
     target.on('stateChange', (state: media.AVPlayerState, _: media.StateChangeReason): void => {
       if (this.destroyed || this.player !== target) return;
       if (state === 'error' || state === 'released') {
@@ -1352,12 +1325,15 @@ abstract class PlaybackController extends OperationQueue {
       }
 
       if (state === 'completed') {
-        this.didJustFinish = true;
-        this.intendedPlaying = this.shouldContinueAfterCompletion();
+        const continuing: boolean = this.shouldContinueAfterCompletion();
+        this.didJustFinish = !continuing;
+        this.intendedPlaying = continuing;
         this.schedule('advance after completion', async (): Promise<void> => this.onCompleted());
       }
 
-      if (wasPlaying !== this.playing) this.delegate.playbackStateChanged(this);
+      if (wasPlaying !== this.playing && !(state === 'completed' && this.intendedPlaying)) {
+        this.delegate.playbackStateChanged(this);
+      }
 
       this.updateStatusTimer();
       this.emitStatus();
@@ -1462,7 +1438,6 @@ abstract class PlaybackController extends OperationQueue {
       player.setPlaybackRate(this.rateValue);
     } else {
       const speed = nearestLegacySpeed(this.rateValue);
-      this.rateValue = legacySpeedValue(speed);
       player.setSpeed(speed);
     }
   }
@@ -1502,31 +1477,24 @@ class AudioPlayerController extends PlaybackController {
     return new AudioStatusRecord(this, didJustFinish);
   }
 
-  callSync(operation: string, args: ESObject[]): ESObject {
-    if (operation === 'setActiveForLockScreen') {
-      this.activeForLockScreen = args[0] === true;
-      this.metadata = readMetadata(args[1]);
-      this.lockScreenOptions = readLockScreenOptions(args[2]);
+  setActiveForLockScreen(active: boolean, metadata?: AudioMetadataInput, options?: LockScreenOptionsInput): void {
+    this.activeForLockScreen = active;
+    this.metadata = metadata;
+    this.lockScreenOptions = options;
+    this.delegate.setLockScreenPlayer(this, active, metadata, options);
+  }
 
-      this.delegate.setLockScreenPlayer(this, this.activeForLockScreen, this.metadata, this.lockScreenOptions);
+  updateLockScreenMetadata(metadata?: AudioMetadataInput): void {
+    this.metadata = metadata;
 
-      return null;
+    if (this.activeForLockScreen) {
+      this.delegate.setLockScreenPlayer(this, true, metadata, this.lockScreenOptions);
     }
-    if (operation === 'updateLockScreenMetadata') {
-      this.metadata = readMetadata(args[0]);
+  }
 
-      if (this.activeForLockScreen) {
-        this.delegate.setLockScreenPlayer(this, true, this.metadata, this.lockScreenOptions);
-      }
-
-      return null;
-    }
-    if (operation === 'clearLockScreenControls') {
-      this.activeForLockScreen = false;
-      this.delegate.setLockScreenPlayer(this, false);
-      return null;
-    }
-    return super.callSync(operation, args);
+  clearLockScreenControls(): void {
+    this.activeForLockScreen = false;
+    this.delegate.setLockScreenPlayer(this, false);
   }
 
   protected emitStatus(): void {
@@ -1550,7 +1518,7 @@ class PlaylistController extends PlaybackController {
     sources: AudioSource[],
     updateInterval: number,
     loopMode: PlaylistLoopMode,
-    dispatcher: SharedObjectEventDispatcher,
+    dispatcher: AudioObjectEventSink,
     delegate: PlaybackDelegate,
   ) {
     super(objectId, sources.length > 0 ? sources[0] : null, updateInterval, false, 0, dispatcher, delegate);
@@ -1580,86 +1548,58 @@ class PlaylistController extends PlaybackController {
     return new PlaylistStatusRecord(this, didJustFinish);
   }
 
-  getProperty(name: string): ESObject {
-    if (name === 'currentIndex') return this.indexValue;
-    if (name === 'trackCount') return this.tracks.length;
-    if (name === 'sources') return this.tracks.map((source: AudioSource): AudioSourceInfoRecord => new AudioSourceInfoRecord(source));
-    if (name === 'loop') return this.loopModeValue;
-    return super.getProperty(name);
+  get sources(): AudioSourceInfoRecord[] {
+    return this.tracks.map((source: AudioSource): AudioSourceInfoRecord => new AudioSourceInfoRecord(source));
   }
 
-  setProperty(name: string, value: ESObject): void {
-    if (name === 'loop') {
-      this.loopModeValue = normalizeLoopMode(value);
-      super.setProperty('loop', this.loopModeValue === 'single');
-      return;
-    }
-    if (name === 'playbackRate') {
-      this.setPlaybackRate(finiteNumber(value, 1));
-      return;
-    }
-    super.setProperty(name, value);
+  setLoopMode(value: string): void {
+    this.loopModeValue = normalizeLoopMode(value);
+    this.setLooping(this.loopModeValue === 'single');
   }
 
-  callSync(operation: string, args: ESObject[]): ESObject {
-    if (operation === 'next') {
-      this.scheduleRelativeTrackChange(1);
-      return null;
-    }
-    if (operation === 'previous') {
-      this.scheduleRelativeTrackChange(-1);
-      return null;
-    }
-    if (operation === 'skipTo') {
-      this.scheduleTrackChange(Math.trunc(finiteNumber(args[0], -1)));
-      return null;
-    }
-    if (operation === 'add') {
-      const source = readSource(args[0]);
+  next(): void {
+    this.scheduleRelativeTrackChange(1);
+  }
 
-      if (source !== null && source.uri !== undefined && source.uri.length > 0) {
-        this.tracks.push(source);
-        if (this.tracks.length === 1) this.scheduleTrackChange(0, false);
+  previous(): void {
+    this.scheduleRelativeTrackChange(-1);
+  }
 
-        this.emitStatus();
-      }
+  skipTo(index: number): void {
+    this.scheduleTrackChange(Math.trunc(index));
+  }
 
-      return null;
-    }
-    if (operation === 'insert') {
-      const source = readSource(args[0]);
-      const index = Math.trunc(finiteNumber(args[1], -1));
+  add(source: AudioSource | null): void {
+    if (source === null || source.uri === undefined || source.uri.length === 0) return;
 
-      if (source !== null && source.uri !== undefined && source.uri.length > 0 && index >= 0 && index <= this.tracks.length) {
-        this.tracks.splice(index, 0, source);
+    this.tracks.push(source);
+    if (this.tracks.length === 1) this.scheduleTrackChange(0, false);
+    this.emitStatus();
+  }
 
-        if (this.tracks.length === 1) this.scheduleTrackChange(0, false);
-        else if (index <= this.indexValue) this.indexValue += 1;
+  insert(source: AudioSource | null, index: number): void {
+    const position = Math.trunc(index);
+    if (source === null || source.uri === undefined || source.uri.length === 0 || position < 0 || position > this.tracks.length) return;
 
-        this.emitStatus();
-      }
+    this.tracks.splice(position, 0, source);
 
-      return null;
-    }
-    if (operation === 'remove') {
-      this.removeTrack(Math.trunc(finiteNumber(args[0], -1)));
-      return null;
-    }
-    if (operation === 'clear') {
-      this.tracks = [];
-      this.indexValue = 0;
-      this.intendedPlaying = false;
+    if (this.tracks.length === 1) this.scheduleTrackChange(0, false);
+    else if (position <= this.indexValue) this.indexValue += 1;
 
-      this.schedule('clear playlist', async (): Promise<void> => this.replacePlayer(null, false));
-      this.emitStatus();
+    this.emitStatus();
+  }
 
-      return null;
-    }
-    if (operation === 'destroy') {
-      this.destroy();
-      return null;
-    }
-    return super.callSync(operation, args);
+  remove(index: number): void {
+    this.removeTrack(Math.trunc(index));
+  }
+
+  clear(): void {
+    this.tracks = [];
+    this.indexValue = 0;
+    this.intendedPlaying = false;
+
+    this.schedule('clear playlist', async (): Promise<void> => this.replacePlayer(null, false));
+    this.emitStatus();
   }
 
   protected async onCompleted(): Promise<void> {
@@ -1713,9 +1653,10 @@ class PlaylistController extends PlaybackController {
     this.indexValue = index;
 
     await this.replacePlayer(this.tracks[index], resume);
+    if (this.destroyed) return;
 
     if (previous !== index && this.observedEvents.has(TRACK_CHANGED_EVENT)) {
-      this.dispatcher.emit(this.objectId, PLAYLIST_CLASS_NAME, TRACK_CHANGED_EVENT, new TrackChangedRecord(previous, index));
+      this.dispatcher.emit(TRACK_CHANGED_EVENT, new TrackChangedRecord(previous, index));
     }
 
     this.emitStatus();
@@ -1796,6 +1737,18 @@ function readRecordingOptions(value: ESObject, fallback?: RecordingOptionsInput)
   return options;
 }
 
+function mergeRecordingOptions(fallback: RecordingOptionsInput, input: RecordingOptionsInput): RecordingOptionsInput {
+  const options: RecordingOptionsInput = {};
+  options.extension = input.extension ?? fallback.extension;
+  options.sampleRate = input.sampleRate ?? fallback.sampleRate;
+  options.numberOfChannels = input.numberOfChannels ?? fallback.numberOfChannels;
+  options.bitRate = input.bitRate ?? fallback.bitRate;
+  options.isMeteringEnabled = input.isMeteringEnabled ?? fallback.isMeteringEnabled;
+  options.mimeType = input.mimeType ?? fallback.mimeType;
+  options.bitsPerSecond = input.bitsPerSecond ?? fallback.bitsPerSecond;
+  return options;
+}
+
 function readRecordingStartOptions(value: ESObject): RecordingStartOptions {
   const options: RecordingStartOptions = {};
 
@@ -1855,7 +1808,7 @@ function recordingProfile(options: RecordingOptionsInput): RecorderProfile {
 }
 
 interface RecorderDelegate {
-  readonly context: UITurboModuleContext;
+  readonly context: ExpoModuleContext;
   ensureRecordingPermission(): void;
   recordingStateChanged(): void;
 }
@@ -1863,7 +1816,7 @@ interface RecorderDelegate {
 class AudioRecorderController extends OperationQueue {
   readonly objectId: number;
   readonly id: string;
-  private readonly dispatcher: SharedObjectEventDispatcher;
+  private readonly dispatcher: AudioObjectEventSink;
   private readonly delegate: RecorderDelegate;
   private options: RecordingOptionsInput;
   private recorder?: media.AVRecorder;
@@ -1886,9 +1839,10 @@ class AudioRecorderController extends OperationQueue {
   private recordingRequested: boolean = false;
   private recordGeneration: number = 0;
   private delayedStartDeadlineMs: number = 0;
-  private pendingDurationMs: number = 0;
+  // -1 means no automatic stop was requested; 0 means stop immediately.
+  private pendingDurationMs: number = -1;
 
-  constructor(objectId: number, options: RecordingOptionsInput, dispatcher: SharedObjectEventDispatcher, delegate: RecorderDelegate) {
+  constructor(objectId: number, options: RecordingOptionsInput, dispatcher: AudioObjectEventSink, delegate: RecorderDelegate) {
     super();
 
     this.objectId = objectId;
@@ -1920,73 +1874,37 @@ class AudioRecorderController extends OperationQueue {
     this.observed = observing;
   }
 
-  getProperty(name: string): ESObject {
-    if (name === 'id') return this.id;
-    if (name === 'currentTime') return this.durationMillis / 1000;
-    if (name === 'isRecording') return this.recordingValue;
-    if (name === 'uri') return this.uri;
-    throw new ExpoAudioError('ERR_AUDIO_UNKNOWN_PROPERTY', `Unknown recorder property '${name}'.`);
+  get currentStatus(): RecorderStateRecord {
+    return new RecorderStateRecord(this);
   }
 
-  setProperty(name: string, _: ESObject): void {
-    throw new ExpoAudioError('ERR_AUDIO_READ_ONLY_PROPERTY', `Recorder property '${name}' is read-only.`);
+  async prepareToRecord(options?: RecordingOptionsInput): Promise<void> {
+    const merged: RecordingOptionsInput = options === undefined ? this.options : mergeRecordingOptions(this.options, options);
+    await this.enqueue(async (): Promise<void> => this.prepare(merged));
   }
 
-  callSync(operation: string, args: ESObject[]): ESObject {
-    if (operation === 'record') {
-      this.record(readRecordingStartOptions(args[0]));
-      return null;
-    }
-    if (operation === 'pause') {
-      this.pause();
-      return null;
-    }
-    if (operation === 'getAvailableInputs') return this.getAvailableInputs();
-    if (operation === 'setInput') {
-      this.setInput(String(args[0] ?? ''));
-      return null;
-    }
-    if (operation === 'getStatus') return new RecorderStateRecord(this);
-    if (operation === 'startRecordingAtTime') {
-      this.record({ atTime: finiteNumber(args[0], 0) });
-      return null;
-    }
-    if (operation === 'recordForDuration') {
-      this.record({ forDuration: finiteNumber(args[0], 0) });
-      return null;
-    }
-    throw new ExpoAudioError('ERR_AUDIO_UNKNOWN_METHOD', `Unknown recorder method '${operation}'.`);
+  async stop(): Promise<void> {
+    await this.enqueue(async (): Promise<void> => this.stopInternal(null));
   }
 
-  async callAsync(operation: string, args: ESObject[]): Promise<ESObject> {
-    if (operation === 'prepareToRecordAsync') {
-      await this.enqueue(async (): Promise<void> => this.prepare(readRecordingOptions(args[0], this.options)));
-      return null;
-    }
-    if (operation === 'stop') {
-      this.backgroundSuspended = false;
-      this.interruptionSuspended = false;
-      this.recordingRequested = false;
-      this.recordGeneration += 1;
-      this.pendingDurationMs = 0;
+  startRecordingAtTime(seconds: number): void {
+    this.record({ atTime: seconds });
+  }
 
-      await this.enqueue(async (): Promise<void> => this.stopInternal(null));
-
-      return null;
-    }
-    if (operation === 'getCurrentInput') return await this.getCurrentInput();
-    return this.callSync(operation, args);
+  recordForDuration(seconds: number): void {
+    this.record({ forDuration: seconds });
   }
 
   destroy(): void {
     if (this.destroyed) return;
 
     this.destroyed = true;
+    this.observed = false;
     this.backgroundSuspended = false;
     this.interruptionSuspended = false;
     this.recordingRequested = false;
     this.recordGeneration += 1;
-    this.pendingDurationMs = 0;
+    this.pendingDurationMs = -1;
 
     this.clearTimers();
     this.schedule('release recorder', async (): Promise<void> => this.releaseRecorder());
@@ -2005,7 +1923,7 @@ class AudioRecorderController extends OperationQueue {
     this.interruptionSuspended = false;
     this.recordingRequested = false;
     this.recordGeneration += 1;
-    this.pendingDurationMs = 0;
+    this.pendingDurationMs = -1;
     this.recordingValue = false;
     this.pausedValue = false;
     this.preparedValue = false;
@@ -2032,7 +1950,7 @@ class AudioRecorderController extends OperationQueue {
     this.interruptionSuspended = false;
     this.recordingRequested = false;
     this.recordGeneration += 1;
-    this.pendingDurationMs = 0;
+    this.pendingDurationMs = -1;
 
     const profile = recordingProfile(options);
     const folder = `${this.delegate.context.uiAbilityContext.cacheDir}/expo-audio`;
@@ -2099,7 +2017,7 @@ class AudioRecorderController extends OperationQueue {
     this.meteringValue = options.isMeteringEnabled === true ? SILENCE_LEVEL_DB : undefined;
   }
 
-  private record(options: RecordingStartOptions): void {
+  record(options: RecordingStartOptions): void {
     this.delegate.ensureRecordingPermission();
 
     if (!this.preparedValue || this.recorder === undefined) {
@@ -2114,8 +2032,20 @@ class AudioRecorderController extends OperationQueue {
 
     this.clearStartAndStopTimers();
 
-    const delay = positiveDelayMilliseconds(options.atTime ?? 0);
-    this.pendingDurationMs = positiveDelayMilliseconds(options.forDuration ?? 0);
+    if (options.atTime !== undefined && (!Number.isFinite(options.atTime) || options.atTime < 0)) {
+      throw new ExpoAudioError('ERR_AUDIO_INVALID_RECORDING_TIME', 'Recording start time must be a finite non-negative number.');
+    }
+    if ((options.atTime ?? 0) > 0) {
+      throw new ExpoAudioError(
+        'ERR_AUDIO_RECORDING_AT_TIME_UNSUPPORTED',
+        'HarmonyOS AVRecorder does not provide a device-clock scheduled recording start.',
+      );
+    }
+    if (options.forDuration !== undefined && (!Number.isFinite(options.forDuration) || options.forDuration < 0)) {
+      throw new ExpoAudioError('ERR_AUDIO_INVALID_RECORDING_DURATION', 'Recording duration must be a finite non-negative number.');
+    }
+    const delay: number = 0;
+    this.pendingDurationMs = options.forDuration === undefined ? -1 : positiveDelayMilliseconds(options.forDuration);
 
     const begin = (): void => {
       this.delayedStartTimer = -1;
@@ -2145,14 +2075,14 @@ class AudioRecorderController extends OperationQueue {
       if (this.pausedValue) await recorder.resume();
       else await recorder.start();
 
-      this.pendingDurationMs = 0;
+      this.pendingDurationMs = -1;
       this.startedAtMs = uptimeMilliseconds();
       this.recordingValue = true;
       this.pausedValue = false;
       this.startProgressTimers();
       this.delegate.recordingStateChanged();
 
-      if (duration > 0) {
+      if (duration >= 0) {
         this.stopTimer = setTimeout((): void => {
           this.stopTimer = -1;
           this.backgroundSuspended = false;
@@ -2168,17 +2098,17 @@ class AudioRecorderController extends OperationQueue {
     });
   }
 
-  private pause(): void {
+  pause(): void {
     this.delegate.ensureRecordingPermission();
-
-    this.backgroundSuspended = false;
-    this.interruptionSuspended = false;
-    this.recordingRequested = false;
-    this.recordGeneration += 1;
-    this.pendingDurationMs = 0;
-
-    this.clearDelayedStartTimer();
-    this.pauseForSuspension();
+    this.schedule('pause recorder', async (): Promise<void> => {
+      this.backgroundSuspended = false;
+      this.interruptionSuspended = false;
+      this.recordingRequested = false;
+      this.recordGeneration += 1;
+      this.pendingDurationMs = -1;
+      this.clearDelayedStartTimer();
+      await this.pauseNativeRecorder();
+    });
   }
 
   suspendForBackground(): void {
@@ -2208,7 +2138,7 @@ class AudioRecorderController extends OperationQueue {
     this.backgroundSuspended = false;
     this.recordingRequested = false;
     this.recordGeneration += 1;
-    this.pendingDurationMs = 0;
+    this.pendingDurationMs = -1;
 
     this.clearDelayedStartTimer();
   }
@@ -2240,25 +2170,24 @@ class AudioRecorderController extends OperationQueue {
     this.interruptionSuspended = false;
     this.recordingRequested = false;
     this.recordGeneration += 1;
-    this.pendingDurationMs = 0;
+    this.pendingDurationMs = -1;
 
     this.clearDelayedStartTimer();
   }
 
   private pauseForSuspension(): void {
-    this.schedule('pause recorder', async (): Promise<void> => {
-      if (!this.recordingValue) return;
+    this.schedule('pause recorder', async (): Promise<void> => this.pauseNativeRecorder());
+  }
 
-      const recorder = this.requireRecorder('pause');
-
-      await recorder.pause();
-
-      this.elapsedBeforeStartMs = this.durationMillis;
-      this.recordingValue = false;
-      this.pausedValue = true;
-      this.stopProgressTimers();
-      this.delegate.recordingStateChanged();
-    });
+  private async pauseNativeRecorder(): Promise<void> {
+    if (!this.recordingValue) return;
+    const recorder = this.requireRecorder('pause');
+    await recorder.pause();
+    this.elapsedBeforeStartMs = this.durationMillis;
+    this.recordingValue = false;
+    this.pausedValue = true;
+    this.stopProgressTimers();
+    this.delegate.recordingStateChanged();
   }
 
   private async stopInternal(error: string | null): Promise<void> {
@@ -2266,7 +2195,7 @@ class AudioRecorderController extends OperationQueue {
     this.interruptionSuspended = false;
     this.recordingRequested = false;
     this.recordGeneration += 1;
-    this.pendingDurationMs = 0;
+    this.pendingDurationMs = -1;
 
     this.clearTimers();
 
@@ -2320,13 +2249,13 @@ class AudioRecorderController extends OperationQueue {
     this.interruptionSuspended = false;
     this.recordingRequested = false;
     this.recordGeneration += 1;
-    this.pendingDurationMs = 0;
+    this.pendingDurationMs = -1;
     this.elapsedBeforeStartMs = 0;
     this.startedAtMs = 0;
     this.delegate.recordingStateChanged();
   }
 
-  private getAvailableInputs(): RecordingInputRecord[] {
+  getAvailableInputs(): RecordingInputRecord[] {
     this.requireRecorder('list inputs');
 
     const manager = audio.getAudioManager().getRoutingManager();
@@ -2335,7 +2264,7 @@ class AudioRecorderController extends OperationQueue {
     return devices.map((device: audio.AudioDeviceDescriptor): RecordingInputRecord => new RecordingInputRecord(device));
   }
 
-  private async getCurrentInput(): Promise<RecordingInputRecord> {
+  async getCurrentInput(): Promise<RecordingInputRecord> {
     const input = await this.requireRecorder('get current input').getCurrentAudioCapturerInfo();
 
     if (input.deviceDescriptors.length === 0) {
@@ -2345,7 +2274,7 @@ class AudioRecorderController extends OperationQueue {
     return new RecordingInputRecord(input.deviceDescriptors[0]);
   }
 
-  private setInput(uid: string): void {
+  setInput(uid: string): void {
     if (uid.length === 0) throw new ExpoAudioError('ERR_AUDIO_INVALID_INPUT', 'The recording input identifier is empty.');
 
     this.requireRecorder('select input');
@@ -2365,15 +2294,14 @@ class AudioRecorderController extends OperationQueue {
       throw new ExpoAudioError('ERR_AUDIO_INPUT_NOT_FOUND', `Recording input '${uid}' is unavailable.`);
     }
 
-    manager
-      .getSessionManager()
-      .selectMediaInputDevice(input)
-      .catch((error: Object): void => {
-        const message = `Failed to select recording input '${uid}': ${cleanError(error)}`;
+    this.enqueue(async (): Promise<void> => {
+      await manager.getSessionManager().selectMediaInputDevice(input);
+    }).catch((error: Object): void => {
+      const message = `Failed to select recording input '${uid}': ${cleanError(error)}`;
 
-        console.error(`Expo Audio ${message}`);
-        this.emitOperationError(message);
-      });
+      console.error(`Expo Audio ${message}`);
+      this.emitOperationError(message);
+    });
   }
 
   private requireRecorder(operation: string): media.AVRecorder {
@@ -2392,7 +2320,7 @@ class AudioRecorderController extends OperationQueue {
       this.interruptionSuspended = false;
       this.recordingRequested = false;
       this.recordGeneration += 1;
-      this.pendingDurationMs = 0;
+      this.pendingDurationMs = -1;
 
       this.enqueue(async (): Promise<void> => this.stopInternal(null)).catch((error: Object): void => {
         console.error(`Expo Audio finalize stopped recorder failed for ${this.id}: ${cleanError(error)}`);
@@ -2434,18 +2362,13 @@ class AudioRecorderController extends OperationQueue {
   private emitResult(error: string | null): void {
     if (!this.observed || this.destroyed) return;
 
-    this.dispatcher.emit(
-      this.objectId,
-      RECORDER_CLASS_NAME,
-      RECORDING_STATUS_EVENT,
-      new RecordingStatusRecord(this.id, error, error === null ? this.uri : null),
-    );
+    this.dispatcher.emit(RECORDING_STATUS_EVENT, new RecordingStatusRecord(this.id, error, error === null ? this.uri : null));
   }
 
   private emitOperationError(error: string): void {
     if (!this.observed || this.destroyed) return;
 
-    this.dispatcher.emit(this.objectId, RECORDER_CLASS_NAME, RECORDING_STATUS_EVENT, new RecordingStatusRecord(this.id, error, null, false));
+    this.dispatcher.emit(RECORDING_STATUS_EVENT, new RecordingStatusRecord(this.id, error, null, false));
   }
 
   private clearStartAndStopTimers(): void {
@@ -2474,10 +2397,8 @@ class AudioRecorderController extends OperationQueue {
   }
 }
 
-class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
-  readonly name: string = SERVICE_NAME;
-  readonly context: UITurboModuleContext;
-  private readonly dispatcher: SharedObjectEventDispatcher;
+class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
+  readonly context: ExpoModuleContext;
   private readonly players: Map<number, AudioPlayerController> = new Map();
   private readonly recorders: Map<number, AudioRecorderController> = new Map();
   private readonly playlists: Map<number, PlaylistController> = new Map();
@@ -2492,22 +2413,20 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
   private audioSessionTransition?: Promise<void>;
   private deactivatingAudioSession: boolean = false;
   private lockScreenPlayer?: AudioPlayerController;
+  private lockScreenOptions?: LockScreenOptionsInput;
   private lockScreenSession?: avSession.AVSession;
   private sessionController?: PlaybackController;
+  private mediaSessionTail: Promise<void> = Promise.resolve();
   private lockScreenGeneration: number = 0;
   private backgroundModes: string[] = [];
   private backgroundTaskTail: Promise<void> = Promise.resolve();
   private lifecycleTail: Promise<void> = Promise.resolve();
-  private releaseSubscription: () => void;
+  private nextObjectId: number = 1;
   private destroyed: boolean = false;
 
-  constructor(context: UITurboModuleContext) {
+  constructor(context: ExpoModuleContext) {
     this.context = context;
-    this.dispatcher = new SharedObjectEventDispatcher(context);
     this.sessionManager = audio.getAudioManager().getSessionManager();
-    this.releaseSubscription = context.rnInstance.cppEventEmitter.subscribe(RELEASE_OBJECT_MESSAGE, (payload: ESObject): void => {
-      this.releaseObject(requireObjectId(payload.objectId), requireObjectKind(payload.kind));
-    });
 
     this.sessionManager.on('audioSessionDeactivated', (event: audio.AudioSessionDeactivatedEvent): void => {
       this.audioSessionActivated = false;
@@ -2533,73 +2452,8 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
     return this.context.uiAbilityContext.cacheDir;
   }
 
-  invokeSync(method: string, args: ESObject[]): ESObject {
-    if (method === 'createObject') {
-      this.createObject(requireObjectId(args[0]), requireObjectKind(args[1]), args.slice(2));
-      return null;
-    }
-    if (method === 'releaseObject') {
-      this.releaseObject(requireObjectId(args[0]), requireObjectKind(args[1]));
-      return null;
-    }
-    if (method === 'getObjectProperty') {
-      return this.requireObject(requireObjectId(args[0]), requireObjectKind(args[1])).getProperty(String(args[2] ?? ''));
-    }
-    if (method === 'setObjectProperty') {
-      this.requireObject(requireObjectId(args[0]), requireObjectKind(args[1])).setProperty(String(args[2] ?? ''), args[3]);
-      return null;
-    }
-    if (method === 'callObject') {
-      return this.requireObject(requireObjectId(args[0]), requireObjectKind(args[1])).callSync(String(args[2] ?? ''), args.slice(3));
-    }
-    if (method === 'setObjectObserving') {
-      this.requireObject(requireObjectId(args[0]), requireObjectKind(args[1])).setObserving(String(args[2] ?? ''), args[3] === true);
-      return null;
-    }
-    throw new ExpoAudioError('ERR_AUDIO_UNKNOWN_METHOD', `Unknown synchronous Expo Audio method '${method}'.`);
-  }
-
-  async invoke(method: string, args: ESObject[]): Promise<ESObject> {
-    if (method === 'callObject') {
-      return await this.requireObject(requireObjectId(args[0]), requireObjectKind(args[1])).callAsync(String(args[2] ?? ''), args.slice(3));
-    }
-    if (method === 'setIsAudioActiveAsync') {
-      await this.setAudioActive(args[0] === true);
-      return null;
-    }
-    if (method === 'setAudioModeAsync') {
-      await this.setAudioMode(args[0]);
-      return null;
-    }
-    if (method === 'requestRecordingPermissionsAsync') return await this.requestRecordingPermission();
-    if (method === 'requestNotificationPermissionsAsync') return await this.requestNotificationPermission();
-    if (method === 'getRecordingPermissionsAsync') return this.getRecordingPermission();
-    if (method === 'preload') {
-      await this.preload(args[0], finiteNumber(args[1], 0));
-      return null;
-    }
-    if (method === 'clearPreloadedSource') {
-      await this.clearPreloaded(args[0]);
-      return null;
-    }
-    if (method === 'clearAllPreloadedSources') {
-      await this.clearAllPreloaded();
-      return null;
-    }
-    if (method === 'getPreloadedSources') return Array.from(this.preloaded.keys());
-    if (method === 'background') {
-      await this.queueLifecycle(async (): Promise<void> => this.onBackground());
-      return null;
-    }
-    if (method === 'foreground') {
-      await this.queueLifecycle(async (): Promise<void> => this.onForeground());
-      return null;
-    }
-    if (method === 'destroy') {
-      await this.queueLifecycle(async (): Promise<void> => this.destroyService());
-      return null;
-    }
-    throw new ExpoAudioError('ERR_AUDIO_UNKNOWN_METHOD', `Unknown Expo Audio method '${method}'.`);
+  playbackUsage(): audio.StreamUsage {
+    return this.mode.shouldRouteThroughEarpiece === true ? audio.StreamUsage.STREAM_USAGE_VOICE_MESSAGE : audio.StreamUsage.STREAM_USAGE_MUSIC;
   }
 
   async takePreloaded(source: AudioSource): Promise<PreparedPlayer | undefined> {
@@ -2675,6 +2529,7 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
     if (!active) {
       if (this.lockScreenPlayer === controller) {
         this.lockScreenPlayer = undefined;
+        this.lockScreenOptions = undefined;
         this.lockScreenGeneration += 1;
 
         if (this.inBackground) this.scheduleBackgroundTaskSync();
@@ -2685,6 +2540,7 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
     }
 
     this.lockScreenPlayer = controller;
+    this.lockScreenOptions = options;
     const generation = ++this.lockScreenGeneration;
 
     this.ensureMediaSession(controller, options)
@@ -2715,15 +2571,26 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
     }
   }
 
-  async prepareForReload(): Promise<void> {
-    await this.queueLifecycle(async (): Promise<void> => this.destroyService());
+  getPreloadedSources(): string[] {
+    return Array.from(this.preloaded.keys());
   }
 
-  private async destroyService(): Promise<void> {
+  async background(): Promise<void> {
+    await this.queueLifecycle(async (): Promise<void> => this.onBackground());
+  }
+
+  async foreground(): Promise<void> {
+    await this.queueLifecycle(async (): Promise<void> => this.onForeground());
+  }
+
+  async prepareForReload(): Promise<void> {
+    await this.queueLifecycle(async (): Promise<void> => this.destroy());
+  }
+
+  async destroy(): Promise<void> {
     if (this.destroyed) return;
 
     this.destroyed = true;
-    this.releaseSubscription();
 
     const players = Array.from(this.players.values());
     const recorders = Array.from(this.recorders.values());
@@ -2744,6 +2611,7 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
     await this.stopBackgroundTask();
     this.lockScreenPlayer = undefined;
     this.clearMediaSession();
+    await this.mediaSessionTail.catch((): void => {});
     await this.deactivateAudioSession();
 
     try {
@@ -2765,96 +2633,71 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
     await run;
   }
 
-  private createObject(objectId: number, kind: AudioObjectKind, args: ESObject[]): void {
+  createPlayer(
+    sink: AudioObjectEventSink,
+    source: AudioSource | null,
+    updateInterval: number,
+    keepsAudioSessionActive: boolean,
+    preferredBufferDuration: number,
+  ): AudioPlayerController {
     if (this.destroyed) throw new ExpoAudioError('ERR_AUDIO_MODULE_DESTROYED', 'Expo Audio has already been destroyed.');
-
-    if (this.hasObject(objectId)) {
-      throw new ExpoAudioError('ERR_AUDIO_DUPLICATE_OBJECT', `Audio object ${objectId} already exists.`);
-    }
-
-    if (kind === 'player') {
-      const player = new AudioPlayerController(
-        objectId,
-        readSource(args[0]),
-        finiteNumber(args[1], 500),
-        args[2] === true,
-        finiteNumber(args[3], 0),
-        this.dispatcher,
-        this,
-      );
-
-      this.players.set(objectId, player);
-
-      return;
-    }
-
-    if (kind === 'recorder') {
-      this.recorders.set(objectId, new AudioRecorderController(objectId, readRecordingOptions(args[0]), this.dispatcher, this));
-
-      return;
-    }
-
-    this.playlists.set(
-      objectId,
-      new PlaylistController(objectId, readSources(args[0]), finiteNumber(args[1], 500), normalizeLoopMode(args[2]), this.dispatcher, this),
-    );
+    const objectId: number = this.allocateObjectId();
+    const controller = new AudioPlayerController(objectId, source, updateInterval, keepsAudioSessionActive, preferredBufferDuration, sink, this);
+    this.players.set(objectId, controller);
+    return controller;
   }
 
-  private releaseObject(objectId: number, kind: AudioObjectKind): void {
-    if (kind === 'player') {
-      const player = this.players.get(objectId);
-
-      if (player !== undefined) {
-        if (this.lockScreenPlayer === player) this.lockScreenPlayer = undefined;
-        if (this.sessionController === player) this.clearMediaSession();
-
-        player.destroy();
-        this.players.delete(objectId);
-      }
-
-      return;
-    }
-
-    if (kind === 'recorder') {
-      const recorder = this.recorders.get(objectId);
-
-      if (recorder !== undefined) {
-        recorder.destroy();
-        this.recorders.delete(objectId);
-      }
-
-      return;
-    }
-
-    const playlist = this.playlists.get(objectId);
-
-    if (playlist !== undefined) {
-      if (this.sessionController === playlist) this.clearMediaSession();
-
-      playlist.destroy();
-      this.playlists.delete(objectId);
-    }
+  createRecorder(sink: AudioObjectEventSink, options: RecordingOptionsInput): AudioRecorderController {
+    if (this.destroyed) throw new ExpoAudioError('ERR_AUDIO_MODULE_DESTROYED', 'Expo Audio has already been destroyed.');
+    const objectId: number = this.allocateObjectId();
+    const controller = new AudioRecorderController(objectId, options, sink, this);
+    this.recorders.set(objectId, controller);
+    return controller;
   }
 
-  private requireObject(objectId: number, kind: AudioObjectKind): AudioPlayerController | AudioRecorderController | PlaylistController {
-    let object: AudioPlayerController | AudioRecorderController | PlaylistController | undefined;
-
-    if (kind === 'player') object = this.players.get(objectId);
-    else if (kind === 'recorder') object = this.recorders.get(objectId);
-    else object = this.playlists.get(objectId);
-
-    if (object === undefined) {
-      throw new ExpoAudioError('ERR_AUDIO_OBJECT_NOT_FOUND', `Audio ${kind} object ${objectId} does not exist.`);
-    }
-
-    return object;
+  createPlaylist(sink: AudioObjectEventSink, sources: AudioSource[], updateInterval: number, loopMode: PlaylistLoopMode): PlaylistController {
+    if (this.destroyed) throw new ExpoAudioError('ERR_AUDIO_MODULE_DESTROYED', 'Expo Audio has already been destroyed.');
+    const objectId: number = this.allocateObjectId();
+    const controller = new PlaylistController(objectId, sources, updateInterval, loopMode, sink, this);
+    this.playlists.set(objectId, controller);
+    return controller;
   }
 
-  private hasObject(objectId: number): boolean {
-    return this.players.has(objectId) || this.recorders.has(objectId) || this.playlists.has(objectId);
+  releasePlayer(player: AudioPlayerController): void {
+    if (this.players.get(player.objectId) !== player) return;
+    if (this.lockScreenPlayer === player) this.lockScreenPlayer = undefined;
+    if (this.sessionController === player) this.clearMediaSession();
+    player.destroy();
+    this.players.delete(player.objectId);
+    this.reconcileReleasedPlaybackObject();
   }
 
-  private async setAudioActive(active: boolean): Promise<void> {
+  releaseRecorder(recorder: AudioRecorderController): void {
+    if (this.recorders.get(recorder.objectId) !== recorder) return;
+    recorder.destroy();
+    this.recorders.delete(recorder.objectId);
+  }
+
+  releasePlaylist(playlist: PlaylistController): void {
+    if (this.playlists.get(playlist.objectId) !== playlist) return;
+    if (this.sessionController === playlist) this.clearMediaSession();
+    playlist.destroy();
+    this.playlists.delete(playlist.objectId);
+    this.reconcileReleasedPlaybackObject();
+  }
+
+  private reconcileReleasedPlaybackObject(): void {
+    if (this.inBackground) this.scheduleBackgroundTaskSync();
+    if (!this.hasActivePlayback() && !this.hasSessionRetainer()) this.deactivateAudioSession();
+  }
+
+  private allocateObjectId(): number {
+    const objectId: number = this.nextObjectId;
+    this.nextObjectId += 1;
+    return objectId;
+  }
+
+  async setAudioActive(active: boolean): Promise<void> {
     this.active = active;
 
     if (active) return;
@@ -2864,28 +2707,25 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
     await this.deactivateAudioSession();
   }
 
-  private async setAudioMode(value: ESObject): Promise<void> {
-    if (value !== null && value !== undefined && typeof value === 'object' && !Array.isArray(value)) {
-      const input = value as Record<string, ESObject>;
-
-      if (typeof input.shouldPlayInBackground === 'boolean') this.mode.shouldPlayInBackground = input.shouldPlayInBackground;
-      if (typeof input.shouldRouteThroughEarpiece === 'boolean') this.mode.shouldRouteThroughEarpiece = input.shouldRouteThroughEarpiece;
-      if (typeof input.allowsBackgroundRecording === 'boolean') this.mode.allowsBackgroundRecording = input.allowsBackgroundRecording;
-      if (typeof input.interruptionMode === 'string') {
-        this.mode.interruptionMode = input.interruptionMode;
-        this.interruptionMode = normalizeInterruptionMode(input.interruptionMode);
-      }
-    }
+  async setAudioMode(input: AudioModeInput): Promise<void> {
+    const next: AudioModeInput = {
+      shouldPlayInBackground: input.shouldPlayInBackground ?? this.mode.shouldPlayInBackground,
+      shouldRouteThroughEarpiece: input.shouldRouteThroughEarpiece ?? this.mode.shouldRouteThroughEarpiece,
+      allowsBackgroundRecording: input.allowsBackgroundRecording ?? this.mode.allowsBackgroundRecording,
+      interruptionMode: input.interruptionMode ?? this.mode.interruptionMode,
+    };
+    const nextInterruptionMode: InterruptionMode = normalizeInterruptionMode(next.interruptionMode ?? 'mixWithOthers');
+    const routeChanged: boolean = next.shouldRouteThroughEarpiece !== this.mode.shouldRouteThroughEarpiece;
 
     if (deviceInfo.apiAvailable(20)) {
-      const earpiece = this.mode.shouldRouteThroughEarpiece === true;
+      const earpiece = next.shouldRouteThroughEarpiece === true;
 
       this.sessionManager.setAudioSessionScene(
         earpiece ? audio.AudioSessionScene.AUDIO_SESSION_SCENE_VOICE_COMMUNICATION : audio.AudioSessionScene.AUDIO_SESSION_SCENE_MEDIA,
       );
 
       await this.sessionManager.setDefaultOutputDevice(earpiece ? audio.DeviceType.EARPIECE : audio.DeviceType.DEFAULT);
-    } else if (this.mode.shouldRouteThroughEarpiece === true) {
+    } else if (next.shouldRouteThroughEarpiece === true) {
       throw new ExpoAudioError('ERR_AUDIO_EARPIECE_ROUTING_UNSUPPORTED', 'Routing playback through the earpiece requires HarmonyOS API 20 or newer.');
     }
 
@@ -2901,8 +2741,18 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
 
     if (this.audioSessionActivated) {
       await this.deactivateAudioSession();
-      if (reactivate) await this.beforePlay();
     }
+
+    this.mode = next;
+    this.interruptionMode = nextInterruptionMode;
+
+    if (routeChanged) {
+      await this.clearAllPreloaded();
+      this.players.forEach((player: AudioPlayerController): void => player.refreshAudioRendererUsage());
+      this.playlists.forEach((playlist: PlaylistController): void => playlist.refreshAudioRendererUsage());
+    }
+
+    if (reactivate) await this.beforePlay();
 
     if (this.inBackground) await this.queueBackgroundTaskSync();
   }
@@ -3031,8 +2881,7 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
     }
   }
 
-  private async preload(value: ESObject, preferredBufferDuration: number): Promise<void> {
-    const source = readSource(value);
+  async preload(source: AudioSource | null, preferredBufferDuration: number): Promise<void> {
     const key = sourceKey(source);
 
     if (source === null || key === null) return;
@@ -3073,7 +2922,7 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
       }
 
       player.audioRendererInfo = {
-        usage: audio.StreamUsage.STREAM_USAGE_MUSIC,
+        usage: this.playbackUsage(),
         rendererFlags: 0,
       };
 
@@ -3091,8 +2940,8 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
     }
   }
 
-  private async clearPreloaded(value: ESObject): Promise<void> {
-    const key = sourceKey(readSource(value));
+  async clearPreloaded(source: AudioSource | null): Promise<void> {
+    const key = sourceKey(source);
     if (key === null) return;
 
     const entry = this.preloaded.get(key);
@@ -3109,7 +2958,7 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
     }
   }
 
-  private async clearAllPreloaded(): Promise<void> {
+  async clearAllPreloaded(): Promise<void> {
     const entries = Array.from(this.preloaded.values());
 
     this.preloaded.clear();
@@ -3126,7 +2975,7 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
     }
   }
 
-  private getRecordingPermission(): PermissionRecord {
+  getRecordingPermission(): PermissionRecord {
     const manager = abilityAccessCtrl.createAtManager();
 
     try {
@@ -3143,7 +2992,7 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
     }
   }
 
-  private async requestRecordingPermission(): Promise<PermissionRecord> {
+  async requestRecordingPermission(): Promise<PermissionRecord> {
     try {
       await abilityAccessCtrl.createAtManager().requestPermissionsFromUser(this.context.uiAbilityContext, [MICROPHONE_PERMISSION]);
 
@@ -3153,7 +3002,7 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
     }
   }
 
-  private async requestNotificationPermission(): Promise<PermissionRecord> {
+  async requestNotificationPermission(): Promise<PermissionRecord> {
     if (notificationManager.isNotificationEnabledSync()) return new PermissionRecord('granted', true);
 
     try {
@@ -3265,7 +3114,7 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
       throw new ExpoAudioError('ERR_AUDIO_BACKGROUND_PLAYBACK', 'No active player is available for the background media session.');
     }
 
-    const session = await this.ensureMediaSession(controller);
+    const session = await this.ensureMediaSession(controller, controller === this.lockScreenPlayer ? this.lockScreenOptions : undefined);
     if (controller !== this.lockScreenPlayer) {
       const metadata: avSession.AVMetadata = { assetId: controller.id };
 
@@ -3321,6 +3170,17 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
   }
 
   private async ensureMediaSession(controller: PlaybackController, options?: LockScreenOptionsInput): Promise<avSession.AVSession> {
+    const operation: Promise<avSession.AVSession> = this.mediaSessionTail
+      .catch((): void => {})
+      .then(async (): Promise<avSession.AVSession> => this.ensureMediaSessionNow(controller, options));
+    this.mediaSessionTail = operation.then(
+      (): void => {},
+      (): void => {},
+    );
+    return await operation;
+  }
+
+  private async ensureMediaSessionNow(controller: PlaybackController, options?: LockScreenOptionsInput): Promise<avSession.AVSession> {
     let session = this.lockScreenSession;
 
     if (session === undefined) {
@@ -3349,14 +3209,14 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
     session.on('play', (): void => controller.play());
     session.on('pause', (): void => controller.pause());
     session.on('seek', (time: number): void => {
-      controller.callAsync('seekTo', [time / 1000]).catch((): void => {});
+      controller.seekTo(time / 1000).catch((): void => {});
     });
 
     if (options?.showSeekForward === true) {
       session.on('fastForward', (time?: number): void => {
         const offset = time ?? SEEK_STEP_MS;
 
-        controller.callAsync('seekTo', [controller.currentTimeSeconds + offset / 1000]).catch((): void => {});
+        controller.seekTo(controller.currentTimeSeconds + offset / 1000).catch((): void => {});
       });
     }
 
@@ -3364,7 +3224,7 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
       session.on('rewind', (time?: number): void => {
         const offset = time ?? SEEK_STEP_MS;
 
-        controller.callAsync('seekTo', [Math.max(0, controller.currentTimeSeconds - offset / 1000)]).catch((): void => {});
+        controller.seekTo(Math.max(0, controller.currentTimeSeconds - offset / 1000)).catch((): void => {});
       });
     }
 
@@ -3396,39 +3256,466 @@ class ExpoAudioService implements PlaybackDelegate, RecorderDelegate {
   private clearMediaSession(): void {
     this.lockScreenGeneration += 1;
     this.sessionController = undefined;
-
-    const session = this.lockScreenSession;
-
-    this.lockScreenSession = undefined;
-
-    if (session !== undefined) {
-      session
-        .deactivate()
-        .catch((): void => {})
-        .then((): Promise<void> => session.destroy())
-        .catch((): void => {});
-    }
+    const cleanup: Promise<void> = this.mediaSessionTail
+      .catch((): void => {})
+      .then(async (): Promise<void> => {
+        const session: avSession.AVSession | undefined = this.lockScreenSession;
+        this.lockScreenSession = undefined;
+        if (session === undefined) return;
+        try {
+          await session.deactivate();
+        } catch (_) {}
+        await session.destroy();
+      });
+    this.mediaSessionTail = cleanup.catch((error: Object): void => {
+      console.error(`Expo Audio lock-screen teardown failed: ${cleanError(error)}`);
+    });
   }
 }
 
-function registerExpoAudioService(): void {
-  if (registered) return;
-
-  ExpoPlatformServiceRegistry.register({
-    name: SERVICE_NAME,
-    create: (context: UITurboModuleContext) => new ExpoAudioService(context),
-  });
-
-  registered = true;
+abstract class ExpoAudioSharedObject extends ExpoSharedObject implements AudioObjectEventSink {
+  emit(eventName: string, payload: ESObject): void {
+    this.sendEvent(eventName, payload);
+  }
 }
 
-export class ExpoAudioPackage extends RNOHPackage {
-  constructor(context: RNPackageContext) {
-    registerExpoAudioService();
+class ExpoAudioPlayer extends ExpoAudioSharedObject {
+  readonly controller: AudioPlayerController;
+  private readonly runtime: ExpoAudioRuntime;
+
+  constructor(
+    context: ExpoModuleContext,
+    runtime: ExpoAudioRuntime,
+    source: AudioSource | null,
+    updateInterval: number,
+    keepsAudioSessionActive: boolean,
+    preferredBufferDuration: number,
+  ) {
     super(context);
+    this.runtime = runtime;
+    this.controller = runtime.createPlayer(this, source, updateInterval, keepsAudioSessionActive, preferredBufferDuration);
   }
 
-  override getDebugName(): string {
-    return '@expo-harmony/expo-audio';
+  override onStartListeningToEvent(eventName: string): void {
+    this.controller.setObserving(eventName, true);
+  }
+
+  override onStopListeningToEvent(eventName: string): void {
+    this.controller.setObserving(eventName, false);
+  }
+
+  override sharedObjectWillRelease(): void {
+    this.runtime.releasePlayer(this.controller);
+  }
+
+  release(): void {
+    this.runtime.releasePlayer(this.controller);
+  }
+}
+
+class ExpoAudioRecorder extends ExpoAudioSharedObject {
+  readonly controller: AudioRecorderController;
+  private readonly runtime: ExpoAudioRuntime;
+
+  constructor(context: ExpoModuleContext, runtime: ExpoAudioRuntime, options: RecordingOptionsInput) {
+    super(context);
+    this.runtime = runtime;
+    this.controller = runtime.createRecorder(this, options);
+  }
+
+  override onStartListeningToEvent(eventName: string): void {
+    this.controller.setObserving(eventName, true);
+  }
+
+  override onStopListeningToEvent(eventName: string): void {
+    this.controller.setObserving(eventName, false);
+  }
+
+  override sharedObjectWillRelease(): void {
+    this.runtime.releaseRecorder(this.controller);
+  }
+}
+
+class ExpoAudioPlaylist extends ExpoAudioSharedObject {
+  readonly controller: PlaylistController;
+  private readonly runtime: ExpoAudioRuntime;
+
+  constructor(context: ExpoModuleContext, runtime: ExpoAudioRuntime, sources: AudioSource[], updateInterval: number, loopMode: PlaylistLoopMode) {
+    super(context);
+    this.runtime = runtime;
+    this.controller = runtime.createPlaylist(this, sources, updateInterval, loopMode);
+  }
+
+  override onStartListeningToEvent(eventName: string): void {
+    this.controller.setObserving(eventName, true);
+  }
+
+  override onStopListeningToEvent(eventName: string): void {
+    this.controller.setObserving(eventName, false);
+  }
+
+  override sharedObjectWillRelease(): void {
+    this.runtime.releasePlaylist(this.controller);
+  }
+
+  release(): void {
+    this.runtime.releasePlaylist(this.controller);
+  }
+}
+
+function audioInputType<Value>(expectedType: string, decoder: (value: ESObject) => Value): ExpoValueType<Value> {
+  return new ExpoValueType<Value>(
+    expectedType,
+    (value: ESObject, path: string): Value => {
+      try {
+        return decoder(value);
+      } catch (error) {
+        if (error instanceof ExpoModuleError) {
+          throw new ExpoModuleError(error.code, `${path}: ${error.message}`, error, path);
+        }
+        throw new ExpoModuleError('ERR_INVALID_ARGUMENT_TYPE', `${path} expected ${expectedType}.`, error as Object, path);
+      }
+    },
+    (value: Value): ESObject => value as ESObject,
+  );
+}
+
+function readAudioMode(value: ESObject): AudioModeInput {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ExpoAudioError('ERR_AUDIO_INVALID_MODE', 'The audio mode must be an object.');
+  }
+  const input = value as Record<string, ESObject>;
+  const mode: AudioModeInput = {};
+  if (typeof input.shouldPlayInBackground === 'boolean') mode.shouldPlayInBackground = input.shouldPlayInBackground;
+  if (typeof input.shouldRouteThroughEarpiece === 'boolean') mode.shouldRouteThroughEarpiece = input.shouldRouteThroughEarpiece;
+  if (typeof input.allowsBackgroundRecording === 'boolean') mode.allowsBackgroundRecording = input.allowsBackgroundRecording;
+  if (typeof input.interruptionMode === 'string') mode.interruptionMode = input.interruptionMode;
+  return mode;
+}
+
+const AUDIO_SOURCE_TYPE: ExpoValueType<AudioSource | null> = audioInputType<AudioSource | null>(
+  'audio source',
+  (value: ESObject): AudioSource | null => readSource(value),
+);
+const AUDIO_SOURCES_TYPE: ExpoValueType<AudioSource[]> = audioInputType<AudioSource[]>('array of audio sources', (value: ESObject): AudioSource[] =>
+  readSources(value),
+);
+const AUDIO_MODE_TYPE: ExpoValueType<AudioModeInput> = audioInputType<AudioModeInput>(
+  'audio mode',
+  (value: ESObject): AudioModeInput => readAudioMode(value),
+);
+const RECORDING_OPTIONS_TYPE: ExpoValueType<RecordingOptionsInput> = audioInputType<RecordingOptionsInput>(
+  'recording options',
+  (value: ESObject): RecordingOptionsInput => readRecordingOptions(value),
+);
+const RECORDING_START_OPTIONS_TYPE: ExpoValueType<RecordingStartOptions> = audioInputType<RecordingStartOptions>(
+  'recording start options',
+  (value: ESObject): RecordingStartOptions => readRecordingStartOptions(value),
+);
+const AUDIO_METADATA_TYPE: ExpoValueType<AudioMetadataInput | undefined> = audioInputType<AudioMetadataInput | undefined>(
+  'lock-screen metadata',
+  (value: ESObject): AudioMetadataInput | undefined => readMetadata(value),
+);
+const LOCK_SCREEN_OPTIONS_TYPE: ExpoValueType<LockScreenOptionsInput | undefined> = audioInputType<LockScreenOptionsInput | undefined>(
+  'lock-screen options',
+  (value: ESObject): LockScreenOptionsInput | undefined => readLockScreenOptions(value),
+);
+
+export class ExpoAudioModule extends ExpoModule {
+  private readonly runtime: ExpoAudioRuntime;
+
+  constructor(context: ExpoModuleContext) {
+    super(context);
+    this.runtime = new ExpoAudioRuntime(context);
+  }
+
+  override definition(): ExpoModuleDefinition {
+    const playerClass = new ExpoSharedObjectClassDefinition<ExpoAudioPlayer>(PLAYER_CLASS_NAME)
+      .construct(
+        ExpoFunction.ownedTyped4(
+          AUDIO_SOURCE_TYPE,
+          ExpoValueTypes.number(),
+          ExpoValueTypes.boolean(),
+          ExpoValueTypes.number(),
+          (
+            context: ExpoModuleContext,
+            source: AudioSource | null,
+            updateInterval: number,
+            keepsAudioSessionActive: boolean,
+            preferredBufferDuration: number,
+          ): ExpoAudioPlayer => new ExpoAudioPlayer(context, this.runtime, source, updateInterval, keepsAudioSessionActive, preferredBufferDuration),
+        ),
+      )
+      .events([PLAYBACK_STATUS_EVENT, 'audioSampleUpdate'])
+      .property('id', ExpoValueTypes.string(), (object: ExpoAudioPlayer): string => object.controller.id)
+      .property('playing', ExpoValueTypes.boolean(), (object: ExpoAudioPlayer): boolean => object.controller.playing)
+      .property(
+        'muted',
+        ExpoValueTypes.boolean(),
+        (object: ExpoAudioPlayer): boolean => object.controller.muted,
+        (object: ExpoAudioPlayer, value: boolean): void => object.controller.setMuted(value),
+      )
+      .property(
+        'loop',
+        ExpoValueTypes.boolean(),
+        (object: ExpoAudioPlayer): boolean => object.controller.looping,
+        (object: ExpoAudioPlayer, value: boolean): void => object.controller.setLooping(value),
+      )
+      .property('paused', ExpoValueTypes.boolean(), (object: ExpoAudioPlayer): boolean => !object.controller.playing)
+      .property('isLoaded', ExpoValueTypes.boolean(), (object: ExpoAudioPlayer): boolean => object.controller.loaded)
+      .property('isAudioSamplingSupported', ExpoValueTypes.boolean(), (_object: ExpoAudioPlayer): boolean => false)
+      .property('isBuffering', ExpoValueTypes.boolean(), (object: ExpoAudioPlayer): boolean => object.controller.buffering)
+      .property('currentTime', ExpoValueTypes.number(), (object: ExpoAudioPlayer): number => object.controller.currentTimeSeconds)
+      .property('duration', ExpoValueTypes.number(), (object: ExpoAudioPlayer): number => object.controller.durationSeconds)
+      .property(
+        'volume',
+        ExpoValueTypes.number(),
+        (object: ExpoAudioPlayer): number => object.controller.volume,
+        (object: ExpoAudioPlayer, value: number): void => object.controller.setVolume(value),
+      )
+      .property('playbackRate', ExpoValueTypes.number(), (object: ExpoAudioPlayer): number => object.controller.playbackRate)
+      .property(
+        'shouldCorrectPitch',
+        ExpoValueTypes.boolean(),
+        (object: ExpoAudioPlayer): boolean => object.controller.correctsPitch,
+        (object: ExpoAudioPlayer, value: boolean): void => object.controller.setShouldCorrectPitch(value),
+      )
+      .property('currentStatus', (object: ExpoAudioPlayer): ESObject => object.controller.currentStatus)
+      .syncFunction('play', (object: ExpoAudioPlayer): void => object.controller.play())
+      .syncFunction('pause', (object: ExpoAudioPlayer): void => object.controller.pause())
+      .syncFunction(
+        'replace',
+        ExpoFunction.ownedTyped1(AUDIO_SOURCE_TYPE, (object: ExpoAudioPlayer, source: AudioSource | null): void => object.controller.replace(source)),
+      )
+      .asyncFunction(
+        'seekTo',
+        ExpoFunction.ownedTyped3(
+          ExpoValueTypes.number(),
+          ExpoValueTypes.number().optional(),
+          ExpoValueTypes.number().optional(),
+          async (object: ExpoAudioPlayer, seconds: number, toleranceBefore?: number, toleranceAfter?: number): Promise<void> => {
+            await object.controller.seekTo(seconds);
+          },
+        ),
+      )
+      .syncFunction(
+        'setPlaybackRate',
+        ExpoFunction.ownedTyped2(
+          ExpoValueTypes.number(),
+          ExpoValueTypes.string().optional(),
+          (object: ExpoAudioPlayer, rate: number, pitchCorrectionQuality?: string): void => {
+            object.controller.setPlaybackRate(rate);
+          },
+        ),
+      )
+      .syncFunction(
+        'setAudioSamplingEnabled',
+        ExpoFunction.ownedTyped1(ExpoValueTypes.boolean(), (object: ExpoAudioPlayer, enabled: boolean): void =>
+          object.controller.setAudioSamplingEnabled(enabled),
+        ),
+      )
+      .syncFunction(
+        'setActiveForLockScreen',
+        ExpoFunction.ownedTyped3(
+          ExpoValueTypes.boolean(),
+          AUDIO_METADATA_TYPE.optional(),
+          LOCK_SCREEN_OPTIONS_TYPE.optional(),
+          (object: ExpoAudioPlayer, active: boolean, metadata?: AudioMetadataInput, options?: LockScreenOptionsInput): void => {
+            object.controller.setActiveForLockScreen(active, metadata, options);
+          },
+        ),
+      )
+      .syncFunction(
+        'updateLockScreenMetadata',
+        ExpoFunction.ownedTyped1(AUDIO_METADATA_TYPE, (object: ExpoAudioPlayer, metadata?: AudioMetadataInput): void => {
+          object.controller.updateLockScreenMetadata(metadata);
+        }),
+      )
+      .syncFunction('clearLockScreenControls', (object: ExpoAudioPlayer): void => {
+        object.controller.clearLockScreenControls();
+      })
+      .syncFunction('remove', (object: ExpoAudioPlayer): void => object.release());
+
+    const recorderClass = new ExpoSharedObjectClassDefinition<ExpoAudioRecorder>(RECORDER_CLASS_NAME)
+      .construct(
+        ExpoFunction.ownedTyped1(
+          RECORDING_OPTIONS_TYPE,
+          (context: ExpoModuleContext, options: RecordingOptionsInput): ExpoAudioRecorder => new ExpoAudioRecorder(context, this.runtime, options),
+        ),
+      )
+      .events([RECORDING_STATUS_EVENT])
+      .property('id', ExpoValueTypes.string(), (object: ExpoAudioRecorder): string => object.controller.id)
+      .property('currentTime', ExpoValueTypes.number(), (object: ExpoAudioRecorder): number => object.controller.durationMillis / 1000)
+      .property('isRecording', ExpoValueTypes.boolean(), (object: ExpoAudioRecorder): boolean => object.controller.recording)
+      .property('uri', ExpoValueTypes.string().nullable(), (object: ExpoAudioRecorder): string | null => object.controller.uri)
+      .syncFunction(
+        'record',
+        ExpoFunction.ownedTyped1(RECORDING_START_OPTIONS_TYPE.optional(), (object: ExpoAudioRecorder, options?: RecordingStartOptions): void => {
+          object.controller.record(options ?? {});
+        }),
+      )
+      .asyncFunction('stop', async (object: ExpoAudioRecorder): Promise<void> => {
+        await object.controller.stop();
+      })
+      .syncFunction('pause', (object: ExpoAudioRecorder): void => {
+        object.controller.pause();
+      })
+      .syncFunction('getAvailableInputs', (object: ExpoAudioRecorder): RecordingInputRecord[] => object.controller.getAvailableInputs())
+      .asyncFunction('getCurrentInput', async (object: ExpoAudioRecorder): Promise<RecordingInputRecord> => await object.controller.getCurrentInput())
+      .syncFunction(
+        'setInput',
+        ExpoFunction.ownedTyped1(ExpoValueTypes.string(), (object: ExpoAudioRecorder, uid: string): void => object.controller.setInput(uid)),
+      )
+      .syncFunction('getStatus', (object: ExpoAudioRecorder): RecorderStateRecord => object.controller.currentStatus)
+      .syncFunction(
+        'startRecordingAtTime',
+        ExpoFunction.ownedTyped1(ExpoValueTypes.number(), (object: ExpoAudioRecorder, seconds: number): void =>
+          object.controller.startRecordingAtTime(seconds),
+        ),
+      )
+      .asyncFunction(
+        'prepareToRecordAsync',
+        ExpoFunction.ownedTyped1(
+          RECORDING_OPTIONS_TYPE.optional(),
+          async (object: ExpoAudioRecorder, options?: RecordingOptionsInput): Promise<void> => {
+            await object.controller.prepareToRecord(options);
+          },
+        ),
+      )
+      .syncFunction(
+        'recordForDuration',
+        ExpoFunction.ownedTyped1(ExpoValueTypes.number(), (object: ExpoAudioRecorder, seconds: number): void =>
+          object.controller.recordForDuration(seconds),
+        ),
+      );
+
+    const playlistClass = new ExpoSharedObjectClassDefinition<ExpoAudioPlaylist>(PLAYLIST_CLASS_NAME)
+      .construct(
+        ExpoFunction.ownedTyped3(
+          AUDIO_SOURCES_TYPE,
+          ExpoValueTypes.number(),
+          ExpoValueTypes.string(),
+          (context: ExpoModuleContext, sources: AudioSource[], updateInterval: number, loopMode: string): ExpoAudioPlaylist =>
+            new ExpoAudioPlaylist(context, this.runtime, sources, updateInterval, normalizeLoopMode(loopMode)),
+        ),
+      )
+      .events([PLAYLIST_STATUS_EVENT, TRACK_CHANGED_EVENT])
+      .property('id', ExpoValueTypes.string(), (object: ExpoAudioPlaylist): string => object.controller.id)
+      .property('currentIndex', ExpoValueTypes.number(), (object: ExpoAudioPlaylist): number => object.controller.currentIndex)
+      .property('trackCount', ExpoValueTypes.number(), (object: ExpoAudioPlaylist): number => object.controller.trackCount)
+      .property('sources', (object: ExpoAudioPlaylist): AudioSourceInfoRecord[] => object.controller.sources)
+      .property('playing', ExpoValueTypes.boolean(), (object: ExpoAudioPlaylist): boolean => object.controller.playing)
+      .property(
+        'muted',
+        ExpoValueTypes.boolean(),
+        (object: ExpoAudioPlaylist): boolean => object.controller.muted,
+        (object: ExpoAudioPlaylist, value: boolean): void => object.controller.setMuted(value),
+      )
+      .property('isLoaded', ExpoValueTypes.boolean(), (object: ExpoAudioPlaylist): boolean => object.controller.loaded)
+      .property('isBuffering', ExpoValueTypes.boolean(), (object: ExpoAudioPlaylist): boolean => object.controller.buffering)
+      .property('currentTime', ExpoValueTypes.number(), (object: ExpoAudioPlaylist): number => object.controller.currentTimeSeconds)
+      .property('duration', ExpoValueTypes.number(), (object: ExpoAudioPlaylist): number => object.controller.durationSeconds)
+      .property(
+        'volume',
+        ExpoValueTypes.number(),
+        (object: ExpoAudioPlaylist): number => object.controller.volume,
+        (object: ExpoAudioPlaylist, value: number): void => object.controller.setVolume(value),
+      )
+      .property(
+        'playbackRate',
+        ExpoValueTypes.number(),
+        (object: ExpoAudioPlaylist): number => object.controller.playbackRate,
+        (object: ExpoAudioPlaylist, value: number): void => object.controller.setPlaybackRate(value),
+      )
+      .property(
+        'loop',
+        ExpoValueTypes.string(),
+        (object: ExpoAudioPlaylist): string => object.controller.loopMode,
+        (object: ExpoAudioPlaylist, value: string): void => object.controller.setLoopMode(value),
+      )
+      .property('currentStatus', (object: ExpoAudioPlaylist): ESObject => object.controller.currentStatus)
+      .syncFunction('play', (object: ExpoAudioPlaylist): void => object.controller.play())
+      .syncFunction('pause', (object: ExpoAudioPlaylist): void => object.controller.pause())
+      .syncFunction('next', (object: ExpoAudioPlaylist): void => object.controller.next())
+      .syncFunction('previous', (object: ExpoAudioPlaylist): void => object.controller.previous())
+      .syncFunction(
+        'skipTo',
+        ExpoFunction.ownedTyped1(ExpoValueTypes.number(), (object: ExpoAudioPlaylist, index: number): void => object.controller.skipTo(index)),
+      )
+      .asyncFunction(
+        'seekTo',
+        ExpoFunction.ownedTyped1(ExpoValueTypes.number(), async (object: ExpoAudioPlaylist, seconds: number): Promise<void> => {
+          await object.controller.seekTo(seconds);
+        }),
+      )
+      .syncFunction(
+        'add',
+        ExpoFunction.ownedTyped1(AUDIO_SOURCE_TYPE, (object: ExpoAudioPlaylist, source: AudioSource | null): void => object.controller.add(source)),
+      )
+      .syncFunction(
+        'insert',
+        ExpoFunction.ownedTyped2(
+          AUDIO_SOURCE_TYPE,
+          ExpoValueTypes.number(),
+          (object: ExpoAudioPlaylist, source: AudioSource | null, index: number): void => object.controller.insert(source, index),
+        ),
+      )
+      .syncFunction(
+        'remove',
+        ExpoFunction.ownedTyped1(ExpoValueTypes.number(), (object: ExpoAudioPlaylist, index: number): void => object.controller.remove(index)),
+      )
+      .syncFunction('clear', (object: ExpoAudioPlaylist): void => object.controller.clear())
+      .syncFunction('destroy', (object: ExpoAudioPlaylist): void => object.release());
+
+    return new ExpoModuleDefinition()
+      .name(MODULE_NAME)
+      .sharedObjectClass(playerClass)
+      .sharedObjectClass(recorderClass)
+      .sharedObjectClass(playlistClass)
+      .asyncFunction(
+        'setIsAudioActiveAsync',
+        ExpoFunction.typed1(ExpoValueTypes.boolean(), async (active: boolean): Promise<void> => await this.runtime.setAudioActive(active)),
+      )
+      .asyncFunction(
+        'setAudioModeAsync',
+        ExpoFunction.typed1(AUDIO_MODE_TYPE, async (mode: AudioModeInput): Promise<void> => await this.runtime.setAudioMode(mode)),
+      )
+      .asyncFunction('requestRecordingPermissionsAsync', async (): Promise<PermissionRecord> => await this.runtime.requestRecordingPermission())
+      .asyncFunction('requestNotificationPermissionsAsync', async (): Promise<PermissionRecord> => await this.runtime.requestNotificationPermission())
+      .asyncFunction('getRecordingPermissionsAsync', async (): Promise<PermissionRecord> => this.runtime.getRecordingPermission())
+      .asyncFunction(
+        'preload',
+        ExpoFunction.typed2(
+          AUDIO_SOURCE_TYPE,
+          ExpoValueTypes.number(),
+          async (source: AudioSource | null, preferredBufferDuration: number): Promise<void> =>
+            await this.runtime.preload(source, preferredBufferDuration),
+        ),
+      )
+      .asyncFunction(
+        'clearPreloadedSource',
+        ExpoFunction.typed1(AUDIO_SOURCE_TYPE, async (source: AudioSource | null): Promise<void> => await this.runtime.clearPreloaded(source)),
+      )
+      .asyncFunction('clearAllPreloadedSources', async (): Promise<void> => await this.runtime.clearAllPreloaded())
+      .asyncFunction(
+        'getPreloadedSources',
+        ExpoFunction.typed0(async (): Promise<string[]> => this.runtime.getPreloadedSources()).returns(ExpoValueTypes.array(ExpoValueTypes.string())),
+      )
+      .onBackground((): void => {
+        this.runtime.background().catch((error: Object): void => {
+          console.error(`Expo Audio background transition failed: ${cleanError(error)}`);
+        });
+      })
+      .onForeground((): void => {
+        this.runtime.foreground().catch((error: Object): void => {
+          console.error(`Expo Audio foreground transition failed: ${cleanError(error)}`);
+        });
+      })
+      .onPrepareForReload(async (): Promise<void> => await this.runtime.prepareForReload())
+      .onDestroy((): void => {
+        this.runtime.destroy().catch((error: Object): void => {
+          console.error(`Expo Audio destroy failed: ${cleanError(error)}`);
+        });
+      });
   }
 }

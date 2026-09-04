@@ -1,14 +1,6 @@
 {
   "platforms": ["harmony"],
   "harmony": {
-    "providers": [
-      {
-        "identifier": "expo-audio:ExpoAudioProvider",
-        "header": "ExpoAudioProvider.h",
-        "className": "expo::harmony::audio::ExpoAudioProvider",
-        "cmakeTargetName": "expo_harmony__expo_audio",
-        "debugOnly": false
-      }
-    ]
+    "modules": ["ExpoAudioModule"]
   }
 }
