@@ -1,3 +1,3 @@
 'use strict';
 
-module.exports = Object.freeze({});
+module.exports = require('expo-sharing');
