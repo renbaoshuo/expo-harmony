@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-haptics",
-  "version": "55.0.14-harmony.0",
+  "version": "55.0.14-harmony.1",
   "license": "MIT",
   "author": "Baoshuo <i@baoshuo.ren>",
   "repository": {
@@ -13,14 +13,16 @@
   "main": "index.js",
   "types": "index.d.ts",
   "scripts": {
-    "harmony:clean": "cd harmony && hvigorw --mode module -p module=expo_haptics@default -p product=default -p buildMode=release --no-daemon clean",
-    "harmony:build": "cd harmony && hvigorw --mode module -p module=expo_haptics@default -p product=default -p buildMode=release --no-daemon assembleHar && mv -f library/build/default/outputs/default/expo_haptics.har ."
+    "harmony:clean": "expo-harmony-module prepare --clean-only",
+    "harmony:build": "expo-harmony-module prepare",
+    "prepack": "expo-harmony-module prepack"
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
     "expo-haptics": "55.0.14"
   },
   "devDependencies": {
+    "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
     "@react-native-oh/react-native-harmony": "0.84.1",
     "expo": "55.0.26",
@@ -34,14 +36,5 @@
   },
   "publishConfig": {
     "access": "public"
-  },
-  "harmony": {
-    "autolinking": {
-      "mainHarPath": "harmony",
-      "ohPackageName": "@expo-harmony/expo-haptics",
-      "etsPackageClassName": "ExpoHapticsPackage",
-      "cppPackageClassName": "ExpoHarmonyExpoHapticsPackage",
-      "cmakeLibraryTargetName": "expo_harmony__expo_haptics"
-    }
   }
 }

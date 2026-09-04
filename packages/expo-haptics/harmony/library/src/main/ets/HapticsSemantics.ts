@@ -1,22 +1,30 @@
-export const NOTIFICATION_SUCCESS: string = 'success';
-export const NOTIFICATION_WARNING: string = 'warning';
-export const NOTIFICATION_ERROR: string = 'error';
+const NOTIFICATION_SUCCESS: string = 'success';
+const NOTIFICATION_WARNING: string = 'warning';
+const NOTIFICATION_ERROR: string = 'error';
 
-export const IMPACT_LIGHT: string = 'light';
-export const IMPACT_MEDIUM: string = 'medium';
-export const IMPACT_HEAVY: string = 'heavy';
-export const IMPACT_SOFT: string = 'soft';
-export const IMPACT_RIGID: string = 'rigid';
+const IMPACT_LIGHT: string = 'light';
+const IMPACT_MEDIUM: string = 'medium';
+const IMPACT_HEAVY: string = 'heavy';
+const IMPACT_SOFT: string = 'soft';
+const IMPACT_RIGID: string = 'rigid';
 
-export const PRESET_NOTICE_SUCCESS: string = 'noticeSuccess';
-export const PRESET_NOTICE_WARNING: string = 'noticeWarning';
-export const PRESET_NOTICE_FAILURE: string = 'noticeFailure';
-export const PRESET_SOFT: string = 'soft';
-export const PRESET_HARD: string = 'hard';
-export const PRESET_SHARP: string = 'sharp';
+export type HapticPresetName =
+  | 'noticeSuccess'
+  | 'noticeWarning'
+  | 'noticeFailure'
+  | 'soft'
+  | 'hard'
+  | 'sharp';
 
-export const COMMON_PRESET_API: number = 12;
-export const NOTICE_PRESET_API: number = 18;
+export const PRESET_NOTICE_SUCCESS: HapticPresetName = 'noticeSuccess';
+export const PRESET_NOTICE_WARNING: HapticPresetName = 'noticeWarning';
+export const PRESET_NOTICE_FAILURE: HapticPresetName = 'noticeFailure';
+export const PRESET_SOFT: HapticPresetName = 'soft';
+export const PRESET_HARD: HapticPresetName = 'hard';
+export const PRESET_SHARP: HapticPresetName = 'sharp';
+
+const COMMON_PRESET_API: number = 12;
+const NOTICE_PRESET_API: number = 18;
 export const PATTERN_API: number = 18;
 
 export type HapticUsage = 'notification' | 'physicalFeedback' | 'touch';
@@ -31,7 +39,7 @@ export interface HapticPreset {
   readonly count: number;
   readonly intensity: number;
   readonly minApi: number;
-  readonly name: string;
+  readonly name: HapticPresetName;
 }
 
 export interface HapticRecipe {
@@ -91,6 +99,12 @@ export function notificationRecipe(type: string): HapticRecipe | undefined {
 export function impactRecipe(style: string): HapticRecipe | undefined {
   switch (style) {
     case IMPACT_LIGHT:
+      return {
+        fallbackMs: 20,
+        pattern: [{ durationMs: 20, intensity: 20, startMs: 0 }],
+        presets: [{ count: 1, intensity: 25, minApi: COMMON_PRESET_API, name: PRESET_SOFT }],
+        usage: 'physicalFeedback',
+      };
     case IMPACT_SOFT:
       return {
         fallbackMs: 20,
