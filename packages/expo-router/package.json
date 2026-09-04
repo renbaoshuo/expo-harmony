@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-router",
-  "version": "55.0.16-harmony.0",
+  "version": "55.0.16-harmony.1",
   "license": "MIT",
   "author": "Baoshuo <i@baoshuo.ren>",
   "repository": {
@@ -13,7 +13,7 @@
   "dependencies": {
     "@expo-harmony/expo-linking": "workspace:*",
     "@react-native-ohos/react-native-safe-area-context": "5.6.3",
-    "@react-native-ohos/react-native-screens": "https://raw.gitcode.com/baoshuo/rntpc_react-native-screens/blobs/6bf1024635b11e50ba87e1e393d1af0b233fe50d/react-native-ohos-react-native-screens-4.23.0-rnoh084.0.tgz"
+    "@react-native-ohos/react-native-screens": "https://raw.atomgit.com/baoshuo/rntpc_react-native-screens/blobs/b9139c34288098501987574752912021df9997e0/react-native-ohos-react-native-screens-4.26.2-rnoh084.0.tgz"
   },
   "peerDependencies": {
     "@react-native-ohos/react-native-gesture-handler": "2.30.1",
