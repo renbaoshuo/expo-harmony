@@ -2,9 +2,9 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-splash-screen)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo SplashScreen 的原生实现，支持通过配置插件设置启动画面的图片、背景色及深色模式资源，并在运行时控制自动隐藏、手动隐藏和淡出过渡，与官方同版本的 expo-splash-screen 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo SplashScreen 的原生实现，与官方同版本的 `expo-splash-screen` 配套使用。支持控制启动画面的自动隐藏、手动隐藏和淡出过渡，以及通过配置插件设置启动图片、背景色和深色模式资源。
 
-如果需要配置 HarmonyOS 原生启动画面，必须在 `app.json` 的 `plugins` 中传入 `@expo-harmony/expo-splash-screen`：
+如果需要在预构建时配置 HarmonyOS 原生启动画面，请在 `app.json` 的 `plugins` 中传入 `@expo-harmony/expo-splash-screen`：
 
 ```json
 {
@@ -28,7 +28,9 @@
 }
 ```
 
-`resizeMode` 支持 `contain`、`cover` 和 `native`。重新 prebuild 后，插件会将图片、背景色和深色模式资源写入 HarmonyOS 原生工程。
+`resizeMode` 支持 `contain`、`cover` 和 `native`。修改配置后需要重新 prebuild，使用 `dark` 资源跟随系统外观时，请将 `expo.userInterfaceStyle` 设置为 `automatic`。
+
+运行时可通过 `SplashScreen.preventAutoHideAsync()` 保持启动画面，待应用准备就绪后调用 `SplashScreen.hide()` 或 `SplashScreen.hideAsync()` 隐藏，也可通过 `SplashScreen.setOptions()` 设置淡出效果和时长。
 
 ## Author
 

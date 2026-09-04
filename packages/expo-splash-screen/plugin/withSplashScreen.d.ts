@@ -17,7 +17,6 @@ export interface SplashScreenPluginConfig extends HarmonySplashScreenConfig {
   harmony?: HarmonySplashScreenConfig;
 }
 
-declare const withSplashScreen: ConfigPlugin<SplashScreenPluginConfig | null> & {
-  withHarmonySplashScreen: ConfigPlugin<SplashScreenPluginConfig | null>;
-};
+declare const withSplashScreen: ConfigPlugin<SplashScreenPluginConfig | null>;
+
 export = withSplashScreen;

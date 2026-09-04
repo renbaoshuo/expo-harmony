@@ -1,20 +1,21 @@
-import type { RNInstance } from '@rnoh/react-native-openharmony';
 import { common } from '@kit.AbilityKit';
-import { DrawableDescriptor, UIContext, window } from '@kit.ArkUI';
+import { DrawableDescriptor, UIContext } from '@kit.ArkUI';
 import { resourceManager } from '@kit.LocalizationKit';
+import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
 
 import { SplashScreenStateMachine } from './SplashScreenStateMachine';
 
 const DEFAULT_BACKGROUND: number = 0xffffffff;
 const DEFAULT_IMAGE_WIDTH: number = 100;
+const FADE_WATCHDOG_GRACE_MS: number = 100;
+const MAX_TIMER_DELAY_MS: number = 2147483647;
 
-export class ExpoSplashScreenError extends Error {
-  readonly code: string;
+export type SplashScreenResizeMode = 'contain' | 'cover' | 'native';
 
-  constructor(code: string, message: string) {
-    super(message);
+export class ExpoSplashScreenError extends ExpoModuleError {
+  constructor(code: string, message: string, cause?: Object) {
+    super(code, message, cause);
     this.name = 'ExpoSplashScreenError';
-    this.code = code;
   }
 }
 
@@ -22,7 +23,7 @@ export class SplashScreenRenderState {
   readonly visible: boolean;
   readonly backgroundColor: number;
   readonly image: DrawableDescriptor | undefined;
-  readonly resizeMode: string;
+  readonly resizeMode: SplashScreenResizeMode;
   readonly imageWidth: number;
   readonly opacity: number;
 
@@ -30,7 +31,7 @@ export class SplashScreenRenderState {
     visible: boolean,
     backgroundColor: number,
     image: DrawableDescriptor | undefined,
-    resizeMode: string,
+    resizeMode: SplashScreenResizeMode,
     imageWidth: number,
     opacity: number,
   ) {
@@ -51,7 +52,7 @@ type SplashScreenRenderListener = (state: SplashScreenRenderState) => void;
 
 export interface SplashScreenRuntimeOwner {
   setOptions(duration: number, fade: boolean): void;
-  prevent(userControlled: boolean): boolean;
+  prevent(controlled: boolean): boolean;
   contentAppeared(): void;
   internalMaybeHide(): void;
   hide(): void;
@@ -61,38 +62,45 @@ export interface SplashScreenRuntimeOwner {
 class SplashScreenResources {
   readonly backgroundColor: number;
   readonly image: DrawableDescriptor | undefined;
-  readonly resizeMode: string;
+  readonly resizeMode: SplashScreenResizeMode;
+  readonly valid: boolean;
   readonly imageWidth: number;
 
-  constructor(backgroundColor: number, image: DrawableDescriptor | undefined, resizeMode: string, imageWidth: number) {
+  constructor(
+    backgroundColor: number,
+    image: DrawableDescriptor | undefined,
+    resizeMode: SplashScreenResizeMode,
+    imageWidth: number,
+    valid: boolean,
+  ) {
     this.backgroundColor = backgroundColor;
     this.image = image;
     this.resizeMode = resizeMode;
     this.imageWidth = imageWidth;
+    this.valid = valid;
   }
 }
 
-class SplashScreenWindowOwner {
+class SplashScreenAbilityOwner {
   readonly ability: common.UIAbilityContext;
-  readonly windowId: number;
   private readonly resources: SplashScreenResources;
   private readonly state: SplashScreenStateMachine = new SplashScreenStateMachine();
-  private runtimeId: number | undefined = undefined;
+  private epoch: string | undefined = undefined;
   private listener: SplashScreenRenderListener | undefined = undefined;
   private ui: UIContext | undefined = undefined;
   private duration: number = 400;
   private fade: boolean = true;
   private opacity: number = 1;
   private generation: number = 0;
+  private timer: number | undefined = undefined;
 
-  constructor(ability: common.UIAbilityContext, id: number, resources: SplashScreenResources) {
+  constructor(ability: common.UIAbilityContext, resources: SplashScreenResources) {
     this.ability = ability;
-    this.windowId = id;
     this.resources = resources;
   }
 
   attachView(ui: UIContext, listener: SplashScreenRenderListener): () => void {
-    if (this.state.snapshot().destroyed) {
+    if (this.state.isDestroyed()) {
       throw new ExpoSplashScreenError(
         'ERR_SPLASH_SCREEN_ABILITY_DESTROYED',
         'Cannot attach the Expo splash screen after its UIAbility was destroyed.',
@@ -107,13 +115,15 @@ class SplashScreenWindowOwner {
 
     this.ui = ui;
     this.listener = listener;
-    this.state.markNativeVisible();
+    if (this.resources.valid) this.state.markNativeVisible();
+
     this.publish();
 
     return (): void => {
       if (this.listener !== listener) return;
 
       this.generation += 1;
+      this.clearTimer();
       this.opacity = 1;
       this.listener = undefined;
       this.ui = undefined;
@@ -121,67 +131,68 @@ class SplashScreenWindowOwner {
     };
   }
 
-  beginRuntime(id: number): void {
-    this.requireAlive();
+  beginRuntime(epoch: string): void {
+    if (this.state.isDestroyed()) {
+      throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_ABILITY_DESTROYED', 'The Expo splash screen owner no longer has a live UIAbility/window.');
+    }
+    if (this.epoch === epoch) return;
 
-    if (this.runtimeId === id) return;
-
-    this.runtimeId = id;
+    this.epoch = epoch;
     this.generation += 1;
+    this.clearTimer();
     this.opacity = 1;
     this.state.prepareForRuntime(this.listener !== undefined);
 
     this.publish();
   }
 
-  endRuntime(id: number): void {
-    if (this.runtimeId !== id) return;
-    this.runtimeId = undefined;
+  endRuntime(epoch: string): void {
+    if (this.epoch !== epoch) return;
+
+    this.epoch = undefined;
     this.generation += 1;
+    this.clearTimer();
   }
 
-  containsRuntime(id: number): boolean {
-    return this.runtimeId === id;
+  containsRuntime(epoch: string): boolean {
+    return this.epoch === epoch;
   }
 
   isDestroyed(): boolean {
-    return this.state.snapshot().destroyed;
+    return this.state.isDestroyed();
   }
 
   setOptions(duration: number, fade: boolean): void {
-    if (!Number.isFinite(duration) || duration < 0) {
+    if (!Number.isFinite(duration) || duration < 0 || duration > MAX_TIMER_DELAY_MS - FADE_WATCHDOG_GRACE_MS) {
       throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_OPTIONS', 'Splash screen duration must be a non-negative finite number.');
     }
-    if (this.state.snapshot().destroyed) return;
+    if (this.state.isDestroyed()) return;
 
     this.duration = duration;
     this.fade = fade;
   }
 
-  prevent(userControlled: boolean): boolean {
-    if (this.state.snapshot().destroyed) return false;
-    return this.state.prevent(userControlled);
+  prevent(controlled: boolean): boolean {
+    return this.state.prevent(controlled);
   }
 
   contentAppeared(): void {
-    if (this.state.snapshot().destroyed) return;
-    if (this.state.contentAppeared()) this.remove(true);
+    if (this.state.contentAppeared()) this.remove();
   }
 
   internalMaybeHide(): void {
-    if (this.state.snapshot().destroyed) return;
-    if (this.state.internalMaybeHide()) this.remove(true);
+    if (this.state.internalMaybeHide()) this.remove();
   }
 
   hide(): void {
-    if (this.state.snapshot().destroyed) return;
-    if (this.state.hide()) this.remove(true);
+    if (this.state.hide()) this.remove();
   }
 
-  prepareForReload(id: number): void {
-    if (this.state.snapshot().destroyed || this.runtimeId !== id) return;
+  prepareForReload(epoch: string): void {
+    if (this.state.isDestroyed() || this.epoch !== epoch) return;
 
     this.generation += 1;
+    this.clearTimer();
     this.opacity = 1;
     this.state.prepareForRuntime(true);
 
@@ -191,8 +202,9 @@ class SplashScreenWindowOwner {
   destroy(): void {
     if (!this.state.destroy()) return;
 
-    this.runtimeId = undefined;
+    this.epoch = undefined;
     this.generation += 1;
+    this.clearTimer();
     this.opacity = 1;
 
     this.publish();
@@ -201,12 +213,13 @@ class SplashScreenWindowOwner {
     this.ui = undefined;
   }
 
-  private remove(allowFade: boolean): void {
-    if (!this.state.snapshot().nativeVisible) return;
+  private remove(): void {
+    if (!this.state.isVisible()) return;
 
+    this.clearTimer();
     const generation = this.generation;
 
-    if (!allowFade || !this.fade || this.duration <= 0) {
+    if (!this.fade || this.duration <= 0) {
       this.finishRemoval(generation);
       return;
     }
@@ -226,11 +239,13 @@ class SplashScreenWindowOwner {
         },
         (): void => {
           if (generation !== this.generation) return;
+
           this.opacity = 0;
           this.publish();
         },
       );
-      setTimeout((): void => this.finishRemoval(generation), Math.ceil(this.duration) + 100);
+
+      this.timer = setTimeout((): void => this.finishRemoval(generation), Math.ceil(this.duration) + FADE_WATCHDOG_GRACE_MS);
     } catch (_) {
       this.finishRemoval(generation);
     }
@@ -239,6 +254,7 @@ class SplashScreenWindowOwner {
   private finishRemoval(generation: number): void {
     if (generation !== this.generation) return;
 
+    this.clearTimer();
     this.state.markNativeRemoved();
     this.opacity = 1;
 
@@ -249,11 +265,9 @@ class SplashScreenWindowOwner {
     const listener = this.listener;
     if (listener === undefined) return;
 
-    const state = this.state.snapshot();
-
     listener(
       new SplashScreenRenderState(
-        state.nativeVisible && !state.destroyed,
+        this.state.isVisible() && !this.state.isDestroyed(),
         this.resources.backgroundColor,
         this.resources.image,
         this.resources.resizeMode,
@@ -263,177 +277,94 @@ class SplashScreenWindowOwner {
     );
   }
 
-  private requireAlive(): void {
-    if (this.state.snapshot().destroyed) {
-      throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_ABILITY_DESTROYED', 'The Expo splash screen owner no longer has a live UIAbility/window.');
-    }
+  private clearTimer(): void {
+    if (this.timer === undefined) return;
+    clearTimeout(this.timer);
+    this.timer = undefined;
   }
 }
 
 class SplashScreenCoordinator {
-  private static readonly ownersByAbility: Map<common.UIAbilityContext, SplashScreenWindowOwner> = new Map();
-  private static readonly ownersByWindow: Map<number, SplashScreenWindowOwner> = new Map();
-  private static readonly ownersByRuntime: Map<number, SplashScreenWindowOwner> = new Map();
+  private static readonly abilities: Map<common.UIAbilityContext, SplashScreenAbilityOwner> = new Map();
+  private static readonly runtimes: Map<string, SplashScreenAbilityOwner> = new Map();
 
-  static async prepareWindow(ability: common.UIAbilityContext, stage: window.WindowStage): Promise<void> {
-    let mainWindow: window.Window;
+  static prepareAbility(ability: common.UIAbilityContext): SplashScreenAbilityOwner {
+    const current = SplashScreenCoordinator.abilities.get(ability);
+    if (current !== undefined && !current.isDestroyed()) return current;
 
-    try {
-      mainWindow = await stage.getMainWindow();
-    } catch (error) {
-      throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_WINDOW', `Unable to locate the UIAbility main window: ${String(error)}`);
-    }
+    const owner = new SplashScreenAbilityOwner(ability, resolveResources(ability.resourceManager));
+    SplashScreenCoordinator.abilities.set(ability, owner);
 
-    let id: number;
-
-    try {
-      id = mainWindow.getWindowProperties().id;
-    } catch (error) {
-      throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_WINDOW', `Unable to inspect the UIAbility main window: ${String(error)}`);
-    }
-
-    const abilityOwner = SplashScreenCoordinator.ownersByAbility.get(ability);
-    if (abilityOwner !== undefined && abilityOwner.windowId === id) return;
-    if (abilityOwner !== undefined) SplashScreenCoordinator.removeOwner(abilityOwner);
-
-    const windowOwner = SplashScreenCoordinator.ownersByWindow.get(id);
-    if (windowOwner !== undefined) SplashScreenCoordinator.removeOwner(windowOwner);
-
-    const resources = resolveResources(ability.resourceManager);
-    const owner = new SplashScreenWindowOwner(ability, id, resources);
-
-    SplashScreenCoordinator.ownersByAbility.set(ability, owner);
-    SplashScreenCoordinator.ownersByWindow.set(id, owner);
+    return owner;
   }
 
   static attachView(ability: common.UIAbilityContext, ui: UIContext, listener: SplashScreenRenderListener): () => void {
-    const owner = SplashScreenCoordinator.ownersByAbility.get(ability);
-    if (owner === undefined) {
-      return (): void => {};
-    }
-
-    return owner.attachView(ui, listener);
+    return SplashScreenCoordinator.prepareAbility(ability).attachView(ui, listener);
   }
 
-  static async bindRNInstance(instance: RNInstance): Promise<void> {
-    if (SplashScreenCoordinator.ownersByWindow.size === 0) return;
-
-    let mainWindow: window.Window;
-
-    try {
-      mainWindow = await instance.getRNWindow();
-    } catch (_) {
-      return;
-    }
-
-    let id: number;
-
-    try {
-      id = mainWindow.getWindowProperties().id;
-    } catch (_) {
-      return;
-    }
-
-    const owner = SplashScreenCoordinator.ownersByWindow.get(id);
-    if (owner === undefined) return;
-
-    const runtime: number = instance.getId();
-
-    SplashScreenCoordinator.bindRuntime(owner, runtime);
-  }
-
-  static bindServiceRuntime(ability: common.UIAbilityContext, id: number): SplashScreenWindowOwner | undefined {
-    const owner = SplashScreenCoordinator.ownersByAbility.get(ability);
-    if (owner === undefined) return undefined;
-
-    SplashScreenCoordinator.bindRuntime(owner, id);
+  static bindRuntimeForAbility(ability: common.UIAbilityContext, epoch: string): SplashScreenAbilityOwner {
+    const owner = SplashScreenCoordinator.prepareAbility(ability);
+    SplashScreenCoordinator.bindRuntime(owner, epoch);
 
     return owner;
   }
 
-  static requireRuntime(id: number): SplashScreenWindowOwner {
-    const owner = SplashScreenCoordinator.ownersByRuntime.get(id);
-    if (owner === undefined || !owner.containsRuntime(id)) {
-      throw new ExpoSplashScreenError(
-        'ERR_SPLASH_SCREEN_RUNTIME_UNBOUND',
-        `RNInstance ${id} was not bound through ExpoSplashScreenLifecycle.onRNInstanceSetUp.`,
-      );
-    }
-
-    return owner;
+  static findRuntime(epoch: string): SplashScreenAbilityOwner | undefined {
+    const owner = SplashScreenCoordinator.runtimes.get(epoch);
+    return owner !== undefined && owner.containsRuntime(epoch) ? owner : undefined;
   }
 
-  static findRuntime(id: number): SplashScreenWindowOwner | undefined {
-    const owner = SplashScreenCoordinator.ownersByRuntime.get(id);
-    return owner !== undefined && owner.containsRuntime(id) ? owner : undefined;
-  }
-
-  static endRuntime(id: number): void {
-    const owner = SplashScreenCoordinator.ownersByRuntime.get(id);
+  static endRuntime(epoch: string): void {
+    const owner = SplashScreenCoordinator.runtimes.get(epoch);
     if (owner === undefined) return;
 
-    SplashScreenCoordinator.ownersByRuntime.delete(id);
-    owner.endRuntime(id);
+    SplashScreenCoordinator.runtimes.delete(epoch);
+    owner.endRuntime(epoch);
   }
 
-  static prepareRuntimeReload(id: number): void {
-    SplashScreenCoordinator.findRuntime(id)?.prepareForReload(id);
-  }
-
-  static destroyRuntimeAbility(id: number): void {
-    const owner = SplashScreenCoordinator.ownersByRuntime.get(id);
-    if (owner === undefined) return;
-
-    SplashScreenCoordinator.removeOwner(owner);
+  static prepareRuntimeReload(epoch: string): void {
+    SplashScreenCoordinator.findRuntime(epoch)?.prepareForReload(epoch);
   }
 
   static destroyAbility(ability: common.UIAbilityContext): void {
-    const owner = SplashScreenCoordinator.ownersByAbility.get(ability);
+    const owner = SplashScreenCoordinator.abilities.get(ability);
     if (owner !== undefined) SplashScreenCoordinator.removeOwner(owner);
   }
 
-  private static bindRuntime(owner: SplashScreenWindowOwner, id: number): void {
-    const previous = SplashScreenCoordinator.ownersByRuntime.get(id);
-    if (previous !== undefined && previous !== owner) previous.endRuntime(id);
+  private static bindRuntime(owner: SplashScreenAbilityOwner, epoch: string): void {
+    const previous = SplashScreenCoordinator.runtimes.get(epoch);
+    if (previous !== undefined && previous !== owner) previous.endRuntime(epoch);
 
-    Array.from(SplashScreenCoordinator.ownersByRuntime.entries()).forEach((entry) => {
-      if (entry[1] === owner && entry[0] !== id) {
-        SplashScreenCoordinator.ownersByRuntime.delete(entry[0]);
+    Array.from(SplashScreenCoordinator.runtimes.entries()).forEach((entry) => {
+      if (entry[1] === owner && entry[0] !== epoch) {
+        SplashScreenCoordinator.runtimes.delete(entry[0]);
       }
     });
 
-    owner.beginRuntime(id);
-    SplashScreenCoordinator.ownersByRuntime.set(id, owner);
+    owner.beginRuntime(epoch);
+    SplashScreenCoordinator.runtimes.set(epoch, owner);
   }
 
-  private static removeOwner(owner: SplashScreenWindowOwner): void {
+  private static removeOwner(owner: SplashScreenAbilityOwner): void {
     owner.destroy();
 
-    if (SplashScreenCoordinator.ownersByAbility.get(owner.ability) === owner) {
-      SplashScreenCoordinator.ownersByAbility.delete(owner.ability);
+    if (SplashScreenCoordinator.abilities.get(owner.ability) === owner) {
+      SplashScreenCoordinator.abilities.delete(owner.ability);
     }
 
-    if (SplashScreenCoordinator.ownersByWindow.get(owner.windowId) === owner) {
-      SplashScreenCoordinator.ownersByWindow.delete(owner.windowId);
-    }
-
-    Array.from(SplashScreenCoordinator.ownersByRuntime.entries()).forEach((entry) => {
-      if (entry[1] === owner) SplashScreenCoordinator.ownersByRuntime.delete(entry[0]);
+    Array.from(SplashScreenCoordinator.runtimes.entries()).forEach((entry) => {
+      if (entry[1] === owner) SplashScreenCoordinator.runtimes.delete(entry[0]);
     });
   }
 }
 
 export class ExpoSplashScreenLifecycle {
-  static async onWindowStageSetup(ability: common.UIAbilityContext, stage: window.WindowStage): Promise<void> {
-    await SplashScreenCoordinator.prepareWindow(ability, stage);
+  static onWindowStageSetup(ability: common.UIAbilityContext): void {
+    SplashScreenCoordinator.prepareAbility(ability);
   }
 
   static onWindowStageWillDestroy(ability: common.UIAbilityContext): void {
     SplashScreenCoordinator.destroyAbility(ability);
-  }
-
-  static async onRNInstanceSetUp(instance: RNInstance): Promise<void> {
-    await SplashScreenCoordinator.bindRNInstance(instance);
   }
 }
 
@@ -441,28 +372,20 @@ export function attachSplashScreenView(ability: common.UIAbilityContext, ui: UIC
   return SplashScreenCoordinator.attachView(ability, ui, listener);
 }
 
-export function requireSplashScreenRuntime(id: number): SplashScreenRuntimeOwner {
-  return SplashScreenCoordinator.requireRuntime(id);
+export function bindSplashScreenRuntime(ability: common.UIAbilityContext, epoch: string): SplashScreenRuntimeOwner {
+  return SplashScreenCoordinator.bindRuntimeForAbility(ability, epoch);
 }
 
-export function bindSplashScreenServiceRuntime(ability: common.UIAbilityContext, id: number): SplashScreenRuntimeOwner | undefined {
-  return SplashScreenCoordinator.bindServiceRuntime(ability, id);
+export function findSplashScreenRuntime(epoch: string): SplashScreenRuntimeOwner | undefined {
+  return SplashScreenCoordinator.findRuntime(epoch);
 }
 
-export function findSplashScreenRuntime(id: number): SplashScreenRuntimeOwner | undefined {
-  return SplashScreenCoordinator.findRuntime(id);
+export function endSplashScreenRuntime(epoch: string): void {
+  SplashScreenCoordinator.endRuntime(epoch);
 }
 
-export function endSplashScreenRuntime(id: number): void {
-  SplashScreenCoordinator.endRuntime(id);
-}
-
-export function prepareSplashScreenRuntimeReload(id: number): void {
-  SplashScreenCoordinator.prepareRuntimeReload(id);
-}
-
-export function destroySplashScreenRuntimeAbility(id: number): void {
-  SplashScreenCoordinator.destroyRuntimeAbility(id);
+export function prepareSplashScreenRuntimeReload(epoch: string): void {
+  SplashScreenCoordinator.prepareRuntimeReload(epoch);
 }
 
 export function destroySplashScreenAbility(ability: common.UIAbilityContext): void {
@@ -471,27 +394,39 @@ export function destroySplashScreenAbility(ability: common.UIAbilityContext): vo
 
 function resolveResources(manager: resourceManager.ResourceManager): SplashScreenResources {
   let background: number = DEFAULT_BACKGROUND;
-  let resize: string = 'contain';
+  let resize: SplashScreenResizeMode = 'contain';
   let width: number = DEFAULT_IMAGE_WIDTH;
   let image: DrawableDescriptor | undefined = undefined;
+  let valid: boolean = true;
 
   try {
     background = manager.getColorByNameSync('expo_splash_screen_background');
-  } catch (_) {}
-  try {
-    resize = manager.getStringByNameSync('expo_splash_screen_resize_mode');
-  } catch (_) {}
-  try {
-    width = Number(manager.getStringByNameSync('expo_splash_screen_image_width'));
-  } catch (_) {}
-  try {
-    image = manager.getDrawableDescriptorByName('expo_splash_screen');
-  } catch (_) {}
-
-  if (!Number.isFinite(width) || width <= 0) width = DEFAULT_IMAGE_WIDTH;
-  if (resize !== 'contain' && resize !== 'cover' && resize !== 'native') {
-    resize = 'contain';
+  } catch (error) {
+    valid = false;
+    console.warn(`Unable to resolve the required Expo splash background resource: ${String(error)}`);
   }
 
-  return new SplashScreenResources(background, image, resize, width);
+  try {
+    const value: string = manager.getStringByNameSync('expo_splash_screen_resize_mode');
+    if (value === 'contain' || value === 'cover' || value === 'native') resize = value;
+    else console.warn(`Ignoring invalid Expo splash resize mode '${value}'.`);
+  } catch (error) {
+    console.warn(`Using the default Expo splash resize mode: ${String(error)}`);
+  }
+
+  try {
+    width = Number(manager.getStringByNameSync('expo_splash_screen_image_width'));
+  } catch (error) {
+    console.warn(`Using the default Expo splash image width: ${String(error)}`);
+  }
+
+  try {
+    image = manager.getDrawableDescriptorByName('expo_splash_screen');
+  } catch (error) {
+    console.warn(`Expo splash image is unavailable; rendering the configured background only: ${String(error)}`);
+  }
+
+  if (!Number.isFinite(width) || width <= 0) width = DEFAULT_IMAGE_WIDTH;
+
+  return new SplashScreenResources(background, image, resize, width, valid);
 }

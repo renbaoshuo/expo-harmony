@@ -15,10 +15,10 @@ const {
 
 const pkg = require('../package.json');
 
-const SPLASH_MEDIA = 'expo_splash_screen';
-const LEGACY_DARK_MEDIA = 'expo_splash_screen_dark';
-const SPLASH_BACKGROUND = 'expo_splash_screen_background';
-const LEGACY_DARK_BACKGROUND = 'expo_splash_screen_background_dark';
+const MEDIA = 'expo_splash_screen';
+const BACKGROUND = 'expo_splash_screen_background';
+const RESIZE_MODE = 'expo_splash_screen_resize_mode';
+const IMAGE_WIDTH = 'expo_splash_screen_image_width';
 const RESIZE_MODES = new Set(['contain', 'cover', 'native']);
 const COLOR = /^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.svg', '.webp', '.gif']);
@@ -30,12 +30,12 @@ const OWNERSHIP = Object.freeze({
   },
   resources: {
     colors: {
-      entry: [SPLASH_BACKGROUND, LEGACY_DARK_BACKGROUND],
-      entryDark: [SPLASH_BACKGROUND, LEGACY_DARK_BACKGROUND],
+      entry: [BACKGROUND],
+      entryDark: [BACKGROUND],
     },
     media: {
-      entry: [SPLASH_MEDIA, LEGACY_DARK_MEDIA],
-      entryDark: [SPLASH_MEDIA, LEGACY_DARK_MEDIA],
+      entry: [MEDIA],
+      entryDark: [MEDIA],
     },
     strings: {
       entry: [
@@ -113,6 +113,7 @@ function normalizeObject(value, field) {
   if (typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError(`${field} splash options must be an object.`);
   }
+
   return value;
 }
 
@@ -121,9 +122,8 @@ function normalizeProps(config, props) {
     throw new TypeError('expo-splash-screen plugin options must be an object or null.');
   }
 
-  const expo = props == null ? normalizeObject(config?.splash, 'legacy') : {};
-  const legacy = normalizeObject(config?.harmony?.splash, 'harmony legacy');
-  const options = { ...expo, ...legacy, ...(props ?? {}) };
+  const expo = props == null ? normalizeObject(config?.splash, 'Expo app config') : {};
+  const options = { ...expo, ...(props ?? {}) };
   const harmony = normalizeObject(options.harmony, 'harmony');
   const dark = {
     ...normalizeObject(options.dark, 'dark'),
@@ -206,6 +206,7 @@ function resolveImage(root, image, field) {
       { operation: 'resolve-splash-image', file: source, cause }
     );
   }
+
   if (!stat?.isFile()) {
     throw new HarmonyConfigPluginError(
       'ERR_HARMONY_CONFIG_INVALID',
@@ -214,16 +215,32 @@ function resolveImage(root, image, field) {
     );
   }
 
-  return { name: `${SPLASH_MEDIA}${image.extension}`, source };
+  return { name: `${MEDIA}${image.extension}`, source };
 }
 
 function updateEntryAbility(json) {
   const module = json.module;
   if (!module || typeof module !== 'object' || !Array.isArray(module.abilities)) {
-    return json;
+    throw new HarmonyConfigPluginError(
+      'ERR_HARMONY_CONFIG_INVALID',
+      'Harmony splash configuration requires module.abilities.',
+      { operation: 'configure-splash-entry-ability' }
+    );
   }
 
   const main = module.mainElement;
+  const matches = module.abilities.filter((ability, index) => (
+    ability && typeof ability === 'object'
+    && (typeof main === 'string' ? ability.name === main : index === 0)
+  ));
+  if (matches.length !== 1) {
+    throw new HarmonyConfigPluginError(
+      'ERR_HARMONY_CONFIG_INVALID',
+      `Harmony splash configuration expected exactly one main Ability, found ${matches.length}.`,
+      { operation: 'configure-splash-entry-ability' }
+    );
+  }
+
   const abilities = module.abilities.map((ability, index) => {
     if (!ability || typeof ability !== 'object') return ability;
 
@@ -263,6 +280,7 @@ const withHarmonySplashScreen = (config, props) => {
 
   config = withModuleJson(config, (mod) => {
     mod.modResults = updateEntryAbility(mod.modResults);
+
     return mod;
   });
 
@@ -273,13 +291,13 @@ const withHarmonySplashScreen = (config, props) => {
     mod.modResults.entryDark ??= {};
 
     mod.modResults.entry.color = setResource(
-      removeResource(mod.modResults.entry.color, LEGACY_DARK_BACKGROUND),
-      SPLASH_BACKGROUND,
+      mod.modResults.entry.color,
+      BACKGROUND,
       qualified.entryBackgroundColor
     );
     mod.modResults.entryDark.color = setResource(
-      removeResource(mod.modResults.entryDark.color, LEGACY_DARK_BACKGROUND),
-      SPLASH_BACKGROUND,
+      mod.modResults.entryDark.color,
+      BACKGROUND,
       qualified.entryDarkBackgroundColor
     );
 
@@ -288,15 +306,14 @@ const withHarmonySplashScreen = (config, props) => {
 
   config = withStrings(config, (mod) => {
     const { normalized } = resolveOptions();
+    let strings = mod.modResults.entry?.string;
 
-    mod.modResults.entry ??= {};
-
-    let strings = mod.modResults.entry.string;
-    strings = setResource(strings, 'expo_splash_screen_resize_mode', normalized.resizeMode);
-    strings = setResource(strings, 'expo_splash_screen_image_width', String(normalized.imageWidth));
+    strings = setResource(strings, RESIZE_MODE, normalized.resizeMode);
+    strings = setResource(strings, IMAGE_WIDTH, String(normalized.imageWidth));
     strings = removeResource(strings, 'expo_splash_screen_has_image');
     strings = removeResource(strings, 'expo_splash_screen_has_dark_image');
 
+    mod.modResults.entry ??= {};
     mod.modResults.entry.string = strings;
 
     return mod;
@@ -304,19 +321,15 @@ const withHarmonySplashScreen = (config, props) => {
 
   config = withMedia(config, (mod) => {
     const { qualified } = resolveOptions();
-
-    mod.modResults.entry ??= {};
-    mod.modResults.entryDark ??= {};
-
     const root = mod.modRequest.projectRoot;
     const image = resolveImage(root, qualified.entryImage, 'image');
     const dark = resolveImage(root, qualified.entryDarkImage, 'darkImage');
 
-    replaceMedia(mod.modResults.entry, SPLASH_MEDIA, image ?? { name: `${SPLASH_MEDIA}.png`, content: TRANSPARENT_PNG });
-    replaceMedia(mod.modResults.entryDark, SPLASH_MEDIA, dark);
+    mod.modResults.entry ??= {};
+    mod.modResults.entryDark ??= {};
 
-    replaceMedia(mod.modResults.entry, LEGACY_DARK_MEDIA, null);
-    replaceMedia(mod.modResults.entryDark, LEGACY_DARK_MEDIA, null);
+    replaceMedia(mod.modResults.entry, MEDIA, image ?? { name: `${MEDIA}.png`, content: TRANSPARENT_PNG });
+    replaceMedia(mod.modResults.entryDark, MEDIA, dark);
 
     return mod;
   });
@@ -325,4 +338,3 @@ const withHarmonySplashScreen = (config, props) => {
 };
 
 module.exports = createRunOncePlugin(withHarmonySplashScreen, pkg.name, pkg.version);
-module.exports.withHarmonySplashScreen = withHarmonySplashScreen;

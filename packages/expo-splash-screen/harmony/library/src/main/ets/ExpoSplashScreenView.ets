@@ -3,7 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { attachSplashScreenView, ExpoSplashScreenError, SplashScreenRenderState } from './SplashScreenLifecycle';
 @Component
 export struct ExpoSplashScreenView {
-  @State private renderState: SplashScreenRenderState = SplashScreenRenderState.hidden();
+  @State private state: SplashScreenRenderState = SplashScreenRenderState.hidden();
   private detach: (() => void) | undefined = undefined;
 
   aboutToAppear(): void {
@@ -15,7 +15,7 @@ export struct ExpoSplashScreenView {
     }
 
     this.detach = attachSplashScreenView(host as common.UIAbilityContext, ui, (state: SplashScreenRenderState): void => {
-      this.renderState = state;
+      this.state = state;
     });
   }
 
@@ -27,29 +27,27 @@ export struct ExpoSplashScreenView {
   }
 
   build(): void {
-    if (this.renderState.visible) {
+    if (this.state.visible) {
       Stack({ alignContent: Alignment.Center }) {
-        if (this.renderState.image !== undefined) {
-          if (this.renderState.resizeMode === 'cover') {
-            Image(this.renderState.image)
+        if (this.state.image !== undefined) {
+          if (this.state.resizeMode === 'cover') {
+            Image(this.state.image)
               .width('100%')
               .height('100%')
               .objectFit(ImageFit.Cover);
-          } else if (this.renderState.resizeMode === 'native') {
-            Image(this.renderState.image)
-              .width(this.renderState.imageWidth)
-              .objectFit(ImageFit.None);
+          } else if (this.state.resizeMode === 'native') {
+            Image(this.state.image).objectFit(ImageFit.None);
           } else {
-            Image(this.renderState.image)
-              .width(this.renderState.imageWidth)
+            Image(this.state.image)
+              .width(this.state.imageWidth)
               .objectFit(ImageFit.Contain);
           }
         }
       }
       .width('100%')
       .height('100%')
-      .backgroundColor(this.renderState.backgroundColor)
-      .opacity(this.renderState.opacity)
+      .backgroundColor(this.state.backgroundColor)
+      .opacity(this.state.opacity)
       .hitTestBehavior(HitTestMode.Block)
       .zIndex(2147483647);
     }
