@@ -1,14 +1,6 @@
 {
   "platforms": ["harmony"],
   "harmony": {
-    "providers": [
-      {
-        "identifier": "expo-constants:ExpoConstantsProvider",
-        "header": "ExpoConstantsProvider.h",
-        "className": "expo::harmony::constants::ExpoConstantsProvider",
-        "cmakeTargetName": "expo_harmony__expo_constants",
-        "debugOnly": false
-      }
-    ]
+    "modules": ["ExpoConstantsModule"]
   }
 }

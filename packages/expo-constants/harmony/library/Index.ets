@@ -1,1 +1,1 @@
-export { ExpoConstantsPackage as default, ExpoConstantsPackage } from './src/main/ets/ExpoConstantsPackage';
+export { ExpoConstantsModule } from './src/main/ets/ExpoConstantsModule';
