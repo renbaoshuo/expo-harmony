@@ -1,3 +1,5 @@
+import { batteryInfo } from '@kit.BasicServicesKit';
+
 export const UNKNOWN_BATTERY_LEVEL: number = -1;
 
 const BATTERY_PERCENT_SCALE: number = 100;
@@ -11,12 +13,6 @@ export class ExpoBatteryState {
 
 export type ExpoBatteryStateValue = number;
 
-class HarmonyBatteryChargeState {
-  static readonly ENABLE: number = 1;
-  static readonly DISABLE: number = 2;
-  static readonly FULL: number = 3;
-}
-
 export function batteryLevelFromSoc(soc: number): number {
   if (!Number.isFinite(soc) || soc < 0 || soc > BATTERY_PERCENT_SCALE) {
     return UNKNOWN_BATTERY_LEVEL;
@@ -25,10 +21,12 @@ export function batteryLevelFromSoc(soc: number): number {
   return soc / BATTERY_PERCENT_SCALE;
 }
 
-export function batteryStateFromChargeState(state: number): ExpoBatteryStateValue {
-  if (state === HarmonyBatteryChargeState.ENABLE) return ExpoBatteryState.CHARGING;
-  if (state === HarmonyBatteryChargeState.DISABLE) return ExpoBatteryState.UNPLUGGED;
-  if (state === HarmonyBatteryChargeState.FULL) return ExpoBatteryState.FULL;
+export function batteryStateFromChargeState(
+  state: batteryInfo.BatteryChargeState,
+): ExpoBatteryStateValue {
+  if (state === batteryInfo.BatteryChargeState.ENABLE) return ExpoBatteryState.CHARGING;
+  if (state === batteryInfo.BatteryChargeState.DISABLE) return ExpoBatteryState.UNPLUGGED;
+  if (state === batteryInfo.BatteryChargeState.FULL) return ExpoBatteryState.FULL;
 
   return ExpoBatteryState.UNKNOWN;
 }

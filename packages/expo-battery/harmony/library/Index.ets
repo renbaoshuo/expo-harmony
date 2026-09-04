@@ -1,1 +1,1 @@
-export { ExpoBatteryPackage as default, ExpoBatteryPackage } from './src/main/ets/ExpoBatteryPackage';
+export { ExpoBatteryModule } from './src/main/ets/ExpoBatteryModule';
