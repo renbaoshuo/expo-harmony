@@ -4,7 +4,7 @@
   "version": "{{PACKAGE_VERSION}}",
   "license": "MIT",
   "dependencies": {
-    "{{NPM_NAME}}": "{{PACKAGE_VERSION}}"
+    "{{NPM_NAME}}": "./library"
   },
   "overrides": {
     "@expo-harmony/expo-modules-core": "55.0.25-harmony.1",
