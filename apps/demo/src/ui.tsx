@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Pressable,
   ScrollView,
-  StatusBar,
   StyleProp,
   StyleSheet,
   Text,
@@ -52,7 +51,6 @@ type LabScreenProps = React.PropsWithChildren<{
 export function LabScreen({ children, description, kicker, testID, title }: LabScreenProps) {
   return (
     <View style={styles.root} testID={testID}>
-      <StatusBar backgroundColor={palette.canvas} barStyle="dark-content" />
       <ScrollView
         contentContainerStyle={styles.page}
         keyboardShouldPersistTaps="handled"

@@ -5,6 +5,7 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import * as SystemUI from 'expo-system-ui';
 import { useEffect } from 'react';
+import { Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-context';
 
@@ -42,6 +43,7 @@ export default function RootLayout() {
               headerStyle: { backgroundColor: palette.surface },
               headerTintColor: palette.signal,
               headerTitleStyle: { color: palette.text, fontWeight: '700' },
+              statusBarBackgroundColor: String(Platform.OS) === 'harmony' ? palette.canvas : undefined,
               statusBarStyle: 'dark',
             }}
           >

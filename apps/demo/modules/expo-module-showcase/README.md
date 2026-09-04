@@ -31,7 +31,7 @@ Android / iOS 使用 Expo SDK 55 对应的 React Native 0.83.6 和 React 19.2.0�
 
 Harmony release 导出通过 RNOH 解析 `hermes-compiler`（本 demo 为 `250829098.0.9`，HBC 98），避免误用 Android / iOS 的 Hermes 编译器。
 
-`react-native-screens` 统一使用 4.26.2。Harmony 的 Metro 搜索路径包含 Router 工作区的 `node_modules`，以发现 Yarn 隔离安装的 Screens 和 Safe Area 平台实现。
+Android / iOS 使用 Expo SDK 55 配套的 `react-native-screens` 4.23.0 和 Reanimated 4.2.1。Harmony 的 Screens 适配包仍对应 4.26.2，其上游依赖由 Router 工作区提供。Harmony 的 Metro 搜索路径包含 Router 工作区的 `node_modules`，以发现 Yarn 隔离安装的 Screens 和 Safe Area 平台实现。
 
 ### HarmonyOS 模拟器
 

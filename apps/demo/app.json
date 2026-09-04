@@ -4,12 +4,16 @@
     "slug": "expo-harmony-demo",
     "version": "1.0.0",
     "orientation": "default",
-    "icon": "./assets/app-icon.svg",
+    "icon": "./assets/app-icon.png",
     "scheme": "expoharmonydemo",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "jsEngine": "hermes",
-    "platforms": ["ios", "android"],
+    "platforms": [
+      "ios",
+      "android",
+      "harmony"
+    ],
     "plugins": [
       "expo-router",
       [
@@ -26,7 +30,7 @@
         "expo-splash-screen",
         {
           "backgroundColor": "#F2F2F7",
-          "image": "./assets/app-icon.svg",
+          "image": "./assets/app-icon.png",
           "resizeMode": "contain"
         }
       ],
@@ -80,8 +84,9 @@
       "@expo-harmony/prebuild-config"
     ],
     "harmony": {
-      "bundleName": "com.expo.harmony.demo",
+      "bundleName": "cn.baoshuo.expoharmonydemo",
       "label": "Expo Harmony 模块实验室",
+      "icon": "./assets/app-icon.svg",
       "versionCode": 1,
       "targetApiVersion": 24,
       "compatibleSdkVersion": 23,
@@ -90,7 +95,9 @@
           "name": "ohos.permission.CAMERA",
           "reason": "$string:camera_permission_reason",
           "usedScene": {
-            "abilities": ["EntryAbility"],
+            "abilities": [
+              "EntryAbility"
+            ],
             "when": "inuse"
           }
         },
@@ -98,15 +105,27 @@
           "name": "ohos.permission.MICROPHONE",
           "reason": "$string:microphone_permission_reason",
           "usedScene": {
-            "abilities": ["EntryAbility"],
+            "abilities": [
+              "EntryAbility"
+            ],
             "when": "inuse"
           }
         },
-        { "name": "ohos.permission.FILE_ACCESS_PERSIST" },
-        { "name": "ohos.permission.GET_NETWORK_INFO" }
+        {
+          "name": "ohos.permission.FILE_ACCESS_PERSIST"
+        },
+        {
+          "name": "ohos.permission.GET_NETWORK_INFO"
+        }
       ],
       "backgroundColor": "#F2F2F7",
       "userInterfaceStyle": "light"
+    },
+    "ios": {
+      "bundleIdentifier": "cn.baoshuo.expoharmonydemo",
+      "infoPlist": {
+        "UIViewControllerBasedStatusBarAppearance": true
+      }
     }
   }
 }
