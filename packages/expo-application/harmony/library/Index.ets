@@ -1,1 +1,1 @@
-export { ExpoApplicationPackage as default, ExpoApplicationPackage } from './src/main/ets/ExpoApplicationPackage';
+export { ExpoApplicationModule } from './src/main/ets/ExpoApplicationModule';
