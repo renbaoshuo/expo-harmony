@@ -1,1 +1,1 @@
-export { ExpoAssetPackage as default, ExpoAssetPackage } from './src/main/ets/ExpoAssetPackage';
+export { ExpoAssetModule } from './src/main/ets/ExpoAssetModule';
