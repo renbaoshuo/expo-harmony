@@ -1,6 +1,4 @@
 export {
-  ExpoBackgroundTaskPackage as default,
-  ExpoBackgroundTaskPackage,
+  ExpoBackgroundTaskModule,
   ExpoBackgroundTaskWorkSchedulerExtension,
 } from './src/main/ets/ExpoBackgroundTaskPackage';
-

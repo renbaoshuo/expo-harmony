@@ -1,10 +1,11 @@
 'use strict';
 
 const fs = require('node:fs');
-const path = require('node:path');
 
 const { createRunOncePlugin } = require('@expo/config-plugins');
 const {
+  atomicWrite,
+  HarmonyPaths,
   recordManagedFile,
   registerHarmonyConfigPlugin,
   withHarmonyDangerousMod,
@@ -30,12 +31,14 @@ export default class ExpoBackgroundTaskWorkScheduler
 `;
 
 function updateModuleJson(json) {
-  const module = json.module && typeof json.module === 'object' && !Array.isArray(json.module)
-    ? json.module
-    : {};
-  const extensions = Array.isArray(module.extensionAbilities)
-    ? module.extensionAbilities
-    : [];
+  if (json.module !== undefined && (json.module === null || typeof json.module !== 'object' || Array.isArray(json.module))) {
+    throw new TypeError('Harmony module.json5 field module must be an object.');
+  }
+  const module = json.module || {};
+  if (module.extensionAbilities !== undefined && !Array.isArray(module.extensionAbilities)) {
+    throw new TypeError('Harmony module.json5 field module.extensionAbilities must be an array.');
+  }
+  const extensions = module.extensionAbilities || [];
   const matches = extensions.filter(extension => extension?.name === EXTENSION_NAME);
 
   if (matches.length > 1) {
@@ -80,9 +83,10 @@ function withHarmonyBackgroundTask(config) {
   });
 
   return withHarmonyDangerousMod(config, async (mod) => {
-    const file = path.join(
+    const moduleName = config.harmony?.moduleName || 'entry';
+    const file = await HarmonyPaths.resolveHarmonyPath(
       mod.modRequest.platformProjectRoot,
-      'entry/src/main/ets/expo-background-task/ExpoBackgroundTaskWorkScheduler.ets'
+      `${moduleName}/src/main/ets/expo-background-task/ExpoBackgroundTaskWorkScheduler.ets`
     );
 
     await writeGeneratedSource(file);
@@ -114,8 +118,7 @@ async function writeGeneratedSource(file) {
     );
   }
 
-  await fs.promises.mkdir(path.dirname(file), { recursive: true });
-  await fs.promises.writeFile(file, GENERATED_SOURCE);
+  await atomicWrite(file, GENERATED_SOURCE);
 }
 
 module.exports = createRunOncePlugin(withHarmonyBackgroundTask, pkg.name, pkg.version);

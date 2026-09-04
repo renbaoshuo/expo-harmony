@@ -1,14 +1,24 @@
 import { bundleManager } from '@kit.AbilityKit';
 import { WorkSchedulerExtensionAbility, workScheduler } from '@kit.BackgroundTasksKit';
-import { RNOHPackage } from '@rnoh/react-native-openharmony';
-import type { RNPackageContext, UITurboModuleContext } from '@rnoh/react-native-openharmony';
-import { EXPO_MODULE_EVENT, ExpoPlatformServiceError, ExpoPlatformServiceRegistry } from '@expo-harmony/expo-modules-core';
-import type { ExpoPlatformServiceFactory } from '@expo-harmony/expo-modules-core';
-import { ExpoTaskConsumer, ExpoTaskExecutionResult, ExpoTaskManagerRegistry, ExpoTaskRecord } from '@expo-harmony/expo-task-manager';
+import {
+  ExpoFunction,
+  ExpoModule,
+  ExpoModuleContext,
+  ExpoModuleDefinition,
+  ExpoModuleError,
+  ExpoValueType,
+  ExpoValueTypes,
+} from '@expo-harmony/expo-modules-core';
+import {
+  ExpoTaskConsumer,
+  ExpoTaskExecutionResult,
+  ExpoTaskManagerRegistry,
+  ExpoTaskManagerWorkMetadata,
+  ExpoTaskRecord,
+} from '@expo-harmony/expo-task-manager';
 
 import {
   BACKGROUND_TASK_MODULE_NAME,
-  BACKGROUND_TASK_SERVICE_NAME,
   BACKGROUND_TASK_STATUS_AVAILABLE,
   BACKGROUND_TASK_STATUS_RESTRICTED,
   BACKGROUND_TASK_TYPE,
@@ -19,7 +29,6 @@ import {
   MILLISECONDS_PER_MINUTE,
   OWNER_PARAMETER,
   OWNER_PARAMETER_VALUE,
-  TASK_MANAGER_OWNER_PARAMETER,
   WORK_ID_MAXIMUM,
   WORK_ID_MINIMUM,
   WORK_SCHEDULER_CAPABILITY,
@@ -28,52 +37,43 @@ import {
 } from './BackgroundTaskConstants';
 import { BackgroundTaskRuntime } from './BackgroundTaskRuntime';
 
-let packageRegistered: boolean = false;
-
 interface BackgroundTaskOptionsInput {
   minimumInterval?: ESObject;
 }
 
-class EmptyEventPayload {}
-
-class BackgroundTaskEventMessage {
-  moduleName: string = BACKGROUND_TASK_MODULE_NAME;
-  eventName: string = EXPIRATION_EVENT_NAME;
-  arguments: ESObject[] = [new EmptyEventPayload()];
-}
-
-class ExpoBackgroundTaskError extends ExpoPlatformServiceError {
-  constructor(code: string, message: string) {
-    super(code, message);
+class ExpoBackgroundTaskError extends ExpoModuleError {
+  constructor(code: string, message: string, cause?: Object) {
+    super(code, message, cause);
     this.name = 'ExpoBackgroundTaskError';
   }
 }
 
 class ExpoBackgroundTaskConsumer implements ExpoTaskConsumer {
   readonly taskType: string = BACKGROUND_TASK_TYPE;
-  readonly consumerId: string = '@expo-harmony/expo-background-task';
+  readonly consumerId: string = OWNER_PARAMETER_VALUE;
   readonly consumerVersion: number = 1;
   private mutation: Promise<void> = Promise.resolve();
 
-  async onTasksChanged(context: UITurboModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
+  async onTasksChanged(context: ExpoModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
     await this.serialize(async (): Promise<void> => {
       await this.reconcile(context, tasks);
     });
   }
 
-  async onExecutionFinished(context: UITurboModuleContext, _results: ExpoTaskExecutionResult[], requestId?: string): Promise<void> {
+  async onExecutionFinished(context: ExpoModuleContext, _results: ExpoTaskExecutionResult[], requestId?: string): Promise<void> {
     await BackgroundTaskRuntime.finish(context.uiAbilityContext, ExpoTaskManagerRegistry.ownerKey(context), requestId);
   }
 
-  async onExecutionExpired(context: UITurboModuleContext, requestId?: string): Promise<void> {
+  async onExecutionExpired(context: ExpoModuleContext, requestId?: string): Promise<void> {
     try {
-      context.rnInstance.postMessageToCpp(EXPO_MODULE_EVENT, new BackgroundTaskEventMessage());
+      const module = context.getModule(BACKGROUND_TASK_MODULE_NAME);
+      if (module instanceof ExpoBackgroundTaskModule) module.notifyTasksExpired();
     } finally {
       await BackgroundTaskRuntime.expire(context.uiAbilityContext, ExpoTaskManagerRegistry.ownerKey(context), requestId);
     }
   }
 
-  private async reconcile(context: UITurboModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
+  private async reconcile(context: ExpoModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
     if (!canIUse(WORK_SCHEDULER_CAPABILITY)) {
       if (tasks.length === 0) return;
 
@@ -111,14 +111,20 @@ class ExpoBackgroundTaskConsumer implements ExpoTaskConsumer {
 
     const id = allocateWorkId(context, works);
     const next = createWorkInfo(context, id, interval);
-    if (current !== undefined) cancelWork(current);
 
     try {
       workScheduler.startWork(next);
     } catch (error) {
-      if (current !== undefined) restoreWorkBestEffort(current, context);
-
       throw new ExpoBackgroundTaskError('ERR_BACKGROUND_TASK_SCHEDULER', `Unable to schedule with HarmonyOS WorkScheduler: ${String(error)}`);
+    }
+
+    if (current !== undefined) {
+      try {
+        cancelWork(current);
+      } catch (error) {
+        cancelWorkBestEffort(next, context);
+        throw new ExpoBackgroundTaskError('ERR_BACKGROUND_TASK_SCHEDULER', `Unable to replace the previous HarmonyOS work: ${String(error)}`);
+      }
     }
 
     for (let i = 1; i < owned.length; ++i) {
@@ -134,11 +140,25 @@ class ExpoBackgroundTaskConsumer implements ExpoTaskConsumer {
 }
 
 const backgroundTaskConsumer = new ExpoBackgroundTaskConsumer();
+let consumerRegistered: boolean = false;
+
+class BackgroundTaskOptions {
+  minimumInterval?: number = undefined;
+}
+
+class EmptyEventPayload {}
+
+const BACKGROUND_TASK_OPTIONS_TYPE: ExpoValueType<BackgroundTaskOptions> = new ExpoValueType<BackgroundTaskOptions>(
+  'BackgroundTask options object',
+  (value: ESObject): BackgroundTaskOptions => decodeOptions(value),
+  (value: BackgroundTaskOptions): ESObject => value,
+);
 
 export class ExpoBackgroundTaskWorkSchedulerExtension extends WorkSchedulerExtensionAbility {
   private readonly requests: Map<number, Promise<string | undefined>[]> = new Map();
 
   override onWorkStart(work: workScheduler.WorkInfo): void {
+    registerConsumer();
     const request = BackgroundTaskRuntime.start(
       this.context,
       work,
@@ -152,6 +172,7 @@ export class ExpoBackgroundTaskWorkSchedulerExtension extends WorkSchedulerExten
   }
 
   override onWorkStop(work: workScheduler.WorkInfo): void {
+    registerConsumer();
     const requests = this.requests.get(work.workId);
     const request = requests?.shift();
 
@@ -161,50 +182,48 @@ export class ExpoBackgroundTaskWorkSchedulerExtension extends WorkSchedulerExten
   }
 }
 
-class ExpoBackgroundTaskService {
-  readonly name: string = BACKGROUND_TASK_SERVICE_NAME;
-  private readonly context: UITurboModuleContext;
-
-  constructor(context: UITurboModuleContext) {
-    this.context = context;
+/** ArkTS author implementation of Expo's BackgroundTask module. */
+export class ExpoBackgroundTaskModule extends ExpoModule {
+  constructor(context: ExpoModuleContext) {
+    super(context);
+    registerConsumer();
   }
 
-  async invoke(method: string, args: ESObject[]): Promise<ESObject> {
-    if (method === 'getStatusAsync') return status();
-    if (method === 'registerTaskAsync') {
-      requireAvailable();
+  definition(): ExpoModuleDefinition {
+    return new ExpoModuleDefinition()
+      .name(BACKGROUND_TASK_MODULE_NAME)
+      .events([EXPIRATION_EVENT_NAME])
+      .asyncFunction('getStatusAsync', ExpoFunction.typed0(async (): Promise<number> => status(this.context)).returns(ExpoValueTypes.number()))
+      .asyncFunction(
+        'registerTaskAsync',
+        ExpoFunction.typed2(
+          ExpoValueTypes.string(),
+          BACKGROUND_TASK_OPTIONS_TYPE,
+          async (taskName: string, options: BackgroundTaskOptions): Promise<void> => {
+            requireConfigured();
+            requireAvailable(this.context);
+            await ExpoTaskManagerRegistry.registerTask(this.context, requireTaskName(taskName), BACKGROUND_TASK_TYPE, options);
+          },
+        ),
+      )
+      .asyncFunction(
+        'unregisterTaskAsync',
+        ExpoFunction.typed1(ExpoValueTypes.string(), async (taskName: string): Promise<void> => {
+          await ExpoTaskManagerRegistry.unregisterTaskForConsumer(this.context, requireTaskName(taskName), BACKGROUND_TASK_TYPE);
+        }),
+      );
+  }
 
-      const taskName = requireTaskName(args[0]);
-      const options: ESObject = requireOptions(args[1]);
-      minimumIntervalMilliseconds(options);
-
-      await ExpoTaskManagerRegistry.registerTask(this.context, taskName, BACKGROUND_TASK_TYPE, options);
-
-      return null;
-    }
-    if (method === 'unregisterTaskAsync') {
-      const taskName = requireTaskName(args[0]);
-
-      await ExpoTaskManagerRegistry.unregisterTaskForConsumer(this.context, taskName, BACKGROUND_TASK_TYPE);
-
-      return null;
-    }
-    if (method === 'triggerTaskWorkerForTestingAsync') {
-      if (!this.context.uiAbilityContext.applicationInfo.debug) {
-        throw new ExpoBackgroundTaskError('ERR_BACKGROUND_TASK_TEST_UNAVAILABLE', 'Background tasks cannot be triggered in production builds.');
-      }
-
-      await ExpoTaskManagerRegistry.executeTaskType(this.context, BACKGROUND_TASK_TYPE, true);
-
-      return true;
-    }
-
-    throw new ExpoBackgroundTaskError('ERR_BACKGROUND_TASK_UNKNOWN_METHOD', `Unknown Expo BackgroundTask Harmony method '${method}'.`);
+  /** @internal Called by the TaskManager consumer in this RuntimeContext. */
+  notifyTasksExpired(): void {
+    if (this.context.isValid) this.sendEvent(EXPIRATION_EVENT_NAME, new EmptyEventPayload());
   }
 }
 
-function status(): number {
-  return hasWorkSchedulerExtension() ? BACKGROUND_TASK_STATUS_AVAILABLE : BACKGROUND_TASK_STATUS_RESTRICTED;
+function status(context: ExpoModuleContext): number {
+  return hasWorkSchedulerExtension() && ExpoTaskManagerRegistry.canEnsureRuntimeForContext(context)
+    ? BACKGROUND_TASK_STATUS_AVAILABLE
+    : BACKGROUND_TASK_STATUS_RESTRICTED;
 }
 
 function hasWorkSchedulerExtension(): boolean {
@@ -227,8 +246,17 @@ function hasWorkSchedulerExtension(): boolean {
   }
 }
 
-function requireAvailable(): void {
-  if (status() !== BACKGROUND_TASK_STATUS_AVAILABLE) {
+function requireAvailable(context: ExpoModuleContext): void {
+  if (status(context) !== BACKGROUND_TASK_STATUS_AVAILABLE) {
+    throw new ExpoBackgroundTaskError(
+      'ERR_BACKGROUND_TASK_UNAVAILABLE',
+      'HarmonyOS WorkScheduler or the TaskManager cold-start runtime loader is unavailable.',
+    );
+  }
+}
+
+function requireConfigured(): void {
+  if (!hasWorkSchedulerExtension()) {
     throw new ExpoBackgroundTaskError(
       'ERR_BACKGROUND_TASK_NOT_CONFIGURED',
       `HarmonyOS WorkScheduler or extension '${WORK_SCHEDULER_EXTENSION_NAME}' is unavailable. ` +
@@ -249,6 +277,21 @@ function requireOptions(value: ESObject): ESObject {
     throw new ExpoBackgroundTaskError('ERR_BACKGROUND_TASK_INVALID_OPTIONS', 'BackgroundTask expected options to be an object.');
   }
   return value;
+}
+
+function decodeOptions(value: ESObject): BackgroundTaskOptions {
+  const raw: ESObject = requireOptions(value);
+  const unknown = Object.keys(raw as Record<string, ESObject>).filter((key: string): boolean => key !== 'minimumInterval');
+  if (unknown.length > 0) {
+    throw new ExpoBackgroundTaskError('ERR_BACKGROUND_TASK_INVALID_OPTIONS', `Unsupported BackgroundTask option '${unknown[0]}'.`);
+  }
+  const result = new BackgroundTaskOptions();
+  const interval: ESObject = (raw as BackgroundTaskOptionsInput).minimumInterval;
+  if (interval !== undefined && interval !== null) {
+    minimumIntervalMilliseconds(raw);
+    result.minimumInterval = interval as number;
+  }
+  return result;
 }
 
 function minimumIntervalMilliseconds(options: ESObject): number {
@@ -275,18 +318,13 @@ function minimumIntervalMilliseconds(options: ESObject): number {
 }
 
 function intervalForTasks(tasks: ExpoTaskRecord[]): number {
-  let interval = EXPO_DEFAULT_INTERVAL_MS;
-  for (const task of tasks) {
-    interval = Math.min(interval, minimumIntervalMilliseconds(task.options));
-  }
-
-  return interval;
+  return minimumIntervalMilliseconds(tasks[tasks.length - 1]?.options ?? {});
 }
 
-function createWorkInfo(context: UITurboModuleContext, id: number, interval: number): workScheduler.WorkInfo {
+function createWorkInfo(context: ExpoModuleContext, id: number, interval: number): workScheduler.WorkInfo {
   const params: Record<string, number | string | boolean> = {};
   params[OWNER_PARAMETER] = OWNER_PARAMETER_VALUE;
-  params[TASK_MANAGER_OWNER_PARAMETER] = ExpoTaskManagerRegistry.ownerKey(context);
+  ExpoTaskManagerWorkMetadata.write(params, ExpoTaskManagerRegistry.ownerKey(context));
 
   return {
     workId: id,
@@ -307,16 +345,16 @@ function workMatchesInterval(work: workScheduler.WorkInfo, interval: number, own
     work.isRepeat === true &&
     work.repeatCycleTime === interval &&
     work.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE &&
-    work.parameters?.[TASK_MANAGER_OWNER_PARAMETER] === ownerKey
+    ExpoTaskManagerWorkMetadata.owner(work.parameters) === ownerKey
   );
 }
 
-function isOwnedWork(context: UITurboModuleContext, work: workScheduler.WorkInfo): boolean {
+function isOwnedWork(context: ExpoModuleContext, work: workScheduler.WorkInfo): boolean {
   return (
     work.bundleName === context.uiAbilityContext.abilityInfo.bundleName &&
     work.abilityName === WORK_SCHEDULER_EXTENSION_NAME &&
     work.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE &&
-    work.parameters?.[TASK_MANAGER_OWNER_PARAMETER] === ExpoTaskManagerRegistry.ownerKey(context)
+    ExpoTaskManagerWorkMetadata.owner(work.parameters, true) === ExpoTaskManagerRegistry.ownerKey(context)
   );
 }
 
@@ -331,7 +369,7 @@ async function readAllWorks(): Promise<workScheduler.WorkInfo[]> {
   }
 }
 
-function allocateWorkId(context: UITurboModuleContext, works: workScheduler.WorkInfo[]): number {
+function allocateWorkId(context: ExpoModuleContext, works: workScheduler.WorkInfo[]): number {
   const ids: Set<number> = new Set(works.map((work: workScheduler.WorkInfo): number => work.workId));
 
   let id = stableWorkId(`${BACKGROUND_TASK_TYPE}:${ExpoTaskManagerRegistry.ownerKey(context)}`);
@@ -362,7 +400,7 @@ function cancelWork(work: workScheduler.WorkInfo): void {
   }
 }
 
-function cancelWorkBestEffort(work: workScheduler.WorkInfo, context: UITurboModuleContext): void {
+function cancelWorkBestEffort(work: workScheduler.WorkInfo, context: ExpoModuleContext): void {
   try {
     cancelWork(work);
   } catch (error) {
@@ -370,37 +408,8 @@ function cancelWorkBestEffort(work: workScheduler.WorkInfo, context: UITurboModu
   }
 }
 
-function restoreWorkBestEffort(work: workScheduler.WorkInfo, context: UITurboModuleContext): void {
-  try {
-    workScheduler.startWork(work);
-  } catch (error) {
-    context.logger.error(`Unable to restore Expo BackgroundTask after an update failed: ${String(error)}`);
-  }
-}
-
-function registerPackage(): void {
-  if (packageRegistered) return;
-
+function registerConsumer(): void {
+  if (consumerRegistered) return;
   ExpoTaskManagerRegistry.registerConsumer(backgroundTaskConsumer);
-  ExpoPlatformServiceRegistry.register(new ExpoBackgroundTaskServiceFactory());
-  packageRegistered = true;
-}
-
-class ExpoBackgroundTaskServiceFactory implements ExpoPlatformServiceFactory {
-  readonly name: string = BACKGROUND_TASK_SERVICE_NAME;
-
-  create(context: UITurboModuleContext): ExpoBackgroundTaskService {
-    return new ExpoBackgroundTaskService(context);
-  }
-}
-
-export class ExpoBackgroundTaskPackage extends RNOHPackage {
-  constructor(context: RNPackageContext) {
-    registerPackage();
-    super(context);
-  }
-
-  override getDebugName(): string {
-    return '@expo-harmony/expo-background-task';
-  }
+  consumerRegistered = true;
 }

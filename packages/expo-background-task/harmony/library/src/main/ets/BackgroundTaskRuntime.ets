@@ -2,9 +2,9 @@ import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
 import { workScheduler } from '@kit.BackgroundTasksKit';
-import { ExpoTaskManagerBackgroundQueue } from '@expo-harmony/expo-task-manager';
+import { ExpoTaskManagerBackgroundQueue, ExpoTaskManagerWorkMetadata } from '@expo-harmony/expo-task-manager';
 
-import { BACKGROUND_TASK_TYPE, OWNER_PARAMETER, OWNER_PARAMETER_VALUE, TASK_MANAGER_OWNER_PARAMETER } from './BackgroundTaskConstants';
+import { BACKGROUND_TASK_TYPE, OWNER_PARAMETER, OWNER_PARAMETER_VALUE } from './BackgroundTaskConstants';
 import {
   BackgroundTaskRuntimeDriver,
   BackgroundTaskRuntimeState,
@@ -16,7 +16,8 @@ import {
 
 const PREFERENCES_NAME: string = 'ExpoBackgroundTask';
 const PENDING_WORK_KEY_PREFIX: string = 'pendingWork.';
-const CORRUPTED_PENDING_WORK_KEY_PREFIX: string = 'corruptedPendingWork.';
+const CORRUPTED_PENDING_WORKS_KEY: string = 'corruptedPendingWorks';
+const MAXIMUM_CORRUPTION_DIAGNOSTICS: number = 20;
 
 class PreferencesRuntimeDriver implements BackgroundTaskRuntimeDriver {
   private readonly context: common.Context;
@@ -47,12 +48,12 @@ class PreferencesRuntimeDriver implements BackgroundTaskRuntimeDriver {
     await ExpoTaskManagerBackgroundQueue.enqueue(this.context, this.ownerKey, BACKGROUND_TASK_TYPE, expiresAt, requestId);
   }
 
-  async requestExpiration(requestId: string): Promise<void> {
-    await ExpoTaskManagerBackgroundQueue.expireRequest(this.context, this.ownerKey, BACKGROUND_TASK_TYPE, requestId);
+  async requestExpiration(requestId: string): Promise<boolean> {
+    return await ExpoTaskManagerBackgroundQueue.expireRequest(this.context, this.ownerKey, BACKGROUND_TASK_TYPE, requestId);
   }
 
-  stop(work: ScheduledWork): void {
-    finishWorkBestEffort(toWorkInfo(work));
+  async stop(work: ScheduledWork): Promise<void> {
+    finishWork(toWorkInfo(work));
   }
 
   report(message: string): void {
@@ -132,8 +133,8 @@ async function createState(context: common.Context, ownerKey: string): Promise<B
 }
 
 function taskManagerOwnerFromWork(work: workScheduler.WorkInfo): string {
-  const value = work.parameters?.[TASK_MANAGER_OWNER_PARAMETER];
-  if (typeof value !== 'string' || value.length === 0) {
+  const value = ExpoTaskManagerWorkMetadata.owner(work.parameters, true);
+  if (value === undefined) {
     throw new Error('Expo BackgroundTask work is missing its TaskManager owner.');
   }
   return value;
@@ -154,8 +155,7 @@ async function readPendingWorks(store: preferences.Preferences): Promise<StoredP
       continue;
     }
 
-    const suffix = key.slice(PENDING_WORK_KEY_PREFIX.length);
-    await store.put(`${CORRUPTED_PENDING_WORK_KEY_PREFIX}${suffix}`, storedValue(values[key]));
+    await recordCorruptionDiagnostic(store, key, values[key]);
     await store.delete(key);
     changed = true;
   }
@@ -172,8 +172,17 @@ function pendingWorkKey(requestId: string): string {
   return `${PENDING_WORK_KEY_PREFIX}${requestId}`;
 }
 
-function storedValue(value: ESObject): string {
-  return typeof value === 'string' ? value : JSON.stringify(value);
+async function recordCorruptionDiagnostic(store: preferences.Preferences, key: string, value: ESObject): Promise<void> {
+  const raw = await store.get(CORRUPTED_PENDING_WORKS_KEY, '[]');
+  let diagnostics: ESObject[] = [];
+  if (typeof raw === 'string') {
+    try {
+      const parsed: ESObject = JSON.parse(raw);
+      if (Array.isArray(parsed)) diagnostics = parsed.slice(-MAXIMUM_CORRUPTION_DIAGNOSTICS + 1);
+    } catch (_) {}
+  }
+  diagnostics.push({ key, valueType: value === null ? 'null' : typeof value, recoveredAt: Date.now() });
+  await store.put(CORRUPTED_PENDING_WORKS_KEY, JSON.stringify(diagnostics));
 }
 
 function createRequestId(work: workScheduler.WorkInfo): string {
@@ -181,7 +190,7 @@ function createRequestId(work: workScheduler.WorkInfo): string {
 }
 
 function isOwnedWork(work: workScheduler.WorkInfo, bundleName: string, abilityName: string): boolean {
-  const taskManagerOwner = work.parameters?.[TASK_MANAGER_OWNER_PARAMETER];
+  const taskManagerOwner = ExpoTaskManagerWorkMetadata.owner(work.parameters, true);
   return (
     work.bundleName === bundleName &&
     work.abilityName === abilityName &&
@@ -205,8 +214,12 @@ function toWorkInfo(work: ScheduledWork): workScheduler.WorkInfo {
 
 function finishWorkBestEffort(work: workScheduler.WorkInfo): void {
   try {
-    workScheduler.stopWork(work, false);
+    finishWork(work);
   } catch (error) {
     console.error(`Unable to finish Expo BackgroundTask execution: ${String(error)}`);
   }
+}
+
+function finishWork(work: workScheduler.WorkInfo): void {
+  workScheduler.stopWork(work, false);
 }

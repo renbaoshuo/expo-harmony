@@ -44,8 +44,8 @@ export interface BackgroundTaskRuntimeDriver {
   save(work: StoredPendingWork): Promise<void>;
   remove(requestId: string): Promise<void>;
   enqueue(requestId: string, expiresAt: number): Promise<void>;
-  requestExpiration(requestId: string): Promise<void>;
-  stop(work: ScheduledWork): void;
+  requestExpiration(requestId: string): Promise<boolean>;
+  stop(work: ScheduledWork): Promise<void>;
   report(message: string): void;
 }
 
@@ -110,11 +110,7 @@ export class BackgroundTaskRuntimeState {
       next.phase = PENDING_PHASE_QUEUED;
       await this.driver.save(next);
     } catch (error) {
-      try {
-        await this.driver.remove(next.requestId);
-      } finally {
-        this.driver.stop(next);
-      }
+      await this.stopAndRemove(next);
 
       throw new Error(`Unable to enqueue Expo BackgroundTask execution: ${String(error)}`);
     }
@@ -164,11 +160,7 @@ export class BackgroundTaskRuntimeState {
   }
 
   private async completePending(pending: StoredPendingWork): Promise<void> {
-    try {
-      await this.driver.remove(pending.requestId);
-    } finally {
-      this.driver.stop(pending);
-    }
+    await this.stopAndRemove(pending);
   }
 
   private async completeBestEffort(pending: StoredPendingWork): Promise<void> {
@@ -185,7 +177,8 @@ export class BackgroundTaskRuntimeState {
       await this.driver.save(pending);
     }
 
-    await this.driver.requestExpiration(pending.requestId);
+    const found = await this.driver.requestExpiration(pending.requestId);
+    if (!found) await this.stopAndRemove(pending);
   }
 
   private async requestExpirationBestEffort(pending: StoredPendingWork): Promise<void> {
@@ -197,11 +190,12 @@ export class BackgroundTaskRuntimeState {
   }
 
   private async cleanupExpiredPending(pending: StoredPendingWork): Promise<void> {
-    try {
-      await this.driver.remove(pending.requestId);
-    } finally {
-      this.driver.stop(pending);
-    }
+    await this.stopAndRemove(pending);
+  }
+
+  private async stopAndRemove(pending: StoredPendingWork): Promise<void> {
+    await this.driver.stop(pending);
+    await this.driver.remove(pending.requestId);
   }
 }
 
