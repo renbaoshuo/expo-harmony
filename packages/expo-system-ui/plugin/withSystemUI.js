@@ -22,9 +22,9 @@ function normalizeHarmonyColor(value) {
 }
 
 function setMetadata(items, name, value) {
-  const next = (Array.isArray(items) ? items : []).filter(item => item?.name !== name);
-  if (value != null) next.push({ name, value });
-  return next;
+  const metadata = (Array.isArray(items) ? items : []).filter(item => item?.name !== name);
+  if (value != null) metadata.push({ name, value });
+  return metadata;
 }
 
 function withHarmonySystemUI(config) {

@@ -1,6 +1,2 @@
-export {
-  ExpoSystemUILifecycle,
-  ExpoSystemUIPackage as default,
-  ExpoSystemUIPackage,
-} from './src/main/ets/ExpoSystemUIPackage';
-export { ExpoSystemUIReactInstanceLifecycleListener } from './src/main/ets/SystemUIReactInstanceLifecycleListener';
+export { ExpoSystemUIModule } from './src/main/ets/ExpoSystemUIModule';
+export { ExpoSystemUIRootView } from './src/main/ets/ExpoSystemUIRootView';

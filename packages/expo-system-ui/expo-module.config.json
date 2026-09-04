@@ -1,15 +1,7 @@
 {
   "platforms": ["harmony"],
   "harmony": {
-    "reactInstanceLifecycleListeners": ["ExpoSystemUIReactInstanceLifecycleListener"],
-    "providers": [
-      {
-        "identifier": "expo-system-ui:ExpoSystemUIProvider",
-        "header": "ExpoSystemUIProvider.h",
-        "className": "expo::harmony::systemui::ExpoSystemUIProvider",
-        "cmakeTargetName": "expo_harmony__expo_system_ui",
-        "debugOnly": false
-      }
-    ]
+    "modules": ["ExpoSystemUIModule"],
+    "rootViewComponents": ["ExpoSystemUIRootView"]
   }
 }
