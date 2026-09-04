@@ -1,1 +1,1 @@
-export { ExpoFetchPackage as default, ExpoFetchPackage } from './src/main/ets/ExpoFetchPackage';
+export { ExpoFetchModule } from './src/main/ets/ExpoFetchModule';
