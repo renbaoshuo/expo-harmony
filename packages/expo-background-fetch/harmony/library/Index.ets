@@ -1,6 +1,5 @@
 export {
-  ExpoBackgroundFetchPackage as default,
-  ExpoBackgroundFetchPackage,
+  ExpoBackgroundFetchModule,
 } from './src/main/ets/ExpoBackgroundFetchPackage';
 export {
   ExpoBackgroundFetchWorkSchedulerExtension,

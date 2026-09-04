@@ -1,4 +1,5 @@
-export const PENDING_WORK_SCHEMA_VERSION: number = 1;
+export const PENDING_WORK_SCHEMA_VERSION: number = 2;
+export const MAXIMUM_PENDING_WORKS: number = 128;
 
 export class StoredPendingWork {
   version: number = PENDING_WORK_SCHEMA_VERSION;
@@ -8,6 +9,8 @@ export class StoredPendingWork {
   abilityName: string;
   taskName: string;
   ownerKey: string;
+  schedulerGeneration: string;
+  expiresAt: number;
 
   constructor(
     requestId: string,
@@ -16,6 +19,8 @@ export class StoredPendingWork {
     abilityName: string,
     taskName: string,
     ownerKey: string,
+    schedulerGeneration: string,
+    expiresAt: number,
   ) {
     this.requestId = requestId;
     this.workId = workId;
@@ -23,6 +28,8 @@ export class StoredPendingWork {
     this.abilityName = abilityName;
     this.taskName = taskName;
     this.ownerKey = ownerKey;
+    this.schedulerGeneration = schedulerGeneration;
+    this.expiresAt = expiresAt;
   }
 }
 
@@ -41,10 +48,12 @@ export function decodePendingWorks(raw: ESObject): PendingWorkDecodeResult {
   if (data === undefined) return new PendingWorkDecodeResult([], true);
 
   const works: StoredPendingWork[] = [];
-  let corrupted = false;
+  const requestIds: Set<string> = new Set();
+  let corrupted = data.length > MAXIMUM_PENDING_WORKS;
+  const limit = Math.min(data.length, MAXIMUM_PENDING_WORKS);
 
-  for (const value of data) {
-    const item = asRecord(value);
+  for (let index = 0; index < limit; ++index) {
+    const item = asRecord(data[index]);
     if (item === undefined) {
       corrupted = true;
       continue;
@@ -57,34 +66,48 @@ export function decodePendingWorks(raw: ESObject): PendingWorkDecodeResult {
     const abilityName = item['abilityName'];
     const taskName = item['taskName'];
     const ownerKey = item['ownerKey'];
+    const schedulerGeneration = item['schedulerGeneration'];
+    const expiresAt = item['expiresAt'];
 
     if (
       version !== PENDING_WORK_SCHEMA_VERSION
-      || typeof requestId !== 'string'
-      || requestId.length === 0
+      || !isSafeString(requestId, 256)
+      || requestIds.has(requestId as string)
       || typeof workId !== 'number'
       || !Number.isSafeInteger(workId)
-      || typeof bundleName !== 'string'
-      || bundleName.length === 0
-      || typeof abilityName !== 'string'
-      || abilityName.length === 0
-      || typeof taskName !== 'string'
-      || taskName.length === 0
-      || typeof ownerKey !== 'string'
-      || ownerKey.length === 0
+      || workId < 1
+      || workId > 0x7fffffff
+      || !isSafeString(bundleName, 256)
+      || !isSafeString(abilityName, 256)
+      || !isSafeString(taskName, 256)
+      || !isSafeString(ownerKey, 1024)
+      || !isSafeString(schedulerGeneration, 128)
+      || typeof expiresAt !== 'number'
+      || !Number.isSafeInteger(expiresAt)
+      || expiresAt <= 0
     ) {
       corrupted = true;
       continue;
     }
 
-    works.push(new StoredPendingWork(requestId, workId, bundleName, abilityName, taskName, ownerKey));
+    requestIds.add(requestId as string);
+    works.push(new StoredPendingWork(
+      requestId as string,
+      workId as number,
+      bundleName as string,
+      abilityName as string,
+      taskName as string,
+      ownerKey as string,
+      schedulerGeneration as string,
+      expiresAt as number,
+    ));
   }
 
   return new PendingWorkDecodeResult(works, corrupted);
 }
 
 function decodeArray(raw: ESObject): ESObject[] | undefined {
-  if (typeof raw !== 'string') return undefined;
+  if (typeof raw !== 'string' || raw.length > 1024 * 1024) return undefined;
 
   try {
     const value: ESObject = JSON.parse(raw);
@@ -93,6 +116,14 @@ function decodeArray(raw: ESObject): ESObject[] | undefined {
   } catch (_) {
     return undefined;
   }
+}
+
+function isSafeString(value: ESObject, maximumLength: number): boolean {
+  if (typeof value !== 'string' || value.length === 0 || value.length > maximumLength) return false;
+  for (let index = 0; index < value.length; ++index) {
+    if (value.charCodeAt(index) < 0x20) return false;
+  }
+  return true;
 }
 
 function asRecord(value: ESObject): Record<string, ESObject> | undefined {

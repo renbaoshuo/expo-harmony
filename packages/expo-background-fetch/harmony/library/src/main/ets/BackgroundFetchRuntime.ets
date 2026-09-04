@@ -2,14 +2,15 @@ import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
 import { workScheduler } from '@kit.BackgroundTasksKit';
-import { ExpoTaskManagerBackgroundQueue } from '@expo-harmony/expo-task-manager';
+import { ExpoTaskManagerBackgroundQueue, ExpoTaskManagerWorkMetadata } from '@expo-harmony/expo-task-manager';
 
 import {
   OWNER_PARAMETER,
   OWNER_PARAMETER_VALUE,
+  SCHEDULER_GENERATION_PARAMETER,
   TASK_NAME_PARAMETER,
-  TASK_MANAGER_OWNER_PARAMETER,
   TASK_TYPE,
+  WORK_SCHEDULER_CLEANUP_MARGIN_MS,
   WORK_SCHEDULER_EXECUTION_WINDOW_MS,
 } from './BackgroundFetchConstants';
 import { decodePendingWorks, PENDING_WORK_SCHEMA_VERSION } from './BackgroundFetchStorageCodec.ts';
@@ -17,6 +18,7 @@ import { decodePendingWorks, PENDING_WORK_SCHEMA_VERSION } from './BackgroundFet
 const PREFERENCES_NAME: string = 'ExpoBackgroundFetch';
 const PENDING_WORKS_KEY: string = 'pendingWorks';
 const CORRUPTED_PENDING_WORKS_KEY: string = 'corruptedPendingWorks';
+const MAXIMUM_CORRUPTION_DIAGNOSTICS: number = 20;
 
 class PendingWork {
   version: number = PENDING_WORK_SCHEMA_VERSION;
@@ -26,118 +28,113 @@ class PendingWork {
   abilityName: string;
   taskName: string;
   ownerKey: string;
+  schedulerGeneration: string;
+  expiresAt: number;
 
-  constructor(requestId: string, workId: number, bundleName: string, abilityName: string, taskName: string, ownerKey: string) {
+  constructor(
+    requestId: string,
+    workId: number,
+    bundleName: string,
+    abilityName: string,
+    taskName: string,
+    ownerKey: string,
+    schedulerGeneration: string,
+    expiresAt: number,
+  ) {
     this.requestId = requestId;
     this.workId = workId;
     this.bundleName = bundleName;
     this.abilityName = abilityName;
     this.taskName = taskName;
     this.ownerKey = ownerKey;
+    this.schedulerGeneration = schedulerGeneration;
+    this.expiresAt = expiresAt;
   }
 
   toWorkInfo(): workScheduler.WorkInfo {
-    return {
-      workId: this.workId,
-      bundleName: this.bundleName,
-      abilityName: this.abilityName,
-    };
+    return { workId: this.workId, bundleName: this.bundleName, abilityName: this.abilityName };
   }
 }
 
 export class BackgroundFetchRuntime {
   private static mutation: Promise<void> = Promise.resolve();
 
-  static start(context: common.Context, work: workScheduler.WorkInfo): void {
-    if (!isOwnedWork(work)) return;
+  static async start(context: common.Context, work: workScheduler.WorkInfo, startedAt: number = Date.now()): Promise<string | undefined> {
+    if (!isOwnedWork(work)) return undefined;
 
     const taskName = taskNameFromWork(work);
     if (taskName === undefined) {
       finishWorkBestEffort(work);
       console.error('Expo Background Fetch ignored a scheduler callback without a task name.');
-      return;
+      return undefined;
     }
 
-    BackgroundFetchRuntime.serialize(async (): Promise<void> => {
-      const store = await openStore(context);
-      const works = await readPendingWorks(store);
-      const current = works.find((pending: PendingWork): boolean => pending.workId === work.workId);
-      const ownerKey = taskManagerOwnerFromWork(work);
-
-      if (current !== undefined) {
-        if (current.taskName !== taskName) {
-          throw new Error(`Expo Background Fetch work '${work.workId}' changed task from '${current.taskName}' to '${taskName}'.`);
+    let requestId: string | undefined;
+    try {
+      await BackgroundFetchRuntime.serialize(async (): Promise<void> => {
+        const expiresAt = startedAt + WORK_SCHEDULER_EXECUTION_WINDOW_MS - WORK_SCHEDULER_CLEANUP_MARGIN_MS;
+        if (expiresAt <= Date.now()) {
+          throw new Error('Expo Background Fetch callback expired before it reached TaskManager.');
         }
 
-        await ExpoTaskManagerBackgroundQueue.expireRequest(context, current.ownerKey, TASK_TYPE, current.requestId);
-        const replacement = new PendingWork(createRequestId(work), work.workId, work.bundleName, work.abilityName, taskName, ownerKey);
-        const nextWorks = works.filter((pending: PendingWork): boolean => pending.requestId !== current.requestId);
-        nextWorks.push(replacement);
-        await writePendingWorks(store, nextWorks);
-        await ExpoTaskManagerBackgroundQueue.enqueue(
-          context,
-          ownerKey,
-          TASK_TYPE,
-          Date.now() + WORK_SCHEDULER_EXECUTION_WINDOW_MS,
-          replacement.requestId,
+        const store = await openStore(context);
+        const works = await readPendingWorks(store);
+        const pending = new PendingWork(
+          createRequestId(work),
+          work.workId,
+          work.bundleName,
+          work.abilityName,
           taskName,
-          {},
-          null,
+          taskManagerOwnerFromWork(work),
+          schedulerGenerationFromWork(work),
+          expiresAt,
         );
-        return;
-      }
+        works.push(pending);
+        await writePendingWorks(store, works);
 
-      const next = new PendingWork(createRequestId(work), work.workId, work.bundleName, work.abilityName, taskName, ownerKey);
-      works.push(next);
-
-      await writePendingWorks(store, works);
-
-      try {
-        await ExpoTaskManagerBackgroundQueue.enqueue(
-          context,
-          ownerKey,
-          TASK_TYPE,
-          Date.now() + WORK_SCHEDULER_EXECUTION_WINDOW_MS,
-          next.requestId,
-          taskName,
-          {},
-          null,
-        );
-      } catch (error) {
         try {
+          await ExpoTaskManagerBackgroundQueue.enqueue(context, pending.ownerKey, TASK_TYPE, expiresAt, pending.requestId, taskName, {}, null, false);
+          requestId = pending.requestId;
+        } catch (error) {
           await writePendingWorks(
             store,
-            works.filter((pending: PendingWork): boolean => pending.requestId !== next.requestId),
+            works.filter((item: PendingWork): boolean => item.requestId !== pending.requestId),
           );
-        } catch (rollback) {
-          console.error(`Unable to roll back Expo Background Fetch pending state: ${String(rollback)}`);
+          throw new Error(`Unable to enqueue Expo Background Fetch execution: ${String(error)}`);
         }
-
-        throw new Error(`Unable to enqueue Expo Background Fetch execution: ${String(error)}`);
-      }
-    }).catch((error: Object): void => {
+      });
+    } catch (error) {
       finishWorkBestEffort(work);
       console.error(String(error));
-    });
+    }
+    return requestId;
   }
 
-  static stop(context: common.Context, work: workScheduler.WorkInfo): void {
+  static stop(context: common.Context, work: workScheduler.WorkInfo, request?: Promise<string | undefined>): void {
     if (!isOwnedWork(work)) return;
-
-    BackgroundFetchRuntime.expire(context, work).catch((error: Object): void => {
+    BackgroundFetchRuntime.serialize(async (): Promise<void> => {
+      const requestId = request === undefined ? undefined : await request;
+      const store = await openStore(context);
+      const works = await readPendingWorks(store);
+      const generation = schedulerGenerationFromWork(work);
+      const matching =
+        requestId === undefined
+          ? works.filter((pending: PendingWork): boolean => pending.workId === work.workId && pending.schedulerGeneration === generation)
+          : works.filter((pending: PendingWork): boolean => pending.requestId === requestId);
+      await expirePendingWorks(context, store, works, matching);
+    }).catch((error: Object): void => {
       console.error(`Unable to expire Expo Background Fetch execution: ${String(error)}`);
     });
   }
 
   static async expire(context: common.Context, work: workScheduler.WorkInfo): Promise<void> {
     if (!isOwnedWork(work)) return;
-
     await BackgroundFetchRuntime.serialize(async (): Promise<void> => {
       const store = await openStore(context);
       const works = await readPendingWorks(store);
-      const matching = works.filter((pending: PendingWork): boolean => pending.workId === work.workId);
-
-      await expirePendingWorks(context, matching);
+      const generation = schedulerGenerationFromWork(work);
+      const matching = works.filter((pending: PendingWork): boolean => pending.workId === work.workId && pending.schedulerGeneration === generation);
+      await expirePendingWorks(context, store, works, matching);
     });
   }
 
@@ -145,63 +142,65 @@ export class BackgroundFetchRuntime {
     await BackgroundFetchRuntime.serialize(async (): Promise<void> => {
       const store = await openStore(context);
       const works = await readPendingWorks(store);
-
-      await expirePendingWorks(context, works);
+      await expirePendingWorks(context, store, works, works.slice());
     });
   }
 
   static async finish(context: common.Context, requestId?: string): Promise<void> {
+    if (requestId === undefined) {
+      console.error('Expo Background Fetch ignored a completion without a TaskManager request id.');
+      return;
+    }
     await BackgroundFetchRuntime.serialize(async (): Promise<void> => {
       const store = await openStore(context);
       const works = await readPendingWorks(store);
-
-      if (requestId === undefined) {
-        try {
-          await writePendingWorks(store, []);
-        } finally {
-          works.forEach((work: PendingWork): void => finishWorkBestEffort(work.toWorkInfo()));
-        }
-        return;
-      }
-
       const pending = works.find((work: PendingWork): boolean => work.requestId === requestId);
-      const remaining = works.filter((work: PendingWork): boolean => work.requestId !== requestId);
-
       if (pending === undefined) return;
 
-      try {
-        await writePendingWorks(store, remaining);
-      } finally {
-        finishWorkBestEffort(pending.toWorkInfo());
-      }
+      const remaining = works.filter((work: PendingWork): boolean => work.requestId !== requestId);
+      await writePendingWorks(store, remaining);
+      const sameSchedulerRun = remaining.some(
+        (work: PendingWork): boolean => work.workId === pending.workId && work.schedulerGeneration === pending.schedulerGeneration,
+      );
+      if (!sameSchedulerRun) finishWorkBestEffort(pending.toWorkInfo());
     });
   }
 
   private static async serialize(action: () => Promise<void>): Promise<void> {
     const next = BackgroundFetchRuntime.mutation.catch((): void => {}).then(action);
-
     BackgroundFetchRuntime.mutation = next.catch((): void => {});
     await next;
   }
 }
 
-async function expirePendingWorks(context: common.Context, matching: PendingWork[]): Promise<void> {
+async function expirePendingWorks(
+  context: common.Context,
+  store: preferences.Preferences,
+  all: PendingWork[],
+  matching: PendingWork[],
+): Promise<void> {
   if (matching.length === 0) return;
-
+  const remove: Set<string> = new Set();
   let failures = 0;
-
   for (const pending of matching) {
     try {
-      await ExpoTaskManagerBackgroundQueue.expireRequest(context, pending.ownerKey, TASK_TYPE, pending.requestId);
+      const found = await ExpoTaskManagerBackgroundQueue.expireRequest(context, pending.ownerKey, TASK_TYPE, pending.requestId);
+      if (!found) remove.add(pending.requestId);
     } catch (error) {
       failures += 1;
       console.error(`Unable to expire Expo Background Fetch request '${pending.requestId}': ${String(error)}`);
     }
   }
-
-  if (failures > 0) {
-    throw new Error(`Unable to expire ${failures} Expo Background Fetch execution request(s).`);
+  if (remove.size > 0) {
+    await writePendingWorks(
+      store,
+      all.filter((pending: PendingWork): boolean => !remove.has(pending.requestId)),
+    );
+    for (const pending of matching) {
+      if (remove.has(pending.requestId)) finishWorkBestEffort(pending.toWorkInfo());
+    }
   }
+  if (failures > 0) throw new Error(`Unable to expire ${failures} Expo Background Fetch execution request(s).`);
 }
 
 async function openStore(context: common.Context): Promise<preferences.Preferences> {
@@ -211,53 +210,73 @@ async function openStore(context: common.Context): Promise<preferences.Preferenc
 async function readPendingWorks(store: preferences.Preferences): Promise<PendingWork[]> {
   const raw = await store.get(PENDING_WORKS_KEY, '[]');
   const decoded = decodePendingWorks(raw);
-
   if (decoded.corrupted) {
-    await store.put(CORRUPTED_PENDING_WORKS_KEY, typeof raw === 'string' ? raw : JSON.stringify(raw));
-
+    await recordCorruptionDiagnostic(store, raw);
     if (decoded.values.length === 0) await store.delete(PENDING_WORKS_KEY);
     else await store.put(PENDING_WORKS_KEY, JSON.stringify(decoded.values));
-
     await store.flush();
     console.error('Expo Background Fetch repaired corrupted pending work storage.');
   }
-
   return decoded.values.map(
     (pending): PendingWork =>
-      new PendingWork(pending.requestId, pending.workId, pending.bundleName, pending.abilityName, pending.taskName, pending.ownerKey),
+      new PendingWork(
+        pending.requestId,
+        pending.workId,
+        pending.bundleName,
+        pending.abilityName,
+        pending.taskName,
+        pending.ownerKey,
+        pending.schedulerGeneration,
+        pending.expiresAt,
+      ),
   );
 }
 
-async function writePendingWorks(store: preferences.Preferences, works: PendingWork[]): Promise<void> {
-  if (works.length === 0) {
-    await store.delete(PENDING_WORKS_KEY);
-  } else {
-    await store.put(PENDING_WORKS_KEY, JSON.stringify(works));
+async function recordCorruptionDiagnostic(store: preferences.Preferences, value: ESObject): Promise<void> {
+  const raw = await store.get(CORRUPTED_PENDING_WORKS_KEY, '[]');
+  let diagnostics: ESObject[] = [];
+  if (typeof raw === 'string') {
+    try {
+      const parsed: ESObject = JSON.parse(raw);
+      if (Array.isArray(parsed)) diagnostics = parsed.slice(-MAXIMUM_CORRUPTION_DIAGNOSTICS + 1);
+    } catch (_) {}
   }
+  diagnostics.push({ valueType: value === null ? 'null' : typeof value, recoveredAt: Date.now() });
+  await store.put(CORRUPTED_PENDING_WORKS_KEY, JSON.stringify(diagnostics));
+}
+
+async function writePendingWorks(store: preferences.Preferences, works: PendingWork[]): Promise<void> {
+  if (works.length === 0) await store.delete(PENDING_WORKS_KEY);
+  else await store.put(PENDING_WORKS_KEY, JSON.stringify(works));
   await store.flush();
 }
 
 function isOwnedWork(work: workScheduler.WorkInfo): boolean {
-  const ownerKey = work.parameters?.[TASK_MANAGER_OWNER_PARAMETER];
-  return work.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE && typeof ownerKey === 'string' && ownerKey.length > 0;
+  return (
+    work.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE &&
+    ExpoTaskManagerWorkMetadata.owner(work.parameters, true) !== undefined &&
+    schedulerGenerationFromWork(work).length > 0
+  );
 }
 
 function taskNameFromWork(work: workScheduler.WorkInfo): string | undefined {
   const value = work.parameters?.[TASK_NAME_PARAMETER];
-
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function schedulerGenerationFromWork(work: workScheduler.WorkInfo): string {
+  const value = work.parameters?.[SCHEDULER_GENERATION_PARAMETER];
+  return typeof value === 'string' ? value : '';
+}
+
+function taskManagerOwnerFromWork(work: workScheduler.WorkInfo): string {
+  const owner = ExpoTaskManagerWorkMetadata.owner(work.parameters, true);
+  if (owner === undefined) throw new Error('Expo Background Fetch work is missing valid TaskManager metadata.');
+  return owner;
 }
 
 function createRequestId(work: workScheduler.WorkInfo): string {
   return `${OWNER_PARAMETER_VALUE}:${work.workId}:${util.generateRandomUUID(true)}`;
-}
-
-function taskManagerOwnerFromWork(work: workScheduler.WorkInfo): string {
-  const value = work.parameters?.[TASK_MANAGER_OWNER_PARAMETER];
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error('Expo Background Fetch work is missing its TaskManager owner.');
-  }
-  return value;
 }
 
 function finishWorkBestEffort(work: workScheduler.WorkInfo): void {

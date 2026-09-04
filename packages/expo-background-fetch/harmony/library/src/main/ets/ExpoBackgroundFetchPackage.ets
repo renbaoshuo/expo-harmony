@@ -1,23 +1,34 @@
 import { workScheduler } from '@kit.BackgroundTasksKit';
 import { bundleManager } from '@kit.AbilityKit';
-import { RNOHPackage } from '@rnoh/react-native-openharmony';
-import type { RNPackageContext, UITurboModuleContext } from '@rnoh/react-native-openharmony';
-import { ExpoPlatformServiceError, ExpoPlatformServiceRegistry } from '@expo-harmony/expo-modules-core';
-import type { ExpoPlatformServiceFactory } from '@expo-harmony/expo-modules-core';
-import { ExpoTaskConsumer, ExpoTaskExecutionResult, ExpoTaskManagerRegistry, ExpoTaskRecord } from '@expo-harmony/expo-task-manager';
+import { util } from '@kit.ArkTS';
+import {
+  ExpoFunction,
+  ExpoModule,
+  ExpoModuleContext,
+  ExpoModuleDefinition,
+  ExpoModuleError,
+  ExpoValueType,
+  ExpoValueTypes,
+} from '@expo-harmony/expo-modules-core';
+import {
+  ExpoTaskConsumer,
+  ExpoTaskExecutionResult,
+  ExpoTaskManagerRegistry,
+  ExpoTaskManagerWorkMetadata,
+  ExpoTaskRecord,
+} from '@expo-harmony/expo-task-manager';
 
 import {
-  BACKGROUND_FETCH_SERVICE_NAME,
   BACKGROUND_FETCH_STATUS_AVAILABLE,
   BACKGROUND_FETCH_STATUS_RESTRICTED,
   DEFAULT_MINIMUM_INTERVAL_SECONDS,
   MINIMUM_INTERVAL_PARAMETER,
   OWNER_PARAMETER,
   OWNER_PARAMETER_VALUE,
+  SCHEDULER_GENERATION_PARAMETER,
   START_ON_BOOT_PARAMETER,
   STOP_ON_TERMINATE_PARAMETER,
   TASK_NAME_PARAMETER,
-  TASK_MANAGER_OWNER_PARAMETER,
   TASK_TYPE,
   WORK_ID_MAXIMUM,
   WORK_ID_MINIMUM,
@@ -40,34 +51,40 @@ class Options {
   startOnBoot?: boolean;
 }
 
-class ExpoBackgroundFetchError extends ExpoPlatformServiceError {
-  constructor(code: string, message: string) {
-    super(code, message);
+class ExpoBackgroundFetchError extends ExpoModuleError {
+  constructor(code: string, message: string, cause?: Object) {
+    super(code, message, cause);
     this.name = 'ExpoBackgroundFetchError';
   }
 }
 
 class BackgroundFetchConsumer implements ExpoTaskConsumer {
   readonly taskType: string = TASK_TYPE;
-  readonly consumerId: string = '@expo-harmony/expo-background-fetch';
+  readonly consumerId: string = OWNER_PARAMETER_VALUE;
   readonly consumerVersion: number = 1;
   private mutation: Promise<void> = Promise.resolve();
+  private readonly contexts: Map<string, ExpoModuleContext> = new Map();
+  private readonly tasks: Map<string, ExpoTaskRecord[]> = new Map();
+  private readonly pausedOwners: Set<string> = new Set();
 
-  async onTasksChanged(context: UITurboModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
+  async onTasksChanged(context: ExpoModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
+    const owner = ExpoTaskManagerRegistry.ownerKey(context);
+    this.contexts.set(owner, context);
+    this.tasks.set(owner, tasks.slice());
     await this.serialize(async (): Promise<void> => {
       await this.reconcile(context, tasks);
     });
   }
 
-  async onExecutionFinished(context: UITurboModuleContext, _results: ExpoTaskExecutionResult[], requestId?: string): Promise<void> {
+  async onExecutionFinished(context: ExpoModuleContext, _results: ExpoTaskExecutionResult[], requestId?: string): Promise<void> {
     await BackgroundFetchRuntime.finish(context.uiAbilityContext, requestId);
   }
 
-  async onExecutionExpired(context: UITurboModuleContext, requestId?: string): Promise<void> {
+  async onExecutionExpired(context: ExpoModuleContext, requestId?: string): Promise<void> {
     await BackgroundFetchRuntime.finish(context.uiAbilityContext, requestId);
   }
 
-  stopOnTerminate(context: UITurboModuleContext): void {
+  stopOnTerminate(context: ExpoModuleContext): void {
     this.serialize(async (): Promise<void> => {
       const works = await readAllWorks();
       const owned = works.filter((work: workScheduler.WorkInfo): boolean => isOwnedWork(context, work) && stopOnTerminateFromWork(work));
@@ -78,18 +95,46 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
     });
   }
 
-  private async reconcile(context: UITurboModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
+  onForeground(context: ExpoModuleContext): void {
+    const owner = ExpoTaskManagerRegistry.ownerKey(context);
+    this.pausedOwners.add(owner);
+    this.serialize(async (): Promise<void> => {
+      const works = await readAllWorks();
+      await cancelWorks(
+        works.filter((work: workScheduler.WorkInfo): boolean => isOwnedWork(context, work)),
+        context,
+      );
+    }).catch((error: Object): void => {
+      context.logger.warn(`Unable to pause Expo Background Fetch in the foreground: ${String(error)}`);
+    });
+  }
+
+  onBackground(context: ExpoModuleContext): void {
+    const owner = ExpoTaskManagerRegistry.ownerKey(context);
+    this.pausedOwners.delete(owner);
+    const tasks = this.tasks.get(owner) ?? [];
+    this.serialize(async (): Promise<void> => this.reconcile(context, tasks)).catch((error: Object): void => {
+      context.logger.warn(`Unable to resume Expo Background Fetch in the background: ${String(error)}`);
+    });
+  }
+
+  private async reconcile(context: ExpoModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
     if (!canIUse(WORK_SCHEDULER_CAPABILITY)) {
       if (tasks.length === 0) {
         await BackgroundFetchRuntime.expireAll(context.uiAbilityContext);
         return;
       }
 
-      requireAvailable();
+      requireAvailable(context);
     }
 
     const works = await readAllWorks();
     const owned = works.filter((work: workScheduler.WorkInfo): boolean => isOwnedWork(context, work));
+
+    if (this.pausedOwners.has(ExpoTaskManagerRegistry.ownerKey(context))) {
+      await cancelWorks(owned, context);
+      return;
+    }
 
     if (tasks.length === 0) {
       await cancelWorks(owned, context);
@@ -97,7 +142,8 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
       return;
     }
 
-    requireAvailable();
+    requireAvailable(context);
+    requireConfigured();
 
     const reserved = works.slice();
     const desiredNames = new Set<string>();
@@ -115,16 +161,12 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
         continue;
       }
 
-      const workId = current?.workId ?? allocateWorkId(reserved, name, ExpoTaskManagerRegistry.ownerKey(context));
+      const workId = allocateWorkId(reserved, name, ExpoTaskManagerRegistry.ownerKey(context));
       const next = createWorkInfo(context, workId, name, options);
-
-      if (current !== undefined) cancelWork(current);
 
       try {
         workScheduler.startWork(next);
       } catch (error) {
-        if (current !== undefined) restoreWorkBestEffort(current, context);
-
         throw new ExpoBackgroundFetchError(
           'ERR_BACKGROUND_FETCH_SCHEDULER',
           `Unable to schedule task '${name}' with HarmonyOS WorkScheduler: ${String(error)}`,
@@ -132,7 +174,15 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
       }
 
       reserved.push(next);
-      await cancelWorks(matching.slice(1), context);
+      try {
+        await cancelWorks(matching, context);
+      } catch (error) {
+        cancelWorkBestEffort(next, context);
+        throw new ExpoBackgroundFetchError(
+          'ERR_BACKGROUND_FETCH_SCHEDULER',
+          `Unable to replace the previous HarmonyOS work for '${name}': ${String(error)}`,
+        );
+      }
     }
 
     const obsolete = owned.filter((work: workScheduler.WorkInfo): boolean => {
@@ -152,50 +202,56 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
 }
 
 const consumer = new BackgroundFetchConsumer();
+let consumerRegistered: boolean = false;
 
-class BackgroundFetchService {
-  readonly name: string = BACKGROUND_FETCH_SERVICE_NAME;
-  private readonly context: UITurboModuleContext;
+const BACKGROUND_FETCH_OPTIONS_TYPE: ExpoValueType<Options> = new ExpoValueType<Options>(
+  'BackgroundFetch options object',
+  (value: ESObject): Options => parseOptions(value),
+  (value: Options): ESObject => value,
+);
+
+/** ArkTS author implementation of Expo's deprecated BackgroundFetch module. */
+export class ExpoBackgroundFetchModule extends ExpoModule {
   private reloading: boolean = false;
 
-  constructor(context: UITurboModuleContext) {
-    this.context = context;
+  constructor(context: ExpoModuleContext) {
+    super(context);
+    registerConsumer();
   }
 
-  async invoke(method: string, args: ESObject[]): Promise<ESObject> {
-    if (method === 'getStatusAsync') return status();
-
-    if (method === 'registerTaskAsync') {
-      const name = requireTaskName(args[0]);
-      const options = parseOptions(args[1]);
-
-      await ExpoTaskManagerRegistry.registerTask(this.context, name, TASK_TYPE, options);
-
-      return null;
-    }
-
-    if (method === 'unregisterTaskAsync') {
-      const name = requireTaskName(args[0]);
-
-      await ExpoTaskManagerRegistry.unregisterTaskForConsumer(this.context, name, TASK_TYPE);
-
-      return null;
-    }
-
-    throw new ExpoBackgroundFetchError('ERR_BACKGROUND_FETCH_UNKNOWN_METHOD', `Unknown Expo Background Fetch Harmony method '${method}'.`);
-  }
-
-  prepareForReload(): void {
-    this.reloading = true;
-  }
-
-  onDestroy(): void {
-    if (!this.reloading) consumer.stopOnTerminate(this.context);
+  definition(): ExpoModuleDefinition {
+    return new ExpoModuleDefinition()
+      .name('ExpoBackgroundFetch')
+      .asyncFunction('getStatusAsync', ExpoFunction.typed0(async (): Promise<number> => status(this.context)).returns(ExpoValueTypes.number()))
+      .asyncFunction(
+        'registerTaskAsync',
+        ExpoFunction.typed2(ExpoValueTypes.string(), BACKGROUND_FETCH_OPTIONS_TYPE, async (taskName: string, options: Options): Promise<void> => {
+          requireConfigured();
+          requireAvailable(this.context);
+          await ExpoTaskManagerRegistry.registerTask(this.context, requireTaskName(taskName), TASK_TYPE, options);
+        }),
+      )
+      .asyncFunction(
+        'unregisterTaskAsync',
+        ExpoFunction.typed1(ExpoValueTypes.string(), async (taskName: string): Promise<void> => {
+          await ExpoTaskManagerRegistry.unregisterTaskForConsumer(this.context, requireTaskName(taskName), TASK_TYPE);
+        }),
+      )
+      .onPrepareForReload(async (): Promise<void> => {
+        this.reloading = true;
+      })
+      .onForeground((): void => consumer.onForeground(this.context))
+      .onBackground((): void => consumer.onBackground(this.context))
+      .onDestroy((): void => {
+        if (!this.reloading) consumer.stopOnTerminate(this.context);
+      });
   }
 }
 
-function status(): number {
-  return hasWorkSchedulerExtension() ? BACKGROUND_FETCH_STATUS_AVAILABLE : BACKGROUND_FETCH_STATUS_RESTRICTED;
+function status(context: ExpoModuleContext): number {
+  return hasWorkSchedulerExtension() && ExpoTaskManagerRegistry.canEnsureRuntimeForContext(context)
+    ? BACKGROUND_FETCH_STATUS_AVAILABLE
+    : BACKGROUND_FETCH_STATUS_RESTRICTED;
 }
 
 function hasWorkSchedulerExtension(): boolean {
@@ -218,11 +274,20 @@ function hasWorkSchedulerExtension(): boolean {
   }
 }
 
-function requireAvailable(): void {
-  if (status() !== BACKGROUND_FETCH_STATUS_AVAILABLE) {
+function requireAvailable(context: ExpoModuleContext): void {
+  if (status(context) !== BACKGROUND_FETCH_STATUS_AVAILABLE) {
     throw new ExpoBackgroundFetchError(
       'ERR_BACKGROUND_FETCH_UNAVAILABLE',
-      `HarmonyOS WorkScheduler or extension '${WORK_SCHEDULER_EXTENSION_NAME}' is unavailable. ` +
+      'HarmonyOS WorkScheduler or a TaskManager cold-start runtime loader is unavailable.',
+    );
+  }
+}
+
+function requireConfigured(): void {
+  if (!hasWorkSchedulerExtension()) {
+    throw new ExpoBackgroundFetchError(
+      'ERR_BACKGROUND_FETCH_NOT_CONFIGURED',
+      `WorkScheduler extension '${WORK_SCHEDULER_EXTENSION_NAME}' is missing. ` +
         'Run Expo prebuild with the @expo-harmony/expo-background-fetch config plugin.',
     );
   }
@@ -241,6 +306,11 @@ function parseOptions(value: ESObject): Options {
   }
 
   const input = value as OptionsInput;
+  for (const key of Object.keys(value as Record<string, ESObject>)) {
+    if (key !== 'minimumInterval' && key !== 'stopOnTerminate' && key !== 'startOnBoot') {
+      throw new ExpoBackgroundFetchError('ERR_BACKGROUND_FETCH_OPTIONS', `Unsupported BackgroundFetch option '${key}'.`);
+    }
+  }
   const options = new Options();
 
   if (input.minimumInterval !== undefined) {
@@ -264,10 +334,14 @@ function parseOptions(value: ESObject): Options {
     options.startOnBoot = input.startOnBoot;
   }
 
+  if (options.startOnBoot === true && options.stopOnTerminate !== false) {
+    throw new ExpoBackgroundFetchError('ERR_BACKGROUND_FETCH_LIFECYCLE_OPTIONS', 'startOnBoot: true requires stopOnTerminate: false on HarmonyOS.');
+  }
+
   return options;
 }
 
-function createWorkInfo(context: UITurboModuleContext, workId: number, taskName: string, options: Options): workScheduler.WorkInfo {
+function createWorkInfo(context: ExpoModuleContext, workId: number, taskName: string, options: Options): workScheduler.WorkInfo {
   const requested = Math.ceil((options.minimumInterval ?? DEFAULT_MINIMUM_INTERVAL_SECONDS) * 1000);
 
   if (!Number.isSafeInteger(requested)) {
@@ -277,7 +351,8 @@ function createWorkInfo(context: UITurboModuleContext, workId: number, taskName:
   const params: Record<string, number | string | boolean> = {};
   params[OWNER_PARAMETER] = OWNER_PARAMETER_VALUE;
   params[TASK_NAME_PARAMETER] = taskName;
-  params[TASK_MANAGER_OWNER_PARAMETER] = ExpoTaskManagerRegistry.ownerKey(context);
+  params[SCHEDULER_GENERATION_PARAMETER] = util.generateRandomUUID(true);
+  ExpoTaskManagerWorkMetadata.write(params, ExpoTaskManagerRegistry.ownerKey(context));
   params[MINIMUM_INTERVAL_PARAMETER] = options.minimumInterval ?? DEFAULT_MINIMUM_INTERVAL_SECONDS;
   params[STOP_ON_TERMINATE_PARAMETER] = options.stopOnTerminate !== false;
   params[START_ON_BOOT_PARAMETER] = options.startOnBoot === true;
@@ -287,7 +362,7 @@ function createWorkInfo(context: UITurboModuleContext, workId: number, taskName:
     bundleName: context.uiAbilityContext.abilityInfo.bundleName,
     abilityName: WORK_SCHEDULER_EXTENSION_NAME,
     isPersisted: options.startOnBoot === true,
-    batteryStatus: workScheduler.BatteryStatus.BATTERY_STATUS_LOW_OR_OKAY,
+    networkType: workScheduler.NetworkType.NETWORK_TYPE_ANY,
     isRepeat: true,
     repeatCycleTime: Math.max(requested, WORK_SCHEDULER_MINIMUM_INTERVAL_MS),
     parameters: params,
@@ -301,22 +376,24 @@ function workMatchesOptions(work: workScheduler.WorkInfo, taskName: string, opti
 
   return (
     work.isRepeat === true &&
+    work.networkType === workScheduler.NetworkType.NETWORK_TYPE_ANY &&
     work.repeatCycleTime === interval &&
     (work.isPersisted === true) === (options.startOnBoot === true) &&
     params?.[TASK_NAME_PARAMETER] === taskName &&
-    params?.[TASK_MANAGER_OWNER_PARAMETER] === ownerKey &&
+    ExpoTaskManagerWorkMetadata.owner(params) === ownerKey &&
+    typeof params?.[SCHEDULER_GENERATION_PARAMETER] === 'string' &&
     params?.[MINIMUM_INTERVAL_PARAMETER] === seconds &&
     params?.[STOP_ON_TERMINATE_PARAMETER] === (options.stopOnTerminate !== false) &&
     params?.[START_ON_BOOT_PARAMETER] === (options.startOnBoot === true)
   );
 }
 
-function isOwnedWork(context: UITurboModuleContext, work: workScheduler.WorkInfo): boolean {
+function isOwnedWork(context: ExpoModuleContext, work: workScheduler.WorkInfo): boolean {
   return (
     work.bundleName === context.uiAbilityContext.abilityInfo.bundleName &&
     work.abilityName === WORK_SCHEDULER_EXTENSION_NAME &&
     work.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE &&
-    work.parameters?.[TASK_MANAGER_OWNER_PARAMETER] === ExpoTaskManagerRegistry.ownerKey(context)
+    ExpoTaskManagerWorkMetadata.owner(work.parameters, true) === ExpoTaskManagerRegistry.ownerKey(context)
   );
 }
 
@@ -366,7 +443,7 @@ function cancelWork(work: workScheduler.WorkInfo): void {
   }
 }
 
-async function cancelWorks(works: workScheduler.WorkInfo[], context: UITurboModuleContext): Promise<void> {
+async function cancelWorks(works: workScheduler.WorkInfo[], context: ExpoModuleContext): Promise<void> {
   let failures = 0;
 
   for (const work of works) {
@@ -394,40 +471,20 @@ async function cancelWorks(works: workScheduler.WorkInfo[], context: UITurboModu
   }
 }
 
-function restoreWorkBestEffort(work: workScheduler.WorkInfo, context: UITurboModuleContext): void {
+function cancelWorkBestEffort(work: workScheduler.WorkInfo, context: ExpoModuleContext): void {
   try {
-    workScheduler.startWork(work);
+    workScheduler.stopWork(work, true);
   } catch (error) {
-    context.logger.error(`Unable to restore Expo Background Fetch after an update failed: ${String(error)}`);
+    context.logger.error(`Unable to roll back Expo Background Fetch work '${work.workId}': ${String(error)}`);
   }
 }
 
-class BackgroundFetchServiceFactory implements ExpoPlatformServiceFactory {
-  readonly name: string = BACKGROUND_FETCH_SERVICE_NAME;
-
-  create(context: UITurboModuleContext): BackgroundFetchService {
-    return new BackgroundFetchService(context);
-  }
-}
-
-let registered: boolean = false;
-
-function registerPackage(): void {
-  if (registered) return;
-
+export function registerBackgroundFetchConsumer(): void {
+  if (consumerRegistered) return;
   ExpoTaskManagerRegistry.registerConsumer(consumer);
-  ExpoPlatformServiceRegistry.register(new BackgroundFetchServiceFactory());
-
-  registered = true;
+  consumerRegistered = true;
 }
 
-export class ExpoBackgroundFetchPackage extends RNOHPackage {
-  constructor(context: RNPackageContext) {
-    registerPackage();
-    super(context);
-  }
-
-  override getDebugName(): string {
-    return '@expo-harmony/expo-background-fetch';
-  }
+function registerConsumer(): void {
+  registerBackgroundFetchConsumer();
 }

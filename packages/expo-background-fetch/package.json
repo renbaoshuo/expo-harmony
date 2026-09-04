@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-background-fetch",
-  "version": "55.0.16-harmony.0",
+  "version": "55.0.16-harmony.1",
   "license": "MIT",
   "author": "Baoshuo <i@baoshuo.ren>",
   "repository": {
@@ -13,8 +13,9 @@
   "main": "index.js",
   "types": "index.d.ts",
   "scripts": {
-    "harmony:clean": "cd harmony && hvigorw --mode module -p module=expo_background_fetch@default -p product=default -p buildMode=release --no-daemon clean",
-    "harmony:build": "cd harmony && hvigorw --mode module -p module=expo_background_fetch@default -p product=default -p buildMode=release --no-daemon assembleHar && mv -f library/build/default/outputs/default/expo_background_fetch.har ."
+    "harmony:clean": "expo-harmony-module prepare --clean-only",
+    "harmony:build": "expo-harmony-module prepare",
+    "prepack": "expo-harmony-module prepack"
   },
   "dependencies": {
     "@expo-harmony/config-plugins": "workspace:*",
@@ -27,6 +28,7 @@
     "expo-task-manager": "~55.0.16"
   },
   "devDependencies": {
+    "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
     "@react-native-oh/react-native-harmony": "0.84.1",
     "expo": "55.0.26",
@@ -41,14 +43,5 @@
   },
   "publishConfig": {
     "access": "public"
-  },
-  "harmony": {
-    "autolinking": {
-      "mainHarPath": "harmony",
-      "ohPackageName": "@expo-harmony/expo-background-fetch",
-      "etsPackageClassName": "ExpoBackgroundFetchPackage",
-      "cppPackageClassName": "ExpoHarmonyExpoBackgroundFetchPackage",
-      "cmakeLibraryTargetName": "expo_harmony__expo_background_fetch"
-    }
   }
 }
