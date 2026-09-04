@@ -12,7 +12,7 @@ import type {
   NavigationBarVisibilityEvent,
 } from './NavigationBar.types';
 
-function navigationBarStyleToButtonStyle(style: NavigationBarStyle): NavigationBarButtonStyle {
+function getButtonStyle(style: NavigationBarStyle): NavigationBarButtonStyle {
   const light = (Appearance.getColorScheme() ?? 'light') === 'light';
 
   switch (style) {
@@ -88,7 +88,7 @@ export async function getBehaviorAsync(): Promise<NavigationBarBehavior> {
 }
 
 export function setStyle(style: NavigationBarStyle): void {
-  void ExpoNavigationBar.setButtonStyleAsync(navigationBarStyleToButtonStyle(style)).catch((error: unknown) => {
+  void ExpoNavigationBar.setButtonStyleAsync(getButtonStyle(style)).catch((error: unknown) => {
     console.warn(`Unable to set the HarmonyOS navigation bar style: ${String(error)}`);
   });
 }

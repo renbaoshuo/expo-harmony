@@ -1,5 +1,4 @@
 import { type EventSubscription, requireNativeModule } from 'expo-modules-core';
-import { DeviceEventEmitter } from 'react-native';
 
 import type {
   NavigationBarButtonStyle,
@@ -9,6 +8,7 @@ import type {
 } from './NavigationBar.types';
 
 type NativeNavigationBarModule = {
+  addListener(event: 'ExpoNavigationBar.didChange', listener: (event: NavigationBarVisibilityEvent) => void): EventSubscription;
   setBackgroundColorAsync(color: number): Promise<void>;
   getBackgroundColorAsync(): Promise<string>;
   setButtonStyleAsync(style: NavigationBarButtonStyle): Promise<void>;
@@ -19,21 +19,21 @@ type NativeNavigationBarModule = {
   getPositionAsync(): Promise<NavigationBarPosition>;
 };
 
-const nativeModule = requireNativeModule<NativeNavigationBarModule>('ExpoNavigationBar');
+const native = requireNativeModule<NativeNavigationBarModule>('ExpoNavigationBar');
 
 export default {
   addListener(
     event: 'ExpoNavigationBar.didChange',
     listener: (event: NavigationBarVisibilityEvent) => void
   ): EventSubscription {
-    return DeviceEventEmitter.addListener(event, listener);
+    return native.addListener(event, listener);
   },
-  setBackgroundColorAsync: nativeModule.setBackgroundColorAsync.bind(nativeModule),
-  getBackgroundColorAsync: nativeModule.getBackgroundColorAsync.bind(nativeModule),
-  setButtonStyleAsync: nativeModule.setButtonStyleAsync.bind(nativeModule),
-  getButtonStyleAsync: nativeModule.getButtonStyleAsync.bind(nativeModule),
-  setVisibilityAsync: nativeModule.setVisibilityAsync.bind(nativeModule),
-  getVisibilityAsync: nativeModule.getVisibilityAsync.bind(nativeModule),
-  setPositionAsync: nativeModule.setPositionAsync.bind(nativeModule),
-  getPositionAsync: nativeModule.getPositionAsync.bind(nativeModule),
+  setBackgroundColorAsync: native.setBackgroundColorAsync.bind(native),
+  getBackgroundColorAsync: native.getBackgroundColorAsync.bind(native),
+  setButtonStyleAsync: native.setButtonStyleAsync.bind(native),
+  getButtonStyleAsync: native.getButtonStyleAsync.bind(native),
+  setVisibilityAsync: native.setVisibilityAsync.bind(native),
+  getVisibilityAsync: native.getVisibilityAsync.bind(native),
+  setPositionAsync: native.setPositionAsync.bind(native),
+  getPositionAsync: native.getPositionAsync.bind(native),
 };
