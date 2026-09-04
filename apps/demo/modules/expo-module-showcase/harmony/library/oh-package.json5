@@ -1,0 +1,9 @@
+{
+  "name": "expo-module-showcase",
+  "version": "1.0.0",
+  "main": "Index.ets",
+  "license": "MIT",
+  "dependencies": {
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.1"
+  }
+}

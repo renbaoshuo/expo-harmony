@@ -4,11 +4,18 @@
   "author": "Baoshuo <i@baoshuo.ren>",
   "license": "MIT",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "apps/*",
+    "apps/*/modules/*"
   ],
   "scripts": {
-    "lint": "eslint \"packages/*/**/*.{ts,tsx,js,jsx}\" --fix",
-    "lint:check": "eslint \"packages/*/**/*.{ts,tsx,js,jsx}\""
+    "lint": "eslint \"{packages,apps}/*/**/*.{ts,tsx,js,jsx}\" --fix",
+    "lint:check": "eslint \"{packages,apps}/*/**/*.{ts,tsx,js,jsx}\"",
+    "typecheck:demo": "yarn workspace @expo-harmony/demo typecheck",
+    "verify:demo": "yarn eslint \"apps/demo/**/*.{ts,tsx,js,jsx}\" && yarn typecheck:demo && yarn workspace @expo-harmony/demo prebuild:harmony && yarn workspace @expo-harmony/demo check:harmony",
+    "verify:expo-modules:typecheck": "yarn workspace @expo-harmony/expo-modules-autolinking typecheck && yarn workspace @expo-harmony/config-plugins typecheck && yarn workspace @expo-harmony/prebuild-config typecheck && yarn workspace @expo-harmony/metro-config typecheck && yarn workspace @expo-harmony/cli typecheck && yarn typecheck:demo",
+    "verify:expo-modules:lint": "eslint \"packages/{cli,config-plugins,prebuild-config,expo-modules-autolinking,create-expo-module,expo-module-scripts}/**/*.{ts,tsx,js,mjs}\" \"apps/demo/**/*.{ts,tsx,js,mjs}\"",
+    "verify:expo-modules": "yarn verify:expo-modules:typecheck && yarn verify:expo-modules:lint && yarn verify:demo"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

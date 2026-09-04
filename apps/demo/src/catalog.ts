@@ -10,7 +10,8 @@ export type ModuleCategory = typeof MODULE_CATEGORIES[number];
 
 export const MODULES = [
   { id: 'expo-modules-core', title: 'Expo Modules Core', packageName: '@expo-harmony/expo-modules-core', category: '核心运行时', summary: '原生模块注册表、事件发射器与 Expo 运行时桥接。' },
-  { id: 'expo-router', title: 'Expo Router', packageName: '@expo-harmony/expo-router', category: '核心运行时', summary: '基于文件的路由、类型化参数、堆栈导航与深链接。' },
+  { id: 'expo-module-showcase', title: 'Expo Modules 测试', packageName: 'modules/expo-module-showcase', category: '核心运行时', summary: '使用本地模块测试原生调用、事件、共享对象、原生组件与页面，覆盖 Android、iOS 和 HarmonyOS。' },
+  { id: 'expo-router', title: 'Expo Router', packageName: 'expo-router', category: '核心运行时', summary: '基于文件的路由、类型化参数、堆栈导航与深链接。' },
   { id: 'expo-task-manager', title: '任务管理器', packageName: '@expo-harmony/expo-task-manager', category: '核心运行时', summary: '全局任务定义与持久化的原生注册。' },
 
   { id: 'app-metrics', title: '应用指标', packageName: '@expo-harmony/expo-app-metrics', category: '应用', summary: '启动耗时、会话、诊断信息与持久化指标。' },

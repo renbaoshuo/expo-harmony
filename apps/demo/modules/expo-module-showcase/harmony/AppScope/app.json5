@@ -1,0 +1,8 @@
+{
+  "app": {
+    "bundleName": "dev.expo.modules.expo.module.showcase.build",
+    "vendor": "expo-harmony",
+    "versionCode": 10000,
+    "versionName": "1.0.0"
+  }
+}

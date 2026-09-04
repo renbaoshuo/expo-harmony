@@ -6,7 +6,6 @@ import * as SplashScreen from 'expo-splash-screen';
 import * as SystemUI from 'expo-system-ui';
 import { useEffect } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import 'react-native-reanimated';
 import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-context';
 
 import '../src/backgroundFetch';

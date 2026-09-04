@@ -43,6 +43,7 @@ import {
   subscribeToBackgroundTaskExecution,
 } from './backgroundTask';
 import type { ModuleId } from './catalog';
+import { ExpoModulesDemo } from './expoModules/ExpoModulesDemo';
 import { HapticsDemo } from './haptics';
 import { AdditionalModuleDemo } from './packageScreens';
 import { palette } from './theme';
@@ -381,6 +382,22 @@ function FileSystemDemo() {
     });
   });
 
+  const runReadContracts = () => operation.run(async () => {
+    const { assertFileSystemReadContracts, assertFileSystemRawDirectoryContracts } = await import('./fileSystemAssertions');
+    return json({
+      reads: await assertFileSystemReadContracts(),
+      resources: await assertFileSystemRawDirectoryContracts(),
+    });
+  });
+
+  const requestLegacyDirectory = (explicitNull: boolean) => operation.run(async () => {
+    const { StorageAccessFramework } = await import('expo-file-system/legacy');
+    const result = explicitNull
+      ? await StorageAccessFramework.requestDirectoryPermissionsAsync(null)
+      : await StorageAccessFramework.requestDirectoryPermissionsAsync();
+    return json(result);
+  });
+
   return (
     <>
       <Panel eyebrow="沙箱" title="演练现代文件对象">
@@ -390,12 +407,22 @@ function FileSystemDemo() {
           label="执行 创建 · 复制 · 移动 · 句柄"
           onPress={() => void runSandbox()}
         />
+        <ActionButton
+          disabled={operation.state.phase === 'running'}
+          label="验证 连续读取 · Seek · EOF · 资源目录"
+          onPress={() => void runReadContracts()}
+          tone="secondary"
+        />
       </Panel>
 
       <Panel eyebrow="系统选择器" title="检查持久化授权">
         <ActionRow>
           <ActionButton disabled={operation.state.phase === 'running'} label="选择文件" onPress={() => void pickFile()} />
           <ActionButton disabled={operation.state.phase === 'running'} label="选择目录" onPress={() => void pickDirectory()} tone="secondary" />
+        </ActionRow>
+        <ActionRow>
+          <ActionButton disabled={operation.state.phase === 'running'} label="Legacy 目录授权（无参）" onPress={() => void requestLegacyDirectory(false)} tone="secondary" />
+          <ActionButton disabled={operation.state.phase === 'running'} label="Legacy 目录授权（null）" onPress={() => void requestLegacyDirectory(true)} tone="secondary" />
         </ActionRow>
         <Note>
           选中的内容仅作抽样读取，演示不会编辑或删除用户选择的文件和目录。
@@ -987,25 +1014,25 @@ function LinearGradientDemo() {
         </LinearGradient>
       </Panel>
 
-      <Panel eyebrow="边界情况" title="部分断点与退化坐标轴">
+      <Panel eyebrow="边界情况" title="偏移断点与视图外坐标">
         <LinearGradient
           colors={['#FF7064', '#FFB000', '#72D8FF']}
           end={{ x: 1, y: 0 }}
-          locations={[0.2, 0.65]}
+          locations={[0.2, 0.65, 1]}
           start={{ x: 0, y: 0 }}
           style={styles.gradientPartial}
           testID="linear-gradient-partial-locations"
         >
-          <Text style={styles.gradientEdgeText}>部分断点仅保留 20% + 65%</Text>
+          <Text style={styles.gradientEdgeText}>三个颜色对应 20% / 65% / 100%</Text>
         </LinearGradient>
         <LinearGradient
           colors={['#FF7064', '#51D88A']}
-          end={{ x: 0.5, y: 0.5 }}
-          start={{ x: 0.5, y: 0.5 }}
+          end={{ x: 1.5, y: 0.5 }}
+          start={{ x: -0.5, y: 0.5 }}
           style={styles.gradientDegenerate}
           testID="linear-gradient-degenerate"
         >
-          <Text style={styles.gradientEdgeText}>退化坐标轴 = 末尾颜色</Text>
+          <Text style={styles.gradientEdgeText}>渐变轴可延伸到视图边界之外</Text>
         </LinearGradient>
       </Panel>
     </>
@@ -1475,6 +1502,7 @@ export function ModuleDemo({ id }: { id: ModuleId }) {
     case 'haptics': return <HapticsDemo />;
     case 'app-metrics': return <AppMetricsDemo />;
     case 'audio': return <AudioDemo />;
+    case 'expo-module-showcase': return <ExpoModulesDemo />;
   }
 
   return <AdditionalModuleDemo id={id} />;

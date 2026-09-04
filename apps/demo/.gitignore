@@ -1,2 +1,4 @@
-.expo/
-harmony/
+/.expo/
+/harmony/
+/android/
+/ios/

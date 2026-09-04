@@ -1,0 +1,14 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "expo_module_showcase-harmony",
+  "version": "1.0.0",
+  "license": "MIT",
+  "dependencies": {
+    "expo-module-showcase": "./library"
+  },
+  "overrides": {
+    "@expo-harmony/expo-modules-core": "../../../node_modules/@expo-harmony/expo-modules-core/harmony/expo_modules_core.har",
+    "@ppd/ffrt": "1.1.5",
+    "@rnoh/react-native-openharmony": "0.84.1"
+  }
+}

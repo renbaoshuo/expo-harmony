@@ -1,0 +1,25 @@
+{
+  "platforms": [
+    "apple",
+    "android",
+    "harmony"
+  ],
+  "apple": {
+    "modules": [
+      "ExpoModuleShowcaseModule",
+      "ExpoModuleShowcaseConsumerModule"
+    ]
+  },
+  "android": {
+    "modules": [
+      "expo.modules.showcase.ExpoModuleShowcaseModule",
+      "expo.modules.showcase.ExpoModuleShowcaseConsumerModule"
+    ]
+  },
+  "harmony": {
+    "modules": [
+      "ExpoModuleShowcaseModule",
+      "ExpoModuleShowcaseConsumerModule"
+    ]
+  }
+}

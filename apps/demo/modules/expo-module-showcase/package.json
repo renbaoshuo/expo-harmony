@@ -1,0 +1,24 @@
+{
+  "name": "expo-module-showcase",
+  "version": "1.0.0",
+  "description": "App-local Expo Module used by the demo application",
+  "private": true,
+  "license": "MIT",
+  "main": "index.ts",
+  "types": "index.ts",
+  "scripts": {
+    "harmony:clean": "expo-harmony-module prepare --clean-only",
+    "harmony:build": "expo-harmony-module prepare",
+    "harmony:inspect": "expo-harmony-module inspect"
+  },
+  "peerDependencies": {
+    "@expo-harmony/expo-modules-core": "workspace:*",
+    "expo-modules-core": "^55.0.0"
+  },
+  "devDependencies": {
+    "@expo-harmony/expo-module-scripts": "workspace:*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
