@@ -1,13 +1,20 @@
-import { LifecycleState, RNOHPackage } from '@rnoh/react-native-openharmony';
-import type { RNPackageContext, UITurboModuleContext } from '@rnoh/react-native-openharmony';
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
-import { EXPO_MODULE_EVENT, ExpoPlatformServiceError, ExpoPlatformServiceRegistry } from '@expo-harmony/expo-modules-core';
-import type { ExpoPlatformServiceFactory } from '@expo-harmony/expo-modules-core';
+import {
+  ExpoAppLifecycleState,
+  ExpoFunction,
+  ExpoModule,
+  ExpoModuleContext,
+  ExpoModuleDefinition,
+  ExpoModuleError,
+  ExpoValueType,
+  ExpoValueTypes,
+} from '@expo-harmony/expo-modules-core';
 
 import {
   EXECUTION_REQUEST_SCHEMA_VERSION,
+  REQUEST_PHASE_EXECUTING,
   REQUEST_PHASE_EXPIRING,
   REQUEST_PHASE_FINISHING,
   REQUEST_PHASE_QUEUED,
@@ -16,25 +23,26 @@ import {
   decodeTaskRecords,
 } from './TaskManagerStorageCodec.ts';
 
-const SERVICE_NAME: string = 'ExpoTaskManagerService';
 const MODULE_NAME: string = 'ExpoTaskManager';
 const TASK_EVENT_NAME: string = 'TaskManager.executeTask';
 const PREFERENCES_NAME: string = 'ExpoTaskManager';
 const REGISTERED_TASKS_KEY: string = 'registeredTasks';
+const REGISTRATION_GENERATIONS_KEY: string = 'registrationGenerations';
 const PENDING_EXECUTION_KEY_PREFIX: string = 'pendingExecution.';
 const CORRUPTED_REGISTERED_TASKS_KEY: string = 'corruptedRegisteredTasks';
 const CORRUPTED_PENDING_EXECUTIONS_KEY: string = 'corruptedPendingExecutions';
 const QUEUE_CHANGED_EVENT: string = 'expo.taskManager.pendingExecutionChanged';
 const QUEUE_EXPIRED_EVENT: string = 'expo.taskManager.pendingExecutionExpired';
-const RNOH_TIMERS_RESUME_MESSAGE: string = 'FOREGROUND';
-const RNOH_TIMERS_PAUSE_MESSAGE: string = 'BACKGROUND';
+const WORK_METADATA_OWNER_PARAMETER: string = 'expo.taskManager.owner';
+const WORK_METADATA_VERSION_PARAMETER: string = 'expo.taskManager.protocolVersion';
+const WORK_METADATA_VERSION: number = 1;
 const MAXIMUM_FUTURE_CLOCK_SKEW_MS: number = 5 * 60 * 1000;
 const DEFAULT_DIRECT_EXECUTION_TIMEOUT_MS: number = 2 * 60 * 1000;
-const QUEUE_RETRY_DELAY_MS: number = 1000;
+const QUEUE_RETRY_BASE_DELAY_MS: number = 1000;
+const QUEUE_RETRY_MAX_DELAY_MS: number = 60 * 1000;
 const MAXIMUM_REQUEST_ID_LENGTH: number = 128;
 const MAXIMUM_SERIALIZED_REQUEST_LENGTH: number = 512 * 1024;
 const MAXIMUM_CORRUPTION_DIAGNOSTICS: number = 20;
-let packageRegistered: boolean = false;
 
 export class ExpoTaskRecord {
   version: number = TASK_RECORD_SCHEMA_VERSION;
@@ -91,9 +99,9 @@ export interface ExpoTaskConsumer {
   readonly taskType: string;
   readonly consumerId: string;
   readonly consumerVersion: number;
-  onTasksChanged(context: UITurboModuleContext, tasks: ExpoTaskRecord[]): Promise<void>;
-  onExecutionFinished?(context: UITurboModuleContext, results: ExpoTaskExecutionResult[], requestId?: string): Promise<void>;
-  onExecutionExpired?(context: UITurboModuleContext, requestId?: string): Promise<void>;
+  onTasksChanged(context: ExpoModuleContext, tasks: ExpoTaskRecord[]): Promise<void>;
+  onExecutionFinished?(context: ExpoModuleContext, results: ExpoTaskExecutionResult[], requestId?: string): Promise<void>;
+  onExecutionExpired?(context: ExpoModuleContext, requestId?: string): Promise<void>;
 }
 
 class TaskExecutionInfo {
@@ -118,16 +126,6 @@ class TaskExecutionBody {
   }
 }
 
-class TaskManagerEventMessage {
-  moduleName: string = MODULE_NAME;
-  eventName: string = TASK_EVENT_NAME;
-  arguments: ESObject[];
-
-  constructor(body: TaskExecutionBody) {
-    this.arguments = [body];
-  }
-}
-
 class PendingExecutionRequest {
   version: number = EXECUTION_REQUEST_SCHEMA_VERSION;
   id: string;
@@ -143,6 +141,9 @@ class PendingExecutionRequest {
   data: ESObject;
   error: ESObject;
   results?: ExpoTaskExecutionResult[];
+  claimToken?: string;
+  claimExpiresAt?: number;
+  allowForeground: boolean;
 
   constructor(
     id: string,
@@ -158,6 +159,9 @@ class PendingExecutionRequest {
     error: ESObject = null,
     phase: string = REQUEST_PHASE_QUEUED,
     results?: ExpoTaskExecutionResult[],
+    claimToken?: string,
+    claimExpiresAt?: number,
+    allowForeground: boolean = true,
   ) {
     this.id = id;
     this.taskType = taskType;
@@ -172,12 +176,16 @@ class PendingExecutionRequest {
     this.data = data;
     this.error = error;
     this.results = results;
+    this.claimToken = claimToken;
+    this.claimExpiresAt = claimExpiresAt;
+    this.allowForeground = allowForeground;
   }
 }
 
 class PendingExecutionBatch {
   ready: PendingExecutionRequest[] = [];
   expired: PendingExecutionRequest[] = [];
+  retryAt?: number;
 }
 
 class PendingExecutionSignal {
@@ -243,9 +251,9 @@ class ActiveTaskExecution {
   }
 }
 
-class ExpoTaskManagerError extends ExpoPlatformServiceError {
-  constructor(code: string, message: string) {
-    super(code, message);
+class ExpoTaskManagerError extends ExpoModuleError {
+  constructor(code: string, message: string, cause?: Object) {
+    super(code, message, cause);
     this.name = 'ExpoTaskManagerError';
   }
 }
@@ -271,6 +279,18 @@ class CorruptionDiagnostic {
     this.valueType = value === null ? 'null' : typeof value;
     this.length = serializedLength(value);
     this.recoveredAt = Date.now();
+  }
+}
+
+class RegistrationGeneration {
+  ownerKey: string;
+  taskName: string;
+  generation: number;
+
+  constructor(ownerKey: string, taskName: string, generation: number) {
+    this.ownerKey = ownerKey;
+    this.taskName = taskName;
+    this.generation = generation;
   }
 }
 
@@ -324,6 +344,53 @@ class TaskRepository {
     await this.store.flush();
   }
 
+  async nextRegistrationGenerationLocked(ownerKey: string, taskName: string, current?: ExpoTaskRecord): Promise<number> {
+    const generations = await this.readRegistrationGenerationsLocked();
+    const existing = generations.find((item: RegistrationGeneration): boolean => {
+      return item.ownerKey === ownerKey && item.taskName === taskName;
+    });
+    const generation = Math.max(existing?.generation ?? 0, current?.registrationGeneration ?? 0) + 1;
+    if (!Number.isSafeInteger(generation)) {
+      throw new ExpoTaskManagerError('ERR_TASK_MANAGER_REGISTRATION_GENERATION', `Task '${taskName}' exhausted its registration generation range.`);
+    }
+    const next = generations.filter((item: RegistrationGeneration): boolean => {
+      return item.ownerKey !== ownerKey || item.taskName !== taskName;
+    });
+    next.push(new RegistrationGeneration(ownerKey, taskName, generation));
+    await this.store.put(REGISTRATION_GENERATIONS_KEY, JSON.stringify(next));
+    return generation;
+  }
+
+  private async readRegistrationGenerationsLocked(): Promise<RegistrationGeneration[]> {
+    const raw = await this.store.get(REGISTRATION_GENERATIONS_KEY, '[]');
+    if (typeof raw !== 'string') return [];
+    try {
+      const parsed: ESObject = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      const generations: RegistrationGeneration[] = [];
+      const values: ESObject[] = parsed as ESObject[];
+      for (let index = 0; index < values.length; ++index) {
+        const value: ESObject = values[index];
+        if (value === null || typeof value !== 'object' || Array.isArray(value)) continue;
+        const item = value as Record<string, ESObject>;
+        if (
+          typeof item['ownerKey'] !== 'string' ||
+          item['ownerKey'].length === 0 ||
+          typeof item['taskName'] !== 'string' ||
+          item['taskName'].length === 0 ||
+          typeof item['generation'] !== 'number' ||
+          !Number.isSafeInteger(item['generation']) ||
+          item['generation'] < 1
+        )
+          continue;
+        generations.push(new RegistrationGeneration(item['ownerKey'], item['taskName'], item['generation']));
+      }
+      return generations;
+    } catch (_) {
+      return [];
+    }
+  }
+
   static async serialize(operation: () => Promise<void>): Promise<void> {
     await TaskManagerStorageLock.serialize(operation);
   }
@@ -341,7 +408,9 @@ async function readPendingExecutions(store: preferences.Preferences): Promise<Pe
     const value: ESObject = values[key] as ESObject;
     const request = decodeExecutionRequest(value);
 
-    if (request !== undefined && key === pendingExecutionKey(request.ownerKey, request.id)) {
+    const currentKey = request === undefined ? undefined : pendingExecutionKey(request.ownerKey, request.id);
+    const legacyKey = request === undefined ? undefined : legacyPendingExecutionKey(request.ownerKey, request.id);
+    if (request !== undefined && (key === currentKey || key === legacyKey)) {
       const pending = new PendingExecutionRequest(
         request.id,
         request.taskType,
@@ -356,8 +425,16 @@ async function readPendingExecutions(store: preferences.Preferences): Promise<Pe
         request.error,
         request.phase,
         executionResults(request.results),
+        request.claimToken,
+        request.claimExpiresAt,
+        request.allowForeground,
       );
       requests.push(pending);
+      if (key === legacyKey && currentKey !== undefined) {
+        await savePendingExecution(store, pending);
+        await store.delete(key);
+        changed = true;
+      }
       continue;
     }
 
@@ -389,10 +466,10 @@ async function removePendingExecution(store: preferences.Preferences, ownerKey: 
 }
 
 function pendingExecutionKey(ownerKey: string, requestId: string): string {
-  return `${PENDING_EXECUTION_KEY_PREFIX}${ownerStorageSegment(ownerKey)}.${requestId}`;
+  return `${PENDING_EXECUTION_KEY_PREFIX}${encodeURIComponent(ownerKey)}.${requestId}`;
 }
 
-function ownerStorageSegment(ownerKey: string): string {
+function legacyPendingExecutionKey(ownerKey: string, requestId: string): string {
   let first = 0x811c9dc5;
   let second = 0x9e3779b9;
   for (let index = 0; index < ownerKey.length; ++index) {
@@ -400,20 +477,15 @@ function ownerStorageSegment(ownerKey: string): string {
     first = Math.imul(first ^ code, 0x01000193);
     second = Math.imul(second ^ code, 0x85ebca6b);
   }
-  return `${first >>> 0}-${second >>> 0}`;
+  return `${PENDING_EXECUTION_KEY_PREFIX}${first >>> 0}-${second >>> 0}.${requestId}`;
 }
 
 function executionResults(values: ESObject[] | undefined): ExpoTaskExecutionResult[] | undefined {
   if (values === undefined) return undefined;
-  const results: ExpoTaskExecutionResult[] = [];
-  for (let index = 0; index < values.length; ++index) {
-    const value: ESObject = values[index];
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) continue;
+  return values.map((value: ESObject): ExpoTaskExecutionResult => {
     const record = value as Record<string, ESObject>;
-    if (typeof record['taskName'] !== 'string') continue;
-    results.push(new ExpoTaskExecutionResult(record['taskName'], record['result']));
-  }
-  return results;
+    return new ExpoTaskExecutionResult(record['taskName'] as string, record['result']);
+  });
 }
 
 function serializeRequest(request: PendingExecutionRequest): string {
@@ -461,6 +533,21 @@ async function recordCorruptionDiagnostic(store: preferences.Preferences, storag
   await store.put(storageKey, JSON.stringify(diagnostics));
 }
 
+export class ExpoTaskManagerWorkMetadata {
+  static write(parameters: Record<string, number | string | boolean>, ownerKey: string): void {
+    parameters[WORK_METADATA_OWNER_PARAMETER] = requireOwnerKey(ownerKey);
+    parameters[WORK_METADATA_VERSION_PARAMETER] = WORK_METADATA_VERSION;
+  }
+
+  static owner(parameters?: Record<string, number | string | boolean>, allowLegacy: boolean = false): string | undefined {
+    if (parameters === undefined) return undefined;
+    const version = parameters?.[WORK_METADATA_VERSION_PARAMETER];
+    if (version !== WORK_METADATA_VERSION && !(allowLegacy && version === undefined)) return undefined;
+    const owner = parameters[WORK_METADATA_OWNER_PARAMETER];
+    return typeof owner === 'string' && owner.length > 0 ? owner : undefined;
+  }
+}
+
 /**
  * Persistence boundary used by a WorkSchedulerExtensionAbility before an RNOH
  * runtime is necessarily available. A live TaskManager scope consumes the
@@ -477,6 +564,7 @@ export class ExpoTaskManagerBackgroundQueue {
     taskName?: string,
     data: ESObject = {},
     error: ESObject = null,
+    allowForeground: boolean = false,
   ): Promise<string> {
     requireTaskType(taskType);
     requireRequestId(requestId);
@@ -493,7 +581,7 @@ export class ExpoTaskManagerBackgroundQueue {
       const current = requests.find((request: PendingExecutionRequest): boolean => request.id === requestId && request.ownerKey === owner);
       const target = await queueTarget(store, owner, taskType, taskName);
 
-      if (current !== undefined && !sameRequest(current, taskType, taskName, owner, expiresAt, data, error, target)) {
+      if (current !== undefined && !sameRequest(current, taskType, taskName, owner, expiresAt, data, error, allowForeground, target)) {
         throw new ExpoTaskManagerError(
           'ERR_TASK_MANAGER_DUPLICATE_REQUEST',
           `Background execution request '${requestId}' conflicts with an existing request generation.`,
@@ -513,6 +601,11 @@ export class ExpoTaskManagerBackgroundQueue {
           taskName,
           data,
           error,
+          REQUEST_PHASE_QUEUED,
+          undefined,
+          undefined,
+          undefined,
+          allowForeground,
         );
 
         await savePendingExecution(store, request);
@@ -520,17 +613,25 @@ export class ExpoTaskManagerBackgroundQueue {
     });
 
     context.getApplicationContext().eventHub.emit(QUEUE_CHANGED_EVENT);
-    await ExpoTaskManagerRegistry.ensureRuntime(owner);
+    try {
+      await ExpoTaskManagerRegistry.ensureRuntime(owner);
+    } catch (error) {
+      // The durable commit is the success boundary. A live or subsequently
+      // loaded RuntimeContext will drain the request before its deadline.
+      console.warn(`Expo TaskManager queued '${requestId}' while its runtime is unavailable: ${String(error)}`);
+    }
 
     return requestId;
   }
 
-  static async expireRequest(context: common.Context, ownerKey: string, taskType: string, requestId: string): Promise<void> {
+  static async expireRequest(context: common.Context, ownerKey: string, taskType: string, requestId: string): Promise<boolean> {
     requireTaskType(taskType);
     requireRequestId(requestId);
     const owner = requireOwnerKey(ownerKey);
     const request = await TaskManagerQueueRepository.markExpiring(context, owner, taskType, requestId);
-    if (request !== undefined) emitExpiration(context, request);
+    if (request === undefined) return false;
+    emitExpiration(context, request);
+    return true;
   }
 }
 
@@ -555,8 +656,13 @@ class TaskManagerQueueRepository {
 
       for (const request of requests) {
         if (request.ownerKey !== ownerKey) continue;
-        if (request.phase === REQUEST_PHASE_EXPIRING || request.expiresAt <= now || request.createdAt > now + MAXIMUM_FUTURE_CLOCK_SKEW_MS) {
+        if (request.phase === REQUEST_PHASE_FINISHING) {
+          batch.ready.push(request);
+        } else if (request.phase === REQUEST_PHASE_EXPIRING || request.expiresAt <= now || request.createdAt > now + MAXIMUM_FUTURE_CLOCK_SKEW_MS) {
           batch.expired.push(request);
+        } else if (request.phase === REQUEST_PHASE_EXECUTING && (request.claimExpiresAt ?? request.expiresAt) > now) {
+          const retryAt = request.claimExpiresAt ?? request.expiresAt;
+          batch.retryAt = Math.min(batch.retryAt ?? retryAt, retryAt);
         } else {
           batch.ready.push(request);
         }
@@ -566,20 +672,69 @@ class TaskManagerQueueRepository {
     return batch;
   }
 
+  static async claim(context: common.Context, request: PendingExecutionRequest, claimToken: string): Promise<PendingExecutionRequest | undefined> {
+    let claimed: PendingExecutionRequest | undefined;
+    await TaskManagerStorageLock.serialize(async (): Promise<void> => {
+      const store = await preferences.getPreferences(context, { name: PREFERENCES_NAME });
+      const requests = await readPendingExecutions(store);
+      const current = requests.find((pending: PendingExecutionRequest): boolean => {
+        return pending.id === request.id && pending.ownerKey === request.ownerKey;
+      });
+      if (current === undefined || !sameTarget(current, request)) return;
+      const now = Date.now();
+      if (current.expiresAt <= now) return;
+      if (current.phase === REQUEST_PHASE_EXECUTING && current.claimToken !== claimToken && (current.claimExpiresAt ?? current.expiresAt) > now)
+        return;
+      if (current.phase !== REQUEST_PHASE_QUEUED && current.phase !== REQUEST_PHASE_EXECUTING) return;
+      current.phase = REQUEST_PHASE_EXECUTING;
+      current.claimToken = claimToken;
+      current.claimExpiresAt = current.expiresAt;
+      await savePendingExecution(store, current);
+      claimed = current;
+    });
+    return claimed;
+  }
+
+  static async releaseClaim(context: common.Context, request: PendingExecutionRequest): Promise<void> {
+    await TaskManagerStorageLock.serialize(async (): Promise<void> => {
+      const store = await preferences.getPreferences(context, { name: PREFERENCES_NAME });
+      const requests = await readPendingExecutions(store);
+      const current = requests.find((pending: PendingExecutionRequest): boolean => {
+        return pending.id === request.id && pending.ownerKey === request.ownerKey;
+      });
+      if (
+        current === undefined ||
+        !sameTarget(current, request) ||
+        current.phase !== REQUEST_PHASE_EXECUTING ||
+        current.claimToken !== request.claimToken
+      )
+        return;
+      current.phase = REQUEST_PHASE_QUEUED;
+      current.claimToken = undefined;
+      current.claimExpiresAt = undefined;
+      await savePendingExecution(store, current);
+    });
+  }
+
   static async markFinishing(context: common.Context, request: PendingExecutionRequest, results: ExpoTaskExecutionResult[]): Promise<boolean> {
     let acquired = false;
     await TaskManagerStorageLock.serialize(async (): Promise<void> => {
       const store = await preferences.getPreferences(context, { name: PREFERENCES_NAME });
       const requests = await readPendingExecutions(store);
-      const current = requests.find((pending: PendingExecutionRequest): boolean => pending.id === request.id);
+      const current = requests.find((pending: PendingExecutionRequest): boolean => {
+        return pending.id === request.id && pending.ownerKey === request.ownerKey;
+      });
       if (current === undefined || !sameTarget(current, request)) return;
       if (current.phase === REQUEST_PHASE_EXPIRING) return;
       if (current.phase === REQUEST_PHASE_FINISHING) {
         acquired = true;
         return;
       }
+      if (current.phase !== REQUEST_PHASE_EXECUTING || current.claimToken === undefined || current.claimToken !== request.claimToken) return;
       current.phase = REQUEST_PHASE_FINISHING;
       current.results = results;
+      current.claimToken = undefined;
+      current.claimExpiresAt = undefined;
       await savePendingExecution(store, current);
       acquired = true;
     });
@@ -601,6 +756,9 @@ class TaskManagerQueueRepository {
       });
       if (request === undefined || request.phase === REQUEST_PHASE_FINISHING) return;
       request.phase = REQUEST_PHASE_EXPIRING;
+      request.results = undefined;
+      request.claimToken = undefined;
+      request.claimExpiresAt = undefined;
       request.expiresAt = Math.min(request.expiresAt, Date.now());
       await savePendingExecution(store, request);
       found = request;
@@ -612,7 +770,9 @@ class TaskManagerQueueRepository {
     await TaskManagerStorageLock.serialize(async (): Promise<void> => {
       const store = await preferences.getPreferences(context, { name: PREFERENCES_NAME });
       const requests = await readPendingExecutions(store);
-      const current = requests.find((pending: PendingExecutionRequest): boolean => pending.id === request.id);
+      const current = requests.find((pending: PendingExecutionRequest): boolean => {
+        return pending.id === request.id && pending.ownerKey === request.ownerKey;
+      });
       if (current === undefined || !sameTarget(current, request) || current.phase !== phase) return;
       await removePendingExecution(store, request.ownerKey, request.id);
       await store.flush();
@@ -647,6 +807,22 @@ function sameTarget(left: PendingExecutionRequest, right: PendingExecutionReques
   );
 }
 
+function taskMatchesConsumer(task: ExpoTaskRecord, consumer: ExpoTaskConsumer): boolean {
+  return task.consumerId === consumer.consumerId && task.consumerVersion === consumer.consumerVersion;
+}
+
+function sameTaskRecord(left: ExpoTaskRecord, right: ExpoTaskRecord): boolean {
+  return (
+    left.ownerKey === right.ownerKey &&
+    left.taskName === right.taskName &&
+    left.taskType === right.taskType &&
+    left.consumerId === right.consumerId &&
+    left.consumerVersion === right.consumerVersion &&
+    left.registrationGeneration === right.registrationGeneration &&
+    serializedEquals(left.options, right.options)
+  );
+}
+
 function sameRequest(
   current: PendingExecutionRequest,
   taskType: string,
@@ -655,10 +831,11 @@ function sameRequest(
   expiresAt: number,
   data: ESObject,
   error: ESObject,
+  allowForeground: boolean,
   target: QueueTarget,
 ): boolean {
   return (
-    current.phase === REQUEST_PHASE_QUEUED &&
+    current.phase !== REQUEST_PHASE_EXPIRING &&
     current.taskType === taskType &&
     current.taskName === taskName &&
     current.ownerKey === ownerKey &&
@@ -666,6 +843,7 @@ function sameRequest(
     current.consumerId === target.consumerId &&
     current.consumerVersion === target.consumerVersion &&
     current.registrationGeneration === target.registrationGeneration &&
+    current.allowForeground === allowForeground &&
     serializedEquals(current.data, data) &&
     serializedEquals(current.error, error)
   );
@@ -686,7 +864,7 @@ function emitExpiration(context: common.Context, request: PendingExecutionReques
 }
 
 class ExpoTaskManagerScope {
-  private readonly context: UITurboModuleContext;
+  private readonly context: ExpoModuleContext;
   private readonly repository: TaskRepository;
   private readonly owner: string;
   private readonly activeExecutions: Map<string, ActiveTaskExecution> = new Map();
@@ -694,46 +872,30 @@ class ExpoTaskManagerScope {
   private readonly claimedIds: Set<string> = new Set();
   private readonly expirations: Map<string, Promise<void>> = new Map();
   private readonly consumerFailures: Map<string, string> = new Map();
-  private readonly subscriptions: Array<() => void> = [];
   private readonly queueListener: () => void;
   private readonly expiryListener: (signal: PendingExecutionSignal) => void;
   private observing: boolean = false;
   private foreground: boolean;
   private destroyed: boolean = false;
-  private timerLeaseCount: number = 0;
   private retryTimer: number = -1;
+  private retryAttempt: number = 0;
   private draining: Promise<void> = Promise.resolve();
 
-  constructor(context: UITurboModuleContext, repository: TaskRepository) {
+  constructor(context: ExpoModuleContext, repository: TaskRepository) {
     this.context = context;
     this.repository = repository;
     this.owner = runtimeOwnerKey(context);
-    this.foreground = context.rnInstance.getLifecycleState() === LifecycleState.READY;
+    this.foreground = context.appLifecycleState === ExpoAppLifecycleState.FOREGROUND;
     this.queueListener = (): void => this.scheduleDrain();
     this.expiryListener = (signal: PendingExecutionSignal): void => this.scheduleExpiry(signal);
 
     const eventHub = context.uiAbilityContext.getApplicationContext().eventHub;
     eventHub.on(QUEUE_CHANGED_EVENT, this.queueListener);
     eventHub.on(QUEUE_EXPIRED_EVENT, this.expiryListener);
-
-    this.subscriptions.push(
-      (): void => eventHub.off(QUEUE_CHANGED_EVENT, this.queueListener),
-      (): void => eventHub.off(QUEUE_EXPIRED_EVENT, this.expiryListener),
-      context.rnInstance.subscribeToLifecycleEvents('FOREGROUND', () => {
-        this.foreground = true;
-        ExpoTaskManagerRegistry.ownerAvailabilityChanged(this);
-      }),
-      context.rnInstance.subscribeToLifecycleEvents('BACKGROUND', () => {
-        this.foreground = false;
-        ExpoTaskManagerRegistry.ownerAvailabilityChanged(this);
-        this.reassertTimerLeaseAfterBackgroundTransition();
-        this.scheduleDrain();
-      }),
-    );
   }
 
   runtimeId(): number {
-    return this.context.rnInstance.getId();
+    return this.context.runtimeId;
   }
 
   ownerKey(): string {
@@ -748,43 +910,44 @@ class ExpoTaskManagerScope {
     return !this.destroyed && this.observing;
   }
 
+  onForeground(): void {
+    if (this.destroyed) return;
+    this.foreground = true;
+    ExpoTaskManagerRegistry.ownerAvailabilityChanged(this);
+  }
+
+  onBackground(): void {
+    if (this.destroyed) return;
+    this.foreground = false;
+    ExpoTaskManagerRegistry.ownerAvailabilityChanged(this);
+    this.scheduleDrain();
+  }
+
   async reconcileConsumers(): Promise<void> {
-    await TaskRepository.serialize(async (): Promise<void> => {
-      const stored = await this.repository.readTasksLocked();
-      const tasks: ExpoTaskRecord[] = [];
-
-      for (const task of stored) {
-        if (task.ownerKey !== this.owner) {
-          tasks.push(task);
-          continue;
-        }
-        const consumer = ExpoTaskManagerRegistry.consumer(task.taskType);
-        if (consumer === undefined) {
-          tasks.push(task);
-          this.consumerFailures.set(task.taskType, `Native consumer '${task.taskType}' is unavailable.`);
-          continue;
-        }
-
-        if (task.consumerId !== consumer.consumerId || task.consumerVersion !== consumer.consumerVersion) {
-          tasks.push(task);
-          this.consumerFailures.set(task.taskType, `Native consumer '${task.taskType}' changed incompatibly.`);
-          continue;
-        }
-
-        tasks.push(task);
+    const tasks = await this.repository.readTasks();
+    for (const task of tasks) {
+      if (task.ownerKey !== this.owner) continue;
+      const consumer = ExpoTaskManagerRegistry.consumer(task.taskType);
+      if (consumer === undefined) {
+        this.consumerFailures.set(task.taskType, `Native consumer '${task.taskType}' is unavailable.`);
+      } else if (!taskMatchesConsumer(task, consumer)) {
+        this.consumerFailures.set(task.taskType, `Native consumer '${task.taskType}' changed incompatibly.`);
       }
+    }
 
-      for (const consumer of ExpoTaskManagerRegistry.allConsumers()) {
-        try {
-          await this.notifyConsumer(consumer.taskType, tasks);
-          this.consumerFailures.delete(consumer.taskType);
-        } catch (error) {
-          const message = errorDescription(error);
-          this.consumerFailures.set(consumer.taskType, message);
-          this.context.logger.error(`Unable to restore Expo task consumer '${consumer.taskType}': ${message}`);
-        }
+    for (const consumer of ExpoTaskManagerRegistry.allConsumers()) {
+      try {
+        await this.notifyConsumer(consumer.taskType, tasks);
+        const incompatible = tasks.some((task: ExpoTaskRecord): boolean => {
+          return task.ownerKey === this.owner && task.taskType === consumer.taskType && !taskMatchesConsumer(task, consumer);
+        });
+        if (!incompatible) this.consumerFailures.delete(consumer.taskType);
+      } catch (error) {
+        const message = errorDescription(error);
+        this.consumerFailures.set(consumer.taskType, message);
+        this.context.logger.error(`Unable to restore Expo task consumer '${consumer.taskType}': ${message}`);
       }
-    });
+    }
   }
 
   async reconcileConsumer(_taskType: string): Promise<void> {
@@ -792,38 +955,45 @@ class ExpoTaskManagerScope {
   }
 
   async registerTask(taskName: string, taskType: string, options: ESObject): Promise<void> {
+    let tasks: ExpoTaskRecord[] = [];
+    let next: ExpoTaskRecord[] = [];
+    let current: ExpoTaskRecord | undefined;
+    let registered: ExpoTaskRecord | undefined;
     await TaskRepository.serialize(async (): Promise<void> => {
-      const tasks = await this.repository.readTasksLocked();
+      tasks = await this.repository.readTasksLocked();
       const index = tasks.findIndex((task: ExpoTaskRecord): boolean => task.ownerKey === this.owner && task.taskName === taskName);
-      const current = index >= 0 ? tasks[index] : undefined;
+      current = index >= 0 ? tasks[index] : undefined;
       const consumer = ExpoTaskManagerRegistry.consumer(taskType);
       if (consumer === undefined) {
         throw new ExpoTaskManagerError('ERR_TASK_MANAGER_CONSUMER_NOT_FOUND', `No Harmony native task consumer is registered for '${taskType}'.`);
       }
 
-      const next = tasks.filter((task: ExpoTaskRecord): boolean => task.ownerKey !== this.owner || task.taskName !== taskName);
-      next.push(
-        new ExpoTaskRecord(
-          taskName,
-          taskType,
-          options,
-          this.owner,
-          consumer.consumerId,
-          consumer.consumerVersion,
-          (current?.registrationGeneration ?? 0) + 1,
-        ),
-      );
+      const generation = await this.repository.nextRegistrationGenerationLocked(this.owner, taskName, current);
+      next = tasks.filter((task: ExpoTaskRecord): boolean => task.ownerKey !== this.owner || task.taskName !== taskName);
+      registered = new ExpoTaskRecord(taskName, taskType, options, this.owner, consumer.consumerId, consumer.consumerVersion, generation);
+      next.push(registered);
 
       await this.repository.writeTasks(next);
+    });
 
-      try {
-        if (current !== undefined && current.taskType !== taskType) {
-          await this.notifyConsumer(current.taskType, next);
-        }
-        await this.notifyConsumer(taskType, next, true);
-      } catch (error) {
-        await this.repository.writeTasks(tasks);
+    try {
+      if (current !== undefined && current.taskType !== taskType) {
+        await this.notifyConsumer(current.taskType, next);
+      }
+      await this.notifyConsumer(taskType, next, true);
+    } catch (error) {
+      let rolledBack = false;
+      await TaskRepository.serialize(async (): Promise<void> => {
+        const latest = await this.repository.readTasksLocked();
+        const candidate = latest.find((task: ExpoTaskRecord): boolean => task.ownerKey === this.owner && task.taskName === taskName);
+        if (registered === undefined || candidate === undefined || !sameTaskRecord(candidate, registered)) return;
+        const rollback = latest.filter((task: ExpoTaskRecord): boolean => task.ownerKey !== this.owner || task.taskName !== taskName);
+        if (current !== undefined) rollback.push(current);
+        await this.repository.writeTasks(rollback);
+        rolledBack = true;
+      });
 
+      if (rolledBack) {
         const types = current !== undefined && current.taskType !== taskType ? [current.taskType, taskType] : [taskType];
         for (const type of types) {
           try {
@@ -832,52 +1002,52 @@ class ExpoTaskManagerScope {
             this.context.logger.error(`Unable to restore native consumer '${type}' after registration failed: ${String(rollback)}`);
           }
         }
-
-        throw new ExpoTaskManagerError(
-          'ERR_TASK_MANAGER_REGISTRATION_FAILED',
-          `Unable to activate native consumer '${taskType}' for task '${taskName}': ${errorDescription(error)}`,
-        );
       }
 
-      if (current !== undefined && current.taskType !== taskType) {
-        this.abortExecutionsForTask(taskName);
-      }
-    });
+      throw new ExpoTaskManagerError(
+        'ERR_TASK_MANAGER_REGISTRATION_FAILED',
+        `Unable to activate native consumer '${taskType}' for task '${taskName}': ${errorDescription(error)}`,
+      );
+    }
+
+    if (current !== undefined && current.taskType !== taskType) this.abortExecutionsForTask(taskName);
   }
 
   async unregisterTask(taskName: string): Promise<void> {
-    await TaskRepository.serialize(async (): Promise<void> => {
-      await this.unregisterTaskInternal(taskName);
-    });
+    await this.unregisterTaskInternal(taskName);
   }
 
   async unregisterTaskForConsumer(taskName: string, taskType: string): Promise<void> {
-    await TaskRepository.serialize(async (): Promise<void> => {
-      await this.unregisterTaskInternal(taskName, taskType);
-    });
+    await this.unregisterTaskInternal(taskName, taskType);
   }
 
   async unregisterAllTasks(): Promise<void> {
+    let tasks: ExpoTaskRecord[] = [];
+    let owned: ExpoTaskRecord[] = [];
+    let next: ExpoTaskRecord[] = [];
     await TaskRepository.serialize(async (): Promise<void> => {
-      const tasks = await this.repository.readTasksLocked();
-      const owned = tasks.filter((task: ExpoTaskRecord): boolean => task.ownerKey === this.owner);
+      tasks = await this.repository.readTasksLocked();
+      owned = tasks.filter((task: ExpoTaskRecord): boolean => task.ownerKey === this.owner);
       if (owned.length === 0) return;
-
-      const types: string[] = [];
-      for (const task of owned) {
-        if (!types.includes(task.taskType)) types.push(task.taskType);
-      }
-
-      const next = tasks.filter((task: ExpoTaskRecord): boolean => task.ownerKey !== this.owner);
+      next = tasks.filter((task: ExpoTaskRecord): boolean => task.ownerKey !== this.owner);
       await this.repository.writeTasks(next);
+    });
+    if (owned.length === 0) return;
 
-      try {
-        for (const taskType of types) {
-          await this.notifyConsumer(taskType, next);
-        }
-      } catch (error) {
-        await this.repository.writeTasks(tasks);
+    const types: string[] = [];
+    for (const task of owned) if (!types.includes(task.taskType)) types.push(task.taskType);
+    try {
+      for (const taskType of types) await this.notifyConsumer(taskType, next);
+    } catch (error) {
+      let rolledBack = false;
+      await TaskRepository.serialize(async (): Promise<void> => {
+        const latest = await this.repository.readTasksLocked();
+        if (latest.some((task: ExpoTaskRecord): boolean => task.ownerKey === this.owner)) return;
+        await this.repository.writeTasks([...latest, ...owned]);
+        rolledBack = true;
+      });
 
+      if (rolledBack) {
         for (const taskType of types) {
           try {
             await this.notifyConsumer(taskType, tasks);
@@ -885,15 +1055,15 @@ class ExpoTaskManagerScope {
             this.context.logger.error(`Unable to restore native consumer '${taskType}' after unregistering all tasks failed: ${String(rollback)}`);
           }
         }
-
-        throw new ExpoTaskManagerError(
-          'ERR_TASK_MANAGER_UNREGISTRATION_FAILED',
-          `Unable to deactivate all native task consumers: ${errorDescription(error)}`,
-        );
       }
 
-      this.abortAllExecutions();
-    });
+      throw new ExpoTaskManagerError(
+        'ERR_TASK_MANAGER_UNREGISTRATION_FAILED',
+        `Unable to deactivate all native task consumers: ${errorDescription(error)}`,
+      );
+    }
+
+    this.abortAllExecutions();
   }
 
   async isTaskRegistered(taskName: string): Promise<boolean> {
@@ -961,7 +1131,6 @@ class ExpoTaskManagerScope {
     if (this.destroyed) return undefined;
     if (ownerGeneration !== undefined && !ExpoTaskManagerRegistry.ownsQueue(this, ownerGeneration)) return undefined;
 
-    let timerLease: boolean = false;
     let deadlineTimer: number = -1;
     const executions: ActiveTaskExecution[] = [];
     try {
@@ -983,7 +1152,10 @@ class ExpoTaskManagerScope {
 
       const tasks = (await this.repository.readTasks()).filter(
         (task: ExpoTaskRecord): boolean =>
-          task.ownerKey === this.owner && task.taskType === taskType && (taskName === undefined || task.taskName === taskName),
+          task.ownerKey === this.owner &&
+          task.taskType === taskType &&
+          taskMatchesConsumer(task, consumer) &&
+          (taskName === undefined || task.taskName === taskName),
       );
       if (this.destroyed) return undefined;
       if (ownerGeneration !== undefined && !ExpoTaskManagerRegistry.ownsQueue(this, ownerGeneration)) return undefined;
@@ -1007,8 +1179,6 @@ class ExpoTaskManagerScope {
       if (this.foreground && !allowForeground) return undefined;
       const deadline = expiresAt ?? Date.now() + DEFAULT_DIRECT_EXECUTION_TIMEOUT_MS;
       if (Date.now() >= deadline) return undefined;
-      timerLease = this.acquireTimerLease();
-
       const completions: Promise<void>[] = [];
       for (const task of tasks) {
         const eventId = util.generateRandomUUID(true);
@@ -1053,7 +1223,6 @@ class ExpoTaskManagerScope {
         this.removeQueuedEvent(execution.eventId);
         execution.abort();
       }
-      this.releaseTimerLease(timerLease);
     }
   }
 
@@ -1105,58 +1274,60 @@ class ExpoTaskManagerScope {
     this.queuedEvents.length = 0;
     this.claimedIds.clear();
 
-    for (const unsubscribe of this.subscriptions) {
-      try {
-        unsubscribe();
-      } catch (error) {
-        this.context.logger.warn(`Unable to remove an Expo TaskManager subscription: ${String(error)}`);
-      }
-    }
-    this.subscriptions.length = 0;
+    const eventHub = this.context.uiAbilityContext.getApplicationContext().eventHub;
+    eventHub.off(QUEUE_CHANGED_EVENT, this.queueListener);
+    eventHub.off(QUEUE_EXPIRED_EVENT, this.expiryListener);
 
     this.abortAllExecutions();
-    try {
-      if (this.timerLeaseCount > 0 && !this.foreground) this.postTimerLifecycle(RNOH_TIMERS_PAUSE_MESSAGE);
-    } catch (error) {
-      this.context.logger.error(`Unable to release the RNOH timer lease while destroying TaskManager: ${String(error)}`);
-    } finally {
-      this.timerLeaseCount = 0;
-      ExpoTaskManagerRegistry.detach(this);
-    }
+    ExpoTaskManagerRegistry.detach(this);
   }
 
   private async unregisterTaskInternal(taskName: string, expectedTaskType?: string): Promise<void> {
-    const tasks = await this.repository.readTasksLocked();
-    const task = tasks.find((item: ExpoTaskRecord): boolean => item.ownerKey === this.owner && item.taskName === taskName);
+    let tasks: ExpoTaskRecord[] = [];
+    let task: ExpoTaskRecord | undefined;
+    let next: ExpoTaskRecord[] = [];
+    await TaskRepository.serialize(async (): Promise<void> => {
+      tasks = await this.repository.readTasksLocked();
+      task = tasks.find((item: ExpoTaskRecord): boolean => item.ownerKey === this.owner && item.taskName === taskName);
 
-    if (task === undefined) {
-      throw new ExpoTaskManagerError('ERR_TASK_MANAGER_TASK_NOT_FOUND', `Task '${taskName}' is not registered.`);
-    }
+      if (task === undefined) {
+        throw new ExpoTaskManagerError('ERR_TASK_MANAGER_TASK_NOT_FOUND', `Task '${taskName}' is not registered.`);
+      }
 
-    if (expectedTaskType !== undefined && task.taskType !== expectedTaskType) {
-      throw new ExpoTaskManagerError(
-        'ERR_TASK_MANAGER_TASK_CONFLICT',
-        `Task '${taskName}' belongs to native consumer '${task.taskType}', not '${expectedTaskType}'.`,
-      );
-    }
+      if (expectedTaskType !== undefined && task.taskType !== expectedTaskType) {
+        throw new ExpoTaskManagerError(
+          'ERR_TASK_MANAGER_TASK_CONFLICT',
+          `Task '${taskName}' belongs to native consumer '${task.taskType}', not '${expectedTaskType}'.`,
+        );
+      }
 
-    const next = tasks.filter((item: ExpoTaskRecord): boolean => item.ownerKey !== this.owner || item.taskName !== taskName);
-    await this.repository.writeTasks(next);
+      next = tasks.filter((item: ExpoTaskRecord): boolean => item.ownerKey !== this.owner || item.taskName !== taskName);
+      await this.repository.writeTasks(next);
+    });
+    const removed = task as ExpoTaskRecord;
 
     try {
-      await this.notifyConsumer(task.taskType, next);
+      await this.notifyConsumer(removed.taskType, next);
     } catch (error) {
-      await this.repository.writeTasks(tasks);
+      let rolledBack = false;
+      await TaskRepository.serialize(async (): Promise<void> => {
+        const latest = await this.repository.readTasksLocked();
+        if (latest.some((item: ExpoTaskRecord): boolean => item.ownerKey === this.owner && item.taskName === taskName)) return;
+        await this.repository.writeTasks([...latest, removed]);
+        rolledBack = true;
+      });
 
-      try {
-        await this.notifyConsumer(task.taskType, tasks);
-      } catch (rollback) {
-        this.context.logger.error(`Unable to restore native consumer '${task.taskType}' after unregistration failed: ${String(rollback)}`);
+      if (rolledBack) {
+        try {
+          await this.notifyConsumer(removed.taskType, tasks);
+        } catch (rollback) {
+          this.context.logger.error(`Unable to restore native consumer '${removed.taskType}' after unregistration failed: ${String(rollback)}`);
+        }
       }
 
       throw new ExpoTaskManagerError(
         'ERR_TASK_MANAGER_UNREGISTRATION_FAILED',
-        `Unable to deactivate native consumer '${task.taskType}' for task '${taskName}': ${errorDescription(error)}`,
+        `Unable to deactivate native consumer '${removed.taskType}' for task '${taskName}': ${errorDescription(error)}`,
       );
     }
 
@@ -1174,7 +1345,9 @@ class ExpoTaskManagerScope {
 
     await consumer.onTasksChanged(
       this.context,
-      tasks.filter((task: ExpoTaskRecord): boolean => task.ownerKey === this.owner && task.taskType === taskType),
+      tasks.filter((task: ExpoTaskRecord): boolean => {
+        return task.ownerKey === this.owner && task.taskType === taskType && taskMatchesConsumer(task, consumer);
+      }),
     );
   }
 
@@ -1188,7 +1361,7 @@ class ExpoTaskManagerScope {
 
   private publish(body: TaskExecutionBody): void {
     if (this.destroyed) return;
-    this.context.rnInstance.postMessageToCpp(EXPO_MODULE_EVENT, new TaskManagerEventMessage(body));
+    this.context.sendEvent(TASK_EVENT_NAME, body);
   }
 
   private abortExecutionsForTask(taskName: string): void {
@@ -1210,57 +1383,6 @@ class ExpoTaskManagerScope {
   private removeQueuedEvent(eventId: string): void {
     const index = this.queuedEvents.findIndex((body: TaskExecutionBody): boolean => body.executionInfo.eventId === eventId);
     if (index >= 0) this.queuedEvents.splice(index, 1);
-  }
-
-  private acquireTimerLease(): boolean {
-    if (this.foreground) return false;
-
-    this.timerLeaseCount += 1;
-    if (this.timerLeaseCount === 1) {
-      // RNOH 0.84.1 only exposes its timer lifecycle through C++ messages.
-      // Posting directly keeps React timers alive without changing ArkTS AppState.
-      try {
-        this.postTimerLifecycle(RNOH_TIMERS_RESUME_MESSAGE);
-      } catch (error) {
-        this.timerLeaseCount -= 1;
-        this.context.logger.error(`Unable to acquire the RNOH timer lease: ${String(error)}`);
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private releaseTimerLease(acquired: boolean): void {
-    if (!acquired || this.timerLeaseCount === 0) return;
-
-    this.timerLeaseCount -= 1;
-    if (this.timerLeaseCount === 0 && !this.foreground) {
-      try {
-        this.postTimerLifecycle(RNOH_TIMERS_PAUSE_MESSAGE);
-      } catch (error) {
-        this.context.logger.error(`Unable to release the RNOH timer lease: ${String(error)}`);
-      }
-    }
-  }
-
-  private reassertTimerLeaseAfterBackgroundTransition(): void {
-    if (this.timerLeaseCount === 0) return;
-
-    setTimeout((): void => {
-      if (!this.destroyed && !this.foreground && this.timerLeaseCount > 0) {
-        try {
-          this.postTimerLifecycle(RNOH_TIMERS_RESUME_MESSAGE);
-        } catch (error) {
-          this.context.logger.error(`Unable to reassert the RNOH timer lease: ${String(error)}`);
-        }
-      }
-    }, 0);
-  }
-
-  private postTimerLifecycle(message: string): void {
-    // RNOH 0.84.1 has no public typed timer-lease API. Keep the private protocol
-    // isolated here so failure cannot corrupt TaskManager's own lease accounting.
-    this.context.rnInstance.postMessageToCpp(message, {});
   }
 
   private scheduleExecutionDeadline(
@@ -1340,24 +1462,29 @@ class ExpoTaskManagerScope {
             await this.expirePendingExecution(request);
           } catch (error) {
             this.context.logger.error(`Unable to clean up expired Expo task request '${request.id}': ${String(error)}`);
+            this.scheduleRetry();
           }
         }
+
+        if (batch.retryAt !== undefined) this.scheduleRetry(Math.max(0, batch.retryAt - Date.now()));
 
         for (const request of batch.ready) {
           if (!ExpoTaskManagerRegistry.ownsQueue(this, ownerGeneration)) return;
           if (this.claimedIds.has(request.id)) continue;
 
           const now = Date.now();
-          if (request.expiresAt <= now || request.createdAt > now + MAXIMUM_FUTURE_CLOCK_SKEW_MS) {
+          if (request.phase !== REQUEST_PHASE_FINISHING && (request.expiresAt <= now || request.createdAt > now + MAXIMUM_FUTURE_CLOCK_SKEW_MS)) {
             try {
               await this.expirePendingExecution(request);
             } catch (error) {
               this.context.logger.error(`Unable to clean up expired Expo task request '${request.id}': ${String(error)}`);
+              this.scheduleRetry();
             }
             continue;
           }
 
           this.claimedIds.add(request.id);
+          let claimed: PendingExecutionRequest | undefined;
 
           try {
             const consumer = ExpoTaskManagerRegistry.consumer(request.taskType);
@@ -1369,24 +1496,27 @@ class ExpoTaskManagerScope {
             if (request.phase === REQUEST_PHASE_FINISHING) {
               results = request.results ?? [];
             } else {
+              if (this.foreground && !request.allowForeground) continue;
+              claimed = await TaskManagerQueueRepository.claim(app, request, util.generateRandomUUID(true));
+              if (claimed === undefined) continue;
               const executionResults = await this.executeTaskType(
-                request.taskType,
-                true,
-                request.id,
-                request.taskName,
-                request.data,
-                request.error,
-                request.expiresAt,
-                request,
+                claimed.taskType,
+                claimed.allowForeground,
+                claimed.id,
+                claimed.taskName,
+                claimed.data,
+                claimed.error,
+                claimed.expiresAt,
+                claimed,
                 ownerGeneration,
               );
               if (executionResults === undefined) {
-                if (Date.now() >= request.expiresAt) await this.expirePendingExecution(request);
+                if (Date.now() >= claimed.expiresAt) await this.expirePendingExecution(claimed);
                 continue;
               }
               results = executionResults;
               if (!ExpoTaskManagerRegistry.ownsQueue(this, ownerGeneration)) return;
-              if (!(await TaskManagerQueueRepository.markFinishing(app, request, results))) continue;
+              if (!(await TaskManagerQueueRepository.markFinishing(app, claimed, results))) continue;
             }
             if (!ExpoTaskManagerRegistry.ownsQueue(this, ownerGeneration)) return;
             await consumer.onExecutionFinished?.(this.context, results, request.id);
@@ -1394,16 +1524,25 @@ class ExpoTaskManagerScope {
             await TaskManagerQueueRepository.acknowledge(app, request, REQUEST_PHASE_FINISHING);
           } catch (error) {
             this.context.logger.error(`Unable to execute queued Expo task request '${request.id}': ${String(error)}`);
+            if (claimed !== undefined && ExpoTaskManagerRegistry.ownsQueue(this, ownerGeneration)) {
+              try {
+                await TaskManagerQueueRepository.releaseClaim(app, claimed);
+              } catch (releaseError) {
+                this.context.logger.error(`Unable to release Expo task claim '${request.id}': ${String(releaseError)}`);
+              }
+            }
             this.scheduleRetry();
           } finally {
             this.claimedIds.delete(request.id);
           }
         }
+        if (this.retryTimer < 0) this.retryAttempt = 0;
       });
 
     this.draining = next;
     next.catch((error: Object): void => {
       this.context.logger.error(`Unable to execute queued Expo tasks: ${String(error)}`);
+      this.scheduleRetry();
     });
   }
 
@@ -1433,12 +1572,16 @@ class ExpoTaskManagerScope {
       });
   }
 
-  private scheduleRetry(): void {
+  private scheduleRetry(minimumDelay: number = 0): void {
     if (this.destroyed || this.retryTimer >= 0) return;
+    const exponential = Math.min(QUEUE_RETRY_MAX_DELAY_MS, QUEUE_RETRY_BASE_DELAY_MS * Math.pow(2, this.retryAttempt));
+    const jittered = Math.round(exponential * (0.8 + Math.random() * 0.4));
+    const delay = Math.max(minimumDelay, jittered);
+    this.retryAttempt = Math.min(this.retryAttempt + 1, 16);
     this.retryTimer = setTimeout((): void => {
       this.retryTimer = -1;
       this.scheduleDrain();
-    }, QUEUE_RETRY_DELAY_MS);
+    }, delay);
   }
 }
 
@@ -1452,6 +1595,7 @@ export class ExpoTaskManagerRegistry {
   private static readonly consumers: Map<string, ExpoTaskConsumer> = new Map();
   private static readonly scopes: Map<number, ExpoTaskManagerScope> = new Map();
   private static readonly loaders: Map<string, ExpoTaskManagerRuntimeLoader> = new Map();
+  private static readonly runtimeLoads: Map<string, Promise<void>> = new Map();
   private static readonly ownerRuntimeIds: Map<string, number> = new Map();
   private static readonly ownerGenerations: Map<string, number> = new Map();
 
@@ -1490,13 +1634,37 @@ export class ExpoTaskManagerRegistry {
     ExpoTaskManagerRegistry.loaders.set(owner, loader);
   }
 
-  static ownerKey(context: UITurboModuleContext): string {
+  static unregisterRuntimeLoader(loader: ExpoTaskManagerRuntimeLoader): void {
+    const owner = requireOwnerKey(loader.ownerKey);
+    if (ExpoTaskManagerRegistry.loaders.get(owner) === loader) ExpoTaskManagerRegistry.loaders.delete(owner);
+  }
+
+  static canEnsureRuntime(ownerKey: string): boolean {
+    const owner = requireOwnerKey(ownerKey);
+    if (ExpoTaskManagerRegistry.hasRuntime(owner)) return true;
+    return ExpoTaskManagerRegistry.loaders.get(owner)?.isAvailable() === true;
+  }
+
+  static canEnsureRuntimeForContext(context: ExpoModuleContext): boolean {
+    const owner = runtimeOwnerKey(context);
+    if (ExpoTaskManagerRegistry.canEnsureRuntime(owner)) return true;
+    return context.getModule(MODULE_NAME) instanceof ExpoTaskManagerModule;
+  }
+
+  static hasRuntimeLoader(ownerKey: string): boolean {
+    const owner = requireOwnerKey(ownerKey);
+    return ExpoTaskManagerRegistry.loaders.get(owner)?.isAvailable() === true;
+  }
+
+  static ownerKey(context: ExpoModuleContext): string {
     return runtimeOwnerKey(context);
   }
 
   static async ensureRuntime(ownerKey: string): Promise<void> {
     const owner = requireOwnerKey(ownerKey);
     if (ExpoTaskManagerRegistry.hasRuntime(owner)) return;
+    const existing = ExpoTaskManagerRegistry.runtimeLoads.get(owner);
+    if (existing !== undefined) return await existing;
     const loader = ExpoTaskManagerRegistry.loaders.get(owner);
     if (loader === undefined || !loader.isAvailable()) {
       throw new ExpoTaskManagerError(
@@ -1504,9 +1672,17 @@ export class ExpoTaskManagerRegistry {
         `No live RNOH runtime or TaskManager runtime loader is available for '${owner}'.`,
       );
     }
-    await loader.load();
-    if (!ExpoTaskManagerRegistry.hasRuntime(owner)) {
-      throw new ExpoTaskManagerError('ERR_TASK_MANAGER_RUNTIME_LOAD_FAILED', `The TaskManager runtime loader did not attach '${owner}'.`);
+    const pending = (async (): Promise<void> => {
+      await loader.load();
+      if (!ExpoTaskManagerRegistry.hasRuntime(owner)) {
+        throw new ExpoTaskManagerError('ERR_TASK_MANAGER_RUNTIME_LOAD_FAILED', `The TaskManager runtime loader did not attach '${owner}'.`);
+      }
+    })();
+    ExpoTaskManagerRegistry.runtimeLoads.set(owner, pending);
+    try {
+      await pending;
+    } finally {
+      if (ExpoTaskManagerRegistry.runtimeLoads.get(owner) === pending) ExpoTaskManagerRegistry.runtimeLoads.delete(owner);
     }
   }
 
@@ -1541,36 +1717,30 @@ export class ExpoTaskManagerRegistry {
     ExpoTaskManagerRegistry.refreshOwner(scope.ownerKey());
   }
 
-  static async registerTask(context: UITurboModuleContext, taskName: string, taskType: string, options: ESObject): Promise<void> {
-    await ExpoTaskManagerRegistry.requireScope(context).registerTask(
-      requireTaskName(taskName),
-      requireTaskType(taskType),
-      requireObject(options, 'task options'),
-    );
+  static async registerTask(context: ExpoModuleContext, taskName: string, taskType: string, options: ESObject): Promise<void> {
+    await (
+      await ExpoTaskManagerRegistry.requireScope(context)
+    ).registerTask(requireTaskName(taskName), requireTaskType(taskType), requireObject(options, 'task options'));
   }
 
-  static async unregisterTask(context: UITurboModuleContext, taskName: string): Promise<void> {
-    await ExpoTaskManagerRegistry.requireScope(context).unregisterTask(requireTaskName(taskName));
+  static async unregisterTask(context: ExpoModuleContext, taskName: string): Promise<void> {
+    await (await ExpoTaskManagerRegistry.requireScope(context)).unregisterTask(requireTaskName(taskName));
   }
 
-  static async unregisterTaskForConsumer(context: UITurboModuleContext, taskName: string, taskType: string): Promise<void> {
-    await ExpoTaskManagerRegistry.requireScope(context).unregisterTaskForConsumer(requireTaskName(taskName), requireTaskType(taskType));
+  static async unregisterTaskForConsumer(context: ExpoModuleContext, taskName: string, taskType: string): Promise<void> {
+    await (await ExpoTaskManagerRegistry.requireScope(context)).unregisterTaskForConsumer(requireTaskName(taskName), requireTaskType(taskType));
   }
 
-  static async isTaskRegistered(context: UITurboModuleContext, taskName: string): Promise<boolean> {
-    return await ExpoTaskManagerRegistry.requireScope(context).isTaskRegistered(requireTaskName(taskName));
+  static async isTaskRegistered(context: ExpoModuleContext, taskName: string): Promise<boolean> {
+    return await (await ExpoTaskManagerRegistry.requireScope(context)).isTaskRegistered(requireTaskName(taskName));
   }
 
-  static async executeTaskType(
-    context: UITurboModuleContext,
-    taskType: string,
-    allowForeground: boolean = false,
-  ): Promise<ExpoTaskExecutionResult[]> {
-    return (await ExpoTaskManagerRegistry.requireScope(context).executeTaskType(requireTaskType(taskType), allowForeground)) ?? [];
+  static async executeTaskType(context: ExpoModuleContext, taskType: string, allowForeground: boolean = false): Promise<ExpoTaskExecutionResult[]> {
+    return (await (await ExpoTaskManagerRegistry.requireScope(context)).executeTaskType(requireTaskType(taskType), allowForeground)) ?? [];
   }
 
   static async executeTask(
-    context: UITurboModuleContext,
+    context: ExpoModuleContext,
     taskName: string,
     data: ESObject,
     error: ESObject = null,
@@ -1580,7 +1750,7 @@ export class ExpoTaskManagerRegistry {
     const payload: ESObject = requireObject(data, 'task execution data');
     if (error !== null) requireObject(error, 'task execution error');
 
-    const results = await ExpoTaskManagerRegistry.requireScope(context).executeTask(name, payload, error, allowForeground);
+    const results = await (await ExpoTaskManagerRegistry.requireScope(context)).executeTask(name, payload, error, allowForeground);
     return results.length > 0 ? results[0] : undefined;
   }
 
@@ -1610,73 +1780,188 @@ export class ExpoTaskManagerRegistry {
     primary?.retryPendingExecutions();
   }
 
-  private static requireScope(context: UITurboModuleContext): ExpoTaskManagerScope {
-    const scope = ExpoTaskManagerRegistry.scopes.get(context.rnInstance.getId());
-    if (scope === undefined) {
+  private static async requireScope(context: ExpoModuleContext): Promise<ExpoTaskManagerScope> {
+    const scope = ExpoTaskManagerRegistry.scopes.get(context.runtimeId);
+    if (scope !== undefined) return scope;
+    const module = context.getModule(MODULE_NAME);
+    if (!(module instanceof ExpoTaskManagerModule)) {
       throw new ExpoTaskManagerError('ERR_TASK_MANAGER_SCOPE_NOT_FOUND', 'The Expo TaskManager Harmony runtime is not initialized.');
     }
-    return scope;
+    return await module.scopeForRegistry();
   }
 }
 
-class ExpoTaskManagerService {
-  readonly name: string = SERVICE_NAME;
-  private readonly scope: ExpoTaskManagerScope;
+class TaskCompletionResponse {
+  eventId: string;
+  result: ESObject;
 
-  private constructor(scope: ExpoTaskManagerScope) {
-    this.scope = scope;
+  constructor(eventId: string, result: ESObject) {
+    this.eventId = eventId;
+    this.result = result;
+  }
+}
+
+const TASK_COMPLETION_RESPONSE_TYPE: ExpoValueType<TaskCompletionResponse> = new ExpoValueType<TaskCompletionResponse>(
+  'TaskManager completion response',
+  (value: ESObject): TaskCompletionResponse => {
+    const response: ESObject = requireObject(value, 'completion response');
+    if (typeof response.eventId !== 'string' || response.eventId.length === 0) {
+      throw new ExpoTaskManagerError('ERR_TASK_MANAGER_INVALID_RESPONSE', 'TaskManager completion response must contain a non-empty string eventId.');
+    }
+    return new TaskCompletionResponse(response.eventId, response.result ?? null);
+  },
+  (value: TaskCompletionResponse): ESObject => value,
+);
+
+/** ArkTS author implementation of Expo's TaskManager native module. */
+export class ExpoTaskManagerModule extends ExpoModule {
+  private scope?: ExpoTaskManagerScope = undefined;
+  private scopePromise?: Promise<ExpoTaskManagerScope> = undefined;
+  private observing: boolean = false;
+  private foreground: boolean;
+  private destroyed: boolean = false;
+
+  constructor(context: ExpoModuleContext) {
+    super(context);
+    this.foreground = context.appLifecycleState === ExpoAppLifecycleState.FOREGROUND;
   }
 
-  static async create(context: UITurboModuleContext): Promise<ExpoTaskManagerService> {
-    const repo = await TaskRepository.create(context.uiAbilityContext);
-    const scope = new ExpoTaskManagerScope(context, repo);
+  definition(): ExpoModuleDefinition {
+    return new ExpoModuleDefinition()
+      .name(MODULE_NAME)
+      .events([TASK_EVENT_NAME])
+      .constant('EVENT_NAME', TASK_EVENT_NAME)
+      .asyncFunction('isAvailableAsync', ExpoFunction.typed0(async (): Promise<boolean> => true).returns(ExpoValueTypes.boolean()))
+      .asyncFunction(
+        'notifyTaskFinishedAsync',
+        ExpoFunction.typed2(
+          ExpoValueTypes.string(),
+          TASK_COMPLETION_RESPONSE_TYPE,
+          async (taskName: string, response: TaskCompletionResponse): Promise<void> => {
+            (await this.scopeForRegistry()).notifyTaskFinished(taskName, response);
+          },
+        ),
+      )
+      .asyncFunction(
+        'isTaskRegisteredAsync',
+        ExpoFunction.typed1(ExpoValueTypes.string(), async (taskName: string): Promise<boolean> => {
+          return await (await this.scopeForRegistry()).isTaskRegistered(taskName);
+        }).returns(ExpoValueTypes.boolean()),
+      )
+      .asyncFunction(
+        'getTaskOptionsAsync',
+        ExpoFunction.typed1(ExpoValueTypes.string(), async (taskName: string): Promise<ESObject> => {
+          return await (await this.scopeForRegistry()).getTaskOptions(taskName);
+        }),
+      )
+      .asyncFunction(
+        'getRegisteredTasksAsync',
+        ExpoFunction.typed0(async (): Promise<ExpoTaskPublicRecord[]> => {
+          return await (await this.scopeForRegistry()).getRegisteredTasks();
+        }),
+      )
+      .asyncFunction(
+        'unregisterTaskAsync',
+        ExpoFunction.typed1(ExpoValueTypes.string(), async (taskName: string): Promise<void> => {
+          await (await this.scopeForRegistry()).unregisterTask(taskName);
+        }),
+      )
+      .asyncFunction(
+        'unregisterAllTasksAsync',
+        ExpoFunction.typed0(async (): Promise<void> => {
+          await (await this.scopeForRegistry()).unregisterAllTasks();
+        }),
+      )
+      .onCreate((): void => {
+        this.initialize().catch((error: Object): void => {
+          this.context.logger.error(`Unable to initialize Expo TaskManager: ${String(error)}`);
+        });
+      })
+      .onStartObserving(TASK_EVENT_NAME, (): void => this.setObserving(true))
+      .onStopObserving(TASK_EVENT_NAME, (): void => this.setObserving(false))
+      .onForeground((): void => this.setForeground(true))
+      .onBackground((): void => this.setForeground(false))
+      .onDestroy((): void => this.destroy());
+  }
 
+  /** @internal Used by the background task consumers in this Host/runtime. */
+  async scopeForRegistry(): Promise<ExpoTaskManagerScope> {
+    return await this.initialize();
+  }
+
+  private initialize(): Promise<ExpoTaskManagerScope> {
+    if (this.destroyed) {
+      return Promise.reject(new ExpoTaskManagerError('ERR_TASK_MANAGER_SCOPE_DESTROYED', 'The Expo TaskManager Harmony runtime has been destroyed.'));
+    }
+    if (this.scopePromise !== undefined) return this.scopePromise;
+    const pending = this.createScope();
+    this.scopePromise = pending;
+    pending.catch((): void => {
+      if (this.scopePromise === pending && this.scope === undefined && !this.destroyed) this.scopePromise = undefined;
+    });
+    return pending;
+  }
+
+  private async createScope(): Promise<ExpoTaskManagerScope> {
+    const repository = await TaskRepository.create(this.context.uiAbilityContext);
+    if (this.destroyed) {
+      throw new ExpoTaskManagerError('ERR_TASK_MANAGER_SCOPE_DESTROYED', 'The Expo TaskManager Harmony runtime was destroyed during initialization.');
+    }
+    const scope = new ExpoTaskManagerScope(this.context, repository);
     ExpoTaskManagerRegistry.attach(scope);
     try {
       await scope.reconcileConsumers();
+      if (this.destroyed) {
+        scope.destroy();
+        throw new ExpoTaskManagerError(
+          'ERR_TASK_MANAGER_SCOPE_DESTROYED',
+          'The Expo TaskManager Harmony runtime was destroyed during initialization.',
+        );
+      }
+      this.scope = scope;
+      if (this.foreground) scope.onForeground();
+      else scope.onBackground();
+      if (this.observing) scope.startObserving();
+      return scope;
     } catch (error) {
       scope.destroy();
-      throw new ExpoTaskManagerError('ERR_TASK_MANAGER_INITIALIZATION_FAILED', `Unable to restore native task consumers: ${errorDescription(error)}`);
+      if (error instanceof ExpoTaskManagerError) throw error;
+      throw new ExpoTaskManagerError(
+        'ERR_TASK_MANAGER_INITIALIZATION_FAILED',
+        `Unable to restore native task consumers: ${errorDescription(error as ESObject)}`,
+        error as Object,
+      );
     }
-
-    return new ExpoTaskManagerService(scope);
   }
 
-  async invoke(method: string, args: ESObject[]): Promise<ESObject> {
-    if (method === 'isAvailableAsync') return true;
-    if (method === 'startObserving') {
-      this.scope.startObserving();
-      return null;
+  private setObserving(observing: boolean): void {
+    if (this.destroyed) return;
+    this.observing = observing;
+    if (observing) {
+      this.initialize()
+        .then((scope: ExpoTaskManagerScope): void => scope.startObserving())
+        .catch((error: Object): void => {
+          this.context.logger.error(`Unable to start observing Expo TaskManager: ${String(error)}`);
+        });
+    } else {
+      this.scope?.stopObserving();
     }
-    if (method === 'stopObserving') {
-      this.scope.stopObserving();
-      return null;
-    }
-    if (method === 'notifyTaskFinishedAsync') {
-      this.scope.notifyTaskFinished(requireTaskName(args[0]), requireObject(args[1], 'completion response'));
-      return null;
-    }
-    if (method === 'isTaskRegisteredAsync') {
-      return await this.scope.isTaskRegistered(requireTaskName(args[0]));
-    }
-    if (method === 'getTaskOptionsAsync') {
-      return await this.scope.getTaskOptions(requireTaskName(args[0]));
-    }
-    if (method === 'getRegisteredTasksAsync') return await this.scope.getRegisteredTasks();
-    if (method === 'unregisterTaskAsync') {
-      await this.scope.unregisterTask(requireTaskName(args[0]));
-      return null;
-    }
-    if (method === 'unregisterAllTasksAsync') {
-      await this.scope.unregisterAllTasks();
-      return null;
-    }
-
-    throw new ExpoTaskManagerError('ERR_TASK_MANAGER_UNKNOWN_METHOD', `Unknown Expo TaskManager Harmony method '${method}'.`);
   }
 
-  onDestroy(): void {
-    this.scope.destroy();
+  private setForeground(foreground: boolean): void {
+    if (this.destroyed) return;
+    this.foreground = foreground;
+    if (foreground) this.scope?.onForeground();
+    else this.scope?.onBackground();
+  }
+
+  private destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.observing = false;
+    this.scope?.destroy();
+    this.scope = undefined;
+    this.scopePromise = undefined;
   }
 }
 
@@ -1736,7 +2021,7 @@ function requireExecutionDeadline(value: ESObject, createdAt: number): number {
 }
 
 function errorDescription(error: ESObject): string {
-  if (error instanceof ExpoPlatformServiceError) return `${error.code}: ${error.message}`;
+  if (error instanceof ExpoModuleError) return `${error.code}: ${error.message}`;
   if (error instanceof Error) return error.message;
   return String(error);
 }
@@ -1748,34 +2033,7 @@ function requireObject(value: ESObject, label: string): ESObject {
   return value;
 }
 
-function runtimeOwnerKey(context: UITurboModuleContext): string {
+function runtimeOwnerKey(context: ExpoModuleContext): string {
   const bundleName = context.uiAbilityContext.abilityInfo.bundleName;
-  const bundleUrl = context.rnInstance.getInitialBundleUrl();
-  return requireOwnerKey(bundleUrl === undefined || bundleUrl.length === 0 ? bundleName : `${bundleName}#${bundleUrl}`);
-}
-
-function registerPackage(): void {
-  if (packageRegistered) return;
-
-  ExpoPlatformServiceRegistry.register(new ExpoTaskManagerServiceFactory());
-  packageRegistered = true;
-}
-
-class ExpoTaskManagerServiceFactory implements ExpoPlatformServiceFactory {
-  readonly name: string = SERVICE_NAME;
-
-  async create(context: UITurboModuleContext): Promise<ExpoTaskManagerService> {
-    return await ExpoTaskManagerService.create(context);
-  }
-}
-
-export class ExpoTaskManagerPackage extends RNOHPackage {
-  constructor(context: RNPackageContext) {
-    registerPackage();
-    super(context);
-  }
-
-  override getDebugName(): string {
-    return '@expo-harmony/expo-task-manager';
-  }
+  return requireOwnerKey(bundleName);
 }

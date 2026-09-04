@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-task-manager",
-  "version": "55.0.16-harmony.0",
+  "version": "55.0.16-harmony.1",
   "license": "MIT",
   "author": "Baoshuo <i@baoshuo.ren>",
   "repository": {
@@ -13,8 +13,9 @@
   "main": "index.js",
   "types": "index.d.ts",
   "scripts": {
-    "harmony:clean": "cd harmony && hvigorw --mode module -p module=expo_task_manager@default -p product=default -p buildMode=release --no-daemon clean",
-    "harmony:build": "cd harmony && hvigorw --mode module -p module=expo_task_manager@default -p product=default -p buildMode=release --no-daemon assembleHar && mv -f library/build/default/outputs/default/expo_task_manager.har ."
+    "harmony:clean": "expo-harmony-module prepare --clean-only",
+    "harmony:build": "expo-harmony-module prepare",
+    "prepack": "expo-harmony-module prepack"
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
@@ -34,14 +35,5 @@
   },
   "publishConfig": {
     "access": "public"
-  },
-  "harmony": {
-    "autolinking": {
-      "mainHarPath": "harmony",
-      "ohPackageName": "@expo-harmony/expo-task-manager",
-      "etsPackageClassName": "ExpoTaskManagerPackage",
-      "cppPackageClassName": "ExpoHarmonyExpoTaskManagerPackage",
-      "cmakeLibraryTargetName": "expo_harmony__expo_task_manager"
-    }
   }
 }

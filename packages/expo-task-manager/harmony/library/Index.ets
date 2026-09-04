@@ -2,9 +2,9 @@ export {
   ExpoTaskConsumer,
   ExpoTaskExecutionResult,
   ExpoTaskManagerBackgroundQueue,
-  ExpoTaskManagerPackage as default,
-  ExpoTaskManagerPackage,
+  ExpoTaskManagerModule,
   ExpoTaskManagerRegistry,
   ExpoTaskManagerRuntimeLoader,
+  ExpoTaskManagerWorkMetadata,
   ExpoTaskRecord,
 } from './src/main/ets/ExpoTaskManagerPackage';

@@ -2,6 +2,7 @@ export const TASK_RECORD_SCHEMA_VERSION: number = 2;
 export const EXECUTION_REQUEST_SCHEMA_VERSION: number = 2;
 
 export const REQUEST_PHASE_QUEUED: string = 'queued';
+export const REQUEST_PHASE_EXECUTING: string = 'executing';
 export const REQUEST_PHASE_FINISHING: string = 'finishing';
 export const REQUEST_PHASE_EXPIRING: string = 'expiring';
 
@@ -51,6 +52,9 @@ export class StoredExecutionRequest {
   data: ESObject;
   error: ESObject;
   results?: ESObject[];
+  claimToken?: string;
+  claimExpiresAt?: number;
+  allowForeground: boolean;
 
   constructor(
     id: string,
@@ -66,6 +70,9 @@ export class StoredExecutionRequest {
     error: ESObject = null,
     phase: string = REQUEST_PHASE_QUEUED,
     results?: ESObject[],
+    claimToken?: string,
+    claimExpiresAt?: number,
+    allowForeground: boolean = true,
     version: number = EXECUTION_REQUEST_SCHEMA_VERSION,
   ) {
     this.version = version;
@@ -82,6 +89,9 @@ export class StoredExecutionRequest {
     this.registrationGeneration = registrationGeneration;
     this.phase = phase;
     this.results = results;
+    this.claimToken = claimToken;
+    this.claimExpiresAt = claimExpiresAt;
+    this.allowForeground = allowForeground;
   }
 }
 
@@ -207,6 +217,9 @@ function executionRequestFromValue(value: ESObject): StoredExecutionRequest | un
   const generation = item['registrationGeneration'];
   const phase = item['phase'];
   const results = item['results'];
+  const claimToken = item['claimToken'];
+  const claimExpiresAt = item['claimExpiresAt'];
+  const allowForeground = item['allowForeground'];
   if (
     typeof id !== 'string'
     || id.length === 0
@@ -228,8 +241,26 @@ function executionRequestFromValue(value: ESObject): StoredExecutionRequest | un
     || consumerId.length === 0
     || !isNonNegativeInteger(consumerVersion)
     || !isNonNegativeInteger(generation)
-    || (phase !== REQUEST_PHASE_QUEUED && phase !== REQUEST_PHASE_FINISHING && phase !== REQUEST_PHASE_EXPIRING)
-    || (results !== undefined && !Array.isArray(results))
+    || (allowForeground !== undefined && typeof allowForeground !== 'boolean')
+    || (
+      phase !== REQUEST_PHASE_QUEUED
+      && phase !== REQUEST_PHASE_EXECUTING
+      && phase !== REQUEST_PHASE_FINISHING
+      && phase !== REQUEST_PHASE_EXPIRING
+    )
+    || (phase === REQUEST_PHASE_FINISHING ? !isExecutionResults(results) : results !== undefined)
+    || (
+      phase === REQUEST_PHASE_EXECUTING
+        ? (
+          typeof claimToken !== 'string'
+          || claimToken.length === 0
+          || typeof claimExpiresAt !== 'number'
+          || !Number.isSafeInteger(claimExpiresAt)
+          || claimExpiresAt < createdAt
+          || claimExpiresAt > expiresAt
+        )
+        : claimToken !== undefined || claimExpiresAt !== undefined
+    )
   ) {
     return undefined;
   }
@@ -248,5 +279,17 @@ function executionRequestFromValue(value: ESObject): StoredExecutionRequest | un
     error,
     phase as string,
     results as ESObject[] | undefined,
+    claimToken as string | undefined,
+    claimExpiresAt as number | undefined,
+    (allowForeground ?? true) as boolean,
   );
+}
+
+function isExecutionResults(value: ESObject): boolean {
+  if (!Array.isArray(value)) return false;
+  for (const item of value) {
+    const record = asRecord(item);
+    if (record === undefined || typeof record['taskName'] !== 'string' || record['taskName'].length === 0) return false;
+  }
+  return true;
 }
