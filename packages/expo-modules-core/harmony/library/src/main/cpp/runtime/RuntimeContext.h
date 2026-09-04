@@ -43,6 +43,7 @@ struct NativeSharedObjectIdentity final {
 };
 class Promise;
 class RuntimeContext;
+class SynchronousBinaryWriteBack;
 struct ViewDefinition;
 
 struct SharedObjectInvocationIdentity final {
@@ -126,7 +127,8 @@ public:
       std::vector<folly::dynamic> arguments = {});
   facebook::jsi::Value callPlatformSyncTyped(
       std::string methodName,
-      std::vector<facebook::jsi::Value> arguments);
+      std::vector<facebook::jsi::Value> arguments,
+      SynchronousBinaryWriteBack *writeBack = nullptr);
   facebook::jsi::Value callPlatformAsync(
       std::string methodName,
       std::vector<folly::dynamic> arguments = {});

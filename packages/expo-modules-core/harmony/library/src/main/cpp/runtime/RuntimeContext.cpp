@@ -659,10 +659,11 @@ facebook::jsi::Value RuntimeContext::callPlatformSync(
 
 facebook::jsi::Value RuntimeContext::callPlatformSyncTyped(
     std::string methodName,
-    std::vector<jsi::Value> arguments) {
+    std::vector<jsi::Value> arguments,
+    SynchronousBinaryWriteBack *writeBack) {
   assertRuntimeThread();
   return turboModule()->callPlatformSync(
-      runtime(), methodName, arguments.data(), arguments.size());
+      runtime(), methodName, arguments.data(), arguments.size(), writeBack);
 }
 
 facebook::jsi::Value RuntimeContext::callPlatformAsync(

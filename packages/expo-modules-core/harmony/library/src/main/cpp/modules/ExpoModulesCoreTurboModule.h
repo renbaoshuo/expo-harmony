@@ -18,6 +18,7 @@ namespace expo::harmony {
 
 class RuntimeContext;
 class ArkTSTypedBridge;
+class SynchronousBinaryWriteBack;
 class ContentAppearedMarkerListener;
 
 class ExpoModulesCoreTurboModule final
@@ -43,7 +44,8 @@ public:
       facebook::jsi::Runtime &runtime,
       const std::string &methodName,
       const facebook::jsi::Value *arguments,
-      size_t argumentCount);
+      size_t argumentCount,
+      SynchronousBinaryWriteBack *writeBack = nullptr);
   facebook::jsi::Value callPlatformAsync(
       facebook::jsi::Runtime &runtime,
       const std::string &methodName,

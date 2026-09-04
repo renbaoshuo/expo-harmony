@@ -16,8 +16,7 @@ std::atomic<RuntimeEpoch> nextRuntimeEpoch{1};
 RuntimeEpoch allocateRuntimeEpoch() noexcept {
   auto epoch = nextRuntimeEpoch.load(std::memory_order_relaxed);
   while (true) {
-    if (epoch == kInvalidRuntimeEpoch ||
-        epoch == std::numeric_limits<RuntimeEpoch>::max()) {
+    if (epoch == kInvalidRuntimeEpoch || epoch == std::numeric_limits<RuntimeEpoch>::max()) {
       // Fail closed rather than reusing an epoch.
       std::terminate();
     }
@@ -46,8 +45,7 @@ std::optional<RuntimeEpoch> decodeRuntimeEpoch(
   RuntimeEpoch epoch = kInvalidRuntimeEpoch;
   const auto [end, error] = std::from_chars(
       encoded.data(), encoded.data() + encoded.size(), epoch);
-  if (error != std::errc{} || end != encoded.data() + encoded.size() ||
-      epoch == kInvalidRuntimeEpoch) {
+  if (error != std::errc{} || end != encoded.data() + encoded.size() || epoch == kInvalidRuntimeEpoch) {
     return std::nullopt;
   }
   return epoch;

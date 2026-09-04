@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
-#include "modules/internal/ModuleDefinition.h"
 #include "errors/CodedError.h"
+#include "modules/internal/ModuleDefinition.h"
 #include "runtime/RuntimeContext.h"
 
 namespace expo::harmony {
@@ -22,9 +22,7 @@ int64_t requireViewTag(Invocation &invocation) {
   }
   auto object = thisValue.getObject(runtime);
   auto nativeTag = object.getProperty(runtime, "nativeTag");
-  if (!nativeTag.isNumber() || !std::isfinite(nativeTag.getNumber()) ||
-      std::trunc(nativeTag.getNumber()) != nativeTag.getNumber() ||
-      nativeTag.getNumber() <= 0 || nativeTag.getNumber() > kMaxSafeInteger) {
+  if (!nativeTag.isNumber() || !std::isfinite(nativeTag.getNumber()) || std::trunc(nativeTag.getNumber()) != nativeTag.getNumber() || nativeTag.getNumber() <= 0 || nativeTag.getNumber() > kMaxSafeInteger) {
     throw CodedError(
         "ERR_VIEW_NOT_FOUND",
         invocation.path() + " cannot resolve the mounted Expo view tag.");
@@ -49,9 +47,7 @@ int64_t requireViewPropsRevision(Invocation &invocation) {
   const auto object = invocation.thisValue().getObject(runtime);
   const auto revision = object.getProperty(runtime, "nativePropsRevision");
   constexpr auto kMaxSafeInteger = 9007199254740991.0;
-  if (!revision.isNumber() || !std::isfinite(revision.getNumber()) ||
-      std::trunc(revision.getNumber()) != revision.getNumber() ||
-      revision.getNumber() <= 0 || revision.getNumber() > kMaxSafeInteger) {
+  if (!revision.isNumber() || !std::isfinite(revision.getNumber()) || std::trunc(revision.getNumber()) != revision.getNumber() || revision.getNumber() <= 0 || revision.getNumber() > kMaxSafeInteger) {
     throw CodedError(
         "ERR_VIEW_NOT_FOUND",
         invocation.path() + " cannot resolve the committed Expo view props revision.");
@@ -70,22 +66,19 @@ ViewHandle requireViewHandle(
   if (std::find(
           componentNames.begin(),
           componentNames.end(),
-          componentName) == componentNames.end()) {
+          componentName)
+      == componentNames.end()) {
     throw CodedError(
         "ERR_VIEW_COMPONENT_MISMATCH",
-        "Expo view tag " + std::to_string(tag) + " uses route '" +
-            componentName + "', which is not a route for " +
-            invocation.path() + ".");
+        "Expo view tag " + std::to_string(tag) + " uses route '" + componentName + "', which is not a route for " + invocation.path() + ".");
   }
 
   auto context = invocation.sharedContext();
-  const auto mountedComponentName =
-      context->mountedViewComponentNameIfPresent(tag);
+  const auto mountedComponentName = context->mountedViewComponentNameIfPresent(tag);
   if (mountedComponentName && *mountedComponentName != componentName) {
     throw CodedError(
         "ERR_VIEW_COMPONENT_MISMATCH",
-        "Expo view tag " + std::to_string(tag) + " belongs to '" +
-            *mountedComponentName + "', not '" + componentName + "'.");
+        "Expo view tag " + std::to_string(tag) + " belongs to '" + *mountedComponentName + "', not '" + componentName + "'.");
   }
 
   // The ArkTS adapter registry is authoritative before native mount state arrives.

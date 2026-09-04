@@ -460,6 +460,8 @@ export class ExpoValueType<Value> {
   readonly acceptsUndefined: boolean;
   /** Whether a trailing function argument using this token may be omitted. */
   readonly isOmittable: boolean;
+  /** Explicit copy-back contract for a synchronous module binary argument. */
+  readonly isWritable: boolean;
   private readonly decoder: ExpoValueDecoder<Value>;
   private readonly encoder: ExpoValueEncoder<Value>;
 
@@ -469,12 +471,14 @@ export class ExpoValueType<Value> {
     encoder: ExpoValueEncoder<Value>,
     acceptsUndefined: boolean = false,
     isOmittable: boolean = false,
+    isWritable: boolean = false,
   ) {
     this.expectedType = expectedType;
     this.decoder = decoder;
     this.encoder = encoder;
     this.acceptsUndefined = acceptsUndefined;
     this.isOmittable = isOmittable;
+    this.isWritable = isWritable;
   }
 
   /** @internal */
@@ -485,6 +489,15 @@ export class ExpoValueType<Value> {
   /** @internal */
   encode(value: Value, path: string): ESObject | void {
     return this.encoder(value, path);
+  }
+
+  /**
+   * Writes the original binary argument's native snapshot back after a successful
+   * synchronous module call. Decoders may wrap its storage, but must not copy it.
+   * Argument encoders do not participate in write-back.
+   */
+  writable(): ExpoValueType<Value> {
+    return new ExpoValueType<Value>(this.expectedType, this.decoder, this.encoder, this.acceptsUndefined, this.isOmittable, true);
   }
 
   optional(): ExpoValueType<Value | undefined> {
@@ -500,6 +513,7 @@ export class ExpoValueType<Value> {
       },
       true,
       true,
+      this.isWritable,
     );
   }
 
@@ -510,6 +524,7 @@ export class ExpoValueType<Value> {
       (value: Value, path: string): ESObject | void => this.encode(value, path),
       true,
       true,
+      this.isWritable,
     );
   }
 
@@ -524,6 +539,9 @@ export class ExpoValueType<Value> {
         if (value === null) return null;
         return this.encode(value, path);
       },
+      false,
+      false,
+      this.isWritable,
     );
   }
 
@@ -557,6 +575,8 @@ export class ExpoValueType<Value> {
         }
       },
       this.acceptsUndefined || other.acceptsUndefined,
+      false,
+      this.isWritable || other.isWritable,
     );
   }
 }
@@ -1103,10 +1123,33 @@ export function ownedFunctionArity<Owner>(body: ExpoOwnedSyncFunction<Owner> | E
   return functionArityWithOwner(body, 1);
 }
 
+/** @internal Writable argument positions in the module transport descriptor. */
+export function writableFunctionArguments<Body>(body: Body | ExpoFunctionSpec<Body>): number[] {
+  if (!(body instanceof ExpoFunctionSpec)) return [];
+  const indices: number[] = [];
+  body.argumentTypes.forEach((type: ExpoValueType<ESObject>, index: number): void => {
+    if (!type.isWritable) return;
+    if (type.acceptsUndefined || type.isOmittable) {
+      throw new ExpoModuleError('ERR_WRITABLE_ARGUMENT', 'Writable binary arguments must be required.');
+    }
+    indices.push(index);
+  });
+  return indices;
+}
+
+function writableBinaryLength(value: ESObject, path: string): number {
+  if (!(value instanceof ArrayBuffer) && !isNumericTypedArray(value)) {
+    throw new ExpoArgumentTypeError(path, 'writable ArrayBuffer or numeric TypedArray', value);
+  }
+  return (value as ArrayBuffer).byteLength;
+}
+
 export function invokeSyncFunction(body: ExpoSyncFunction, args: ESObject[], path: string = 'Expo function'): ESObject | void {
+  writableFunctionArguments(body).forEach((index: number): void => {
+    writableBinaryLength(args[index], `${path} argument ${index + 1}`);
+  });
   const values: ESObject[] = prepareArguments(body, args, 0, path);
   const result: ESObject | void = invokeRawSyncFunction(unwrapSyncFunction(body), values);
-
   return encodeFunctionResult(body, result, `${path} return value`);
 }
 
@@ -1172,6 +1215,9 @@ function invokeRawSyncFunction(body: ExpoSyncFunctionBody, args: ESObject[]): ES
 }
 
 export async function invokeAsyncFunction(body: ExpoAsyncFunction, args: ESObject[], path: string = 'Expo function'): Promise<ESObject | void> {
+  if (writableFunctionArguments(body).length > 0) {
+    throw new ExpoModuleError('ERR_WRITABLE_ARGUMENT', 'Writable arguments are supported only by synchronous module functions.');
+  }
   const values: ESObject[] = prepareArguments(body, args, 0, path);
   const result: ESObject | void = await invokeRawAsyncFunction(unwrapAsyncFunction(body), values);
 
@@ -1291,6 +1337,9 @@ function encodeFunctionResult<Body>(body: Body | ExpoFunctionSpec<Body>, value: 
 
 function functionArityWithOwner<Body>(body: Body | ExpoFunctionSpec<Body>, ownerArity: number): ExpoFunctionArityRange {
   if (body instanceof ExpoFunctionSpec) {
+    if (ownerArity !== 0 && writableFunctionArguments(body).length > 0) {
+      throw new ExpoModuleError('ERR_WRITABLE_ARGUMENT', 'Writable arguments are supported only by synchronous module functions.');
+    }
     const required: number = body.rawRequiredArity - ownerArity;
     const maximum: number = body.rawMaximumArity - ownerArity;
 

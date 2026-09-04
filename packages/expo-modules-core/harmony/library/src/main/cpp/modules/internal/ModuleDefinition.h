@@ -97,8 +97,7 @@ using SharedObjectPropertySetter = std::function<void(
     Invocation &,
     const std::shared_ptr<NativeSharedObject> &,
     const facebook::jsi::Value &)>;
-using ModuleEventObserver =
-    std::function<void(RuntimeContext &, const std::string &)>;
+using ModuleEventObserver = std::function<void(RuntimeContext &, const std::string &)>;
 
 struct FunctionDefinition {
   std::string name;

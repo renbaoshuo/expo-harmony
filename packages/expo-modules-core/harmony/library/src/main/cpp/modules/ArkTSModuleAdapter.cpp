@@ -1,23 +1,28 @@
 #include "ArkTSModuleAdapter.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include <jsi/JSIDynamic.h>
+
 #include <react/bridging/LongLivedObject.h>
 
-#include "modules/internal/ModuleDefinition.h"
 #include "api/Promise.h"
 #include "common/SharedObject.h"
 #include "errors/CodedError.h"
+#include "modules/ArkTSTypedBridge.h"
 #include "modules/ViewHandle.h"
+#include "modules/internal/ModuleDefinition.h"
 #include "runtime/Protocol.h"
 #include "runtime/RuntimeContext.h"
 
@@ -241,6 +246,25 @@ bool isArrayBufferView(jsi::Runtime &runtime, const jsi::Object &object) {
   return result.isBool() && result.getBool();
 }
 
+std::vector<size_t> writableArgumentIndices(
+    const folly::dynamic &descriptor, size_t arity, bool async, const std::string &path) {
+  std::vector<size_t> indices;
+  if (!descriptor.count("writableArguments")) {
+    return indices;
+  }
+  for (const auto &value : requireArray(descriptor, "writableArguments", path)) {
+    const auto index = readTransportInteger(value);
+    if (!index || *index >= arity || (!indices.empty() && *index <= indices.back())) {
+      throw CodedError("ERR_ARKTS_MODULE_DESCRIPTOR", path + ".writableArguments must contain increasing argument indices within arity.");
+    }
+    indices.push_back(static_cast<size_t>(*index));
+  }
+  if (async && !indices.empty()) {
+    throw CodedError("ERR_ARKTS_MODULE_DESCRIPTOR", path + " cannot declare asynchronous writable arguments.");
+  }
+  return indices;
+}
+
 struct TypedEncodedArguments final {
   std::vector<jsi::Value> values;
   std::vector<std::shared_ptr<NativeSharedObject>> sharedObjects;
@@ -304,8 +328,7 @@ jsi::Value encodeTypedJSIValue(
   }
   auto object = value.getObject(runtime);
   if (object.hasNativeState<expo::SharedObject::NativeState>(runtime)) {
-    auto nativeState =
-        object.getNativeState<expo::SharedObject::NativeState>(runtime);
+    auto nativeState = object.getNativeState<expo::SharedObject::NativeState>(runtime);
     if (nativeState->isReleased() || nativeState->objectId <= 0) {
       throw CodedError(
           "ERR_SHARED_OBJECT_RELEASED",
@@ -321,8 +344,7 @@ jsi::Value encodeTypedJSIValue(
     sharedObjects.push_back(native);
     return makeTypedMarker(runtime, identity);
   }
-  if (object.isFunction(runtime) || object.isArrayBuffer(runtime) ||
-      isArrayBufferView(runtime, object)) {
+  if (object.isFunction(runtime) || object.isArrayBuffer(runtime) || isArrayBufferView(runtime, object)) {
     return jsi::Value(runtime, value);
   }
   if (object.isArray(runtime)) {
@@ -446,7 +468,8 @@ std::vector<jsi::Value> makeTypedValueArguments(
 
 jsi::Value decodeTypedValueGraph(
     const std::shared_ptr<RuntimeContext> &context,
-    const jsi::Value &value);
+    const jsi::Value &value,
+    const std::function<void()> &commit = {});
 
 jsi::Value decodeTypedResult(
     const std::shared_ptr<RuntimeContext> &context,
@@ -630,8 +653,7 @@ jsi::Value decodeArkTSValue(
           "ERR_ARKTS_MODULE_VALUE", "ArkTS returned an invalid SharedObject marker.");
     }
     auto runtimeEpoch = requireString(marker, "runtimeEpoch", "SharedObject marker");
-    const auto &moduleNameValue =
-        requireField(marker, "moduleName", "SharedObject marker");
+    const auto &moduleNameValue = requireField(marker, "moduleName", "SharedObject marker");
     if (!moduleNameValue.isString()) {
       throw CodedError(
           "ERR_SHARED_OBJECT_TYPE",
@@ -663,11 +685,7 @@ jsi::Value decodeArkTSValue(
       auto native = context->getNativeSharedObject(
           static_cast<long>(*objectIdValue), moduleName, className);
       const auto identity = context->nativeSharedObjectIdentity(native);
-      if (identity.runtimeEpoch != runtimeEpoch ||
-          identity.objectId != static_cast<long>(*objectIdValue) ||
-          identity.moduleName != moduleName ||
-          identity.className != className ||
-          identity.nativeRefType != nativeRefType) {
+      if (identity.runtimeEpoch != runtimeEpoch || identity.objectId != static_cast<long>(*objectIdValue) || identity.moduleName != moduleName || identity.className != className || identity.nativeRefType != nativeRefType) {
         throw CodedError(
             "ERR_SHARED_OBJECT_TYPE", "ArkTS returned mismatched SharedObject metadata.");
       }
@@ -775,8 +793,7 @@ void collectTypedAuthorIds(
     return;
   }
   auto object = value.getObject(runtime);
-  if (object.isFunction(runtime) || object.isArrayBuffer(runtime) ||
-      isArrayBufferView(runtime, object)) {
+  if (object.isFunction(runtime) || object.isArrayBuffer(runtime) || isArrayBufferView(runtime, object)) {
     return;
   }
   if (object.hasProperty(runtime, kMarker)) {
@@ -833,8 +850,7 @@ jsi::Value decodeTypedArkTSValue(
     return jsi::Value(runtime, value);
   }
   auto object = value.getObject(runtime);
-  if (object.isFunction(runtime) || object.isArrayBuffer(runtime) ||
-      isArrayBufferView(runtime, object)) {
+  if (object.isFunction(runtime) || object.isArrayBuffer(runtime) || isArrayBufferView(runtime, object)) {
     return jsi::Value(runtime, value);
   }
   if (object.hasProperty(runtime, kMarker)) {
@@ -879,13 +895,18 @@ jsi::Value decodeTypedArkTSValue(
 
 jsi::Value decodeTypedValueGraph(
     const std::shared_ptr<RuntimeContext> &context,
-    const jsi::Value &value) {
+    const jsi::Value &value,
+    const std::function<void()> &commit) {
   auto &runtime = context->runtime();
   std::unordered_map<uint64_t, std::shared_ptr<ArkTSSharedObject>> staged;
   std::unordered_set<long> createdObjectIds;
   try {
-    return decodeTypedArkTSValue(
+    auto result = decodeTypedArkTSValue(
         context, value, staged, createdObjectIds, 0);
+    if (commit) {
+      commit();
+    }
+    return result;
   } catch (const CodedError &error) {
     rollbackStagedObjects(context, createdObjectIds);
     discardTypedAuthorIds(context, runtime, value);
@@ -1051,8 +1072,8 @@ void adoptArkTSPromise(
           size_t count) {
         try {
           auto value = count == 0
-              ? jsi::Value::undefined()
-              : jsi::Value(callbackRuntime, arguments[0]);
+                         ? jsi::Value::undefined()
+                         : jsi::Value(callbackRuntime, arguments[0]);
           auto holder = std::make_shared<ArkTSTypedResultHolder>(
               callbackRuntime, std::move(value));
           react::LongLivedObjectCollection::get(callbackRuntime).add(holder);
@@ -1158,8 +1179,7 @@ std::vector<std::shared_ptr<ExpoModule>> ArkTSModuleAdapter::createModules(
   } catch (const std::exception &error) {
     throw CodedError(
         "ERR_ARKTS_MODULE_RUNTIME_BIND",
-        "The ArkTS Expo module runtime could not be bound: " +
-            std::string(error.what()));
+        "The ArkTS Expo module runtime could not be bound: " + std::string(error.what()));
   }
 
   jsi::Value value;
@@ -1171,8 +1191,7 @@ std::vector<std::shared_ptr<ExpoModule>> ArkTSModuleAdapter::createModules(
   } catch (const std::exception &error) {
     throw CodedError(
         "ERR_ARKTS_MODULE_DESCRIPTOR_READ",
-        "The ArkTS Expo module descriptors could not be read: " +
-            std::string(error.what()));
+        "The ArkTS Expo module descriptors could not be read: " + std::string(error.what()));
   }
 
   folly::dynamic descriptors;
@@ -1181,8 +1200,7 @@ std::vector<std::shared_ptr<ExpoModule>> ArkTSModuleAdapter::createModules(
   } catch (const std::exception &error) {
     throw CodedError(
         "ERR_ARKTS_MODULE_DESCRIPTOR_TRANSPORT",
-        "The ArkTS Expo module descriptors could not cross the JSI copy-value boundary: " +
-            std::string(error.what()));
+        "The ArkTS Expo module descriptors could not cross the JSI copy-value boundary: " + std::string(error.what()));
   }
   if (!descriptors.isArray()) {
     throw CodedError(
@@ -1325,6 +1343,7 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
           path + ".requiredArity cannot exceed .arity.");
     }
     const auto async = requireBoolean(function, "async", path);
+    const auto writableIndices = writableArgumentIndices(function, arity, async, path);
     if (!functionNames.insert(name).second) {
       throw CodedError(
           "ERR_ARKTS_MODULE_DESCRIPTOR",
@@ -1362,8 +1381,19 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
           .name = name,
           .arity = arity,
           .requiredArity = requiredArity,
-          .body = [moduleName, name](Invocation &invocation) {
+          .body = [moduleName, name, writableIndices](Invocation &invocation) {
             auto context = invocation.sharedContext();
+            auto &runtime = invocation.runtime();
+            std::optional<SynchronousBinaryWriteBack> writeBack;
+            if (!writableIndices.empty()) {
+              writeBack.emplace(runtime);
+            }
+            for (const auto index : writableIndices) {
+              if (index >= invocation.argumentCount()) {
+                throw CodedError("ERR_WRITABLE_ARGUMENT", "A writable binary argument is missing.");
+              }
+              writeBack->add(invocation.argument(index));
+            }
             auto encoded = encodeTypedArguments(invocation);
             auto arguments = takeTypedArgumentArray(
                 invocation.runtime(), std::move(encoded.values));
@@ -1374,8 +1404,14 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
                     arguments,
                     context->runtimeEpochString(),
                     moduleName,
-                    name));
-            return decodeTypedResult(context, std::move(result));
+                    name),
+                writeBack ? &*writeBack : nullptr);
+            if (writableIndices.empty()) {
+              return decodeTypedResult(context, std::move(result));
+            }
+            return decodeTypedValueGraph(context, result, [&]() {
+              writeBack->commit(*context);
+            });
           },
       });
     }

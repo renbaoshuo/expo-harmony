@@ -104,8 +104,7 @@ void NativeSharedObject::bindToRuntime(
     runtimeBinding_.reset();
     objectId_ = 0;
   }
-  if (runtimeBinding_.bind(sharedContext.get(), objectId) ==
-      SharedObjectBindResult::RuntimeConflict) {
+  if (runtimeBinding_.bind(sharedContext.get(), objectId) == SharedObjectBindResult::RuntimeConflict) {
     throw CodedError(
         "ERR_SHARED_OBJECT_RUNTIME",
         "A native SharedObject cannot be reused by two live JavaScript runtimes.");
@@ -130,9 +129,7 @@ bool NativeSharedObject::isBoundToRuntime(
     long objectId) const noexcept {
   std::scoped_lock lock(runtimeBindingMutex_);
   auto sharedContext = runtimeContext_.lock();
-  return sharedContext && sharedContext.get() == context &&
-      objectId_ == objectId &&
-      runtimeBinding_.objectId(context) == objectId;
+  return sharedContext && sharedContext.get() == context && objectId_ == objectId && runtimeBinding_.objectId(context) == objectId;
 }
 
 void NativeSharedObject::markReleaseRequested() noexcept {

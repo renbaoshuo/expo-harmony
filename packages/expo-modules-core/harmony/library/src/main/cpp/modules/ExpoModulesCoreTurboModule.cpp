@@ -337,9 +337,10 @@ jsi::Value ExpoModulesCoreTurboModule::callPlatformSync(
     jsi::Runtime &runtime,
     const std::string &methodName,
     const jsi::Value *arguments,
-    size_t argumentCount) {
+    size_t argumentCount,
+    SynchronousBinaryWriteBack *writeBack) {
   return typedPlatformBridge_->call(
-      runtime, methodName, arguments, argumentCount);
+      runtime, methodName, arguments, argumentCount, writeBack);
 }
 
 jsi::Value ExpoModulesCoreTurboModule::callPlatformAsync(

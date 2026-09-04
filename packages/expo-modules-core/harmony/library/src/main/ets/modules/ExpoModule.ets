@@ -48,6 +48,7 @@ import {
   functionArity,
   invokeAsyncFunction,
   invokeSyncFunction,
+  writableFunctionArguments,
 } from './ExpoValueConverter';
 import { ExpoModuleError } from './ExpoModuleError';
 import { createExpoModuleLogger, ExpoModuleLogger } from '../appcontext/ExpoModuleLogger';
@@ -129,6 +130,7 @@ export interface ExpoModuleFunctionDescriptor {
   readonly arity: number;
   readonly requiredArity: number;
   readonly async: boolean;
+  readonly writableArguments: number[];
 }
 
 export interface ExpoModulePropertyDescriptor {
@@ -1222,8 +1224,12 @@ export class ExpoModuleDefinition {
   ): void {
     requireMemberName(name, 'function');
     this.requireAvailableModuleMember(name);
+    const writableArguments: number[] = writableFunctionArguments(async ? asyncBody : syncBody);
+    if (async && writableArguments.length > 0) {
+      throw new ExpoModuleError('ERR_WRITABLE_ARGUMENT', 'Writable arguments are supported only by synchronous module functions.');
+    }
     this.functionValues.set(name, {
-      descriptor: { name, arity: arity.maximum, requiredArity: arity.required, async },
+      descriptor: { name, arity: arity.maximum, requiredArity: arity.required, async, writableArguments },
       syncBody,
       asyncBody,
     });
