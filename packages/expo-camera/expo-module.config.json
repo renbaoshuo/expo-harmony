@@ -1,14 +1,6 @@
 {
   "platforms": ["harmony"],
   "harmony": {
-    "providers": [
-      {
-        "identifier": "expo-camera:ExpoCameraProvider",
-        "header": "ExpoCameraProvider.h",
-        "className": "expo::harmony::camera::ExpoCameraProvider",
-        "cmakeTargetName": "expo_harmony__expo_camera",
-        "debugOnly": false
-      }
-    ]
+    "modules": ["ExpoCameraModule"]
   }
 }

@@ -1,6 +1,16 @@
-import { RNOHPackage } from '@rnoh/react-native-openharmony';
-import type { RNComponentContext, RNPackageContext, UITurboModuleContext } from '@rnoh/react-native-openharmony';
-import { ExpoPlatformServiceRegistry, ExpoViewAdapter, ExpoViewAdapterRegistry, ExpoViewContentContext } from '@expo-harmony/expo-modules-core';
+import {
+  ExpoFunction,
+  ExpoModule,
+  ExpoModuleContext,
+  ExpoModuleDefinition,
+  ExpoModuleError,
+  ExpoSharedObjectClassDefinition,
+  ExpoSharedRef,
+  ExpoValueType,
+  ExpoValueTypes,
+  ExpoViewContext,
+  ExpoViewDefinition,
+} from '@expo-harmony/expo-modules-core';
 import { abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { camera } from '@kit.CameraKit';
@@ -12,15 +22,14 @@ import image from '@ohos.multimedia.image';
 import util from '@ohos.util';
 import { ExpoCameraError } from './ExpoCameraError';
 import { encodeExifMetadata } from './ExpoCameraExif';
-import { buildExpoCameraView, ExpoCameraViewRegistry, ExpoCameraViewState } from './ExpoCameraView';
+import { BarcodeScannerSettings, buildExpoCameraView, ExpoCameraViewState, PictureOptions, RecordingOptions } from './ExpoCameraView';
 
-const SERVICE_NAME: string = 'ExpoCameraService';
-const COMPONENT_NAME: string = 'ViewManagerAdapter_ExpoCamera';
 const CAMERA_PERMISSION: Permissions = 'ohos.permission.CAMERA';
 const MICROPHONE_PERMISSION: Permissions = 'ohos.permission.MICROPHONE';
 const SCAN_CAPABILITY: string = 'SystemCapability.Multimedia.Scan.ScanBarcode';
+// Scan Kit BusinessError: the user cancelled the system scanner UI.
+const SCANNER_CANCELLED_ERROR_CODE: number = 1000500002;
 const BARCODE_IMAGE_LIMIT: number = 10 * 1024 * 1024;
-let registered: boolean = false;
 let fileSequence: number = 0;
 
 class BarcodePoint {
@@ -73,6 +82,101 @@ interface SavePictureOptions {
   quality?: number;
   base64?: boolean;
   metadata?: Record<string, ESObject>;
+}
+
+type ScannerOptions = BarcodeScannerSettings;
+
+function requireRecord(value: ESObject, path: string): Record<string, ESObject> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ExpoModuleError('ERR_INVALID_ARGUMENT_TYPE', `${path} expected an object, received ${value === null ? 'null' : typeof value}.`);
+  }
+  return value as Record<string, ESObject>;
+}
+
+function optionalField<Value>(record: Record<string, ESObject>, key: string, type: ExpoValueType<Value>, path: string): Value | undefined {
+  const value: ESObject = record[key];
+  return value === undefined ? undefined : type.decode(value, `${path}.${key}`);
+}
+
+function inputRecordType<Value>(name: string, decode: (record: Record<string, ESObject>, path: string) => Value): ExpoValueType<Value> {
+  return new ExpoValueType<Value>(
+    name,
+    (value: ESObject, path: string): Value => decode(requireRecord(value, path), path),
+    (value: Value): ESObject => value as ESObject,
+  );
+}
+
+const COPY_RECORD_TYPE: ExpoValueType<Record<string, ESObject>> = inputRecordType(
+  'plain object',
+  (record: Record<string, ESObject>): Record<string, ESObject> => record,
+);
+const STRING_ARRAY_TYPE = ExpoValueTypes.array(ExpoValueTypes.string());
+const SAVE_PICTURE_OPTIONS_TYPE: ExpoValueType<SavePictureOptions> = inputRecordType(
+  'SavePictureOptions',
+  (record: Record<string, ESObject>, path: string): SavePictureOptions => ({
+    quality: optionalField(record, 'quality', ExpoValueTypes.number(), path),
+    base64: optionalField(record, 'base64', ExpoValueTypes.boolean(), path),
+    metadata: optionalField(record, 'metadata', COPY_RECORD_TYPE, path),
+  }),
+);
+const PICTURE_OPTIONS_TYPE: ExpoValueType<PictureOptions> = inputRecordType(
+  'PictureOptions',
+  (record: Record<string, ESObject>, path: string): PictureOptions => ({
+    quality: optionalField(record, 'quality', ExpoValueTypes.number(), path),
+    base64: optionalField(record, 'base64', ExpoValueTypes.boolean(), path),
+    exif: optionalField(record, 'exif', ExpoValueTypes.boolean(), path),
+    additionalExif: optionalField(record, 'additionalExif', COPY_RECORD_TYPE, path),
+    id: optionalField(record, 'id', ExpoValueTypes.number(), path),
+    fastMode: optionalField(record, 'fastMode', ExpoValueTypes.boolean(), path),
+    mirror: optionalField(record, 'mirror', ExpoValueTypes.boolean(), path),
+    skipProcessing: optionalField(record, 'skipProcessing', ExpoValueTypes.boolean(), path),
+    imageType: optionalField(record, 'imageType', ExpoValueTypes.string(), path),
+    pictureRef: optionalField(record, 'pictureRef', ExpoValueTypes.boolean(), path),
+    shutterSound: optionalField(record, 'shutterSound', ExpoValueTypes.boolean(), path),
+    maxDownsampling: optionalField(record, 'maxDownsampling', ExpoValueTypes.number(), path),
+  }),
+);
+const RECORDING_OPTIONS_TYPE: ExpoValueType<RecordingOptions> = inputRecordType(
+  'RecordingOptions',
+  (record: Record<string, ESObject>, path: string): RecordingOptions => ({
+    maxDuration: optionalField(record, 'maxDuration', ExpoValueTypes.number(), path),
+    maxFileSize: optionalField(record, 'maxFileSize', ExpoValueTypes.number(), path),
+    mirror: optionalField(record, 'mirror', ExpoValueTypes.boolean(), path),
+    codec: optionalField(record, 'codec', ExpoValueTypes.string(), path),
+  }),
+);
+const SCANNER_OPTIONS_TYPE: ExpoValueType<ScannerOptions> = inputRecordType(
+  'ScannerOptions',
+  (record: Record<string, ESObject>, path: string): ScannerOptions => ({
+    barcodeTypes: optionalField(record, 'barcodeTypes', STRING_ARRAY_TYPE, path),
+  }),
+);
+
+class CameraPictureRef extends ExpoSharedRef<image.PixelMap> {
+  readonly width: number;
+  readonly height: number;
+  private readonly saveBody: (pixel: image.PixelMap, options: SavePictureOptions) => Promise<SavedPicture>;
+
+  constructor(
+    context: ExpoModuleContext,
+    pixel: image.PixelMap,
+    width: number,
+    height: number,
+    saveBody: (pixel: image.PixelMap, options: SavePictureOptions) => Promise<SavedPicture>,
+  ) {
+    super(context, 'image', pixel);
+    this.width = width;
+    this.height = height;
+    this.saveBody = saveBody;
+  }
+
+  async savePictureAsync(options: SavePictureOptions): Promise<SavedPicture> {
+    return await this.saveBody(this.value, options);
+  }
+
+  override sharedObjectWillRelease(): void {
+    this.value.release().catch((): void => {});
+  }
 }
 
 class SavedPicture {
@@ -186,10 +290,10 @@ function scanType(type: string): scanCore.ScanType | undefined {
   return undefined;
 }
 
-function scanTypes(value?: ESObject, allWhenEmpty: boolean = true): scanCore.ScanType[] {
-  if (!Array.isArray(value)) return allWhenEmpty ? [scanCore.ScanType.ALL] : [];
+function scanTypes(value?: string[], allWhenEmpty: boolean = true): scanCore.ScanType[] {
+  if (value === undefined) return allWhenEmpty ? [scanCore.ScanType.ALL] : [];
 
-  const types = (value as string[])
+  const types = value
     .map((type: string): scanCore.ScanType | undefined => scanType(type))
     .filter((type: scanCore.ScanType | undefined): boolean => type !== undefined) as scanCore.ScanType[];
 
@@ -203,9 +307,10 @@ function barcodeResult(value: scanBarcode.ScanResult): BarcodeResult {
   const right = rect?.right ?? left;
   const bottom = rect?.bottom ?? top;
   const bounds = new BarcodeBounds(new BarcodePoint(left, top), new BarcodeSize(right - left, bottom - top));
-  const points = value.cornerPoints?.map((point: scanBarcode.Point): BarcodePoint => {
-    return new BarcodePoint(point.x, point.y);
-  }) ?? [new BarcodePoint(left, top), new BarcodePoint(right, top), new BarcodePoint(right, bottom), new BarcodePoint(left, bottom)];
+  const points =
+    value.cornerPoints?.map((point: scanBarcode.Point): BarcodePoint => {
+      return new BarcodePoint(point.x, point.y);
+    }) ?? [];
 
   return new BarcodeResult(barcodeType(value.scanType), value.originalValue, points, bounds);
 }
@@ -223,94 +328,277 @@ class PermissionRecord {
   }
 }
 
-class ExpoCameraViewAdapter implements ExpoViewAdapter {
-  readonly componentName: string = COMPONENT_NAME;
-  readonly content: WrappedBuilder<[ExpoViewContentContext]> = wrapBuilder(buildExpoCameraView);
+export class ExpoCameraModule extends ExpoModule {
+  private readonly mountedViews: Set<ExpoCameraViewState> = new Set<ExpoCameraViewState>();
 
-  create(context: RNComponentContext, tag: number, _: string): ESObject {
-    const state = new ExpoCameraViewState(context, tag);
-    ExpoCameraViewRegistry.add(state);
-    return state;
+  constructor(context: ExpoModuleContext) {
+    super(context);
   }
 
-  updateProps(view: ESObject, props: Record<string, ESObject>): void {
-    (view as ExpoCameraViewState).updateProps(props);
-  }
+  override definition(): ExpoModuleDefinition {
+    const pictureClass = new ExpoSharedObjectClassDefinition<CameraPictureRef>('Picture')
+      .sharedRef('image')
+      .property('width', ExpoValueTypes.number(), (picture: CameraPictureRef): number => picture.width)
+      .property('height', ExpoValueTypes.number(), (picture: CameraPictureRef): number => picture.height)
+      .asyncFunction(
+        'savePictureAsync',
+        ExpoFunction.ownedTyped1(
+          SAVE_PICTURE_OPTIONS_TYPE.defaulted({}),
+          async (picture: CameraPictureRef, options: SavePictureOptions): Promise<SavedPicture> => await picture.savePictureAsync(options),
+        ),
+      );
 
-  destroy(view: ESObject): void {
-    const state = view as ExpoCameraViewState;
-    ExpoCameraViewRegistry.remove(state.instanceId, state.tag);
-  }
-}
+    const cameraView = new ExpoViewDefinition<ExpoCameraViewState>(
+      'Default',
+      (viewContext: ExpoViewContext): ExpoCameraViewState =>
+        new ExpoCameraViewState(
+          viewContext,
+          (pixel: image.PixelMap, width: number, height: number): CameraPictureRef =>
+            new CameraPictureRef(
+              this.context,
+              pixel,
+              width,
+              height,
+              async (picturePixel: image.PixelMap, options: SavePictureOptions): Promise<SavedPicture> =>
+                await this.savePicture(picturePixel, options),
+            ),
+        ),
+      wrapBuilder(buildExpoCameraView),
+    )
+      .prop(
+        'facing',
+        ExpoValueTypes.string(),
+        (view: ExpoCameraViewState, value: string): void => {
+          view.setFacing(value);
+        },
+        'back',
+      )
+      .prop(
+        'flashMode',
+        ExpoValueTypes.string(),
+        (view: ExpoCameraViewState, value: string): void => {
+          view.setFlashMode(value);
+        },
+        'off',
+      )
+      .prop(
+        'selectedLens',
+        ExpoValueTypes.string().nullable(),
+        (view: ExpoCameraViewState, value: string | null): void => view.setSelectedLens(value),
+        null,
+      )
+      .prop(
+        'enableTorch',
+        ExpoValueTypes.boolean(),
+        (view: ExpoCameraViewState, value: boolean): void => {
+          view.setEnableTorch(value);
+        },
+        false,
+      )
+      .prop(
+        'pictureSize',
+        ExpoValueTypes.string().nullable(),
+        (view: ExpoCameraViewState, value: string | null): void => view.setPictureSize(value),
+        null,
+      )
+      .prop(
+        'zoom',
+        ExpoValueTypes.number(),
+        (view: ExpoCameraViewState, value: number): void => {
+          view.setZoom(value);
+        },
+        0,
+      )
+      .prop(
+        'mode',
+        ExpoValueTypes.string(),
+        (view: ExpoCameraViewState, value: string): void => {
+          view.setMode(value);
+        },
+        'picture',
+      )
+      .prop(
+        'barcodeScannerEnabled',
+        ExpoValueTypes.boolean(),
+        (view: ExpoCameraViewState, value: boolean): void => view.setBarcodeScannerEnabled(value),
+        false,
+      )
+      .prop(
+        'barcodeScannerSettings',
+        SCANNER_OPTIONS_TYPE.nullable(),
+        (view: ExpoCameraViewState, value: ScannerOptions | null): void => view.setBarcodeScannerSettings(value),
+        null,
+      )
+      .prop(
+        'mute',
+        ExpoValueTypes.boolean(),
+        (view: ExpoCameraViewState, value: boolean): void => {
+          view.setMute(value);
+        },
+        false,
+      )
+      .prop('animateShutter', ExpoValueTypes.boolean(), (view: ExpoCameraViewState, value: boolean): void => view.setAnimateShutter(value), true)
+      .prop(
+        'videoQuality',
+        ExpoValueTypes.string(),
+        (view: ExpoCameraViewState, value: string): void => {
+          view.setVideoQuality(value);
+        },
+        '1080p',
+      )
+      .prop(
+        'videoStabilizationMode',
+        ExpoValueTypes.string().nullable(),
+        (view: ExpoCameraViewState, value: string | null): void => view.setVideoStabilizationMode(value),
+        null,
+      )
+      .prop(
+        'autoFocus',
+        ExpoValueTypes.string(),
+        (view: ExpoCameraViewState, value: string): void => {
+          view.setAutoFocus(value);
+        },
+        'off',
+      )
+      .prop(
+        'responsiveOrientationWhenOrientationLocked',
+        ExpoValueTypes.boolean(),
+        (view: ExpoCameraViewState, value: boolean): void => view.setResponsiveOrientation(value),
+        false,
+      )
+      .prop(
+        'mirror',
+        ExpoValueTypes.boolean(),
+        (view: ExpoCameraViewState, value: boolean): void => {
+          view.setMirror(value);
+        },
+        false,
+      )
+      .prop(
+        'active',
+        ExpoValueTypes.boolean(),
+        (view: ExpoCameraViewState, value: boolean): void => {
+          view.setActive(value);
+        },
+        true,
+      )
+      .prop(
+        'videoBitrate',
+        ExpoValueTypes.number().nullable(),
+        (view: ExpoCameraViewState, value: number | null): void => view.setVideoBitrate(value),
+        null,
+      )
+      .prop('ratio', ExpoValueTypes.string().nullable(), (view: ExpoCameraViewState, value: string | null): void => view.setRatio(value), null)
+      .events(['onCameraReady', 'onMountError', 'onPictureSaved', 'onBarcodeScanned', 'onResponsiveOrientationChanged', 'onAvailableLensesChanged'])
+      .asyncFunction(
+        'takePicture',
+        ExpoFunction.ownedTyped1(
+          PICTURE_OPTIONS_TYPE.defaulted({}),
+          async (view: ExpoCameraViewState, options: PictureOptions): Promise<ESObject> => await view.takePictureAsync(options),
+        ),
+      )
+      .asyncFunction(
+        'getAvailablePictureSizes',
+        ExpoFunction.ownedTyped0(async (view: ExpoCameraViewState): Promise<string[]> => await view.getAvailablePictureSizesAsync()).returns(
+          STRING_ARRAY_TYPE,
+        ),
+      )
+      .asyncFunction(
+        'getAvailableLenses',
+        ExpoFunction.ownedTyped0(async (view: ExpoCameraViewState): Promise<string[]> => await view.getAvailableLensesAsync()).returns(
+          STRING_ARRAY_TYPE,
+        ),
+      )
+      .asyncFunction(
+        'record',
+        ExpoFunction.ownedTyped1(
+          RECORDING_OPTIONS_TYPE.defaulted({}),
+          async (view: ExpoCameraViewState, options: RecordingOptions): Promise<ESObject> => await view.recordAsync(options),
+        ),
+      )
+      .asyncFunction(
+        'toggleRecording',
+        ExpoFunction.ownedTyped0(async (view: ExpoCameraViewState): Promise<ESObject> => await view.toggleRecordingAsync()),
+      )
+      .asyncFunction(
+        'stopRecording',
+        ExpoFunction.ownedTyped0(async (view: ExpoCameraViewState): Promise<ESObject> => await view.stopRecordingAsync()),
+      )
+      .asyncFunction(
+        'resumePreview',
+        ExpoFunction.ownedTyped0(async (view: ExpoCameraViewState): Promise<ESObject> => await view.resumePreviewAsync()),
+      )
+      .asyncFunction(
+        'pausePreview',
+        ExpoFunction.ownedTyped0(async (view: ExpoCameraViewState): Promise<ESObject> => await view.pausePreviewAsync()),
+      )
+      .asyncFunction(
+        'launchModernScanner',
+        ExpoFunction.ownedTyped0(async (view: ExpoCameraViewState): Promise<ESObject> => await view.launchModernScannerAsync()),
+      )
+      .onCreate((view: ExpoCameraViewState): void => {
+        this.mountedViews.add(view);
+      })
+      .onDidUpdateProps((view: ExpoCameraViewState): void => view.commitProps())
+      .onDestroy((view: ExpoCameraViewState): void => {
+        this.mountedViews.delete(view);
+        view.destroy();
+      });
 
-class ExpoCameraService {
-  readonly name: string = SERVICE_NAME;
-  private readonly context: UITurboModuleContext;
-
-  constructor(context: UITurboModuleContext) {
-    this.context = context;
-  }
-
-  invokeSync(method: string, _: ESObject[]): ESObject {
-    if (method === 'isModernBarcodeScannerAvailable') return canIUse(SCAN_CAPABILITY);
-
-    throw new ExpoCameraError('ERR_CAMERA_UNKNOWN_METHOD', `Unknown synchronous Expo Camera method '${method}'.`);
-  }
-
-  async invoke(method: string, args: ESObject[]): Promise<ESObject> {
-    if (method === 'isAvailable') {
-      return camera.getCameraManager(this.context.uiAbilityContext).getSupportedCameras().length > 0;
-    }
-
-    if (method === 'getCameraPermissions') return this.getPermission(CAMERA_PERMISSION);
-    if (method === 'requestCameraPermissions') return await this.requestPermission(CAMERA_PERMISSION);
-    if (method === 'getMicrophonePermissions') return this.getPermission(MICROPHONE_PERMISSION);
-    if (method === 'requestMicrophonePermissions') return await this.requestPermission(MICROPHONE_PERMISSION);
-    if (method === 'getAvailableVideoCodecs') return await this.getAvailableVideoCodecs();
-    if (method === 'savePicture') return await this.savePicture(String(args[0] ?? ''), args[1] as SavePictureOptions | undefined);
-
-    if (method === 'scanFromURL') return await this.scanFromURL(String(args[0] ?? ''), args[1]);
-    if (method === 'dismissScanner') return null;
-    if (method === 'launchScanner') return await this.launchScanner(args[0]);
-
-    if (method === 'destroy') {
-      ExpoCameraViewRegistry.destroyInstance(this.context.rnInstance.getId());
-
-      return null;
-    }
-    if (method === 'background') {
-      ExpoCameraViewRegistry.onBackground(this.context.rnInstance.getId());
-
-      return null;
-    }
-    if (method === 'foreground') {
-      ExpoCameraViewRegistry.onForeground(this.context.rnInstance.getId());
-
-      return null;
-    }
-
-    if (
-      method === 'takePicture' ||
-      method === 'getAvailablePictureSizes' ||
-      method === 'getAvailableLenses' ||
-      method === 'record' ||
-      method === 'toggleRecording' ||
-      method === 'stopRecording' ||
-      method === 'resumePreview' ||
-      method === 'pausePreview' ||
-      method === 'launchModernScanner'
-    ) {
-      const tag = Number(args[0]);
-      if (!Number.isFinite(tag)) throw new ExpoCameraError('ERR_CAMERA_VIEW_NOT_FOUND', 'Camera view tag is invalid.');
-
-      return await ExpoCameraViewRegistry.require(this.context.rnInstance.getId(), tag).invoke(method, args.slice(1));
-    }
-
-    throw new ExpoCameraError('ERR_CAMERA_UNKNOWN_METHOD', `Unknown Expo Camera method '${method}'.`);
-  }
-
-  onDestroy(): void {
-    ExpoCameraViewRegistry.destroyInstance(this.context.rnInstance.getId());
+    return new ExpoModuleDefinition()
+      .name('ExpoCamera')
+      .constant('Type', { front: 'front', back: 'back' })
+      .constant('FlashMode', { off: 'off', on: 'on', auto: 'auto', screen: 'screen' })
+      .property('isModernBarcodeScannerAvailable', ExpoValueTypes.boolean(), (): boolean => canIUse(SCAN_CAPABILITY))
+      .property('toggleRecordingAsyncAvailable', ExpoValueTypes.boolean(), (): boolean => true)
+      .events(['onModernBarcodeScanned'])
+      .sharedObjectClass(pictureClass)
+      .asyncFunction(
+        'isAvailableAsync',
+        ExpoFunction.typed0(
+          async (): Promise<boolean> => camera.getCameraManager(this.context.uiAbilityContext).getSupportedCameras().length > 0,
+        ).returns(ExpoValueTypes.boolean()),
+      )
+      .asyncFunction('getCameraPermissionsAsync', async (): Promise<PermissionRecord> => this.getPermission(CAMERA_PERMISSION))
+      .asyncFunction('requestCameraPermissionsAsync', async (): Promise<PermissionRecord> => await this.requestPermission(CAMERA_PERMISSION))
+      .asyncFunction('getMicrophonePermissionsAsync', async (): Promise<PermissionRecord> => this.getPermission(MICROPHONE_PERMISSION))
+      .asyncFunction('requestMicrophonePermissionsAsync', async (): Promise<PermissionRecord> => await this.requestPermission(MICROPHONE_PERMISSION))
+      .asyncFunction(
+        'getAvailableVideoCodecsAsync',
+        ExpoFunction.typed0(async (): Promise<string[]> => await this.getAvailableVideoCodecs()).returns(STRING_ARRAY_TYPE),
+      )
+      .asyncFunction(
+        'scanFromURLAsync',
+        ExpoFunction.typed2(
+          ExpoValueTypes.string(),
+          STRING_ARRAY_TYPE.optional(),
+          async (uri: string, types?: string[]): Promise<BarcodeResult[]> => await this.scanFromURL(uri, types),
+        ),
+      )
+      .asyncFunction(
+        'launchScanner',
+        ExpoFunction.typed1(SCANNER_OPTIONS_TYPE.defaulted({}), async (options: ScannerOptions): Promise<void> => {
+          const result: BarcodeResult = await this.launchScanner(options);
+          this.sendEvent('onModernBarcodeScanned', result);
+        }),
+      )
+      .asyncFunction('dismissScanner', async (): Promise<null> => {
+        throw new ExpoCameraError(
+          'ERR_CAMERA_SCANNER_DISMISS_UNSUPPORTED',
+          'HarmonyOS Scan Kit does not expose programmatic dismissal for its system scanner UI.',
+        );
+      })
+      .view(cameraView)
+      .onBackground((): void => {
+        this.mountedViews.forEach((view: ExpoCameraViewState): void => view.onBackground());
+      })
+      .onForeground((): void => {
+        this.mountedViews.forEach((view: ExpoCameraViewState): void => view.onForeground());
+      })
+      .onDestroy((): void => {
+        this.mountedViews.forEach((view: ExpoCameraViewState): void => view.destroy());
+        this.mountedViews.clear();
+      });
   }
 
   private getPermission(permission: Permissions): PermissionRecord {
@@ -360,7 +648,7 @@ class ExpoCameraService {
     }
   }
 
-  private async scanFromURL(url: string, types: ESObject): Promise<BarcodeResult[]> {
+  private async scanFromURL(url: string, types?: string[]): Promise<BarcodeResult[]> {
     if (url.length === 0) throw new ExpoCameraError('ERR_CAMERA_INVALID_URL', 'The barcode image URL is empty.');
     if (!canIUse(SCAN_CAPABILITY)) {
       throw new ExpoCameraError('ERR_CAMERA_SCANNER_UNAVAILABLE', 'Barcode scanning is not supported on this device.');
@@ -451,23 +739,21 @@ class ExpoCameraService {
     }
   }
 
-  private async launchScanner(value: ESObject): Promise<BarcodeResult> {
+  private async launchScanner(options: ScannerOptions = {}): Promise<BarcodeResult> {
     if (!canIUse(SCAN_CAPABILITY)) {
       throw new ExpoCameraError('ERR_CAMERA_SCANNER_UNAVAILABLE', 'The modern barcode scanner is not supported on this device.');
     }
 
-    const options = value as Record<string, ESObject> | undefined;
-
     try {
       const result = await scanBarcode.startScanForResult(this.context.uiAbilityContext, {
-        scanTypes: scanTypes(options?.barcodeTypes),
+        scanTypes: scanTypes(options.barcodeTypes),
       });
 
       return barcodeResult(result);
     } catch (error) {
       console.error(`Expo Camera barcode scanner failed: ${String(error)}`);
       const code = (error as BusinessError).code;
-      if (code === 1000500002) {
+      if (code === SCANNER_CANCELLED_ERROR_CODE) {
         throw new ExpoCameraError('ERR_CAMERA_SCANNER_CANCELLED', 'The barcode scanner was cancelled.');
       }
 
@@ -475,16 +761,11 @@ class ExpoCameraService {
     }
   }
 
-  private async savePicture(uri: string, options: SavePictureOptions = {}): Promise<SavedPicture> {
-    if (!uri.startsWith('file://')) {
-      throw new ExpoCameraError('ERR_CAMERA_PICTURE_REF', 'The picture reference no longer points to a local image.');
-    }
+  private async savePicture(pixel: image.PixelMap, options: SavePictureOptions = {}): Promise<SavedPicture> {
     if (options.quality !== undefined && (!Number.isFinite(options.quality) || options.quality < 0 || options.quality > 1)) {
       throw new ExpoCameraError('ERR_CAMERA_INVALID_OPTION', 'Photo quality must be a number between 0 and 1.');
     }
 
-    const source = image.createImageSource(uri.slice('file://'.length));
-    const pixel = await source.createPixelMap();
     const packer = image.createImagePacker();
 
     try {
@@ -514,35 +795,6 @@ class ExpoCameraService {
       try {
         await packer.release();
       } catch (_) {}
-      try {
-        await pixel.release();
-      } catch (_) {}
-      try {
-        await source.release();
-      } catch (_) {}
     }
-  }
-}
-
-function registerNativeAdapters(): void {
-  if (registered) return;
-
-  ExpoViewAdapterRegistry.register(new ExpoCameraViewAdapter());
-  ExpoPlatformServiceRegistry.register({
-    name: SERVICE_NAME,
-    create: (context: UITurboModuleContext) => new ExpoCameraService(context),
-  });
-
-  registered = true;
-}
-
-export class ExpoCameraPackage extends RNOHPackage {
-  constructor(context: RNPackageContext) {
-    registerNativeAdapters();
-    super(context);
-  }
-
-  override getDebugName(): string {
-    return '@expo-harmony/expo-camera';
   }
 }

@@ -1,1 +1,1 @@
-export { ExpoCameraPackage as default, ExpoCameraPackage } from './src/main/ets/ExpoCameraPackage';
+export { ExpoCameraModule } from './src/main/ets/ExpoCameraPackage';
