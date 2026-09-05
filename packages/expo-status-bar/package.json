@@ -1,0 +1,43 @@
+{
+  "name": "@expo-harmony/expo-status-bar",
+  "version": "55.0.6-harmony.0",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-status-bar",
+    "harmonyos"
+  ],
+  "license": "MIT",
+  "author": "Baoshuo <i@baoshuo.ren>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renbaoshuo/expo-harmony.git",
+    "directory": "packages/expo-status-bar"
+  },
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-status-bar#readme",
+  "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
+  "main": "index.js",
+  "react-native": "src/index.ts",
+  "types": "index.d.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "expo-status-bar": "55.0.6",
+    "react": "*",
+    "react-native": "*"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "expo-status-bar": "55.0.6",
+    "react": "19.2.3",
+    "react-native": "0.84.1",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
