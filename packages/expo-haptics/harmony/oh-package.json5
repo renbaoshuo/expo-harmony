@@ -18,7 +18,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@expo-harmony/expo-haptics": "55.0.14-harmony.1"
+    "@expo-harmony/expo-haptics": "./library"
   },
   "overrides": {
     "@expo-harmony/expo-modules-core": "55.0.25-harmony.1",

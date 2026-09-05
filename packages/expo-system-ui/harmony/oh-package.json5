@@ -18,7 +18,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@expo-harmony/expo-system-ui": "55.0.18-harmony.1"
+    "@expo-harmony/expo-system-ui": "./library"
   },
   "overrides": {
     "@expo-harmony/expo-modules-core": "55.0.25-harmony.1",
