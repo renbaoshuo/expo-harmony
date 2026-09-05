@@ -20,8 +20,8 @@
   "main": "src/index.ts",
   "types": "index.d.ts",
   "scripts": {
-    "harmony:clean": "cd harmony && hvigorw --mode module -p module=expo_modules_core@default -p product=default -p buildMode=release --no-daemon clean",
-    "harmony:build": "cd harmony && ohpm install --all && hvigorw --mode module -p module=expo_modules_core@default -p product=default -p buildMode=release --no-daemon assembleHar && mv -f library/build/default/outputs/default/expo_modules_core.har .",
+    "harmony:clean": "expo-harmony-module prepare --clean-only",
+    "harmony:build": "expo-harmony-module prepare",
     "prepack": "yarn harmony:build"
   },
   "peerDependencies": {
@@ -39,6 +39,7 @@
     }
   },
   "devDependencies": {
+    "@expo-harmony/expo-module-scripts": "workspace:*",
     "@react-native-oh/react-native-harmony": "0.84.1",
     "@react-native-ohos/react-native-worklets": "1.0.0",
     "expo-modules-core": "55.0.25",

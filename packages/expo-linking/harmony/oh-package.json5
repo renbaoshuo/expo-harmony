@@ -2,6 +2,20 @@
   "modelVersion": "5.0.0",
   "name": "expo-linking-harmony",
   "version": "55.0.16-harmony.1",
+  "description": "HarmonyOS port of expo-linking",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-linking#readme",
+  "repository": "https://github.com/renbaoshuo/expo-harmony",
+  "author": {
+    "name": "Baoshuo",
+    "email": "i@baoshuo.ren",
+    "url": "https://github.com/renbaoshuo"
+  },
   "license": "MIT",
   "dependencies": {
     "@expo-harmony/expo-linking": "55.0.16-harmony.1"

@@ -1,6 +1,20 @@
 {
   "name": "@expo-harmony/expo-keep-awake",
   "version": "55.0.8-harmony.1",
+  "description": "HarmonyOS port of expo-keep-awake",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-keep-awake#readme",
+  "repository": "https://github.com/renbaoshuo/expo-harmony",
+  "author": {
+    "name": "Baoshuo",
+    "email": "i@baoshuo.ren",
+    "url": "https://github.com/renbaoshuo"
+  },
   "main": "Index.ets",
   "license": "MIT",
   "dependencies": {
