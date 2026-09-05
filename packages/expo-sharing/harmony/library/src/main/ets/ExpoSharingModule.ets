@@ -6,6 +6,7 @@ import {
   ExpoModuleError,
   ExpoValueType,
   ExpoValueTypes,
+  fileUriFromPath,
 } from '@expo-harmony/expo-modules-core';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { uniformTypeDescriptor } from '@kit.ArkData';
@@ -755,7 +756,7 @@ async function resolveFilePayload(
         value: payload.value,
         shareType: payload.shareType,
         mimeType: payload.mimeType,
-        contentUri: fileUri.getUriFromPath(file),
+        contentUri: fileUriFromPath(file),
         contentType: contentTypeFromMime(payload.mimeType ?? '', payload.shareType),
         contentMimeType: payload.mimeType ?? null,
         originalName: name,

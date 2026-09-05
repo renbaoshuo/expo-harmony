@@ -15,6 +15,7 @@ export {
 } from './modules/ExpoModule';
 export { ExpoModuleError } from './modules/ExpoModuleError';
 export { ExpoModuleLogger } from './appcontext/ExpoModuleLogger';
+export { fileUriFromPath } from './appcontext/FileUri';
 export {
   ExpoEither,
   ExpoEitherOfFour,

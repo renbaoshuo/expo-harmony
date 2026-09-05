@@ -1,4 +1,12 @@
-import { ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoModuleError, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
+import {
+  ExpoFunction,
+  ExpoModule,
+  ExpoModuleContext,
+  ExpoModuleDefinition,
+  ExpoModuleError,
+  ExpoValueTypes,
+  fileUriFromPath,
+} from '@expo-harmony/expo-modules-core';
 import fs from '@ohos.file.fs';
 import fileUri from '@ohos.file.fileuri';
 import fileHash from '@ohos.file.hash';
@@ -77,7 +85,7 @@ export class ExpoAssetModule extends ExpoModule {
 
   private async download(uri: string, md5: string | null, type: string): Promise<string> {
     const scheme = uriScheme(uri);
-    if (scheme === 'file') return new fileUri.FileUri(uri).toString();
+    if (scheme === 'file') return uri;
 
     const ext = safeAssetType(type);
     const key = md5 === null ? md5String(uri) : safeMd5(md5);
@@ -107,7 +115,7 @@ export class ExpoAssetModule extends ExpoModule {
 
     this.assertActive();
 
-    if (cached) return fileUri.getUriFromPath(file);
+    if (cached) return fileUriFromPath(file);
 
     const temp = `${file}.expo-${Date.now()}-${Math.floor(Math.random() * 0x7fffffff)}.tmp`;
     try {
@@ -118,7 +126,7 @@ export class ExpoAssetModule extends ExpoModule {
 
       await fs.moveFile(temp, file, 0);
 
-      return fileUri.getUriFromPath(file);
+      return fileUriFromPath(file);
     } catch (error) {
       try {
         await fs.unlink(temp);

@@ -11,6 +11,7 @@ import {
   ExpoSharedRef,
   ExpoValueType,
   ExpoValueTypes,
+  fileUriFromPath,
 } from '@expo-harmony/expo-modules-core';
 import { fileUri } from '@kit.CoreFileKit';
 import fs from '@ohos.file.fs';
@@ -594,12 +595,7 @@ function toFileUri(path: string, directory: boolean = false): string {
   if (path.startsWith('file:')) return path;
   if (!path.startsWith('/')) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_INVALID_PATH');
 
-  const uri = `file://${path
-    .split('/')
-    .map((segment: string): string =>
-      encodeURIComponent(segment).replace(/[!'()*]/g, (character: string): string => `%${character.charCodeAt(0).toString(16).toUpperCase()}`),
-    )
-    .join('/')}`;
+  const uri = fileUriFromPath(path);
   return directory && !uri.endsWith('/') ? `${uri}/` : uri;
 }
 
