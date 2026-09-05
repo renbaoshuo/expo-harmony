@@ -25,7 +25,7 @@
   "dependencies": {
     "@expo-harmony/expo-modules-autolinking": "workspace:*",
     "json5": "2.2.3",
-    "tar": "6.2.1"
+    "tar": "7.5.21"
   },
   "engines": {
     "node": ">=20"
