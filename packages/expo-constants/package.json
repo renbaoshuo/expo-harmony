@@ -1,6 +1,15 @@
 {
   "name": "@expo-harmony/expo-constants",
   "version": "55.0.17-harmony.1",
+  "description": "HarmonyOS port of expo-constants",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-constants#readme",
+  "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "license": "MIT",
   "author": "Baoshuo <i@baoshuo.ren>",
   "repository": {

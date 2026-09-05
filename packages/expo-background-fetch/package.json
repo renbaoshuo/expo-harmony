@@ -1,6 +1,13 @@
 {
   "name": "@expo-harmony/expo-background-fetch",
   "version": "55.0.16-harmony.1",
+  "description": "HarmonyOS port of expo-background-fetch",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
   "license": "MIT",
   "author": "Baoshuo <i@baoshuo.ren>",
   "repository": {

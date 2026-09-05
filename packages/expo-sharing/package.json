@@ -1,6 +1,15 @@
 {
   "name": "@expo-harmony/expo-sharing",
   "version": "55.0.20-harmony.1",
+  "description": "HarmonyOS port of expo-sharing",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-sharing#readme",
+  "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "license": "MIT",
   "author": "Baoshuo <i@baoshuo.ren>",
   "repository": {

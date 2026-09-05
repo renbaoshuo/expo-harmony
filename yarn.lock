@@ -2025,6 +2025,22 @@ __metadata:
   languageName: unknown
   linkType: soft
 
+"@expo-harmony/expo-status-bar@workspace:packages/expo-status-bar":
+  version: 0.0.0-use.local
+  resolution: "@expo-harmony/expo-status-bar@workspace:packages/expo-status-bar"
+  dependencies:
+    "@types/react": "npm:19.2.2"
+    expo-status-bar: "npm:55.0.6"
+    react: "npm:19.2.3"
+    react-native: "npm:0.84.1"
+    typescript: "npm:6.0.3"
+  peerDependencies:
+    expo-status-bar: 55.0.6
+    react: "*"
+    react-native: "*"
+  languageName: unknown
+  linkType: soft
+
 "@expo-harmony/expo-system-ui@workspace:*, @expo-harmony/expo-system-ui@workspace:packages/expo-system-ui":
   version: 0.0.0-use.local
   resolution: "@expo-harmony/expo-system-ui@workspace:packages/expo-system-ui"
@@ -7353,6 +7369,18 @@ __metadata:
   peerDependencies:
     expo: "*"
   checksum: 10c0/f7e00eeae16b59b12ea8e796425483d50ba4484b37b3df99fa76961e99cef29a89b0bfd5044ba74b4bb16f932fdfbbd0617b4bb7e2ba3f14ad952a812decac21
+  languageName: node
+  linkType: hard
+
+"expo-status-bar@npm:55.0.6":
+  version: 55.0.6
+  resolution: "expo-status-bar@npm:55.0.6"
+  dependencies:
+    react-native-is-edge-to-edge: "npm:^1.2.1"
+  peerDependencies:
+    react: "*"
+    react-native: "*"
+  checksum: 10c0/3138d63c78287bb14bfb6ac2fe1709768d7cec5019c533c3aff074a53d10fb0db7842897c2b741ecabe2946d1b3e4cec06f47f219c238bd7f1df6bb16b8ef2ad
   languageName: node
   linkType: hard
 

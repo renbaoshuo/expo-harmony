@@ -2,11 +2,10 @@
   "name": "@expo-harmony/metro-config",
   "version": "55.0.26-harmony.0",
   "keywords": [
-    "expo",
-    "harmonyos",
-    "metro",
     "react-native",
-    "rnoh"
+    "expo",
+    "expo-harmony",
+    "harmonyos"
   ],
   "author": "Baoshuo <i@baoshuo.ren>",
   "license": "MIT",

@@ -1,10 +1,11 @@
 {
   "name": "@expo-harmony/expo-status-bar",
   "version": "55.0.6-harmony.0",
+  "description": "HarmonyOS port of expo-status-bar",
   "keywords": [
     "react-native",
     "expo",
-    "expo-status-bar",
+    "expo-harmony",
     "harmonyos"
   ],
   "license": "MIT",

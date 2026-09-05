@@ -1,6 +1,15 @@
 {
   "name": "@expo-harmony/expo-module-scripts",
   "version": "55.0.0-harmony.0",
+  "description": "HarmonyOS port of expo-module-scripts",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-module-scripts#readme",
+  "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "license": "MIT",
   "author": "Baoshuo <i@baoshuo.ren>",
   "repository": {

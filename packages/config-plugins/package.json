@@ -1,6 +1,14 @@
 {
   "name": "@expo-harmony/config-plugins",
   "version": "55.0.10-harmony.1",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/config-plugins#readme",
+  "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "license": "MIT",
   "author": "Baoshuo <i@baoshuo.ren>",
   "repository": {

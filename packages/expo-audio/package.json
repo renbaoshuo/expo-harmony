@@ -1,6 +1,15 @@
 {
   "name": "@expo-harmony/expo-audio",
   "version": "55.0.14-harmony.1",
+  "description": "HarmonyOS port of expo-audio",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-audio#readme",
+  "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "license": "MIT",
   "author": "Baoshuo <i@baoshuo.ren>",
   "repository": {

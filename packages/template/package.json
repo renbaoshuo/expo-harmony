@@ -2,11 +2,13 @@
   "name": "@expo-harmony/template",
   "version": "55.0.0-harmony.0",
   "keywords": [
+    "react-native",
     "expo",
-    "template",
-    "harmonyos",
-    "rnoh"
+    "expo-harmony",
+    "harmonyos"
   ],
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/template#readme",
+  "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "author": "Baoshuo <i@baoshuo.ren>",
   "license": "MIT",
   "repository": {

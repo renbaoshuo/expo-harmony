@@ -1,6 +1,20 @@
 {
   "name": "@expo-harmony/demo",
   "version": "0.0.0",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renbaoshuo/expo-harmony.git",
+    "directory": "apps/demo"
+  },
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/apps/demo#readme",
+  "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "private": true,
   "main": "expo-router/entry",
   "author": "Baoshuo <i@baoshuo.ren>",

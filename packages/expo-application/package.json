@@ -1,6 +1,13 @@
 {
   "name": "@expo-harmony/expo-application",
   "version": "55.0.15-harmony.1",
+  "description": "HarmonyOS port of expo-application",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
   "author": "Baoshuo <i@baoshuo.ren>",
   "license": "MIT",
   "repository": {

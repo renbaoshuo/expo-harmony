@@ -1,9 +1,22 @@
 {
   "name": "expo-module-showcase",
   "version": "1.0.0",
-  "description": "App-local Expo Module used by the demo application",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "author": "Baoshuo <i@baoshuo.ren>",
   "private": true,
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renbaoshuo/expo-harmony.git",
+    "directory": "apps/demo/modules/expo-module-showcase"
+  },
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/apps/demo/modules/expo-module-showcase#readme",
+  "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "main": "index.ts",
   "types": "index.ts",
   "scripts": {

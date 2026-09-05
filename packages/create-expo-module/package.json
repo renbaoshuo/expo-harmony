@@ -1,6 +1,12 @@
 {
   "name": "@expo-harmony/create-expo-module",
   "version": "55.0.0-harmony.0",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
   "license": "MIT",
   "author": "Baoshuo <i@baoshuo.ren>",
   "repository": {

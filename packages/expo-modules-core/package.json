@@ -1,12 +1,12 @@
 {
   "name": "@expo-harmony/expo-modules-core",
   "version": "55.0.25-harmony.1",
-  "description": "HarmonyOS native runtime for Expo Modules Core",
+  "description": "HarmonyOS port of expo-modules-core",
   "keywords": [
-    "expo",
-    "harmonyos",
     "react-native",
-    "rnoh"
+    "expo",
+    "expo-harmony",
+    "harmonyos"
   ],
   "author": "Baoshuo <i@baoshuo.ren>",
   "license": "MIT",

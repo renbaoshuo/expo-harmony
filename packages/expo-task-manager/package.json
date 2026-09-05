@@ -1,6 +1,13 @@
 {
   "name": "@expo-harmony/expo-task-manager",
   "version": "55.0.16-harmony.1",
+  "description": "HarmonyOS port of expo-task-manager",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
   "license": "MIT",
   "author": "Baoshuo <i@baoshuo.ren>",
   "repository": {
