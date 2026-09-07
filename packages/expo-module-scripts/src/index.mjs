@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -14,6 +15,33 @@ const HARMONY_MODULE = 'library';
 const HARMONY_PRODUCT = 'default';
 const BUNDLED_HAR = 'harmony/library.har';
 const OH_PACKAGE_MANIFEST = 'harmony/library/oh-package.json5';
+
+async function fingerprint(project) {
+  const hash = createHash('sha256');
+  for (const file of ['package.json', 'harmony/oh-package.json5', 'harmony/library/oh-package.json5']) {
+    hash.update(await fs.promises.readFile(path.join(project.packageRoot, file)));
+  }
+  hash.update(await fs.promises.readFile(project.bundledHar));
+  return hash.digest('hex');
+}
+
+export async function writeBuildReceipt(file, projects) {
+  const records = {};
+  for (const project of projects) records[project.packageRoot] = await fingerprint(project);
+  await fs.promises.writeFile(file, JSON.stringify(records));
+}
+
+// Only the release process passes this short-lived receipt to its pack children.
+// A missing, changed or unrecorded artifact fails closed instead of rebuilding.
+async function hasBuildReceipt(project) {
+  const file = process.env.EXPO_HARMONY_BUILD_RECEIPT;
+  if (!file) return false;
+  const records = JSON.parse(await fs.promises.readFile(file, 'utf8'));
+  if (records[project.packageRoot] !== await fingerprint(project)) {
+    throw new Error(`Release build receipt does not match ${project.packageRoot}. Run release preparation again.`);
+  }
+  return true;
+}
 
 function requiredString(value, field) {
   if (typeof value !== 'string' || value.length === 0) throw new TypeError(`${field} is required.`);
@@ -380,13 +408,14 @@ async function executeWorkspaceBuild(entries) {
 }
 
 export async function buildWorkspace(root = process.cwd(), options = {}) {
-  const entries = await createWorkspaceBuild(root, { all: true });
+  const entries = await createWorkspaceBuild(root, { all: true, clean: options.clean });
   if (!options.dryRun) await executeWorkspaceBuild(entries);
   return { builds: entries.map(entry => entry.plan) };
 }
 
 export async function prepareModule(root = process.cwd(), options = {}) {
   if (!options.cleanOnly) {
+    if (!options.dryRun && await hasBuildReceipt(await loadModuleProject(root))) return { reused: true };
     const entries = await createWorkspaceBuild(root);
 
     if (!options.dryRun) await executeWorkspaceBuild(entries);
@@ -451,7 +480,7 @@ export async function prepackModule(root = process.cwd(), options = {}) {
 
   if (options.dryRun) return plan;
 
-  await executeWorkspaceBuild(entries);
+  if (!await hasBuildReceipt(project)) await executeWorkspaceBuild(entries);
 
   const output = await spawnCommand(plan.pack.command, plan.pack.args, { cwd: project.packageRoot, capture: true });
   const result = JSON.parse(output);

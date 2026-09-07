@@ -7119,6 +7119,9 @@ __metadata:
     eslint: "npm:^9.39.5"
     eslint-plugin-react: "npm:^7.37.5"
     globals: "npm:^17.9.0"
+    json5: "npm:2.2.3"
+    semver: "npm:7.7.3"
+    tar: "npm:6.2.1"
     typescript: "npm:^6.0.3"
     typescript-eslint: "npm:^8.66.0"
   languageName: unknown

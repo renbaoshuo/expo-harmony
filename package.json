@@ -25,7 +25,9 @@
     "build": "yarn harmony:build && yarn workspaces foreach --all --include '@expo-harmony/*' --topological-dev --verbose run build",
     "harmony:build": "node ./packages/expo-module-scripts/bin/expo-harmony-module.js build-workspace",
     "lint": "eslint \"{packages,apps}/*/**/*.{ts,tsx,js,jsx}\" --fix",
-    "lint:check": "eslint \"{packages,apps}/*/**/*.{ts,tsx,js,jsx}\""
+    "lint:check": "eslint \"{packages,apps}/*/**/*.{ts,tsx,js,jsx}\"",
+    "release": "node scripts/release.mjs",
+    "release:prepare": "node scripts/release.mjs --prepare-only"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
@@ -33,6 +35,9 @@
     "eslint": "^9.39.5",
     "eslint-plugin-react": "^7.37.5",
     "globals": "^17.9.0",
+    "json5": "2.2.3",
+    "semver": "7.7.3",
+    "tar": "6.2.1",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.66.0"
   },
