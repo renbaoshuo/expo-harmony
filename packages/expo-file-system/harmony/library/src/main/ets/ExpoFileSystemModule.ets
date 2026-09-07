@@ -921,7 +921,7 @@ function makeMultipartForm(input: UploadRequest): rcp.MultipartForm {
   );
   const form = new rcp.MultipartForm(JSON.parse(`{${fields.join(',')}}`) as rcp.MultipartFormFields);
   // RCP otherwise serializes keys in hash order. API 21+ supports explicit
-  // ordering; this package's minimum SDK is 23. Always put the file part last.
+  // ordering; this package's minimum SDK is 21. Always put the file part last.
   form.keys = entries.map((entry): string => entry[0]);
   return form;
 }

@@ -45,11 +45,13 @@ const ValidOrientations = new Set([
 ]);
 const ValidDeviceTypes = new Set<HarmonyDeviceType>(['phone', 'tablet', '2in1']);
 const SupportedMinimumHarmonyApi = 13;
-const DefaultHarmonyCompatibleApi = 23;
+const DefaultHarmonyCompatibleApi = SupportedMinimumHarmonyApi;
 const DefaultHarmonyTargetApi = 24;
 const HarmonySdkVersions = new Map([
   [13, '5.0.1(13)'],
+  [14, '5.0.2(14)'],
   [20, '6.0.0(20)'],
+  [21, '6.0.1(21)'],
   [23, '6.1.0(23)'],
   [24, '6.1.1(24)'],
 ]);

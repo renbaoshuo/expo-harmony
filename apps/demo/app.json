@@ -89,7 +89,7 @@
       "icon": "./assets/app-icon.svg",
       "versionCode": 1,
       "targetApiVersion": 24,
-      "compatibleSdkVersion": 23,
+      "compatibleSdkVersion": 21,
       "permissions": [
         {
           "name": "ohos.permission.CAMERA",

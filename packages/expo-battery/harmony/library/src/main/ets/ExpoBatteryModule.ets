@@ -1,5 +1,5 @@
 import { ExpoAppLifecycleState, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoModuleError } from '@expo-harmony/expo-modules-core';
-import { batteryInfo, BusinessError, commonEventManager, power } from '@kit.BasicServicesKit';
+import { batteryInfo, BusinessError, commonEventManager, deviceInfo, power } from '@kit.BasicServicesKit';
 import { batteryLevelFromSoc, batteryStateFromChargeState, ExpoBatteryState, UNKNOWN_BATTERY_LEVEL } from './BatterySemantics';
 import type { ExpoBatteryStateValue } from './BatterySemantics';
 
@@ -372,7 +372,7 @@ export class ExpoBatteryModule extends ExpoModule {
       return (
         mode === power.DevicePowerMode.MODE_POWER_SAVE ||
         mode === power.DevicePowerMode.MODE_EXTREME_POWER_SAVE ||
-        mode === power.DevicePowerMode.MODE_CUSTOM_POWER_SAVE
+        (deviceInfo.sdkApiVersion >= 20 && mode === power.DevicePowerMode.MODE_CUSTOM_POWER_SAVE)
       );
     } catch (error) {
       throw new ExpoBatteryError('ERR_BATTERY_POWER_MODE', `Unable to read the HarmonyOS power mode: ${String(error)}`);
