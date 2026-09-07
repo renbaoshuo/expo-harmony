@@ -22,7 +22,7 @@
   "dependencies": {
     "@expo-harmony/expo-linking": "workspace:*",
     "@react-native-ohos/react-native-safe-area-context": "5.6.3",
-    "@react-native-ohos/react-native-screens": "https://raw.atomgit.com/baoshuo/rntpc_react-native-screens/blobs/b9139c34288098501987574752912021df9997e0/react-native-ohos-react-native-screens-4.26.2-rnoh084.0.tgz"
+    "@react-native-ohos/react-native-screens": "https://raw.atomgit.com/baoshuo/rntpc_react-native-screens/blobs/4d7ff55b0d27067d85388e6fbe2074c7df7e49df/react-native-ohos-react-native-screens-4.26.2-rnoh084.0.tgz"
   },
   "peerDependencies": {
     "@react-native-ohos/react-native-gesture-handler": "2.30.1",
