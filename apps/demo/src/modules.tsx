@@ -31,6 +31,7 @@ import { antDesignFontAsset, DYNAMIC_FONT_FAMILY } from './fixtures';
 import { AppMetricsDemo } from './appMetrics';
 import { AudioDemo } from './audio';
 import { BrightnessDemo } from './brightness';
+import { CellularDemo } from './cellular';
 import {
   BACKGROUND_FETCH_OPTIONS,
   BACKGROUND_FETCH_TASK,
@@ -1496,6 +1497,7 @@ export function ModuleDemo({ id }: { id: ModuleId }) {
     case 'navigation-bar': return <NavigationBarDemo />;
     case 'sharing': return <SharingDemo />;
     case 'network': return <NetworkDemo />;
+    case 'cellular': return <CellularDemo />;
     case 'camera': return <CameraDemo />;
     case 'battery': return <BatteryDemo />;
     case 'brightness': return <BrightnessDemo />;

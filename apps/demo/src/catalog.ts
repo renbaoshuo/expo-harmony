@@ -27,6 +27,7 @@ export const MODULES = [
   { id: 'blur', title: '模糊', packageName: '@expo-harmony/expo-blur', category: '设备与媒体', summary: '原生模糊视图、色调变体与强度更新。' },
   { id: 'brightness', title: '亮度', packageName: '@expo-harmony/expo-brightness', category: '设备与媒体', summary: '窗口亮度读写、权限、数值边界与平台兼容行为。' },
   { id: 'camera', title: '相机', packageName: '@expo-harmony/expo-camera', category: '设备与媒体', summary: '权限申请、预览、拍照与镜头能力。' },
+  { id: 'cellular', title: '蜂窝网络', packageName: '@expo-harmony/expo-cellular', category: '设备与媒体', summary: '网络代际、SIM 服务商、国家码与电话状态权限。' },
   { id: 'crypto', title: '加密', packageName: '@expo-harmony/expo-crypto', category: '设备与媒体', summary: '摘要、随机字节、UUID 与 AES-GCM 往返校验。' },
   { id: 'fetch', title: '网络请求', packageName: '@expo-harmony/expo-fetch', category: '设备与媒体', summary: '通过 Expo fetch 实现的流式 HTTP 与本地文件响应。' },
   { id: 'file-system', title: '文件系统', packageName: '@expo-harmony/expo-file-system', category: '设备与媒体', summary: '文件、目录、原始句柄与系统选择器。' },
