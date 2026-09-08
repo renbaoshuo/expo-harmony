@@ -1,10 +1,20 @@
 # expo-harmony
 
-让 Expo 驱动的 React Native 应用程序在 HarmonyOS 上运行。
+**让 Expo 驱动的 React Native 应用程序在 HarmonyOS 上运行。**
 
-[查阅快速开始文档 >>](./docs/QUICK_START.md)
+- 复用现有 Expo 项目的业务代码，以少量代码改动为应用增加 HarmonyOS 支持。
+- 提供从开发调试到构建打包的工具链，支持环境诊断、原生工程生成、HAP 构建、设备安装和应用启动。
+- 支持 [Expo CNG](https://docs.expo.dev/workflow/continuous-native-generation/)，通过配置生成 HarmonyOS 原生工程，省去人工维护的繁杂流程。
+- 支持 [Autolinking](https://docs.expo.dev/modules/autolinking/)，自动链接 Expo 模块和 RNOH 原生模块，无需逐个注册模块、配置构建依赖。
+- 支持 [Expo Modules API](https://docs.expo.dev/modules/overview/)，可用 ArkTS 编写原生模块和视图组件，并提供脚手架，为已有 Expo 模块补充 HarmonyOS 支持。
 
-[AtomGit 上的镜像仓库](https://atomgit.com/baoshuo/expo-harmony)
+[**查阅快速开始文档 >>**](./docs/QUICK_START.md)
+
+AtomGit 上的镜像仓库：[atomgit.com/baoshuo/expo-harmony](https://atomgit.com/baoshuo/expo-harmony)
+
+[![G-Star Selected by AtomGit](https://atomgit.com/baoshuo/expo-harmony/star/new_badge.svg)](https://atomgit.com/baoshuo/expo-harmony)
+
+本库目前适配：Expo SDK 55 + RNOH 0.84.1。
 
 ## Supported Libraries
 
