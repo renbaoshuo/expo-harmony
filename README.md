@@ -28,6 +28,7 @@ AtomGit 上的镜像仓库：[atomgit.com/baoshuo/expo-harmony](https://atomgit.
 - [expo-background-task](./packages/expo-background-task/)
 - [expo-battery](./packages/expo-battery/)
 - [expo-blur](./packages/expo-blur/)
+- [expo-brightness](./packages/expo-brightness/)
 - [expo-camera](./packages/expo-camera/)
 - [expo-constants](./packages/expo-constants/)
 - [expo-crypto](./packages/expo-crypto/)
