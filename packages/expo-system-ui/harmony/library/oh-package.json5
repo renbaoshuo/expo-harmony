@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-system-ui",
-  "version": "55.0.18-harmony.2",
+  "version": "55.0.18-harmony.3",
   "description": "HarmonyOS port of expo-system-ui",
   "keywords": [
     "react-native",
@@ -18,6 +18,6 @@
   "main": "Index.ets",
   "license": "MIT",
   "dependencies": {
-    "@expo-harmony/expo-modules-core": "55.0.25-harmony.1"
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.2"
   }
 }

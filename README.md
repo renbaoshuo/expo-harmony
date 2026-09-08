@@ -40,9 +40,11 @@
 - [expo-system-ui](./packages/expo-system-ui/)
 - [expo-task-manager](./packages/expo-task-manager/)
 
-接入工具链（`@expo-harmony/cli`、`@expo-harmony/metro-config`、`@expo-harmony/prebuild-config`、`@expo-harmony/config-plugins`、`@expo-harmony/template`、`@expo-harmony/create-expo-module`）也都在本仓库 `packages/` 下，用法见 [快速开始](./docs/QUICK_START.md)。
+可以查看 [快速开始](./docs/QUICK_START.md) 获得接入教程。
 
 更多 Expo 库正在移植中，也欢迎贡献更多移植！
+
+**如果您觉得这个库有帮助到您，请在页面上方给这个仓库点亮一个 Star 🌟～**
 
 ## Author
 

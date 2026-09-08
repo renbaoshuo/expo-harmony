@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-background-fetch",
-  "version": "55.0.16-harmony.2",
+  "version": "55.0.16-harmony.3",
   "description": "HarmonyOS port of expo-background-fetch",
   "keywords": [
     "react-native",

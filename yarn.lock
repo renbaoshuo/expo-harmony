@@ -1952,7 +1952,7 @@ __metadata:
     "@expo-harmony/expo-linking": "workspace:*"
     "@react-native-oh/react-native-harmony": "npm:0.84.1"
     "@react-native-ohos/react-native-safe-area-context": "npm:5.6.3"
-    "@react-native-ohos/react-native-screens": "https://raw.atomgit.com/baoshuo/rntpc_react-native-screens/blobs/b9139c34288098501987574752912021df9997e0/react-native-ohos-react-native-screens-4.26.2-rnoh084.0.tgz"
+    "@react-native-ohos/react-native-screens": "https://raw.atomgit.com/baoshuo/rntpc_react-native-screens/blobs/4d7ff55b0d27067d85388e6fbe2074c7df7e49df/react-native-ohos-react-native-screens-4.26.2-rnoh084.0.tgz"
     react: "npm:19.2.3"
     react-native: "npm:0.84.1"
     react-native-gesture-handler: "npm:2.30.0"
@@ -4041,9 +4041,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@react-native-ohos/react-native-screens@https://raw.atomgit.com/baoshuo/rntpc_react-native-screens/blobs/b9139c34288098501987574752912021df9997e0/react-native-ohos-react-native-screens-4.26.2-rnoh084.0.tgz":
+"@react-native-ohos/react-native-screens@https://raw.atomgit.com/baoshuo/rntpc_react-native-screens/blobs/4d7ff55b0d27067d85388e6fbe2074c7df7e49df/react-native-ohos-react-native-screens-4.26.2-rnoh084.0.tgz":
   version: 4.26.2-rnoh084.0
-  resolution: "@react-native-ohos/react-native-screens@https://raw.atomgit.com/baoshuo/rntpc_react-native-screens/blobs/b9139c34288098501987574752912021df9997e0/react-native-ohos-react-native-screens-4.26.2-rnoh084.0.tgz"
+  resolution: "@react-native-ohos/react-native-screens@https://raw.atomgit.com/baoshuo/rntpc_react-native-screens/blobs/4d7ff55b0d27067d85388e6fbe2074c7df7e49df/react-native-ohos-react-native-screens-4.26.2-rnoh084.0.tgz"
   dependencies:
     react-freeze: "npm:^1.0.0"
     warn-once: "npm:^0.1.0"
@@ -4051,7 +4051,7 @@ __metadata:
     react: ">=19.2.0"
     react-native: ">=0.84.0 <0.85.0"
     react-native-screens: 4.26.2
-  checksum: 10c0/e4c0fab2f0777a7a4b9d39f0a5142c5be6bb8066d41b57283c54ad14adaecfb84f0ae070bfff1030a02c29e3be4ac360a3e4fa64c218eca9934a89c993d5f1e0
+  checksum: 10c0/fce56d52bcdd27b9e3d914975c4764879efecfe4f8e5b6d5719493b0d02a80e3a16f729a95280dac0060bcaed24ca366a40efd9fc4cb45fb12b02918bdc5c38f
   languageName: node
   linkType: hard
 

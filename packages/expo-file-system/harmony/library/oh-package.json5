@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-file-system",
-  "version": "55.0.24-harmony.1",
+  "version": "55.0.24-harmony.2",
   "description": "HarmonyOS port of expo-file-system",
   "keywords": [
     "react-native",
@@ -18,7 +18,7 @@
   "main": "Index.ets",
   "license": "MIT",
   "dependencies": {
-    "@expo-harmony/expo-modules-core": "55.0.25-harmony.1",
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.2",
     "libexpo_file_system_atomic.so": "file:./src/main/cpp/types/libexpo_file_system_atomic"
   }
 }

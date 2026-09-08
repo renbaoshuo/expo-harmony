@@ -1,7 +1,7 @@
 {
   "modelVersion": "5.0.0",
   "name": "expo-background-fetch-harmony",
-  "version": "55.0.16-harmony.2",
+  "version": "55.0.16-harmony.3",
   "description": "HarmonyOS port of expo-background-fetch",
   "keywords": [
     "react-native",
@@ -21,8 +21,8 @@
     "@expo-harmony/expo-background-fetch": "./library"
   },
   "overrides": {
-    "@expo-harmony/expo-modules-core": "55.0.25-harmony.1",
-    "@expo-harmony/expo-task-manager": "55.0.16-harmony.1",
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.2",
+    "@expo-harmony/expo-task-manager": "55.0.16-harmony.2",
     "@rnoh/react-native-openharmony": "0.84.1"
   }
 }

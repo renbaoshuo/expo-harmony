@@ -1,7 +1,7 @@
 {
   "modelVersion": "5.0.0",
   "name": "expo-constants-harmony",
-  "version": "55.0.17-harmony.2",
+  "version": "55.0.17-harmony.3",
   "description": "HarmonyOS port of expo-constants",
   "keywords": [
     "react-native",

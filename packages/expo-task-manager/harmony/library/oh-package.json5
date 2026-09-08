@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-task-manager",
-  "version": "55.0.16-harmony.1",
+  "version": "55.0.16-harmony.2",
   "description": "HarmonyOS port of expo-task-manager",
   "keywords": [
     "react-native",
@@ -18,6 +18,6 @@
   "main": "Index.ets",
   "license": "MIT",
   "dependencies": {
-    "@expo-harmony/expo-modules-core": "55.0.25-harmony.1"
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.2"
   }
 }

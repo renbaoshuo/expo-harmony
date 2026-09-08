@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-crypto",
-  "version": "55.0.15-harmony.1",
+  "version": "55.0.15-harmony.2",
   "description": "HarmonyOS port of expo-crypto",
   "keywords": [
     "react-native",
@@ -18,6 +18,6 @@
   "main": "Index.ets",
   "license": "MIT",
   "dependencies": {
-    "@expo-harmony/expo-modules-core": "55.0.25-harmony.1"
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.2"
   }
 }
