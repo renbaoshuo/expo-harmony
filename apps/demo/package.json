@@ -43,6 +43,7 @@
     "@expo-harmony/expo-background-task": "workspace:*",
     "@expo-harmony/expo-battery": "workspace:*",
     "@expo-harmony/expo-blur": "workspace:*",
+    "@expo-harmony/expo-brightness": "workspace:*",
     "@expo-harmony/expo-camera": "workspace:*",
     "@expo-harmony/expo-constants": "workspace:*",
     "@expo-harmony/expo-crypto": "workspace:*",

@@ -25,6 +25,7 @@ export const MODULES = [
   { id: 'audio', title: '音频', packageName: '@expo-harmony/expo-audio', category: '设备与媒体', summary: '播放、预加载、播放列表状态与后台音频。' },
   { id: 'battery', title: '电池', packageName: '@expo-harmony/expo-battery', category: '设备与媒体', summary: '电源状态快照、Hook 与原生状态事件。' },
   { id: 'blur', title: '模糊', packageName: '@expo-harmony/expo-blur', category: '设备与媒体', summary: '原生模糊视图、色调变体与强度更新。' },
+  { id: 'brightness', title: '亮度', packageName: '@expo-harmony/expo-brightness', category: '设备与媒体', summary: '窗口亮度读写、权限、数值边界与平台兼容行为。' },
   { id: 'camera', title: '相机', packageName: '@expo-harmony/expo-camera', category: '设备与媒体', summary: '权限申请、预览、拍照与镜头能力。' },
   { id: 'crypto', title: '加密', packageName: '@expo-harmony/expo-crypto', category: '设备与媒体', summary: '摘要、随机字节、UUID 与 AES-GCM 往返校验。' },
   { id: 'fetch', title: '网络请求', packageName: '@expo-harmony/expo-fetch', category: '设备与媒体', summary: '通过 Expo fetch 实现的流式 HTTP 与本地文件响应。' },

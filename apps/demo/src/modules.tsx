@@ -30,6 +30,7 @@ import { StyleSheet, Switch, Text, View } from 'react-native';
 import { antDesignFontAsset, DYNAMIC_FONT_FAMILY } from './fixtures';
 import { AppMetricsDemo } from './appMetrics';
 import { AudioDemo } from './audio';
+import { BrightnessDemo } from './brightness';
 import {
   BACKGROUND_FETCH_OPTIONS,
   BACKGROUND_FETCH_TASK,
@@ -1497,6 +1498,7 @@ export function ModuleDemo({ id }: { id: ModuleId }) {
     case 'network': return <NetworkDemo />;
     case 'camera': return <CameraDemo />;
     case 'battery': return <BatteryDemo />;
+    case 'brightness': return <BrightnessDemo />;
     case 'background-fetch': return <BackgroundFetchDemo />;
     case 'background-task': return <BackgroundTaskDemo />;
     case 'haptics': return <HapticsDemo />;
