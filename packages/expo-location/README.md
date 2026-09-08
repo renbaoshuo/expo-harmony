@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-location) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/location/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Location 的原生实现，与官方同版本的 `expo-location` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo Location 的原生实现，与官方同版本的 `expo-location` 配套使用。支持前台定位权限、单次与缓存定位、位置与方向订阅、地理编码与逆地理编码。
 
 ## 安装
 
@@ -28,13 +28,13 @@ npm install @expo-harmony/expo-location expo-location@55.1.10
 
 返回 `Promise<LocationPermissionResponse>`，查询前台定位权限。
 
-授予模糊定位权限（`ohos.permission.APPROXIMATELY_LOCATION`）即视为已授权，精确定位权限不是必需。API 20 及以上直接读取系统的权限状态，未决定返回 `undetermined`，拒绝返回 `denied`；API 13–19 只记录本模块收到的明确拒绝，返回 `denied` 需要之前在这里拒绝过，否则为 `undetermined`，也无法反映其他模块的申请或系统设置重置。拒绝后 `canAskAgain` 为 `false`。`expires` 恒为 `'never'`。
+授予模糊定位权限（`ohos.permission.APPROXIMATELY_LOCATION`）即视为已授权，精确定位权限不是必需。API 20 及以上直接读取系统的权限状态，未决定返回 `undetermined`，拒绝返回 `denied`；API 13–19 已授权时同样返回 `granted`，未授权时只能反映在这里发生过的明确拒绝，之前拒绝过才返回 `denied`，否则为 `undetermined`，其他途径的拒绝和系统设置重置读不到。读取到已授权时清除之前的拒绝记录。明确拒绝后 `canAskAgain` 为 `false`。`expires` 恒为 `'never'`。
 
 #### `Location.requestForegroundPermissionsAsync()`
 
 返回 `Promise<LocationPermissionResponse>`，申请前台定位权限，同时申请模糊与精确定位。同一时刻的重复调用共用一次系统弹窗。
 
-模块已声明两个定位权限，权限场景为 `EntryAbility` / `inuse`；使用自定义 Ability 的宿主需要自行配置使用场景和权限说明，缺少声明时抛出 `ERR_LOCATION_PERMISSION_REQUEST`。API 18 及以上还会检查系统返回的申请失败原因，原因非 0 时同样抛出该错误。
+模块已声明两个定位权限，权限场景为 `EntryAbility` / `inuse`；使用自定义 Ability 的宿主需要自行配置使用场景和权限说明，缺少声明时抛出 `ERR_LOCATION_PERMISSION_REQUEST`。API 18 及以上会区分申请失败原因：权限名无效、未声明或系统返回异常结果时抛出该错误，其余情况返回权限响应。未授权时返回 `denied`，`canAskAgain` 取决于系统状态，无法弹窗或只能在设置页开启时为 `false`；临时服务异常不会变成永久拒绝。
 
 #### `Location.getProviderStatusAsync()`
 
@@ -42,19 +42,19 @@ npm install @expo-harmony/expo-location expo-location@55.1.10
 
 #### `Location.hasServicesEnabledAsync()`
 
-返回 `Promise<boolean>`，系统定位服务是否开启。设备没有定位能力时返回 `false`。
+返回 `Promise<boolean>`，系统定位服务是否开启。设备没有定位能力或系统查询失败时返回 `false`，查询失败会打印一条警告日志。
 
 #### `Location.getCurrentPositionAsync(options)`
 
-返回 `Promise<LocationObject>`，请求一次当前定位，10 秒超时。`options` 见 `LocationOptions`。
+返回 `Promise<LocationObject>`。先按 `timeInterval`（毫秒）读取系统缓存，未指定时采用下方精度档位的默认间隔；显式 `0` 跳过缓存。没有符合年龄限制的缓存时请求新定位，10 秒超时。`distanceInterval` 只用于持续订阅，单次定位不使用。`options` 见 `LocationOptions`。
 
-`accuracy` 为 `High` 及以上时按精度优先请求，否则按速度优先。未授予前台定位权限时抛出 `ERR_LOCATION_UNAUTHORIZED`，定位服务未开启时抛出 `ERR_LOCATION_SETTINGS_UNSATISFIED`。
+请求新定位时，`accuracy` 为 `High` 及以上按精度优先，否则按速度优先。未授予前台定位权限时抛出 `ERR_LOCATION_UNAUTHORIZED`，定位服务未开启时抛出 `ERR_LOCATION_SETTINGS_UNSATISFIED`。
 
 #### `Location.getLastKnownPositionAsync(options)`
 
 返回 `Promise<LocationObject | null>`，读取系统缓存的最近位置。`options` 见 `LocationLastKnownOptions`。
 
-超过 `maxAge` 或精度低于 `requiredAccuracy` 时返回 `null`；系统没有缓存、定位服务不可用或已关闭时也返回 `null`。需要前台定位权限。
+超过 `maxAge`，或精度缺失、大于 `requiredAccuracy` 时返回 `null`；系统没有缓存、定位服务不可用或已关闭时也返回 `null`。需要前台定位权限。
 
 #### `Location.watchPositionAsync(options, callback, errorHandler)`
 
@@ -62,17 +62,17 @@ npm install @expo-harmony/expo-location expo-location@55.1.10
 
 API 18 及以上会监听本应用的前台定位权限变化，权限恢复后重新启动订阅；API 13–17 没有这个监听，要等回到前台或调用权限接口时才重新检查。
 
-`options` 见 `LocationOptions`。`timeInterval` 与 `distanceInterval` 未指定时按 `accuracy` 取默认值，正数毫秒间隔向上取整到秒，显式传 `0` 表示不限间隔。
+`options` 见 `LocationOptions`。`timeInterval` 与 `distanceInterval` 未指定时按 `accuracy` 取默认值，正数毫秒间隔向上取整到秒，显式传 `0` 表示不校验时间间隔，实际回调频率仍由系统定位源决定。HarmonyOS 没有 Android 的平衡精度档，`Lowest` 按低功耗请求，其他档位按高精度请求，`Low` 和 `Balanced` 可能比 Android 更耗电。
 
 #### `Location.getHeadingAsync()`
 
-返回 `Promise<LocationHeadingObject>`，获取当前方向。内部订阅方向并等待准确度足够或若干次更新后返回。设备没有方向传感器时拒绝。
+返回 `Promise<LocationHeadingObject>`，获取当前方向。订阅方向变化，等待准确度足够或若干次更新后返回。需要前台定位权限和已开启的位置服务；设备没有方向传感器时拒绝。
 
 #### `Location.watchHeadingAsync(callback, errorHandler)`
 
 返回 `Promise<LocationSubscription>`，订阅方向变化，约每 200 毫秒回调一次。`accuracy` 取 0–3，对应系统传感器的无、低、中、高准确度。
 
-`magHeading` 为磁北角度，范围 0–360，不需要定位权限。`trueHeading` 为真北角度，需要定位权限和可用位置，依赖定位结果计算，条件不满足时返回 `-1`。
+订阅需要前台定位权限和已开启的位置服务。`magHeading` 为磁北角度，范围 [0, 360)；`trueHeading` 依赖可用位置计算，尚无位置或磁偏角时返回 `-1`。权限被收回或位置开关关闭时会通知 `errorHandler` 并暂停位置与方向更新，恢复后继续订阅。
 
 #### `Location.geocodeAsync(address)`
 
@@ -80,7 +80,7 @@ API 18 及以上会监听本应用的前台定位权限变化，权限恢复后�
 
 #### `Location.reverseGeocodeAsync(location)`
 
-返回 `Promise<LocationGeocodedAddress[]>`，把坐标转换成地址，每次最多一个结果。权限和可用性要求与 `geocodeAsync()` 相同。`name` 和 `formattedAddress` 取系统的地点名称，时区等系统未提供的字段返回 `null`。
+返回 `Promise<LocationGeocodedAddress[]>`，把坐标转换成地址，每次最多一个结果。权限和可用性要求与 `geocodeAsync()` 相同。系统只返回详细地址，没有独立的地标名称，因此 `name` 恒为 `null`，`formattedAddress` 为该详细地址；`timezone` 也为 `null`。系统未返回结果时返回空数组。
 
 #### `Location.isBackgroundLocationAvailableAsync()`
 
@@ -113,25 +113,25 @@ Android 专属的 `mocked` 不返回。
 
 #### `LocationObjectCoords`
 
-| 属性               | 类型             | 说明                                          |
-| ------------------ | ---------------- | --------------------------------------------- |
-| `latitude`         | `number`         | WGS-84 纬度                                   |
-| `longitude`        | `number`         | WGS-84 经度                                   |
-| `altitude`         | `number \| null` | 海拔，米                                      |
-| `accuracy`         | `number \| null` | 水平精度，米                                  |
-| `altitudeAccuracy` | `number \| null` | 垂直精度，米                                  |
-| `heading`          | `number \| null` | 行进方向，度                                  |
-| `speed`            | `number \| null` | 速度，米每秒                                  |
+| 属性               | 类型             | 说明         |
+| ------------------ | ---------------- | ------------ |
+| `latitude`         | `number`         | WGS-84 纬度  |
+| `longitude`        | `number`         | WGS-84 经度  |
+| `altitude`         | `number \| null` | 海拔，米     |
+| `accuracy`         | `number \| null` | 水平精度，米 |
+| `altitudeAccuracy` | `number \| null` | 垂直精度，米 |
+| `heading`          | `number \| null` | 行进方向，度 |
+| `speed`            | `number \| null` | 速度，米每秒 |
 
 系统没有提供或数值非有限时返回 `null`；`accuracy`、`altitudeAccuracy`、`heading`、`speed` 为负时也返回 `null`，`altitude` 允许负值。
 
 #### `LocationHeadingObject`
 
-| 属性          | 类型     | 说明                            |
-| ------------- | -------- | ------------------------------- |
-| `magHeading`  | `number` | 磁北角度，0–360                 |
-| `trueHeading` | `number` | 真北角度，0–360；不可用时为 `-1` |
-| `accuracy`    | `number` | 校准等级 0–3                    |
+| 属性          | 类型     | 说明                                |
+| ------------- | -------- | ----------------------------------- |
+| `magHeading`  | `number` | 磁北角度，[0, 360)                  |
+| `trueHeading` | `number` | 真北角度，[0, 360)；不可用时为 `-1` |
+| `accuracy`    | `number` | 校准等级 0–3                        |
 
 #### `LocationGeocodedLocation`
 
@@ -139,35 +139,35 @@ Android 专属的 `mocked` 不返回。
 
 #### `LocationGeocodedAddress`
 
-`city`、`district`、`street`、`streetNumber`、`region`、`subregion`、`country`、`postalCode`、`isoCountryCode`、`name`、`formattedAddress` 均为 `string | null`，取系统地址字段，未提供时为 `null`，其中 `name` 与 `formattedAddress` 都取地点名称。`timezone` 恒为 `null`。
+`city`、`district`、`street`、`streetNumber`、`region`、`subregion`、`country`、`postalCode`、`isoCountryCode`、`name`、`formattedAddress` 均为 `string | null`，取系统地址字段，未提供时为 `null`。`formattedAddress` 是详细地址；系统没有独立的地标名称来源时，`name` 恒为 `null`；`timezone` 也没有取值来源时，恒为 `null`。
 
 #### `LocationOptions`
 
-| 属性                        | 类型       | 说明                             |
-| --------------------------- | ---------- | -------------------------------- |
-| `accuracy`                  | `Accuracy` | 定位精度，默认 `Balanced`        |
-| `timeInterval`              | `number`   | 更新间隔，毫秒                   |
-| `distanceInterval`          | `number`   | 更新距离，米                     |
+| 属性               | 类型       | 说明                      |
+| ------------------ | ---------- | ------------------------- |
+| `accuracy`         | `Accuracy` | 定位精度，默认 `Balanced` |
+| `timeInterval`     | `number`   | 更新间隔，毫秒            |
+| `distanceInterval` | `number`   | 更新距离，米              |
 
 Android 专属的 `mayShowUserSettingsDialog` 在 HarmonyOS 上不生效。
 
 `timeInterval` 与 `distanceInterval` 未指定时按 `accuracy` 取值：
 
-| 精度                | 间隔    | 距离     |
-| ------------------- | ------- | -------- |
-| `Lowest`            | 10 秒   | 3000 米  |
-| `Low`               | 5 秒    | 1000 米  |
-| `Balanced`          | 3 秒    | 100 米   |
-| `High`              | 2 秒    | 50 米    |
-| `Highest`           | 1 秒    | 25 米    |
-| `BestForNavigation` | 0.5 秒  | 0 米     |
+| 精度                | 间隔   | 距离    |
+| ------------------- | ------ | ------- |
+| `Lowest`            | 10 秒  | 3000 米 |
+| `Low`               | 5 秒   | 1000 米 |
+| `Balanced`          | 3 秒   | 100 米  |
+| `High`              | 2 秒   | 50 米   |
+| `Highest`           | 1 秒   | 25 米   |
+| `BestForNavigation` | 0.5 秒 | 0 米    |
 
 #### `LocationLastKnownOptions`
 
-| 属性               | 类型     | 说明                                 |
-| ------------------ | -------- | ------------------------------------ |
-| `maxAge`           | `number` | 位置超过该毫秒数视为无效             |
-| `requiredAccuracy` | `number` | 精度超过该米数时返回 `null`          |
+| 属性               | 类型     | 说明                        |
+| ------------------ | -------- | --------------------------- |
+| `maxAge`           | `number` | 位置超过该毫秒数视为无效    |
+| `requiredAccuracy` | `number` | 精度超过该米数时返回 `null` |
 
 #### `LocationPermissionResponse`
 
@@ -184,9 +184,9 @@ Android 专属的 `gpsAvailable`、`networkAvailable`、`passiveAvailable` 不�
 
 #### `LocationSubscription`
 
-| 属性     | 类型         | 说明               |
-| -------- | ------------ | ------------------ |
-| `remove` | `() => void` | 停止订阅回调       |
+| 属性     | 类型         | 说明         |
+| -------- | ------------ | ------------ |
+| `remove` | `() => void` | 停止订阅回调 |
 
 #### `LocationCallback`、`LocationErrorCallback`、`LocationHeadingCallback`
 
@@ -198,7 +198,7 @@ Android 专属的 `gpsAvailable`、`networkAvailable`、`passiveAvailable` 不�
 
 #### `PermissionExpiration`
 
-`'never' | number`，当前所有权限永久有效。
+`'never' | number`，响应固定为 `'never'`，表示不提供过期时间；系统仍可能回收临时授权。
 
 #### `PermissionHookOptions`
 
@@ -214,14 +214,14 @@ Android 专属的 `gpsAvailable`、`networkAvailable`、`passiveAvailable` 不�
 
 #### `Accuracy`
 
-| 成员                | 值  | 含义               |
-| ------------------- | --- | ------------------ |
-| `Lowest`            | 1   | 约 3 公里          |
-| `Low`               | 2   | 约 1 公里          |
-| `Balanced`          | 3   | 100 米以内         |
-| `High`              | 4   | 10 米以内          |
-| `Highest`           | 5   | 最高精度           |
-| `BestForNavigation` | 6   | 导航级精度         |
+| 成员                | 值  | 含义       |
+| ------------------- | --- | ---------- |
+| `Lowest`            | 1   | 约 3 公里  |
+| `Low`               | 2   | 约 1 公里  |
+| `Balanced`          | 3   | 100 米以内 |
+| `High`              | 4   | 10 米以内  |
+| `Highest`           | 5   | 最高精度   |
+| `BestForNavigation` | 6   | 导航级精度 |
 
 #### `PermissionStatus`
 

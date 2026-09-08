@@ -55,6 +55,7 @@ function PermissionsCard() {
 }
 
 function PositionCard() {
+  const [age, setAge] = useState('0');
   const [position, setPosition] = useState<Location.LocationObject | null>();
   const [events, setEvents] = useState(0);
   const [listening, setListening] = useState(false);
@@ -71,9 +72,14 @@ function PositionCard() {
   }, []);
 
   const read = (cached: boolean) => action.run(async () => {
+    const interval = Number(age);
+    if (!cached && (!age.trim() || !Number.isFinite(interval) || interval < 0)) {
+      throw new Error('缓存时限必须为非负毫秒数。');
+    }
+
     const value = cached
       ? await Location.getLastKnownPositionAsync({ maxAge: 60_000, requiredAccuracy: 1000 })
-      : await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      : await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High, timeInterval: interval });
     if (value) validate(value);
     setPosition(value);
 
@@ -133,6 +139,7 @@ function PositionCard() {
       <DataRow label="时间戳（毫秒）" value={position ? String(position.timestamp) : '尚未读取'} />
       <DataRow label="订阅状态 / 回调次数" value={`${listening ? '已订阅' : '未订阅'} / ${events}`} />
       <DataRow label="订阅错误" value={error} />
+      <Field label="单次定位可接受缓存（毫秒）" value={age} onChangeText={setAge} testID="location-cache-age" />
       <ActionRow>
         <ActionButton disabled={busy} label="获取当前位置" onPress={() => void read(false)} testID="location-current" />
         <ActionButton disabled={busy} label="读取缓存位置" onPress={() => void read(true)} testID="location-cached" tone="secondary" />
@@ -140,7 +147,7 @@ function PositionCard() {
         <ActionButton disabled={busy || !listening} label="取消位置订阅" onPress={() => void stop()} testID="location-watch-stop" tone="secondary" />
       </ActionRow>
       <ResultPanel state={action.state} />
-      <Note>先授予定位权限。缓存仅接受最近一分钟、精度不超过 1000 米的结果；不存在时返回 null。模拟器定位依赖模拟位置输入。</Note>
+      <Note>先授予权限并开启系统位置开关。单次定位缓存时限设为 0 获取新位置，设为 60000 后可观察一分钟内的时间戳复用。“读取缓存位置”还要求精度不超过 1000 米，不存在时返回 null。</Note>
     </Panel>
   );
 }
@@ -213,7 +220,7 @@ function HeadingCard() {
         <ActionButton disabled={busy || !listening} label="取消方向订阅" onPress={() => void stop()} testID="location-heading-stop" tone="secondary" />
       </ActionRow>
       <ResultPanel state={action.state} />
-      <Note>磁北无需定位权限；真北需要定位权限和可用位置。模拟器可能没有方向传感器；离开此页会释放订阅。</Note>
+      <Note>先授予权限并开启系统位置开关；真北还需要可用位置。关闭位置或收回权限应报告错误并暂停回调，恢复后继续。模拟器可能没有方向传感器；离开此页会释放订阅。</Note>
     </Panel>
   );
 }

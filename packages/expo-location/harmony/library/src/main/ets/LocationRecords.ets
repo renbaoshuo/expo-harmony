@@ -6,7 +6,6 @@ export const LOCATION_EVENT: string = 'Expo.locationChanged';
 export const HEADING_EVENT: string = 'Expo.headingChanged';
 export const ERROR_EVENT: string = 'Expo.locationError';
 export const LOCATION_TIMEOUT_MS: number = 10_000;
-export const HEADING_INTERVAL_NS: number = 200_000_000;
 
 export enum Accuracy {
   Lowest = 1,
@@ -31,6 +30,25 @@ export class LocationOptions {
   timeInterval?: number;
   distanceInterval?: number;
   mayShowUserSettingsDialog: boolean = true;
+
+  interval(): number {
+    if (this.timeInterval !== undefined) return this.timeInterval;
+
+    switch (this.accuracy) {
+      case Accuracy.Lowest:
+        return 10_000;
+      case Accuracy.Low:
+        return 5000;
+      case Accuracy.High:
+        return 2000;
+      case Accuracy.Highest:
+        return 1000;
+      case Accuracy.BestForNavigation:
+        return 500;
+      default:
+        return 3000;
+    }
+  }
 }
 
 export class LastKnownOptions {
@@ -220,6 +238,7 @@ export class LocationErrorEvent {
 }
 
 export class ProviderStatus {
+  // This port does not register background location task consumers.
   backgroundModeEnabled: boolean = false;
   locationServicesEnabled: boolean;
 
@@ -251,7 +270,7 @@ export class GeocodedAddress {
     this.subregion = address.subAdministrativeArea ?? null;
     this.country = address.countryName ?? null;
     this.postalCode = address.postalCode ?? null;
-    this.name = address.placeName ?? null;
+    this.name = null;
     this.isoCountryCode = address.countryCode ?? null;
     this.formattedAddress = address.placeName ?? null;
   }
@@ -259,35 +278,27 @@ export class GeocodedAddress {
 
 export function locationRequest(options: LocationOptions): geoLocationManager.LocationRequest {
   // Defaults match Android LocationHelpers.buildLocationParamsForAccuracy in Expo 55.1.10.
-  let interval: number = 3000;
   let distance: number = 100;
-  let priority = geoLocationManager.LocationRequestPriority.LOW_POWER;
+  let priority = geoLocationManager.LocationRequestPriority.ACCURACY;
 
   switch (options.accuracy) {
     case Accuracy.Lowest:
-      interval = 10_000;
       distance = 3000;
+      priority = geoLocationManager.LocationRequestPriority.LOW_POWER;
       break;
     case Accuracy.Low:
-      interval = 5000;
       distance = 1000;
       break;
     case Accuracy.Balanced:
       break;
     case Accuracy.High:
-      interval = 2000;
       distance = 50;
-      priority = geoLocationManager.LocationRequestPriority.ACCURACY;
       break;
     case Accuracy.Highest:
-      interval = 1000;
       distance = 25;
-      priority = geoLocationManager.LocationRequestPriority.ACCURACY;
       break;
     case Accuracy.BestForNavigation:
-      interval = 500;
       distance = 0;
-      priority = geoLocationManager.LocationRequestPriority.ACCURACY;
       break;
   }
 
@@ -295,7 +306,7 @@ export function locationRequest(options: LocationOptions): geoLocationManager.Lo
     priority,
     // A non-UNSET scenario overrides priority in Location Kit.
     scenario: geoLocationManager.LocationRequestScenario.UNSET,
-    timeInterval: Math.ceil((options.timeInterval ?? interval) / 1000),
+    timeInterval: Math.ceil(options.interval() / 1000),
     distanceInterval: options.distanceInterval ?? distance,
   };
 }
