@@ -22,9 +22,11 @@ if(NOT EXISTS "${EXPO_HARMONY_NATIVE_INPUTS_STAMP}")
 endif()
 include("${EXPO_HARMONY_NATIVE_INPUTS_STAMP}")
 
-if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND DEFINED OHOS_SDK_NATIVE)
+if((CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin"
+    OR CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+    AND DEFINED OHOS_SDK_NATIVE)
   set(CMAKE_CXX_FLAGS
-    "${CMAKE_CXX_FLAGS} -include ${OHOS_SDK_NATIVE}/sysroot/usr/include/assert.h")
+    "${CMAKE_CXX_FLAGS} -include \"${OHOS_SDK_NATIVE}/sysroot/usr/include/assert.h\"")
 endif()
 
 add_subdirectory("${RNOH_CPP_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/rnoh")
