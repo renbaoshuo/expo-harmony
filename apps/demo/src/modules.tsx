@@ -47,6 +47,7 @@ import {
 import type { ModuleId } from './catalog';
 import { ExpoModulesDemo } from './expoModules/ExpoModulesDemo';
 import { HapticsDemo } from './haptics';
+import { LocationDemo } from './location';
 import { AdditionalModuleDemo } from './packageScreens';
 import { palette } from './theme';
 import {
@@ -1490,6 +1491,7 @@ export function ModuleDemo({ id }: { id: ModuleId }) {
     case 'keep-awake': return <KeepAwakeDemo />;
     case 'fetch': return <FetchDemo />;
     case 'linking': return <LinkingDemo />;
+    case 'location': return <LocationDemo />;
     case 'application': return <ApplicationDemo />;
     case 'system-ui': return <SystemUIDemo />;
     case 'splash-screen': return <SplashScreenDemo />;

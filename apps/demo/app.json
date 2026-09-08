@@ -60,6 +60,12 @@
           "visibility": "visible"
         }
       ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "允许此应用访问位置信息，用于验证前台定位与地理编码。"
+        }
+      ],
       "expo-sharing",
       "@expo-harmony/expo-sharing",
       "expo-background-fetch",
