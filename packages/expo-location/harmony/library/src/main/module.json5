@@ -1,0 +1,19 @@
+{
+  "module": {
+    "name": "expo_location",
+    "type": "har",
+    "deviceTypes": ["default", "tablet", "2in1"],
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.APPROXIMATELY_LOCATION",
+        "reason": "$string:expo_location_permission_reason",
+        "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" }
+      },
+      {
+        "name": "ohos.permission.LOCATION",
+        "reason": "$string:expo_location_permission_reason",
+        "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" }
+      }
+    ]
+  }
+}

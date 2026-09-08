@@ -40,6 +40,7 @@ AtomGit 上的镜像仓库：[atomgit.com/baoshuo/expo-harmony](https://atomgit.
 - [expo-keep-awake](./packages/expo-keep-awake/)
 - [expo-linear-gradient](./packages/expo-linear-gradient/)
 - [expo-linking](./packages/expo-linking/)
+- [expo-location](./packages/expo-location/)
 - [expo-module-scripts](./packages/expo-module-scripts/)
 - [expo-modules-autolinking](./packages/expo-modules-autolinking/)
 - [expo-modules-core](./packages/expo-modules-core/)
