@@ -147,7 +147,7 @@ async function startExpoMetroAsync(
   );
 
   const startedAt = Date.now();
-  const timeoutMs = options.readyTimeoutMs || 180_000;
+  const timeoutMs = options.readyTimeoutMs || 1800000;
 
   try {
     while (Date.now() - startedAt < timeoutMs) {
