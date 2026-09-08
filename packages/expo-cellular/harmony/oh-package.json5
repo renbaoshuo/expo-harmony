@@ -1,0 +1,27 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "expo-cellular-harmony",
+  "version": "55.0.13-harmony.0",
+  "description": "HarmonyOS port of expo-cellular",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-cellular#readme",
+  "repository": "https://github.com/renbaoshuo/expo-harmony",
+  "author": {
+    "name": "Baoshuo",
+    "email": "i@baoshuo.ren",
+    "url": "https://github.com/renbaoshuo"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@expo-harmony/expo-cellular": "./library"
+  },
+  "overrides": {
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.2",
+    "@rnoh/react-native-openharmony": "0.84.1"
+  }
+}
