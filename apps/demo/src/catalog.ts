@@ -17,6 +17,7 @@ export const MODULES = [
   { id: 'app-metrics', title: '应用指标', packageName: '@expo-harmony/expo-app-metrics', category: '应用', summary: '启动耗时、会话、诊断信息与持久化指标。' },
   { id: 'application', title: '应用信息', packageName: '@expo-harmony/expo-application', category: '应用', summary: '应用包标识、版本号、显示名称与安装时间。' },
   { id: 'asset', title: '资源', packageName: '@expo-harmony/expo-asset', category: '应用', summary: '内置资源、本地 URI 与远程缓存行为。' },
+  { id: 'blob', title: '二进制数据', packageName: '@expo-harmony/expo-blob', category: '应用', summary: 'Blob 构造、文本与字节读取、切片、编码边界与流式读取。' },
   { id: 'constants', title: '常量', packageName: '@expo-harmony/expo-constants', category: '应用', summary: '内嵌的应用配置、设备信息与运行时标识。' },
   { id: 'font', title: '字体', packageName: '@expo-harmony/expo-font', category: '应用', summary: '内置字体资源与运行时注册。' },
   { id: 'splash-screen', title: '启动屏', packageName: '@expo-harmony/expo-splash-screen', category: '应用', summary: '启动过程接管与幂等的内容就绪交接。' },

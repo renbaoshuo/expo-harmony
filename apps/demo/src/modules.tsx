@@ -30,6 +30,7 @@ import { StyleSheet, Switch, Text, View } from 'react-native';
 import { antDesignFontAsset, DYNAMIC_FONT_FAMILY } from './fixtures';
 import { AppMetricsDemo } from './appMetrics';
 import { AudioDemo } from './audio';
+import { BlobDemo } from './blob';
 import { BrightnessDemo } from './brightness';
 import { CellularDemo } from './cellular';
 import {
@@ -1485,6 +1486,7 @@ function BackgroundTaskDemo() {
 export function ModuleDemo({ id }: { id: ModuleId }) {
   switch (id) {
     case 'asset': return <AssetDemo />;
+    case 'blob': return <BlobDemo />;
     case 'constants': return <ConstantsDemo />;
     case 'file-system': return <FileSystemDemo />;
     case 'font': return <FontDemo />;
