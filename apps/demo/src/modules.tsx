@@ -34,6 +34,7 @@ import { BlobDemo } from './blob';
 import { BrightnessDemo } from './brightness';
 import { CellularDemo } from './cellular';
 import { ClipboardDemo } from './clipboard';
+import { DeviceDemo } from './device';
 import {
   BACKGROUND_FETCH_OPTIONS,
   BACKGROUND_FETCH_TASK,
