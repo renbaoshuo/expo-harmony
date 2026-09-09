@@ -1,0 +1,12 @@
+{
+  "string": [
+    {
+      "name": "expo_contacts_read_permission_reason",
+      "value": "用于读取和选择您的联系人信息"
+    },
+    {
+      "name": "expo_contacts_write_permission_reason",
+      "value": "用于添加、更新和删除您的联系人"
+    }
+  ]
+}

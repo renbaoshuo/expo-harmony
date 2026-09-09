@@ -35,6 +35,7 @@
 - [expo-cellular](./packages/expo-cellular/)
 - [expo-clipboard](./packages/expo-clipboard/)
 - [expo-constants](./packages/expo-constants/)
+- [expo-contacts](./packages/expo-contacts/)
 - [expo-crypto](./packages/expo-crypto/)
 - [expo-device](./packages/expo-device/)
 - [expo-fetch](./packages/expo-fetch/)
