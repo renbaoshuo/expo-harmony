@@ -40,6 +40,7 @@ export const MODULES = [
   { id: 'location', title: '定位', packageName: '@expo-harmony/expo-location', category: '设备与媒体', summary: '定位权限、当前位置、位置与方向订阅、地理编码及参数边界。' },
   { id: 'navigation-bar', title: '导航栏', packageName: '@expo-harmony/expo-navigation-bar', category: '设备与媒体', summary: '系统导航栏颜色、按键与可见性。' },
   { id: 'network', title: '网络', packageName: '@expo-harmony/expo-network', category: '设备与媒体', summary: '连接类型、可达性、IP 地址与状态事件。' },
+  { id: 'print', title: '打印', packageName: '@expo-harmony/expo-print', category: '设备与媒体', summary: 'HTML 转 PDF、分页与 Base64 校验，以及系统文档打印。' },
   { id: 'sharing', title: '分享', packageName: '@expo-harmony/expo-sharing', category: '设备与媒体', summary: '通过 Harmony 系统面板分享本地文件。' },
 
   { id: 'background-fetch', title: '后台拉取', packageName: '@expo-harmony/expo-background-fetch', category: '后台任务', summary: 'WorkScheduler 注册与 JavaScript 回调。' },

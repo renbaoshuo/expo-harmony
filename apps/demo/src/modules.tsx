@@ -51,6 +51,7 @@ import { ExpoModulesDemo } from './expoModules/ExpoModulesDemo';
 import { HapticsDemo } from './haptics';
 import { LocationDemo } from './location';
 import { AdditionalModuleDemo } from './packageScreens';
+import { PrintDemo } from './print';
 import { palette } from './theme';
 import {
   ActionButton,
@@ -1507,6 +1508,7 @@ export function ModuleDemo({ id }: { id: ModuleId }) {
     case 'battery': return <BatteryDemo />;
     case 'brightness': return <BrightnessDemo />;
     case 'clipboard': return <ClipboardDemo />;
+    case 'print': return <PrintDemo />;
     case 'background-fetch': return <BackgroundFetchDemo />;
     case 'background-task': return <BackgroundTaskDemo />;
     case 'haptics': return <HapticsDemo />;
