@@ -101,6 +101,7 @@
         }
       ],
       "./plugins/withAudioFixture",
+      "./plugins/withIntentLauncherFixture",
       "@expo-harmony/prebuild-config"
     ],
     "harmony": {

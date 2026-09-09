@@ -56,6 +56,7 @@ import { LocationDemo } from './location';
 import { LivePhotoDemo } from './livePhoto';
 import { AdditionalModuleDemo } from './packageScreens';
 import { PrintDemo } from './print';
+import { IntentLauncherDemo } from './intent-launcher';
 import { palette } from './theme';
 import {
   ActionButton,
@@ -1517,6 +1518,7 @@ export function ModuleDemo({ id }: { id: ModuleId }) {
     case 'contacts': return <ContactsDemo />;
     case 'device': return <DeviceDemo />;
     case 'print': return <PrintDemo />;
+    case 'intent-launcher': return <IntentLauncherDemo />;
     case 'background-fetch': return <BackgroundFetchDemo />;
     case 'background-task': return <BackgroundTaskDemo />;
     case 'haptics': return <HapticsDemo />;

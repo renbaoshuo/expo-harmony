@@ -20,6 +20,7 @@ export const MODULES = [
   { id: 'blob', title: '二进制数据', packageName: '@expo-harmony/expo-blob', category: '应用', summary: 'Blob 构造、文本与字节读取、切片、编码边界与流式读取。' },
   { id: 'constants', title: '常量', packageName: '@expo-harmony/expo-constants', category: '应用', summary: '内嵌的应用配置、设备信息与运行时标识。' },
   { id: 'font', title: '字体', packageName: '@expo-harmony/expo-font', category: '应用', summary: '内置字体资源与运行时注册。' },
+  { id: 'intent-launcher', title: '意图启动器', packageName: '@expo-harmony/expo-intent-launcher', category: '应用', summary: '应用启动、图标读取、Want 参数、结果回传与并发保护。' },
   { id: 'splash-screen', title: '启动屏', packageName: '@expo-harmony/expo-splash-screen', category: '应用', summary: '启动过程接管与幂等的内容就绪交接。' },
   { id: 'system-ui', title: '系统 UI', packageName: '@expo-harmony/expo-system-ui', category: '应用', summary: '根窗口背景与界面样式配置。' },
 
