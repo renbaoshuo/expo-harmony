@@ -27,6 +27,7 @@ export const MODULES = [
   { id: 'battery', title: '电池', packageName: '@expo-harmony/expo-battery', category: '设备与媒体', summary: '电源状态快照、Hook 与原生状态事件。' },
   { id: 'blur', title: '模糊', packageName: '@expo-harmony/expo-blur', category: '设备与媒体', summary: '原生模糊视图、色调变体与强度更新。' },
   { id: 'brightness', title: '亮度', packageName: '@expo-harmony/expo-brightness', category: '设备与媒体', summary: '窗口亮度读写、权限、数值边界与平台兼容行为。' },
+  { id: 'calendar', title: '日历', packageName: '@expo-harmony/expo-calendar', category: '设备与媒体', summary: '日历权限、日历与日程读写、重复实例、提醒以及系统新建页面。' },
   { id: 'camera', title: '相机', packageName: '@expo-harmony/expo-camera', category: '设备与媒体', summary: '权限申请、预览、拍照与镜头能力。' },
   { id: 'cellular', title: '蜂窝网络', packageName: '@expo-harmony/expo-cellular', category: '设备与媒体', summary: '网络代际、SIM 服务商、国家码与电话状态权限。' },
   { id: 'clipboard', title: '剪贴板', packageName: '@expo-harmony/expo-clipboard', category: '设备与媒体', summary: '文本、HTML、URL 与图片读写，以及剪贴板变化事件。' },

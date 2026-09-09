@@ -32,6 +32,7 @@ import { AppMetricsDemo } from './appMetrics';
 import { AudioDemo } from './audio';
 import { BlobDemo } from './blob';
 import { BrightnessDemo } from './brightness';
+import { CalendarDemo } from './calendar';
 import { CellularDemo } from './cellular';
 import { ClipboardDemo } from './clipboard';
 import { DeviceDemo } from './device';
@@ -1510,7 +1511,9 @@ export function ModuleDemo({ id }: { id: ModuleId }) {
     case 'camera': return <CameraDemo />;
     case 'battery': return <BatteryDemo />;
     case 'brightness': return <BrightnessDemo />;
+    case 'calendar': return <CalendarDemo />;
     case 'clipboard': return <ClipboardDemo />;
+    case 'device': return <DeviceDemo />;
     case 'print': return <PrintDemo />;
     case 'background-fetch': return <BackgroundFetchDemo />;
     case 'background-task': return <BackgroundTaskDemo />;
