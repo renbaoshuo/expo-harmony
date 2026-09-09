@@ -1,0 +1,47 @@
+{
+  "name": "@expo-harmony/expo-device",
+  "version": "55.0.17-harmony.0",
+  "description": "HarmonyOS port of expo-device",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "author": "Baoshuo <i@baoshuo.ren>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renbaoshuo/expo-harmony.git",
+    "directory": "packages/expo-device"
+  },
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-device#readme",
+  "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "harmony:clean": "expo-harmony-module prepare --clean-only",
+    "harmony:build": "expo-harmony-module prepare",
+    "prepack": "expo-harmony-module prepack"
+  },
+  "peerDependencies": {
+    "@expo-harmony/expo-modules-core": "workspace:*",
+    "expo-device": "55.0.17"
+  },
+  "devDependencies": {
+    "@expo-harmony/expo-module-scripts": "workspace:*",
+    "@expo-harmony/expo-modules-core": "workspace:*",
+    "@react-native-oh/react-native-harmony": "0.84.1",
+    "expo": "55.0.26",
+    "expo-device": "55.0.17",
+    "expo-modules-core": "55.0.25",
+    "react": "19.2.3",
+    "react-native": "0.84.1"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

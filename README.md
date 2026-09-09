@@ -35,6 +35,7 @@ AtomGit 上的镜像仓库：[atomgit.com/baoshuo/expo-harmony](https://atomgit.
 - [expo-clipboard](./packages/expo-clipboard/)
 - [expo-constants](./packages/expo-constants/)
 - [expo-crypto](./packages/expo-crypto/)
+- [expo-device](./packages/expo-device/)
 - [expo-fetch](./packages/expo-fetch/)
 - [expo-file-system](./packages/expo-file-system/)
 - [expo-font](./packages/expo-font/)
