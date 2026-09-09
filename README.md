@@ -10,7 +10,8 @@
 
 [**查阅快速开始文档 >>**](./docs/QUICK_START.md)
 
-AtomGit 上的镜像仓库：[atomgit.com/baoshuo/expo-harmony](https://atomgit.com/baoshuo/expo-harmony)
+> - <small>GitHub 上的主线仓库：[github.com/renbaoshuo/expo-harmony](https://github.com/renbaoshuo/expo-harmony)</small>
+> - <small>AtomGit 上的镜像仓库：[atomgit.com/baoshuo/expo-harmony](https://atomgit.com/baoshuo/expo-harmony)</small>
 
 [![G-Star Selected by AtomGit](https://atomgit.com/baoshuo/expo-harmony/star/new_badge.svg)](https://atomgit.com/baoshuo/expo-harmony)
 
@@ -61,6 +62,8 @@ AtomGit 上的镜像仓库：[atomgit.com/baoshuo/expo-harmony](https://atomgit.
 可以查看 [快速开始](./docs/QUICK_START.md) 获得接入教程。
 
 更多 Expo 库正在移植中，也欢迎贡献更多移植！
+
+> <small>Note: 对于 AtomGit 的用户，烦请移步 [GitHub 仓库](https://github.com/renbaoshuo/expo-harmony) 提起 [Pull Request](https://github.com/renbaoshuo/expo-harmony/pulls)。您可以正常在 AtomGit 上发起 issue 提交问题反馈。</small>
 
 **如果您觉得这个库有帮助到您，请在页面上方给这个仓库点亮一个 Star 🌟～**
 
