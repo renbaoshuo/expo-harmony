@@ -50,6 +50,7 @@ import type { ModuleId } from './catalog';
 import { ExpoModulesDemo } from './expoModules/ExpoModulesDemo';
 import { HapticsDemo } from './haptics';
 import { LocationDemo } from './location';
+import { LivePhotoDemo } from './livePhoto';
 import { AdditionalModuleDemo } from './packageScreens';
 import { PrintDemo } from './print';
 import { palette } from './theme';
@@ -1495,6 +1496,7 @@ export function ModuleDemo({ id }: { id: ModuleId }) {
     case 'keep-awake': return <KeepAwakeDemo />;
     case 'fetch': return <FetchDemo />;
     case 'linking': return <LinkingDemo />;
+    case 'live-photo': return <LivePhotoDemo />;
     case 'location': return <LocationDemo />;
     case 'application': return <ApplicationDemo />;
     case 'system-ui': return <SystemUIDemo />;
