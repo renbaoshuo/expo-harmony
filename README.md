@@ -44,6 +44,7 @@
 - [expo-file-system](./packages/expo-file-system/)
 - [expo-font](./packages/expo-font/)
 - [expo-haptics](./packages/expo-haptics/)
+- [expo-intent-launcher](./packages/expo-intent-launcher/)
 - [expo-keep-awake](./packages/expo-keep-awake/)
 - [expo-linear-gradient](./packages/expo-linear-gradient/)
 - [expo-linking](./packages/expo-linking/)

@@ -1,0 +1,28 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "expo-intent-launcher-harmony",
+  "version": "55.0.12-harmony.0",
+  "description": "HarmonyOS port of expo-intent-launcher",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-intent-launcher#readme",
+  "repository": "https://github.com/renbaoshuo/expo-harmony",
+  "author": {
+    "name": "Baoshuo",
+    "email": "i@baoshuo.ren",
+    "url": "https://github.com/renbaoshuo"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@expo-harmony/expo-intent-launcher": "./library"
+  },
+  "overrides": {
+    "@ppd/ffrt": "1.1.5",
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.2",
+    "@rnoh/react-native-openharmony": "0.84.1"
+  }
+}
