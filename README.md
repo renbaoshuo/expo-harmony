@@ -2,9 +2,10 @@
 
 **让 Expo 驱动的 React Native 应用程序在 HarmonyOS 上运行。**
 
-- 复用现有 Expo 项目的业务代码，以少量代码改动为应用增加 HarmonyOS 支持。
-- 提供从开发调试到构建打包的工具链，支持环境诊断、原生工程生成、HAP 构建、设备安装和应用启动。
-- 支持 [Expo CNG](https://docs.expo.dev/workflow/continuous-native-generation/)，通过配置生成 HarmonyOS 原生工程，省去人工维护的繁杂流程。
+- 能够使开发者以极少的代码改动，复用现有 Expo 项目的业务代码为应用增加 HarmonyOS 支持。
+- 提供众多常用 Expo 模块的 HarmonyOS 实现，减少开发者自行编写原生适配代码的工作量。
+- 提供从开发调试到构建打包的完整工具链，支持环境诊断、原生工程生成、HAP 构建、设备安装、应用启动等多项能力。
+- 支持 [Expo CNG](https://docs.expo.dev/workflow/continuous-native-generation/)，通过配置生成 HarmonyOS 原生工程，省去人工维护的繁杂流程，也不需要将原生工程在仓库中手动维护。
 - 支持 [Autolinking](https://docs.expo.dev/modules/autolinking/)，自动链接 Expo 模块和 RNOH 原生模块，无需逐个注册模块、配置构建依赖。
 - 支持 [Expo Modules API](https://docs.expo.dev/modules/overview/)，可用 ArkTS 编写原生模块和视图组件，并提供脚手架，为已有 Expo 模块补充 HarmonyOS 支持。
 
