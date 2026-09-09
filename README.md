@@ -32,6 +32,7 @@
 - [expo-blob](./packages/expo-blob/)
 - [expo-blur](./packages/expo-blur/)
 - [expo-brightness](./packages/expo-brightness/)
+- [expo-calendar](./packages/expo-calendar/)
 - [expo-camera](./packages/expo-camera/)
 - [expo-cellular](./packages/expo-cellular/)
 - [expo-clipboard](./packages/expo-clipboard/)

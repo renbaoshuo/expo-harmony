@@ -1,0 +1,12 @@
+{
+  "string": [
+    {
+      "name": "expo_calendar_read_permission_reason",
+      "value": "用于读取日历和日程"
+    },
+    {
+      "name": "expo_calendar_write_permission_reason",
+      "value": "用于创建、更新和删除日历及日程"
+    }
+  ]
+}

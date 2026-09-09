@@ -1,15 +1,15 @@
 {
   "modelVersion": "5.0.0",
-  "name": "expo-print-harmony",
+  "name": "expo-calendar-harmony",
   "version": "55.0.15-harmony.0",
-  "description": "HarmonyOS port of expo-print",
+  "description": "HarmonyOS port of expo-calendar",
   "keywords": [
     "react-native",
     "expo",
     "expo-harmony",
     "harmonyos"
   ],
-  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-print#readme",
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-calendar#readme",
   "repository": "https://github.com/renbaoshuo/expo-harmony",
   "author": {
     "name": "Baoshuo",
@@ -18,7 +18,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@expo-harmony/expo-print": "./library"
+    "@expo-harmony/expo-calendar": "./library"
   },
   "overrides": {
     "@expo-harmony/expo-modules-core": "55.0.25-harmony.2",
