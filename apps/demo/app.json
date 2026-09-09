@@ -27,6 +27,20 @@
       "@expo-harmony/expo-constants",
       "@expo-harmony/expo-font",
       [
+        "@expo-harmony/expo-calendar",
+        {
+          "readCalendarPermission": "用于验证日历查询、日程读取和重复实例功能",
+          "writeCalendarPermission": "用于创建、更新和清理演示页面的测试日历及日程"
+        }
+      ],
+      [
+        "@expo-harmony/expo-contacts",
+        {
+          "readContactsPermission": "用于验证联系人查询、分页和导出功能",
+          "writeContactsPermission": "用于创建、更新和清理演示页面的测试联系人"
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "backgroundColor": "#F2F2F7",

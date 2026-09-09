@@ -32,6 +32,7 @@ export const MODULES = [
   { id: 'cellular', title: '蜂窝网络', packageName: '@expo-harmony/expo-cellular', category: '设备与媒体', summary: '网络代际、SIM 服务商、国家码与电话状态权限。' },
   { id: 'clipboard', title: '剪贴板', packageName: '@expo-harmony/expo-clipboard', category: '设备与媒体', summary: '文本、HTML、URL 与图片读写，以及剪贴板变化事件。' },
   { id: 'crypto', title: '加密', packageName: '@expo-harmony/expo-crypto', category: '设备与媒体', summary: '摘要、随机字节、UUID 与 AES-GCM 往返校验。' },
+  { id: 'contacts', title: '联系人', packageName: '@expo-harmony/expo-contacts', category: '设备与媒体', summary: '通讯录权限、联系人读写、分页查询、系统选择器与 vCard 导出。' },
   { id: 'device', title: '设备信息', packageName: '@expo-harmony/expo-device', category: '设备与媒体', summary: '品牌、型号、系统版本、内存、CPU 架构、设备类型与开机时长。' },
   { id: 'fetch', title: '网络请求', packageName: '@expo-harmony/expo-fetch', category: '设备与媒体', summary: '通过 Expo fetch 实现的流式 HTTP 与本地文件响应。' },
   { id: 'file-system', title: '文件系统', packageName: '@expo-harmony/expo-file-system', category: '设备与媒体', summary: '文件、目录、原始句柄与系统选择器。' },

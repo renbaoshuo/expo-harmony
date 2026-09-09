@@ -35,6 +35,7 @@ import { BrightnessDemo } from './brightness';
 import { CalendarDemo } from './calendar';
 import { CellularDemo } from './cellular';
 import { ClipboardDemo } from './clipboard';
+import { ContactsDemo } from './contacts';
 import { DeviceDemo } from './device';
 import {
   BACKGROUND_FETCH_OPTIONS,
@@ -1513,6 +1514,7 @@ export function ModuleDemo({ id }: { id: ModuleId }) {
     case 'brightness': return <BrightnessDemo />;
     case 'calendar': return <CalendarDemo />;
     case 'clipboard': return <ClipboardDemo />;
+    case 'contacts': return <ContactsDemo />;
     case 'device': return <DeviceDemo />;
     case 'print': return <PrintDemo />;
     case 'background-fetch': return <BackgroundFetchDemo />;
