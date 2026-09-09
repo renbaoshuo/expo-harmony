@@ -48,6 +48,7 @@ AtomGit 上的镜像仓库：[atomgit.com/baoshuo/expo-harmony](https://atomgit.
 - [expo-modules-core](./packages/expo-modules-core/)
 - [expo-navigation-bar](./packages/expo-navigation-bar/)
 - [expo-network](./packages/expo-network/)
+- [expo-print](./packages/expo-print/)
 - [expo-router](./packages/expo-router/)
 - [expo-sharing](./packages/expo-sharing/)
 - [expo-splash-screen](./packages/expo-splash-screen/)

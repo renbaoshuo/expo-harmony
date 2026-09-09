@@ -1,0 +1,23 @@
+{
+  "name": "@expo-harmony/expo-print",
+  "version": "55.0.15-harmony.0",
+  "description": "HarmonyOS port of expo-print",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-print#readme",
+  "repository": "https://github.com/renbaoshuo/expo-harmony",
+  "author": {
+    "name": "Baoshuo",
+    "email": "i@baoshuo.ren",
+    "url": "https://github.com/renbaoshuo"
+  },
+  "main": "Index.ets",
+  "license": "MIT",
+  "dependencies": {
+    "@expo-harmony/expo-modules-core": "55.0.25-harmony.2"
+  }
+}

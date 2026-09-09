@@ -1,0 +1,11 @@
+{
+  "module": {
+    "name": "expo_print",
+    "type": "har",
+    "deviceTypes": ["default", "tablet", "2in1"],
+    "requestPermissions": [
+      { "name": "ohos.permission.PRINT" },
+      { "name": "ohos.permission.INTERNET" }
+    ]
+  }
+}
