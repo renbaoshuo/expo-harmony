@@ -1,0 +1,7 @@
+{
+  "module": {
+    "name": "expo_live_photo",
+    "type": "har",
+    "deviceTypes": ["default", "tablet", "2in1"]
+  }
+}

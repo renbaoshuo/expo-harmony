@@ -1,0 +1,10 @@
+{
+  "platforms": [
+    "harmony"
+  ],
+  "harmony": {
+    "modules": [
+      "ExpoLivePhotoModule"
+    ]
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "name": "@expo-harmony/expo-live-photo",
+  "version": "55.0.15-harmony.0",
+  "description": "HarmonyOS port of expo-live-photo",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-live-photo#readme",
+  "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
+  "license": "MIT",
+  "author": "Baoshuo <i@baoshuo.ren>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renbaoshuo/expo-harmony.git",
+    "directory": "packages/expo-live-photo"
+  },
+  "main": "index.js",
+  "react-native": "src/index.ts",
+  "types": "index.d.ts",
+  "scripts": {
+    "harmony:clean": "expo-harmony-module prepare --clean-only",
+    "harmony:build": "expo-harmony-module prepare",
+    "prepack": "expo-harmony-module prepack",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@expo-harmony/expo-modules-core": "workspace:*",
+    "expo-live-photo": "55.0.15"
+  },
+  "devDependencies": {
+    "@expo-harmony/expo-module-scripts": "workspace:*",
+    "@expo-harmony/expo-modules-core": "workspace:*",
+    "@react-native-oh/react-native-harmony": "0.84.1",
+    "@types/react": "19.2.2",
+    "expo": "55.0.26",
+    "expo-live-photo": "55.0.15",
+    "expo-modules-core": "55.0.25",
+    "react": "19.2.3",
+    "react-native": "0.84.1",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "harmony": {
+    "alias": "expo-live-photo",
+    "redirectInternalImports": true
+  }
+}
