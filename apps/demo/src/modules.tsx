@@ -33,6 +33,7 @@ import { AudioDemo } from './audio';
 import { BlobDemo } from './blob';
 import { BrightnessDemo } from './brightness';
 import { CellularDemo } from './cellular';
+import { ClipboardDemo } from './clipboard';
 import {
   BACKGROUND_FETCH_OPTIONS,
   BACKGROUND_FETCH_TASK,
@@ -1505,6 +1506,7 @@ export function ModuleDemo({ id }: { id: ModuleId }) {
     case 'camera': return <CameraDemo />;
     case 'battery': return <BatteryDemo />;
     case 'brightness': return <BrightnessDemo />;
+    case 'clipboard': return <ClipboardDemo />;
     case 'background-fetch': return <BackgroundFetchDemo />;
     case 'background-task': return <BackgroundTaskDemo />;
     case 'haptics': return <HapticsDemo />;
