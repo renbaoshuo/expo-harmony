@@ -22,46 +22,46 @@
 
 已经移植的库都发布在 `@expo-harmony/` 下，具体列表如下：
 
-- [expo-app-metrics](./packages/expo-app-metrics/)
-- [expo-application](./packages/expo-application/)
-- [expo-asset](./packages/expo-asset/)
-- [expo-audio](./packages/expo-audio/)
-- [expo-background-fetch](./packages/expo-background-fetch/)
-- [expo-background-task](./packages/expo-background-task/)
-- [expo-battery](./packages/expo-battery/)
-- [expo-blob](./packages/expo-blob/)
-- [expo-blur](./packages/expo-blur/)
-- [expo-brightness](./packages/expo-brightness/)
-- [expo-calendar](./packages/expo-calendar/)
-- [expo-camera](./packages/expo-camera/)
-- [expo-cellular](./packages/expo-cellular/)
-- [expo-clipboard](./packages/expo-clipboard/)
-- [expo-constants](./packages/expo-constants/)
-- [expo-contacts](./packages/expo-contacts/)
-- [expo-crypto](./packages/expo-crypto/)
-- [expo-device](./packages/expo-device/)
-- [expo-fetch](./packages/expo-fetch/)
-- [expo-file-system](./packages/expo-file-system/)
-- [expo-font](./packages/expo-font/)
-- [expo-haptics](./packages/expo-haptics/)
-- [expo-intent-launcher](./packages/expo-intent-launcher/)
-- [expo-keep-awake](./packages/expo-keep-awake/)
-- [expo-linear-gradient](./packages/expo-linear-gradient/)
-- [expo-linking](./packages/expo-linking/)
-- [expo-live-photo](./packages/expo-live-photo/)
-- [expo-location](./packages/expo-location/)
-- [expo-module-scripts](./packages/expo-module-scripts/)
-- [expo-modules-autolinking](./packages/expo-modules-autolinking/)
-- [expo-modules-core](./packages/expo-modules-core/)
-- [expo-navigation-bar](./packages/expo-navigation-bar/)
-- [expo-network](./packages/expo-network/)
-- [expo-print](./packages/expo-print/)
-- [expo-router](./packages/expo-router/)
-- [expo-sharing](./packages/expo-sharing/)
-- [expo-splash-screen](./packages/expo-splash-screen/)
-- [expo-status-bar](./packages/expo-status-bar/)
-- [expo-system-ui](./packages/expo-system-ui/)
-- [expo-task-manager](./packages/expo-task-manager/)
+- [expo-app-metrics](./packages/expo-app-metrics/)：采集应用启动耗时、帧率与内存使用等性能指标。
+- [expo-application](./packages/expo-application/)：获取原生应用的 ID、名称和构建版本等信息。
+- [expo-asset](./packages/expo-asset/)：下载资源并在其他库中使用。
+- [expo-audio](./packages/expo-audio/)：提供音频播放与录制的 API。
+- [expo-background-fetch](./packages/expo-background-fetch/)：执行后台抓取任务。
+- [expo-background-task](./packages/expo-background-task/)：运行后台任务。
+- [expo-battery](./packages/expo-battery/)：获取设备电池信息并监听相关事件。
+- [expo-blob](./packages/expo-blob/)：符合 Web 标准的 React Native Blob 实现。
+- [expo-blur](./packages/expo-blur/)：模糊其下方所有内容的 React 组件。
+- [expo-brightness](./packages/expo-brightness/)：获取和设置屏幕亮度。
+- [expo-calendar](./packages/expo-calendar/)：访问系统日历、事件、提醒及相关记录。
+- [expo-camera](./packages/expo-camera/)：访问设备摄像头。
+- [expo-cellular](./packages/expo-cellular/)：获取用户蜂窝网络服务提供商信息。
+- [expo-clipboard](./packages/expo-clipboard/)：读取和写入剪贴板内容。
+- [expo-constants](./packages/expo-constants/)：获取在应用整个安装期间保持不变的系统信息。
+- [expo-contacts](./packages/expo-contacts/)：访问手机的系统联系人。
+- [expo-crypto](./packages/expo-crypto/)：通用的加密操作。
+- [expo-device](./packages/expo-device/)：获取设备硬件相关的系统信息。
+- [expo-fetch](./packages/expo-fetch/)：提供符合 WinterCG 规范的 Fetch API。
+- [expo-file-system](./packages/expo-file-system/)：访问设备上的本地文件系统。
+- [expo-font](./packages/expo-font/)：在运行时加载字体并在 React Native 组件中使用。
+- [expo-haptics](./packages/expo-haptics/)：访问系统的振动与触感反馈效果。
+- [expo-intent-launcher](./packages/expo-intent-launcher/)：启动系统 Intent。
+- [expo-keep-awake](./packages/expo-keep-awake/)：在渲染时阻止屏幕休眠的 React 组件。
+- [expo-linear-gradient](./packages/expo-linear-gradient/)：渲染渐变视图的 React 组件。
+- [expo-linking](./packages/expo-linking/)：创建并打开通用深度链接。
+- [expo-live-photo](./packages/expo-live-photo/)：显示实况照片（Live Photo）。
+- [expo-location](./packages/expo-location/)：读取地理位置、轮询当前位置或订阅位置更新事件。
+- [expo-module-scripts](./packages/expo-module-scripts/)：为 HarmonyOS 下的 Expo Module 提供构建与打包命令支持。
+- [expo-modules-autolinking](./packages/expo-modules-autolinking/)：自动链接 Expo 模块和 RNOH 原生模块。
+- [expo-modules-core](./packages/expo-modules-core/)：提供 Expo Modules 所需的原生运行时。
+- [expo-navigation-bar](./packages/expo-navigation-bar/)：与系统导航栏进行交互。
+- [expo-network](./packages/expo-network/)：获取设备网络信息，如 IP 地址、MAC 地址和飞行模式状态。
+- [expo-print](./packages/expo-print/)：提供打印功能。
+- [expo-router](./packages/expo-router/)：面向 React Native 和 Web 应用的基于文件的路由库。
+- [expo-sharing](./packages/expo-sharing/)：与其他应用分享和接收数据。
+- [expo-splash-screen](./packages/expo-splash-screen/)：控制原生启动画面的显示行为。
+- [expo-status-bar](./packages/expo-status-bar/)：提供与 React Native StatusBar 一致的接口，但其默认值更适合 Expo 环境。
+- [expo-system-ui](./packages/expo-system-ui/)：与系统 UI 元素进行交互。
+- [expo-task-manager](./packages/expo-task-manager/)：支持可在后台运行的任务。
 
 可以查看 [快速开始](./docs/QUICK_START.md) 获得接入教程。
 
