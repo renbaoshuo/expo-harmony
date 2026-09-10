@@ -30,7 +30,12 @@
       "require": "./build/index.js",
       "default": "./build/index.js"
     },
-    "./bin/expo-harmony": "./build/bin/expo-harmony.js"
+    "./bin/expo-harmony": "./build/bin/expo-harmony.js",
+    "./internal/prebuild": {
+      "types": "./build/internal/prebuild.d.ts",
+      "require": "./build/internal/prebuild.js",
+      "default": "./build/internal/prebuild.js"
+    }
   },
   "bin": {
     "expo-harmony": "build/bin/expo-harmony.js"

@@ -1,0 +1,64 @@
+{
+  "name": "@expo-harmony/patch-project",
+  "version": "55.1.27-harmony.0",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/patch-project#readme",
+  "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
+  "license": "MIT",
+  "author": "Baoshuo <i@baoshuo.ren>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/renbaoshuo/expo-harmony.git",
+    "directory": "packages/patch-project"
+  },
+  "main": "build/withPatchPlugin.js",
+  "types": "build/withPatchPlugin.d.ts",
+  "scripts": {
+    "prebuild": "yarn workspace @expo-harmony/cli build",
+    "build": "tsc -p tsconfig.json",
+    "prepare": "yarn build",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "exports": {
+    ".": {
+      "types": "./build/withPatchPlugin.d.ts",
+      "require": "./build/withPatchPlugin.js",
+      "default": "./build/withPatchPlugin.js"
+    },
+    "./app.plugin.js": "./app.plugin.js",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@expo-harmony/cli": "workspace:*",
+    "@expo-harmony/config-plugins": "workspace:*",
+    "@expo-harmony/expo-modules-autolinking": "workspace:*",
+    "@expo/config": "55.0.17",
+    "@expo/config-plugins": "55.0.10"
+  },
+  "peerDependencies": {
+    "expo": "55.0.26"
+  },
+  "devDependencies": {
+    "@types/node": "18.19.0",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Preserve manual Harmony native changes with CNG patches",
+  "bin": {
+    "expo-harmony-patch-project": "build/cli/index.js"
+  },
+  "files": [
+    "app.plugin.js",
+    "build"
+  ]
+}

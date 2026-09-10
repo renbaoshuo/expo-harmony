@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,8 +18,8 @@ import { packAsync } from './template';
 
 export type { Change as CheckChange } from '@expo-harmony/prebuild-config/internal';
 
-const IgnoredProjectDirectories = new Set(['.expo', '.git', '.hvigor', '.yarn', 'node_modules']);
-const IgnoredHarmonyGeneratedDirectories = new Set([
+const IgnoredDirectories = new Set(['.expo', '.git', '.hvigor', '.yarn', 'node_modules']);
+const GeneratedDirectories = new Set([
   '.cxx',
   '.git',
   '.hvigor',
@@ -103,16 +104,18 @@ function shouldCopyPrebuildCheckPath(
   if (!relative) return true;
 
   const segments = relative.split(path.sep);
-  if (IgnoredProjectDirectories.has(segments[0])) return false;
+  if (IgnoredDirectories.has(segments[0])) return false;
 
-  const nativeRoot = isInside(plan.harmonyRoot, source)
+  const root = isInside(plan.harmonyRoot, source)
     ? plan.harmonyRoot
     : isAppLocalHarmonyPath(project, source)
       ? path.join(project, ...segments.slice(0, 3))
       : null;
-  if (nativeRoot) {
-    const native = path.relative(nativeRoot, source).split(path.sep);
-    if (native.some(segment => IgnoredHarmonyGeneratedDirectories.has(segment))) return false;
+  if (root) {
+    const native = path.relative(root, source).split(path.sep);
+    if (GeneratedDirectories.has(native[0])
+      || (GeneratedDirectories.has(native[1])
+        && fs.existsSync(path.join(root, native[0], 'src/main/module.json5')))) return false;
   }
 
   return source !== plan.exportPaths.bundle;
@@ -126,6 +129,7 @@ async function copyAsync(
 ) {
   await fs.promises.cp(project, target, {
     recursive: true,
+    verbatimSymlinks: true,
     filter: source => shouldCopyPrebuildCheckPath(project, source, plan),
   });
 
@@ -137,16 +141,16 @@ async function copyAsync(
     });
   }
 
-  // Keep a real node_modules directory in the isolated project and link its
-  // entries. Dependency scanners then retain the isolated lexical package path
-  // (including scoped packages) instead of collapsing the entire node_modules
-  // root to the source project's realpath. Package directories stay linked;
-  // Windows copies loose files to avoid requiring file-symlink privileges.
+  // Link individual packages so dependency scanners retain paths inside the mirror.
   await linkModulesAsync(modules, path.join(target, 'node_modules'));
   await stageAsync(project, target, temp);
 }
 
-async function checkUnlockedAsync(project, options: CheckOptions) {
+async function withGeneratedProjectAsync<T>(
+  project: string,
+  options: CheckOptions & { clean?: boolean; skipPatches?: boolean },
+  action: (expected: string, checksum: string) => Promise<T>
+): Promise<T> {
   project = path.resolve(project);
   const plan = await resolveHarmonyBuildPlanAsync(project);
   const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'expo-harmony-check-'));
@@ -155,6 +159,8 @@ async function checkUnlockedAsync(project, options: CheckOptions) {
 
   try {
     await copyAsync(project, expected, plan, temp);
+    if (options.clean) await fs.promises.rm(path.join(expected, 'harmony'), { recursive: true, force: true });
+
     packed = await packAsync(project);
 
     const expo = resolveExpoCli(project);
@@ -173,6 +179,7 @@ async function checkUnlockedAsync(project, options: CheckOptions) {
         ...packed.env,
         ...(options.buildType ? { EXPO_HARMONY_BUILD_TYPE: options.buildType } : {}),
         EXPO_HARMONY_CHECK_MIRROR_ROOT: temp,
+        ...(options.skipPatches ? { EXPO_HARMONY_SKIP_PATCHES: '1' } : {}),
       },
       operation: 'check-prebuild',
     });
@@ -185,7 +192,9 @@ async function checkUnlockedAsync(project, options: CheckOptions) {
       );
     }
 
-    return compareAsync(project, expected);
+    const checksum = createHash('md5').update(Uint8Array.from(await fs.promises.readFile(packed.tarball))).digest('hex');
+
+    return await action(expected, checksum);
   } finally {
     if (packed) await packed.cleanup();
     await fs.promises.rm(temp, { recursive: true, force: true });
@@ -196,8 +205,8 @@ async function checkAsync(project, options: CheckOptions = {}) {
   return withHarmonyProjectLockAsync(
     project,
     'prebuild-check',
-    () => checkUnlockedAsync(project, options)
+    () => withGeneratedProjectAsync(project, options, expected => compareAsync(project, expected))
   );
 }
 
-export { checkAsync };
+export { checkAsync, withGeneratedProjectAsync };
