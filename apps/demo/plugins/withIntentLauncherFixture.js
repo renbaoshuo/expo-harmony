@@ -1,13 +1,11 @@
 'use strict';
 
-const fs = require('node:fs');
 const path = require('node:path');
 
 const { createRunOncePlugin } = require('@expo/config-plugins');
 const {
-  recordManagedFile,
   registerHarmonyConfigPlugin,
-  withHarmonyDangerousMod,
+  withHarmonyGeneratedFiles,
   withModuleJson,
   withProfiles,
 } = require('@expo-harmony/config-plugins');
@@ -43,20 +41,16 @@ function withIntentLauncherFixture(config) {
     return mod;
   });
 
-  return withHarmonyDangerousMod(config, async (mod) => {
-    const root = path.join(mod.modRequest.platformProjectRoot, 'entry/src/main/ets');
-    const files = [
-      [`${ABILITY}.ets`, `intentlauncher/${ABILITY}.ets`],
-      ['IntentLauncher.ets', `${PAGE}.ets`],
-    ];
-    for (const [source, relative] of files) {
-      const file = path.join(root, relative);
-      await fs.promises.mkdir(path.dirname(file), { recursive: true });
-      await fs.promises.copyFile(path.join(__dirname, '../native/intent-launcher', source), file);
-      recordManagedFile(mod, file, NAME);
-    }
-
-    return mod;
+  return withHarmonyGeneratedFiles(config, {
+    owner: NAME,
+    files: {
+      [`entry/src/main/ets/intentlauncher/${ABILITY}.ets`]: {
+        source: path.join(__dirname, '../native/intent-launcher', `${ABILITY}.ets`),
+      },
+      [`entry/src/main/ets/${PAGE}.ets`]: {
+        source: path.join(__dirname, '../native/intent-launcher/IntentLauncher.ets'),
+      },
+    },
   });
 }
 

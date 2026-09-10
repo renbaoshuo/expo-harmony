@@ -1,14 +1,7 @@
 'use strict';
 
-const fs = require('node:fs');
-const path = require('node:path');
-
 const { createRunOncePlugin } = require('@expo/config-plugins');
-const {
-  recordManagedFile,
-  registerHarmonyConfigPlugin,
-  withHarmonyDangerousMod,
-} = require('@expo-harmony/config-plugins');
+const { withRawfile } = require('@expo-harmony/config-plugins');
 
 const PLUGIN_NAME = 'expo-harmony-demo-audio-fixture';
 const RAWFILE_PATH = 'audio/probe.wav';
@@ -26,21 +19,10 @@ function withAudioFixture(config) {
   const enabled = config.harmony?.bundleName || config.platforms?.includes('harmony');
   if (!enabled) return config;
 
-  config = registerHarmonyConfigPlugin(config, PLUGIN_NAME);
-
-  return withHarmonyDangerousMod(config, async (mod) => {
-    const root = path.join(mod.modRequest.platformProjectRoot, 'entry', 'src', 'main', 'resources', 'rawfile');
-    const bytes = fixtureBytes();
-
-    for (const relative of [RAWFILE_PATH, ASSET_PATH]) {
-      const destination = path.join(root, relative);
-
-      await fs.promises.mkdir(path.dirname(destination), { recursive: true });
-      await fs.promises.writeFile(destination, bytes);
-      recordManagedFile(mod, destination, PLUGIN_NAME);
-    }
-
-    return mod;
+  const content = fixtureBytes();
+  return withRawfile(config, {
+    owner: PLUGIN_NAME,
+    files: Object.fromEntries([RAWFILE_PATH, ASSET_PATH].map(relative => [relative, { content }])),
   });
 }
 

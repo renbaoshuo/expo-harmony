@@ -2,13 +2,12 @@
 
 const normalizeColor = require('@react-native/normalize-colors');
 const { createRunOncePlugin } = require('@expo/config-plugins');
-const { withModuleJson } = require('@expo-harmony/config-plugins');
+const { HarmonyManifest, HarmonyResources, withModuleJson } = require('@expo-harmony/config-plugins');
 const pkg = require('../package.json');
 
 const BUTTON_STYLES = new Set(['light', 'dark']);
 const POSITIONS = new Set(['relative', 'absolute']);
 const VISIBILITIES = new Set(['visible', 'hidden']);
-// Keep these keys aligned with the constants in ExpoNavigationBarModule.ets.
 const METADATA = Object.freeze({
   backgroundColor: 'expo.harmony.navigationBar.backgroundColor',
   barStyle: 'expo.harmony.navigationBar.barStyle',
@@ -28,16 +27,7 @@ function toArgb(value) {
     throw new TypeError('Harmony expo-navigation-bar backgroundColor must be a valid React Native color.');
   }
 
-  const rgba = color.toString(16).padStart(8, '0').toUpperCase();
-
-  return `#${rgba.slice(6, 8)}${rgba.slice(0, 6)}`;
-}
-
-function setMetadata(items, name, value) {
-  const next = (Array.isArray(items) ? items : []).filter(item => item?.name !== name);
-  if (value != null) next.push({ name, value });
-
-  return next;
+  return HarmonyResources.toArgb(color);
 }
 
 function validateValue(set, name, value) {
@@ -79,15 +69,20 @@ function withHarmonyNavigationBar(config, input) {
       ? mod.modResults.module
       : {};
 
-    let metadata = manifest.metadata;
-    metadata = setMetadata(metadata, METADATA.backgroundColor, toArgb(props.backgroundColor));
-    metadata = setMetadata(metadata, METADATA.barStyle, props.barStyle);
-    metadata = setMetadata(metadata, METADATA.position, props.position);
-    metadata = setMetadata(metadata, METADATA.visibility, props.visibility);
+    const target = { metadata: manifest.metadata };
+    for (const [name, value] of [
+      [METADATA.backgroundColor, toArgb(props.backgroundColor)],
+      [METADATA.barStyle, props.barStyle],
+      [METADATA.position, props.position],
+      [METADATA.visibility, props.visibility],
+    ]) {
+      if (value == null) HarmonyManifest.removeMetadata(target, name);
+      else HarmonyManifest.setMetadata(target, { name, value });
+    }
 
     mod.modResults = {
       ...mod.modResults,
-      module: { ...manifest, metadata },
+      module: { ...manifest, metadata: target.metadata },
     };
 
     return mod;

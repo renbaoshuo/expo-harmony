@@ -6,6 +6,8 @@ const path = require('node:path');
 const { createRunOncePlugin } = require('@expo/config-plugins');
 const {
   HarmonyConfigPluginError,
+  HarmonyManifest,
+  HarmonyResources,
   registerHarmonyConfigPlugin,
   withColors,
   withMedia,
@@ -75,14 +77,7 @@ function normalizeColor(value, field, fallback) {
     throw new TypeError(`${field} must be #RRGGBB or #RRGGBBAA.`);
   }
 
-  const upper = color.toUpperCase();
-  if (upper.length === 9) {
-    // Expo config follows CSS/React Native #RRGGBBAA, while Harmony resource
-    // colors use #AARRGGBB. Six-digit opaque colors have the same ordering.
-    return `#${upper.slice(7, 9)}${upper.slice(1, 7)}`;
-  }
-
-  return upper;
+  return HarmonyResources.toArgb(color);
 }
 
 function normalizeImageWidth(value) {
@@ -219,42 +214,21 @@ function resolveImage(root, image, field) {
 }
 
 function updateEntryAbility(json) {
-  const module = json.module;
-  if (!module || typeof module !== 'object' || !Array.isArray(module.abilities)) {
-    throw new HarmonyConfigPluginError(
-      'ERR_HARMONY_CONFIG_INVALID',
-      'Harmony splash configuration requires module.abilities.',
-      { operation: 'configure-splash-entry-ability' }
-    );
-  }
+  const selected = HarmonyManifest.getMainAbilityOrThrow(json);
 
-  const main = module.mainElement;
-  const matches = module.abilities.filter((ability, index) => (
-    ability && typeof ability === 'object'
-    && (typeof main === 'string' ? ability.name === main : index === 0)
-  ));
-  if (matches.length !== 1) {
-    throw new HarmonyConfigPluginError(
-      'ERR_HARMONY_CONFIG_INVALID',
-      `Harmony splash configuration expected exactly one main Ability, found ${matches.length}.`,
-      { operation: 'configure-splash-entry-ability' }
-    );
-  }
-
-  const abilities = module.abilities.map((ability, index) => {
-    if (!ability || typeof ability !== 'object') return ability;
-
-    const selected = typeof main === 'string' ? ability.name === main : index === 0;
-    if (!selected) return ability;
-
-    return {
-      ...ability,
-      startWindowBackground: '$color:expo_splash_screen_background',
-      startWindowIcon: '$media:expo_splash_screen',
-    };
-  });
-
-  return { ...json, module: { ...module, abilities } };
+  return {
+    ...json,
+    module: {
+      ...json.module,
+      abilities: json.module.abilities.map(ability => ability === selected
+        ? {
+            ...ability,
+            startWindowBackground: '$color:expo_splash_screen_background',
+            startWindowIcon: '$media:expo_splash_screen',
+          }
+        : ability),
+    },
+  };
 }
 
 const withHarmonySplashScreen = (config, props) => {

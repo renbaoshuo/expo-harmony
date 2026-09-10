@@ -6,6 +6,7 @@ const path = require('node:path');
 const { createRunOncePlugin } = require('@expo/config-plugins');
 const {
   atomicWrite,
+  HarmonyManifest,
   HarmonyPaths,
   recordManagedFile,
   registerHarmonyConfigPlugin,
@@ -31,47 +32,18 @@ export default class ExpoBackgroundFetchWorkSchedulerExtension
 `;
 
 function updateModuleJson(json) {
-  if (json.module !== undefined && (json.module === null || typeof json.module !== 'object' || Array.isArray(json.module))) {
-    throw new TypeError('Harmony module.json5 field module must be an object.');
-  }
-  const module = json.module || {};
-  if (module.extensionAbilities !== undefined && !Array.isArray(module.extensionAbilities)) {
-    throw new TypeError('Harmony module.json5 field module.extensionAbilities must be an array.');
-  }
-  const abilities = module.extensionAbilities || [];
-  const found = abilities.filter(ability => ability?.name === EXTENSION_NAME);
+  const result = { ...json, module: json.module === undefined ? {} : json.module };
+  HarmonyManifest.getModuleOrThrow(result);
 
-  if (found.length > 1) {
-    throw new TypeError(`Harmony module declares ${EXTENSION_NAME} more than once.`);
-  }
+  result.module = { ...result.module };
+  HarmonyManifest.ensureExtensionAbility(result, {
+    name: EXTENSION_NAME,
+    srcEntry: EXTENSION_SOURCE,
+    type: 'workScheduler',
+    exported: false,
+  });
 
-  if (found.length === 1) {
-    const ability = found[0];
-
-    if (ability.type !== 'workScheduler'
-      || ability.srcEntry !== EXTENSION_SOURCE
-      || ability.exported !== false) {
-      throw new TypeError(`Harmony module already declares ${EXTENSION_NAME} with incompatible settings.`);
-    }
-
-    return json;
-  }
-
-  return {
-    ...json,
-    module: {
-      ...module,
-      extensionAbilities: [
-        ...abilities,
-        {
-          name: EXTENSION_NAME,
-          srcEntry: EXTENSION_SOURCE,
-          type: 'workScheduler',
-          exported: false,
-        },
-      ],
-    },
-  };
+  return result;
 }
 
 const withBackgroundFetch = (config) => {
@@ -92,7 +64,6 @@ const withBackgroundFetch = (config) => {
     );
 
     await writeGeneratedSource(file);
-
     recordManagedFile(mod, file, pkg.name);
 
     return mod;
@@ -103,14 +74,16 @@ async function writeGeneratedSource(file) {
   let current;
   try {
     current = await fs.promises.readFile(file, 'utf8');
-  } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      throw new Error(`Unable to inspect Harmony source '${file}': ${String(error)}`);
+  } catch (cause) {
+    if (cause?.code !== 'ENOENT') {
+      throw new Error(`Unable to inspect Harmony source '${file}': ${String(cause)}`, { cause });
     }
   }
+
   if (current !== undefined && current !== GENERATED_SOURCE && !current.includes(GENERATED_MARKER)) {
     throw new TypeError(`Harmony source '${file}' already exists and is not managed by ${pkg.name}.`);
   }
+
   await atomicWrite(file, GENERATED_SOURCE);
 }
 

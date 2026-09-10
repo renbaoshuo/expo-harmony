@@ -1,18 +1,18 @@
 'use strict';
 
 const { createRunOncePlugin } = require('@expo/config-plugins');
-const { registerHarmonyConfigPlugin, withStrings } = require('@expo-harmony/config-plugins');
+const { HarmonyResources, registerHarmonyConfigPlugin, withStrings } = require('@expo-harmony/config-plugins');
 
 const pkg = require('../package.json');
 
 const READ_PERMISSION_REASON = 'expo_clipboard_read_permission_reason';
 
-function withHarmonyClipboard(config, { clipboardPermission } = {}) {
+function withHarmonyClipboard(config, { clipboardPermission: permission } = {}) {
   const enabled = config.harmony?.bundleName || config.platforms?.includes('harmony');
   if (!enabled) return config;
 
-  if (clipboardPermission !== undefined
-    && (typeof clipboardPermission !== 'string' || clipboardPermission.trim().length === 0)) {
+  if (permission !== undefined
+    && (typeof permission !== 'string' || permission.trim().length === 0)) {
     throw new TypeError('clipboardPermission must be a non-empty string.');
   }
 
@@ -21,17 +21,10 @@ function withHarmonyClipboard(config, { clipboardPermission } = {}) {
   });
 
   return withStrings(config, (mod) => {
-    const current = mod.modResults.entry?.string;
-    const strings = (Array.isArray(current) ? current : [])
-      .filter(resource => resource?.name !== READ_PERMISSION_REASON);
-
-    if (clipboardPermission !== undefined) {
-      strings.push({ name: READ_PERMISSION_REASON, value: clipboardPermission });
-    }
-
-    if (Array.isArray(current) || strings.length > 0) {
-      mod.modResults.entry ??= {};
-      mod.modResults.entry.string = strings;
+    const entry = mod.modResults.entry ??= {};
+    HarmonyResources.removeString(entry, READ_PERMISSION_REASON);
+    if (permission !== undefined) {
+      HarmonyResources.setString(entry, { name: READ_PERMISSION_REASON, value: permission });
     }
 
     return mod;

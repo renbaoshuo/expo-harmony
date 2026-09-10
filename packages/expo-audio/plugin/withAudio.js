@@ -1,7 +1,13 @@
 'use strict';
 
 const { createRunOncePlugin } = require('@expo/config-plugins');
-const { registerHarmonyConfigPlugin, withModuleJson, withStrings } = require('@expo-harmony/config-plugins');
+const {
+  HarmonyResources,
+  normalizeHarmonyConfig,
+  registerHarmonyConfigPlugin,
+  withModuleJson,
+  withStrings,
+} = require('@expo-harmony/config-plugins');
 
 const pkg = require('../package.json');
 
@@ -27,8 +33,8 @@ function selectedAbilityName(module) {
 
 function microphoneDeclaration(permission, ability, reason) {
   const current = permission && typeof permission === 'object' ? permission : {};
-  const usedScene = current.usedScene && typeof current.usedScene === 'object' ? current.usedScene : {};
-  const fallbackReason = typeof current.reason === 'string' && current.reason !== `$string:${CUSTOM_MICROPHONE_REASON}`
+  const scene = current.usedScene && typeof current.usedScene === 'object' ? current.usedScene : {};
+  const fallback = typeof current.reason === 'string' && current.reason !== `$string:${CUSTOM_MICROPHONE_REASON}`
     ? current.reason
     : MICROPHONE_REASON;
 
@@ -37,13 +43,13 @@ function microphoneDeclaration(permission, ability, reason) {
     name: MICROPHONE_PERMISSION,
     reason: isPermissionReasonText(reason)
       ? `$string:${CUSTOM_MICROPHONE_REASON}`
-      : (typeof reason === 'string' ? reason : fallbackReason),
+      : (typeof reason === 'string' ? reason : fallback),
     ...(ability
       ? {
           usedScene: {
-            ...usedScene,
-            abilities: [...new Set([...(Array.isArray(usedScene.abilities) ? usedScene.abilities : []), ability])],
-            when: usedScene.when === 'always' ? 'always' : 'inuse',
+            ...scene,
+            abilities: [...new Set([...(Array.isArray(scene.abilities) ? scene.abilities : []), ability])],
+            when: scene.when === 'always' ? 'always' : 'inuse',
           },
         }
       : {}),
@@ -51,8 +57,9 @@ function microphoneDeclaration(permission, ability, reason) {
 }
 
 function upsertMicrophonePermission(permissions, ability, enabled, reason) {
-  const index = permissions.findIndex(permission => permission?.name === MICROPHONE_PERMISSION);
   if (!enabled) return permissions.filter(permission => permission?.name !== MICROPHONE_PERMISSION);
+
+  const index = permissions.findIndex(permission => permission?.name === MICROPHONE_PERMISSION);
   const declaration = microphoneDeclaration(index >= 0 ? permissions[index] : undefined, ability, reason);
 
   if (index < 0) return [...permissions, declaration];
@@ -74,9 +81,7 @@ function updateHarmonyPermissions(config, options = {}) {
   const playback = options.enableBackgroundPlayback !== false;
   const recording = options.enableBackgroundRecording === true;
   const microphone = options.recordAudioAndroid !== false && options.microphonePermission !== false;
-  const ability = typeof harmony.abilityName === 'string' && harmony.abilityName.length > 0
-    ? harmony.abilityName
-    : undefined;
+  const ability = normalizeHarmonyConfig(config).abilityName;
   const current = Array.isArray(harmony.permissions) ? harmony.permissions : [];
   const permissions = addBackgroundPermission(
     upsertMicrophonePermission(current, ability, microphone, options.microphonePermission),
@@ -95,7 +100,7 @@ function updateManifest(json, options = {}) {
   const microphone = options.recordAudioAndroid !== false && options.microphonePermission !== false;
   const ability = selectedAbilityName(module);
   const current = Array.isArray(module.requestPermissions) ? module.requestPermissions : [];
-  const requestPermissions = addBackgroundPermission(
+  const permissions = addBackgroundPermission(
     upsertMicrophonePermission(current, ability, microphone, options.microphonePermission),
     playback || recording
   );
@@ -116,7 +121,7 @@ function updateManifest(json, options = {}) {
       })
     : module.abilities;
 
-  return { ...json, module: { ...module, abilities, requestPermissions } };
+  return { ...json, module: { ...module, abilities, requestPermissions: permissions } };
 }
 
 function withHarmonyAudio(config, options = {}) {
@@ -134,17 +139,10 @@ function withHarmonyAudio(config, options = {}) {
   });
 
   return withStrings(config, (mod) => {
-    const current = mod.modResults.entry?.string;
-    const strings = (Array.isArray(current) ? current : [])
-      .filter(resource => resource?.name !== CUSTOM_MICROPHONE_REASON);
-
+    const entry = mod.modResults.entry ??= {};
+    HarmonyResources.removeString(entry, CUSTOM_MICROPHONE_REASON);
     if (options.recordAudioAndroid !== false && isPermissionReasonText(options.microphonePermission)) {
-      strings.push({ name: CUSTOM_MICROPHONE_REASON, value: options.microphonePermission });
-    }
-
-    if (Array.isArray(current) || strings.length > 0) {
-      mod.modResults.entry ??= {};
-      mod.modResults.entry.string = strings;
+      HarmonyResources.setString(entry, { name: CUSTOM_MICROPHONE_REASON, value: options.microphonePermission });
     }
 
     return mod;

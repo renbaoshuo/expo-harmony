@@ -2,7 +2,7 @@
 
 const normalizeColor = require('@react-native/normalize-colors');
 const { createRunOncePlugin } = require('@expo/config-plugins');
-const { withModuleJson } = require('@expo-harmony/config-plugins');
+const { HarmonyManifest, HarmonyResources, withModuleJson } = require('@expo-harmony/config-plugins');
 const pkg = require('../package.json');
 
 const STYLES = new Set(['light', 'dark', 'automatic']);
@@ -16,15 +16,7 @@ function normalizeHarmonyColor(value) {
     throw new TypeError('Harmony expo-system-ui backgroundColor must be a valid React Native color.');
   }
 
-  const rgba = color.toString(16).padStart(8, '0').toUpperCase();
-
-  return `#${rgba.slice(6, 8)}${rgba.slice(0, 6)}`;
-}
-
-function setMetadata(items, name, value) {
-  const metadata = (Array.isArray(items) ? items : []).filter(item => item?.name !== name);
-  if (value != null) metadata.push({ name, value });
-  return metadata;
+  return HarmonyResources.toArgb(color);
 }
 
 function withHarmonySystemUI(config) {
@@ -45,12 +37,14 @@ function withHarmonySystemUI(config) {
       ? mod.modResults.module
       : {};
 
-    let metadata = setMetadata(manifest.metadata, 'expo.harmony.rootViewBackgroundColor', background);
-    metadata = setMetadata(metadata, 'expo.harmony.userInterfaceStyle', style);
+    const target = { metadata: manifest.metadata };
+    if (background == null) HarmonyManifest.removeMetadata(target, 'expo.harmony.rootViewBackgroundColor');
+    else HarmonyManifest.setMetadata(target, { name: 'expo.harmony.rootViewBackgroundColor', value: background });
+    HarmonyManifest.setMetadata(target, { name: 'expo.harmony.userInterfaceStyle', value: style });
 
     mod.modResults = {
       ...mod.modResults,
-      module: { ...manifest, metadata },
+      module: { ...manifest, metadata: target.metadata },
     };
 
     return mod;

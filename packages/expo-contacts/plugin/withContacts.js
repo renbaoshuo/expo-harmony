@@ -1,7 +1,7 @@
 'use strict';
 
 const { createRunOncePlugin } = require('@expo/config-plugins');
-const { registerHarmonyConfigPlugin, withStrings } = require('@expo-harmony/config-plugins');
+const { HarmonyResources, registerHarmonyConfigPlugin, withStrings } = require('@expo-harmony/config-plugins');
 
 const pkg = require('../package.json');
 
@@ -27,16 +27,10 @@ function withHarmonyContacts(config, options = {}) {
   });
 
   return withStrings(config, (mod) => {
-    const current = mod.modResults.entry?.string;
-    const strings = (Array.isArray(current) ? current : []).filter(resource => !names.includes(resource?.name));
-
+    const entry = mod.modResults.entry ??= {};
     for (const [name, value] of Object.entries(reasons)) {
-      if (value !== undefined) strings.push({ name, value });
-    }
-
-    if (Array.isArray(current) || strings.length > 0) {
-      mod.modResults.entry ??= {};
-      mod.modResults.entry.string = strings;
+      HarmonyResources.removeString(entry, name);
+      if (value !== undefined) HarmonyResources.setString(entry, { name, value });
     }
 
     return mod;
