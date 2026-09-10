@@ -68,8 +68,6 @@ function fontEntries(config, props) {
     appendFontEntries(fonts, options.harmony?.fonts, 'expo-font.harmony.fonts');
   }
 
-  appendFontEntries(fonts, config.harmony?.fonts, 'expo.harmony.fonts');
-
   const entries = [];
   for (const font of fonts) {
     if (typeof font === 'string') {

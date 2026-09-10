@@ -10,7 +10,11 @@
 npm install @expo-harmony/expo-font expo-font@55.0.8
 ```
 
-如果需要在预构建时将字体打包到 HarmonyOS 应用中，请在 `app.json` 的 `plugins` 中传入 `@expo-harmony/expo-font`：
+鸿蒙适配会通过 Autolinking 自动接入，无需额外配置。最低支持 HarmonyOS 5.0.1（API 13），宿主的 `compatibleSdkVersion` 也需满足此要求。
+
+字体可以在运行时用 `Font.loadAsync` 加载，也可以在预构建时打包进应用。运行时加载不用改 `app.json`。
+
+预构建打包要在 `app.json` 的 `plugins` 中注册 `@expo-harmony/expo-font`，并启用 `@expo-harmony/prebuild-config`：
 
 ```json
 {
@@ -21,15 +25,30 @@ npm install @expo-harmony/expo-font expo-font@55.0.8
         {
           "fonts": ["./assets/fonts/Inter-Regular.ttf"]
         }
-      ]
+      ],
+      "@expo-harmony/prebuild-config"
     ]
   }
 }
 ```
 
-仅通过 `Font.loadAsync` 在运行时动态加载字体时，不需要在 `app.json` 中配置字体路径。
+打包的字体在 JavaScript 运行前完成注册，`Font.getLoadedFonts()` 会列出它们。
 
-打包的字体在 JavaScript 运行前完成注册，`Font.getLoadedFonts()` 会列出它们。`fonts` 接受字体文件路径或目录；传入目录时，目录下所有 `.ttf`、`.otf` 文件按文件名推导系列名，`_bold`、`_italic`、`_bold_italic` 后缀会被去掉。同一系列只能对应一个字体文件，权重和斜体变体需要用不同的系列名区分，否则预构建报错。字体路径也可以写在官方 `expo-font` 插件的配置里，一样会被打包。
+`fonts` 参数接受字体文件路径、目录，或 `{ fontFamily, fontDefinitions: [{ path }] }`。传入目录时，目录下的 `.ttf`、`.otf` 文件按文件名推导系列名，`_bold`、`_italic`、`_bold_italic` 后缀会去掉。同一系列只能对应一个字体文件，不支持 `weight`、`style`，权重和斜体变体要用不同的系列名区分，否则预构建报错。
+
+字体路径也可以写在官方 `expo-font` 插件的 `fonts` 参数里。注册 `@expo-harmony/expo-font` 后，插件会读取这些路径并打包到 HarmonyOS，无需重复配置：
+
+```json
+{
+  "expo": {
+    "plugins": [
+      ["expo-font", { "fonts": ["./assets/fonts/Inter-Regular.ttf"] }],
+      "@expo-harmony/expo-font",
+      "@expo-harmony/prebuild-config"
+    ]
+  }
+}
+```
 
 ## API 对照表
 
@@ -37,7 +56,7 @@ npm install @expo-harmony/expo-font expo-font@55.0.8
 
 #### `useFonts(map)`
 
-返回 `[boolean, Error | null]`。字体加载完成后第一项为 `true`，失败时第二项为错误。运行时改变传入的字体映射不会重新加载。
+返回 `[boolean, Error | null]`。字体加载完成后第一项为 `true`，失败时第二项为错误。`map` 是单个系列名，或名称到字体资源的映射。运行时改变传入的映射不会重新加载。
 
 ### Methods
 
@@ -45,9 +64,9 @@ npm install @expo-harmony/expo-font expo-font@55.0.8
 
 返回 `Promise<void>`，注册字体系列。第一个参数是名称到字体资源的映射，也可以是单个名称，此时由第二个参数给出资源。
 
-字体源可以是 `require('...')` 返回的资源模块 ID、远程 `http`、`https` 地址，或应用沙箱内的本地 `file://` 地址。打包资源以 `asset://` 地址传入时按应用内资源处理。远程地址会先下载到缓存目录再注册。字体文件须在 1 字节到 32 MB 之间。
+字体源可以是 `require('...')` 返回的资源模块 ID、远程 `http`、`https` 地址，或应用沙箱内的本地 `file://` 地址。打包资源以 `asset://` 地址传入时按应用内资源处理。远程地址会先下载到缓存目录再注册。本地 `file://` 地址须指向应用沙箱内的文件，沙箱之外的路径会被拒绝。字体文件须在 1 字节到 32 MB 之间。
 
-同一系列重复加载同一资源时直接返回。
+系列已注册时再次调用直接返回，不比较资源。配置插件打包的系列在启动时已经注册，运行时用同名加载会被跳过。
 
 加载方式随 HarmonyOS SDK 版本变化：
 
@@ -143,7 +162,9 @@ npm install @expo-harmony/expo-font expo-font@55.0.8
 | `ERR_FONT_RENDER_TOO_LARGE` | 文本或图片超出渲染上限                             |
 | `ERR_FONT_RENDER_EMPTY`     | 文本渲染结果为空                                   |
 
-`ERR_WEB_ENVIRONMENT` 和 `ERR_UNLOAD` 在 HarmonyOS 上不会出现。
+> **未实现的内容**
+>
+> - `ERR_WEB_ENVIRONMENT`、`ERR_UNLOAD`：分别只在 Web 和字体注销场景下出现，HarmonyOS 上没有对应的功能。
 
 ## Author
 

@@ -26,19 +26,6 @@ export interface HarmonySkill {
   uris?: HarmonySkillUri[];
 }
 
-export interface HarmonyFontDefinition {
-  path: string;
-  weight?: number;
-  style?: 'normal' | 'italic';
-}
-
-export type HarmonyFont
-  = | string
-    | {
-      fontFamily: string;
-      fontDefinitions: HarmonyFontDefinition[];
-    };
-
 export interface HarmonyConfig {
   bundleName: string;
   moduleName?: string;
@@ -62,7 +49,6 @@ export interface HarmonyConfig {
   jsEngine?: 'hermes';
   abiFilters?: string[];
   signingConfigFile?: string;
-  fonts?: HarmonyFont[];
 }
 
 export type ExpoConfigWithHarmony = Omit<ExpoConfig, 'platforms'> & {

@@ -55,7 +55,6 @@ module.exports = defineExpoHarmonyConfig({
 | `jsEngine` | `hermes` |
 | `abiFilters` | `['arm64-v8a', 'x86_64']` |
 | `signingConfigFile` | 签名配置文件路径，不设置则忽略 |
-| `fonts` | 字体列表，每项是字体名或 `{ fontFamily, fontDefinitions }` |
 
 `targetSdkVersion` 和 `compatibleSdkVersion` 可以写数字或带 API 级别的 SDK 标签。内置标签覆盖 API 13、14、20、21、23、24，其他版本写成 `6.1.1(24)` 这样的形式。`backgroundColor` 写 `#RRGGBB` 或 `#RRGGBBAA`，写入原生工程时转成 ARGB。`jsEngine` 目前只能是 `hermes`。
 

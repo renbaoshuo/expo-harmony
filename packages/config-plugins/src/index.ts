@@ -11,8 +11,6 @@ export type {
   ExpoKnownPlatform,
   HarmonyConfig,
   HarmonyDeviceType,
-  HarmonyFont,
-  HarmonyFontDefinition,
   HarmonyOrientation,
   HarmonyPermission,
   HarmonyPlatform,
