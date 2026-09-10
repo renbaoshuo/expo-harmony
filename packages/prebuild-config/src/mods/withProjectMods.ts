@@ -3,12 +3,12 @@ import path from 'node:path';
 import {
   withAppJson,
   withHvigorConfig,
-  withNativeInputsStamp,
   withProjectBuildProfile,
   withReactNativeConfig,
   withRootHvigor,
   withRootOhPackage,
 } from '@expo-harmony/config-plugins';
+import { withNativeInputsStamp } from '@expo-harmony/config-plugins/internal';
 import { loadConfigAsync as loadReactNativeCliConfigAsync } from '@react-native-community/cli-config';
 
 import {

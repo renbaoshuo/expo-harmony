@@ -29,12 +29,17 @@
       "require": "./build/index.js",
       "default": "./build/index.js"
     },
-    "./native-inputs": {
+    "./package.json": "./package.json",
+    "./internal": {
+      "types": "./build/internal.d.ts",
+      "require": "./build/internal.js",
+      "default": "./build/internal.js"
+    },
+    "./internal/native-inputs": {
       "types": "./build/nativeInputs.d.ts",
       "require": "./build/nativeInputs.js",
       "default": "./build/nativeInputs.js"
-    },
-    "./package.json": "./package.json"
+    }
   },
   "dependencies": {
     "@expo/config-plugins": "55.0.10",

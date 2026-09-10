@@ -1,7 +1,8 @@
-import type { ExpoConfig } from '@expo/config-types';
+import type { ExpoConfigWithHarmony } from './config';
 
 export interface HarmonyConfigPluginOwnership {
   readonly owner: string;
+  readonly files?: readonly string[];
   readonly ability?: Readonly<Partial<{
     startWindowBackground: string;
     startWindowIcon: string;
@@ -115,7 +116,19 @@ export function normalizeHarmonyConfigPlugins(value: unknown): readonly HarmonyC
 
     owners.add(plugin.owner);
 
+    let files: string[] | undefined;
+    if (plugin.files !== undefined) {
+      if (!Array.isArray(plugin.files) || plugin.files.some(file => typeof file !== 'string'
+        || !file || file.includes('\\') || file.includes('\0') || /^[A-Za-z]:/.test(file)
+        || file.split('/').some(part => !part || part === '.' || part === '..'))) {
+        throw new TypeError(`Invalid Harmony config-plugin ownership: ${plugin.owner}.files must contain relative file paths.`);
+      }
+
+      files = [...new Set(plugin.files as string[])].sort();
+    }
+
     return {
+      ...(files === undefined ? {} : { files }),
       ability: normalizeAbility(plugin.ability),
       owner: plugin.owner,
       resources: normalizeResources(plugin.resources),
@@ -125,15 +138,22 @@ export function normalizeHarmonyConfigPlugins(value: unknown): readonly HarmonyC
   return plugins.sort((left, right) => left.owner.localeCompare(right.owner, 'en'));
 }
 
-export function registerHarmonyConfigPlugin(
-  config: ExpoConfig,
+export function registerHarmonyConfigPlugin<Config extends ExpoConfigWithHarmony>(
+  config: Config,
   owner: string,
   claims: Omit<HarmonyConfigPluginOwnership, 'owner'> = {}
-): ExpoConfig {
+): Config {
   const plugin = normalizeHarmonyConfigPlugins([{ ...claims, owner }])[0];
 
   config._internal ??= {};
   const plugins = normalizeHarmonyConfigPlugins(config._internal.harmonyConfigPlugins);
+  for (const other of plugins) {
+    if (other.owner === owner) continue;
+
+    const duplicate = plugin.files?.find(file => other.files?.includes(file));
+    if (duplicate) throw new TypeError(`Harmony file ${duplicate} is claimed by both ${other.owner} and ${owner}.`);
+  }
+
   config._internal.harmonyConfigPlugins = normalizeHarmonyConfigPlugins([
     ...plugins.filter(item => item.owner !== owner),
     plugin,
@@ -142,6 +162,6 @@ export function registerHarmonyConfigPlugin(
   return config;
 }
 
-export function getHarmonyConfigPlugins(config: ExpoConfig): readonly HarmonyConfigPluginOwnership[] {
+export function getHarmonyConfigPlugins(config: ExpoConfigWithHarmony): readonly HarmonyConfigPluginOwnership[] {
   return normalizeHarmonyConfigPlugins(config?._internal?.harmonyConfigPlugins);
 }

@@ -8,7 +8,6 @@ export interface HarmonyManagedPaths {
   readonly projectBuildProfile: string;
   readonly rootOhPackage: string;
   readonly rootHvigor: string;
-  readonly nativeInputsStamp: string;
   readonly hvigorConfig: string;
   readonly entryBuildProfile: string;
   readonly entryOhPackage: string;
@@ -44,12 +43,12 @@ export interface HarmonyPathsApi {
   readonly RESOURCE_PATHS: HarmonyResourcePaths;
   assertNoExternalSymlink(root: string, target: string): Promise<void>;
   isInside(root: string, target: string): boolean;
-  resolveHarmonyPath(platformProjectRoot: string, relativePath: string): Promise<string>;
-  resolveProjectPath(projectRoot: string, modName: keyof HarmonyProjectPaths): Promise<string>;
-  toPosixRelative(projectRoot: string, target: string): string;
+  resolveHarmonyPath(directory: string, relative: string): Promise<string>;
+  resolveProjectPath(root: string, name: keyof HarmonyProjectPaths): Promise<string>;
+  toPosixRelative(root: string, target: string): string;
 }
 
-const ManagedPaths: HarmonyManagedPaths = Object.freeze({
+const ManagedPaths: HarmonyManagedPaths & { readonly nativeInputsStamp: string } = Object.freeze({
   appJson: 'AppScope/app.json5',
   projectBuildProfile: 'build-profile.json5',
   rootOhPackage: 'oh-package.json5',
@@ -74,8 +73,7 @@ const ProjectPaths: HarmonyProjectPaths = Object.freeze({
 });
 
 const ProjectPathCandidates: HarmonyProjectPathCandidates = Object.freeze({
-  // Keep this order aligned with @react-native-community/cli-config's async
-  // search places. The first entry is also the file created for new projects.
+  // Match React Native CLI lookup precedence; new projects use the first path.
   reactNativeConfig: Object.freeze([
     'react-native.config.js',
     'react-native.config.cjs',
@@ -102,41 +100,40 @@ const ResourcePaths: HarmonyResourcePaths = Object.freeze({
 
 export function isInside(root: string, target: string): boolean {
   const relative = path.relative(root, target);
-
   return relative === ''
     || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
 export async function assertNoExternalSymlink(root: string, target: string): Promise<void> {
-  const absoluteRoot = path.resolve(root);
-  const realRoot = await fs.promises.realpath(absoluteRoot).catch(() => absoluteRoot);
-  const relative = path.relative(absoluteRoot, target);
-  let cursor = absoluteRoot;
+  const absolute = path.resolve(root);
+  const canonical = await fs.promises.realpath(absolute).catch(() => absolute);
+  const relative = path.relative(absolute, target);
+  let current = absolute;
 
   for (const segment of relative.split(path.sep).filter(Boolean)) {
-    cursor = path.join(cursor, segment);
+    current = path.join(current, segment);
 
     let stat: fs.Stats;
     try {
-      stat = await fs.promises.lstat(cursor);
+      stat = await fs.promises.lstat(current);
     } catch (cause) {
       if ((cause as NodeJS.ErrnoException).code === 'ENOENT') break;
 
       throw new HarmonyConfigPluginError(
         'ERR_HARMONY_PATH_INVALID',
-        `Cannot inspect managed Harmony path ${cursor}: ${(cause as Error).message}`,
-        { cause, file: cursor, operation: 'resolve-path' }
+        `Cannot inspect managed Harmony path ${current}: ${(cause as Error).message}`,
+        { cause, file: current, operation: 'resolve-path' }
       );
     }
 
     if (stat.isSymbolicLink()) {
-      const real = await fs.promises.realpath(cursor);
+      const real = await fs.promises.realpath(current);
 
-      if (!isInside(realRoot, real)) {
+      if (!isInside(canonical, real)) {
         throw new HarmonyConfigPluginError(
           'ERR_HARMONY_PATH_ESCAPE',
-          `Refusing to follow a symlink outside the Harmony project: ${cursor}`,
-          { file: cursor, operation: 'resolve-path' }
+          `Refusing to follow a symlink outside the Harmony project: ${current}`,
+          { file: current, operation: 'resolve-path' }
         );
       }
     }
@@ -144,24 +141,24 @@ export async function assertNoExternalSymlink(root: string, target: string): Pro
 }
 
 export async function resolveHarmonyPath(
-  platformProjectRoot: string,
-  relativePath: string
+  directory: string,
+  relative: string
 ): Promise<string> {
-  if (typeof relativePath !== 'string' || !relativePath || path.isAbsolute(relativePath)) {
+  if (typeof relative !== 'string' || !relative || path.isAbsolute(relative)) {
     throw new HarmonyConfigPluginError(
       'ERR_HARMONY_PATH_ESCAPE',
-      `Invalid managed path: ${relativePath}`,
+      `Invalid managed path: ${relative}`,
       { operation: 'resolve-path' }
     );
   }
 
-  const root = path.resolve(platformProjectRoot);
-  const target = path.resolve(root, relativePath);
+  const root = path.resolve(directory);
+  const target = path.resolve(root, relative);
 
   if (!isInside(root, target)) {
     throw new HarmonyConfigPluginError(
       'ERR_HARMONY_PATH_ESCAPE',
-      `Managed path escapes the Harmony project: ${relativePath}`,
+      `Managed path escapes the Harmony project: ${relative}`,
       { file: target, operation: 'resolve-path' }
     );
   }
@@ -172,30 +169,25 @@ export async function resolveHarmonyPath(
 }
 
 export async function resolveProjectPath(
-  projectRoot: string,
-  modName: keyof HarmonyProjectPaths
+  root: string,
+  name: keyof HarmonyProjectPaths
 ): Promise<string> {
-  const candidates = ProjectPathCandidates[modName] || [ProjectPaths[modName]];
-  const resolved = await Promise.all(candidates.map(candidate => resolveHarmonyPath(projectRoot, candidate)));
-  const existing = resolved.filter(file => fs.existsSync(file));
-
-  if (existing.length > 1) {
-    throw new HarmonyConfigPluginError(
-      'ERR_HARMONY_CONFIG_INVALID',
-      `Multiple files provide harmony.${modName}: ${existing.map(file => path.basename(file)).join(', ')}`,
-      { file: existing[0], operation: `harmony.${modName}.read` }
-    );
+  const candidates = ProjectPathCandidates[name] || [ProjectPaths[name]];
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(root, candidate))) return resolveHarmonyPath(root, candidate);
   }
 
-  return existing[0] || resolved[0];
+  return resolveHarmonyPath(root, candidates[0]);
 }
 
-export function toPosixRelative(projectRoot: string, target: string): string {
-  return path.relative(projectRoot, target).split(path.sep).join('/');
+export function toPosixRelative(root: string, target: string): string {
+  return path.relative(root, target).split(path.sep).join('/');
 }
 
-export const HarmonyPaths: HarmonyPathsApi = {
-  HARMONY_PATHS: ManagedPaths,
+const { nativeInputsStamp: NativeInputsStampPath, ...PublicManagedPaths } = ManagedPaths;
+
+export const HarmonyPaths: Readonly<HarmonyPathsApi> = Object.freeze({
+  HARMONY_PATHS: Object.freeze(PublicManagedPaths),
   PROJECT_PATH_CANDIDATES: ProjectPathCandidates,
   PROJECT_PATHS: ProjectPaths,
   RESOURCE_PATHS: ResourcePaths,
@@ -204,6 +196,6 @@ export const HarmonyPaths: HarmonyPathsApi = {
   resolveHarmonyPath,
   resolveProjectPath,
   toPosixRelative,
-};
+});
 
-export { ManagedPaths, ProjectPathCandidates, ProjectPaths, ResourcePaths };
+export { ManagedPaths, NativeInputsStampPath, ProjectPathCandidates, ProjectPaths, ResourcePaths };

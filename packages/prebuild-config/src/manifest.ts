@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { normalizeHarmonyConfigPlugins, stableHarmonyJson } from '@expo-harmony/config-plugins';
+import { stableHarmonyJson } from '@expo-harmony/config-plugins';
+import { normalizeHarmonyConfigPlugins } from '@expo-harmony/config-plugins/internal';
 import type {
   HarmonyConfigPluginOwnership,
   NormalizedHarmonyConfig,

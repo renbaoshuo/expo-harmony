@@ -78,7 +78,6 @@ function fingerprintHarmonyNativeInputsSync(
   const files = findLocalHars(root, manifest);
 
   const hash = crypto.createHash('sha256');
-
   hash.update(`expo-harmony-native-dependencies-v${HarmonyNativeInputsFingerprintVersion}\0`);
   hash.update(Uint8Array.from(data));
   if (lock) hash.update(lock);

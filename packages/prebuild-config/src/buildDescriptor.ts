@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import { HarmonyPaths, type NormalizedHarmonyConfig } from '@expo-harmony/config-plugins';
+import { NativeInputsStampPath } from '@expo-harmony/config-plugins/internal';
 
 const BuildDescriptorSchemaVersion = 2;
 const BuildModes = Object.freeze(['debug', 'release'] as const);
@@ -106,8 +107,8 @@ function validateHarmonyBuildDescriptor(value: unknown): HarmonyBuildDescriptor 
     throw new TypeError('Harmony build descriptor contains invalid project roots.');
   }
 
-  const harmonyRoot = value.harmonyRoot;
-  const moduleRoot = value.moduleRoot;
+  const harmony = value.harmonyRoot;
+  const module = value.moduleRoot;
 
   const identity = value.identity;
 
@@ -122,8 +123,8 @@ function validateHarmonyBuildDescriptor(value: unknown): HarmonyBuildDescriptor 
   if (!isRecord(inputs)
     || !isSafeRelativePath(inputs.manifest)
     || !isSafeRelativePath(inputs.lockfile)
-    || !isStrictDescendant(harmonyRoot, inputs.manifest)
-    || !isStrictDescendant(harmonyRoot, inputs.lockfile)) {
+    || !isStrictDescendant(harmony, inputs.manifest)
+    || !isStrictDescendant(harmony, inputs.lockfile)) {
     throw new TypeError('Harmony build descriptor contains invalid native input paths.');
   }
 
@@ -131,11 +132,11 @@ function validateHarmonyBuildDescriptor(value: unknown): HarmonyBuildDescriptor 
 
   if (!isRecord(cache)
     || !isSafeRelativePath(cache.stateFile)
-    || !isStrictDescendant(moduleRoot, cache.stateFile)
+    || !isStrictDescendant(module, cache.stateFile)
     || !Array.isArray(cache.invalidationRoots)
     || cache.invalidationRoots.length === 0
     || cache.invalidationRoots.some(item => (
-      !isSafeRelativePath(item) || !isStrictDescendant(moduleRoot, item)
+      !isSafeRelativePath(item) || !isStrictDescendant(module, item)
     ))) {
     throw new TypeError('Harmony build descriptor contains invalid native cache paths.');
   }
@@ -152,8 +153,8 @@ function validateHarmonyBuildDescriptor(value: unknown): HarmonyBuildDescriptor 
 
   if (!isRecord(files)
     || [...roots, ...modules].some(field => !isSafeRelativePath(files[field]))
-    || roots.some(field => !isStrictDescendant(harmonyRoot, files[field] as string))
-    || modules.some(field => !isStrictDescendant(moduleRoot, files[field] as string))) {
+    || roots.some(field => !isStrictDescendant(harmony, files[field] as string))
+    || modules.some(field => !isStrictDescendant(module, files[field] as string))) {
     throw new TypeError('Harmony build descriptor contains invalid project file paths.');
   }
 
@@ -167,7 +168,7 @@ function validateHarmonyBuildDescriptor(value: unknown): HarmonyBuildDescriptor 
     .some(field => !isSafeRelativePath(output[field]));
 
   if (invalid
-    || !isStrictDescendant(moduleRoot, output.rawfileRoot as string)
+    || !isStrictDescendant(module, output.rawfileRoot as string)
     || !isStrictDescendant(output.rawfileRoot as string, output.bundle as string)
     || !isStrictDescendant(output.metadataRoot as string, output.sourceMap as string)) {
     throw new TypeError('Harmony build descriptor contains invalid export paths.');
@@ -182,7 +183,7 @@ function validateHarmonyBuildDescriptor(value: unknown): HarmonyBuildDescriptor 
   for (const mode of BuildModes) {
     const variant = validateVariant(value.variants[mode]);
 
-    if (!isStrictDescendant(moduleRoot, variant.expectedHap)) {
+    if (!isStrictDescendant(module, variant.expectedHap)) {
       throw new TypeError(`Harmony ${mode} HAP output must be inside the module root.`);
     }
   }
@@ -242,7 +243,7 @@ function createHarmonyBuildDescriptor(
       hvigorConfig: `${harmony}/${paths.hvigorConfig}`,
       moduleHvigor: `${harmony}/${paths.entryHvigor}`,
       moduleJson: `${harmony}/${paths.moduleJson}`,
-      nativeInputsStamp: `${harmony}/${paths.nativeInputsStamp}`,
+      nativeInputsStamp: `${harmony}/${NativeInputsStampPath}`,
       projectBuildProfile: `${harmony}/${paths.projectBuildProfile}`,
       rootHvigor: `${harmony}/${paths.rootHvigor}`,
       templateMarker: `${harmony}/${HarmonyTemplateMarker}`,

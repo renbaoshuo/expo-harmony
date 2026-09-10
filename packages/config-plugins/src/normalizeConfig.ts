@@ -6,6 +6,7 @@ import type {
   HarmonySkill,
 } from './config';
 import { HarmonyConfigPluginError } from './errors';
+import { toArgb } from './resources';
 
 type HarmonyExpoConfig = ExpoConfigWithHarmony;
 
@@ -32,10 +33,10 @@ interface NormalizedHarmonyConfig {
   versionName: string;
 }
 
-const BundleNamePattern = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*){2,}$/;
+const BundlePattern = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*){2,}$/;
 const IdentifierPattern = /^[A-Za-z][A-Za-z0-9_]*$/;
 const ColorPattern = /^(#[0-9A-Fa-f]{6}|#[0-9A-Fa-f]{8})$/;
-const ValidOrientations = new Set([
+const Orientations = new Set([
   'default',
   'portrait',
   'landscape',
@@ -43,11 +44,10 @@ const ValidOrientations = new Set([
   'landscape_inverted',
   'auto_rotation',
 ]);
-const ValidDeviceTypes = new Set<HarmonyDeviceType>(['phone', 'tablet', '2in1']);
-const SupportedMinimumHarmonyApi = 13;
-const DefaultHarmonyCompatibleApi = SupportedMinimumHarmonyApi;
-const DefaultHarmonyTargetApi = 24;
-const HarmonySdkVersions = new Map([
+const DeviceTypes = new Set<HarmonyDeviceType>(['phone', 'tablet', '2in1']);
+const MinimumApi = 13;
+const TargetApi = 24;
+const SdkVersions = new Map([
   [13, '5.0.1(13)'],
   [14, '5.0.2(14)'],
   [20, '6.0.0(20)'],
@@ -93,11 +93,7 @@ function normalizeColor(value: unknown, field: string, fallback: string): string
     throw new HarmonyConfigError(`${field} must be #RRGGBB or #RRGGBBAA.`);
   }
 
-  const result = color.toUpperCase();
-
-  return result.length === 9
-    ? `#${result.slice(7, 9)}${result.slice(1, 7)}`
-    : result;
+  return toArgb(color);
 }
 
 function parseSdkApi(value: unknown, field: string): number | null {
@@ -129,11 +125,11 @@ function resolveSdkVersion(api: number, field: string, value?: unknown): string 
       }
     } else {
       const version = readString(value, `harmony.${field}`);
-      const versionApi = parseSdkApi(version, field);
+      const parsed = parseSdkApi(version, field);
 
-      if (versionApi !== api) {
+      if (parsed !== api) {
         throw new HarmonyConfigError(
-          `harmony.${field} describes API ${versionApi}, but the configured API level is ${api}.`
+          `harmony.${field} describes API ${parsed}, but the configured API level is ${api}.`
         );
       }
 
@@ -141,7 +137,7 @@ function resolveSdkVersion(api: number, field: string, value?: unknown): string 
     }
   }
 
-  const version = HarmonySdkVersions.get(api);
+  const version = SdkVersions.get(api);
 
   if (!version) {
     throw new HarmonyConfigError(
@@ -173,7 +169,7 @@ function normalizeStringArray<T extends string = string>(
   return result;
 }
 
-function normalizePermission(permission: HarmonyPermission) {
+export function normalizePermission(permission: HarmonyPermission) {
   if (!permission || typeof permission !== 'object') {
     throw new HarmonyConfigError('harmony.permissions entries must be objects.');
   }
@@ -198,6 +194,7 @@ function normalizePermission(permission: HarmonyPermission) {
     if (!permission.usedScene || typeof permission.usedScene !== 'object') {
       throw new HarmonyConfigError('permission.usedScene must be an object.');
     }
+
     const when: 'always' | 'inuse' = permission.usedScene.when === undefined
       ? 'inuse'
       : permission.usedScene.when;
@@ -223,7 +220,7 @@ function normalizeSkill(skill: HarmonySkill) {
   const result: {
     actions?: string[];
     entities?: string[];
-    uris?: Array<Record<string, string>>;
+    uris?: HarmonySkill['uris'];
   } = {};
 
   for (const field of ['entities', 'actions'] as const) {
@@ -240,9 +237,11 @@ function normalizeSkill(skill: HarmonySkill) {
         throw new HarmonyConfigError('Harmony skill URI must be an object.');
       }
 
-      const result: Record<string, string> = {};
+      const result: NonNullable<HarmonySkill['uris']>[number] = {};
       for (const [key, value] of Object.entries(uri)) {
-        result[key] = readString(value, `harmony.skills[].uris[].${key}`);
+        result[key] = typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))
+          ? value
+          : readString(value, `harmony.skills[].uris[].${key}`);
       }
 
       return result;
@@ -268,56 +267,51 @@ function normalizeHarmonyConfig(config: HarmonyExpoConfig): NormalizedHarmonyCon
     throw new HarmonyConfigError('Expo config must contain a harmony object.');
   }
 
-  const bundleName = readString(harmony.bundleName, 'harmony.bundleName');
-
-  if (!BundleNamePattern.test(bundleName)) {
+  const bundle = readString(harmony.bundleName, 'harmony.bundleName');
+  if (!BundlePattern.test(bundle)) {
     throw new HarmonyConfigError(
       'harmony.bundleName must contain at least three valid dot-separated segments.'
     );
   }
 
-  const moduleName = readString(harmony.moduleName, 'harmony.moduleName', 'entry');
-  const abilityName = readString(harmony.abilityName, 'harmony.abilityName', 'EntryAbility');
-
-  if (!IdentifierPattern.test(moduleName)) {
+  const module = readString(harmony.moduleName, 'harmony.moduleName', 'entry');
+  const ability = readString(harmony.abilityName, 'harmony.abilityName', 'EntryAbility');
+  if (!IdentifierPattern.test(module)) {
     throw new HarmonyConfigError('harmony.moduleName must be a valid Harmony identifier.');
   }
-  if (!IdentifierPattern.test(abilityName)) {
+  if (!IdentifierPattern.test(ability)) {
     throw new HarmonyConfigError('harmony.abilityName must be a valid Harmony identifier.');
   }
 
-  const versionName = readString(harmony.versionName, 'harmony.versionName', config.version || '1.0.0');
-  const versionCode = readPositiveInteger(harmony.versionCode, 'versionCode', 1);
-  const targetSdkApi = parseSdkApi(harmony.targetSdkVersion, 'targetSdkVersion');
-  const targetApi = readPositiveInteger(
+  const version = readString(harmony.versionName, 'harmony.versionName', config.version || '1.0.0');
+  const code = readPositiveInteger(harmony.versionCode, 'versionCode', 1);
+
+  const target = readPositiveInteger(
     harmony.targetApiVersion,
     'targetApiVersion',
-    targetSdkApi ?? DefaultHarmonyTargetApi
+    parseSdkApi(harmony.targetSdkVersion, 'targetSdkVersion') ?? TargetApi
   );
-  const compatibleSdkApi = parseSdkApi(harmony.compatibleSdkVersion, 'compatibleSdkVersion');
-  const compatibleApi = readPositiveInteger(
-    compatibleSdkApi ?? undefined,
+  const compatible = readPositiveInteger(
+    parseSdkApi(harmony.compatibleSdkVersion, 'compatibleSdkVersion') ?? undefined,
     'compatibleSdkVersion',
-    DefaultHarmonyCompatibleApi
+    MinimumApi
   );
 
-  if (compatibleApi < SupportedMinimumHarmonyApi) {
+  if (compatible < MinimumApi) {
     throw new HarmonyConfigError(
-      `Harmony compatible API must be ${SupportedMinimumHarmonyApi} or newer.`
+      `Harmony compatible API must be ${MinimumApi} or newer.`
     );
   }
-  if (compatibleApi > targetApi) {
+  if (compatible > target) {
     throw new HarmonyConfigError('Harmony compatibleSdkVersion cannot exceed targetApiVersion.');
   }
 
   const orientation = harmony.orientation || config.orientation || 'default';
-
-  if (!ValidOrientations.has(orientation)) {
+  if (!Orientations.has(orientation)) {
     throw new HarmonyConfigError(`Unsupported Harmony orientation: ${orientation}`);
   }
 
   const style = harmony.userInterfaceStyle || config.userInterfaceStyle || 'light';
-
   if (!['light', 'dark', 'automatic'].includes(style)) {
     throw new HarmonyConfigError(`Unsupported Harmony UI style: ${style}`);
   }
@@ -327,8 +321,8 @@ function normalizeHarmonyConfig(config: HarmonyExpoConfig): NormalizedHarmonyCon
     'harmony.backgroundColor',
     '#FFFFFF'
   );
-  const engine = harmony.jsEngine || 'hermes';
 
+  const engine = harmony.jsEngine || 'hermes';
   if (engine !== 'hermes') {
     throw new HarmonyConfigError('Expo Harmony currently supports only the Hermes JavaScript engine.');
   }
@@ -361,6 +355,7 @@ function normalizeHarmonyConfig(config: HarmonyExpoConfig): NormalizedHarmonyCon
   }
 
   skills = [...new Map(skills.map(skill => [JSON.stringify(skill), skill])).values()];
+
   const queries = [...new Set([
     'http',
     'https',
@@ -380,40 +375,40 @@ function normalizeHarmonyConfig(config: HarmonyExpoConfig): NormalizedHarmonyCon
     : normalizeStringArray<HarmonyDeviceType>(
         harmony.deviceTypes,
         'harmony.deviceTypes',
-        ValidDeviceTypes
+        DeviceTypes
       );
 
   return Object.freeze({
     abiFilters: abis,
-    abilityName,
+    abilityName: ability,
     backgroundColor: background,
-    bundleName,
+    bundleName: bundle,
     compatibleSdkVersionString: resolveSdkVersion(
-      compatibleApi,
+      compatible,
       'compatibleSdkVersion',
       harmony.compatibleSdkVersion
     ),
     deviceTypes: devices,
     icon: harmony.icon || config.icon,
     label: readString(harmony.label, 'harmony.label', config.name),
-    moduleName,
+    moduleName: module,
     nativeOrientation: orientation === 'default' ? 'unspecified' : orientation,
     permissions,
     productName: readString(harmony.productName, 'harmony.productName', 'default'),
     querySchemes: queries,
     signingConfigFile: signing,
     skills,
-    targetApiVersion: targetApi,
+    targetApiVersion: target,
     targetSdkVersionString: resolveSdkVersion(
-      targetApi,
+      target,
       'targetSdkVersion',
       harmony.targetSdkVersion
     ),
     vendor: readString(harmony.vendor, 'harmony.vendor', 'expo-harmony'),
-    versionCode,
-    versionName,
+    versionCode: code,
+    versionName: version,
   });
 }
 
-export { HarmonySdkVersions, normalizeHarmonyConfig };
+export { normalizeHarmonyConfig };
 export type { HarmonyExpoConfig, NormalizedHarmonyConfig };

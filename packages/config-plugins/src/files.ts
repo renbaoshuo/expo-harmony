@@ -21,7 +21,7 @@ export function stableJson(value: unknown): string {
   return `${JSON.stringify(sortValue(value), null, 2)}\n`;
 }
 
-export async function readJson5<T>(file: string, fallback: T, modName: string): Promise<T> {
+export async function readJson5<T>(file: string, fallback: T, name: string): Promise<T> {
   try {
     const source = await fs.promises.readFile(file, 'utf8');
 
@@ -31,8 +31,8 @@ export async function readJson5<T>(file: string, fallback: T, modName: string): 
 
     throw new HarmonyConfigPluginError(
       'ERR_HARMONY_JSON5_INVALID',
-      `Cannot parse ${file} for harmony.${modName}: ${(cause as Error).message}`,
-      { cause, file, operation: `harmony.${modName}.read` }
+      `Cannot parse ${file} for harmony.${name}: ${(cause as Error).message}`,
+      { cause, file, operation: `harmony.${name}.read` }
     );
   }
 }
@@ -74,6 +74,5 @@ export async function writeJson5(file: string, value: unknown): Promise<void> {
 
 export async function sha256File(file: string): Promise<string> {
   const data = Uint8Array.from(await fs.promises.readFile(file));
-
   return crypto.createHash('sha256').update(data).digest('hex');
 }

@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  getHarmonyConfigPlugins,
   recordManagedFile,
   withHarmonyDangerousMod,
 } from '@expo-harmony/config-plugins';
+import { getHarmonyConfigPlugins } from '@expo-harmony/config-plugins/internal';
 
 import { createHarmonyBuildDescriptor } from '../buildDescriptor';
 import { HarmonyPrebuildError } from '../errors';

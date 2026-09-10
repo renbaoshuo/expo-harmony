@@ -1,4 +1,10 @@
 export { defineExpoHarmonyConfig } from './config';
+export { createRunOncePlugin, withPlugins, withRunOnce, withStaticPlugin } from './composition';
+export type { HarmonyPluginReference, HarmonyStaticPlugin } from './composition';
+export { compileHarmonyModsAsync } from './compiler';
+export type { HarmonyCompileOptions } from './compiler';
+export { createHarmonyFileMod, withHarmonyJsonFile } from './customFiles';
+export type { HarmonyFileModOptions, HarmonyJsonFileOptions } from './customFiles';
 export type {
   ExpoConfigWithHarmony,
   ExpoHarmonyPlatform,
@@ -11,10 +17,12 @@ export type {
   HarmonyPermission,
   HarmonyPlatform,
   HarmonySkill,
+  HarmonySkillUri,
 } from './config';
 export { HarmonyConfigPluginError } from './errors';
+export type { HarmonyConfigPluginErrorOptions } from './errors';
 export { atomicWrite, stableJson as stableHarmonyJson } from './files';
-export { HarmonySdkVersions, normalizeHarmonyConfig } from './normalizeConfig';
+export { normalizeHarmonyConfig } from './normalizeConfig';
 export type { HarmonyExpoConfig, NormalizedHarmonyConfig } from './normalizeConfig';
 export {
   HarmonyModNames as HARMONY_MOD_NAMES,
@@ -22,7 +30,6 @@ export {
   withAppJson,
   withArkTSPackageProvider,
   withCMakeLists,
-  withCngManifest,
   withColors,
   withCppPackageProvider,
   withEntryAbility,
@@ -38,7 +45,6 @@ export {
   withIndexPage,
   withMedia,
   withModuleJson,
-  withNativeInputsStamp,
   withProfiles,
   withProjectBuildProfile,
   withReactNativeConfig,
@@ -51,15 +57,10 @@ export type {
   HarmonyJson,
   HarmonyMediaDescriptor,
   HarmonyMediaMap,
-  HarmonyModAction,
   HarmonyModName,
   HarmonyResourceMap,
 } from './mods';
-export {
-  getHarmonyConfigPlugins,
-  normalizeHarmonyConfigPlugins,
-  registerHarmonyConfigPlugin,
-} from './ownership';
+export { registerHarmonyConfigPlugin } from './ownership';
 export type { HarmonyConfigPluginOwnership } from './ownership';
 export { HarmonyPaths } from './paths';
 export type {
@@ -69,3 +70,12 @@ export type {
   HarmonyProjectPaths,
   HarmonyResourcePaths,
 } from './paths';
+
+export type { HarmonyConfigPlugin, HarmonyModAction, HarmonyModConfig } from './pluginTypes';
+export * as HarmonyManifest from './manifest';
+export * as HarmonyResources from './resources';
+export type { HarmonyAbility, HarmonyExtensionAbility, HarmonyMetadata, HarmonyModule, HarmonyModuleJson } from './manifest';
+export type { HarmonyResourceFile, HarmonyResourceItem } from './resources';
+export { withHarmonyGeneratedFiles, withRawfile } from './generatedFiles';
+export type { HarmonyFileDescriptor, HarmonyFileMap, HarmonyGeneratedFilesOptions } from './generatedFiles';
+export { HarmonyPermissions, withHarmonyPermissions } from './permissions';

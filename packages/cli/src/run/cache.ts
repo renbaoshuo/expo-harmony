@@ -4,7 +4,7 @@ import path from 'node:path';
 import {
   HarmonyNativeInputsFingerprintVersion,
   fingerprintHarmonyNativeInputsSync,
-} from '@expo-harmony/config-plugins/native-inputs';
+} from '@expo-harmony/config-plugins/internal/native-inputs';
 
 import { HarmonyCliError } from '../errors';
 import type { HarmonyBuildPlan } from '../tools';
@@ -17,13 +17,14 @@ export interface HarmonyNativeBuildCacheState {
   fingerprintVersion: number;
 }
 
-const CacheSchemaVersion = 1;
+const SchemaVersion = 1;
 
 async function readOptionalFile(file) {
   try {
     return await fs.promises.readFile(file);
   } catch (error) {
     if (error?.code === 'ENOENT') return null;
+
     throw new HarmonyCliError(
       error.code || 'ERR_HARMONY_NATIVE_CACHE',
       error.message || `Cannot read a Harmony native cache input: ${file}`,
@@ -33,14 +34,14 @@ async function readOptionalFile(file) {
 }
 
 async function resolveNativeDependencyFingerprintAsync(
-  projectRoot: string,
+  root: string,
   plan: HarmonyBuildPlan
 ) {
   try {
     return fingerprintHarmonyNativeInputsSync({
       lockfile: plan.nativeInputs.lockfile,
       manifest: plan.nativeInputs.manifest,
-      projectRoot,
+      projectRoot: root,
     });
   } catch (cause) {
     throw new HarmonyCliError(
@@ -52,10 +53,10 @@ async function resolveNativeDependencyFingerprintAsync(
 }
 
 async function prepareHarmonyNativeBuildCacheAsync(
-  projectRoot: string,
+  root: string,
   plan: HarmonyBuildPlan
 ): Promise<HarmonyNativeBuildCacheState> {
-  const current = await resolveNativeDependencyFingerprintAsync(projectRoot, plan);
+  const current = await resolveNativeDependencyFingerprintAsync(root, plan);
   const file = plan.nativeCache.stateFile;
   const source = await readOptionalFile(file);
   let saved = null;
@@ -68,7 +69,7 @@ async function prepareHarmonyNativeBuildCacheAsync(
     }
   }
 
-  const changed = saved?.schemaVersion !== CacheSchemaVersion
+  const changed = saved?.schemaVersion !== SchemaVersion
     || saved?.fingerprintVersion !== HarmonyNativeInputsFingerprintVersion
     || saved?.fingerprint !== current.fingerprint;
 
@@ -94,7 +95,7 @@ async function commitHarmonyNativeBuildCacheAsync(state: HarmonyNativeBuildCache
     artifactCount: state.artifactCount,
     fingerprint: state.fingerprint,
     fingerprintVersion: state.fingerprintVersion,
-    schemaVersion: CacheSchemaVersion,
+    schemaVersion: SchemaVersion,
   }, null, 2)}\n`);
   await fs.promises.rename(temp, state.cacheFile);
 }

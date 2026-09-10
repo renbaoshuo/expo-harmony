@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  getHarmonyConfigPlugins,
   HarmonyPaths,
   withColors,
   withEntryBuildProfile,
@@ -13,6 +12,7 @@ import {
   withProfiles,
   withStrings,
 } from '@expo-harmony/config-plugins';
+import { getHarmonyConfigPlugins } from '@expo-harmony/config-plugins/internal';
 
 import {
   createHarmonyBuildDescriptor,

@@ -18,10 +18,12 @@ export interface HarmonyPermission {
   usedScene?: { abilities?: string[]; when?: 'inuse' | 'always' };
 }
 
+export type HarmonySkillUri = Record<string, string | number | boolean>;
+
 export interface HarmonySkill {
   entities?: string[];
   actions?: string[];
-  uris?: Array<Record<string, string>>;
+  uris?: HarmonySkillUri[];
 }
 
 export interface HarmonyFontDefinition {
@@ -46,14 +48,11 @@ export interface HarmonyConfig {
   versionCode?: number;
   versionName?: string;
   targetApiVersion?: number;
-  /** Harmony SDK label written to build-profile.json5, e.g. 6.0.0(20). Its API must match targetApiVersion. */
   targetSdkVersion?: number | string;
-  /** API number, or a full Harmony SDK label ending in the API number. */
   compatibleSdkVersion?: number | string;
   deviceTypes?: HarmonyDeviceType[];
   permissions?: HarmonyPermission[];
   skills?: HarmonySkill[];
-  /** URL schemes the app may inspect with Linking.canOpenURL. http, https, and expo.scheme are added automatically. */
   querySchemes?: string[];
   icon?: string;
   label?: string;
@@ -63,7 +62,6 @@ export interface HarmonyConfig {
   jsEngine?: 'hermes';
   abiFilters?: string[];
   signingConfigFile?: string;
-  /** Fonts bundled when the `@expo-harmony/expo-font` config plugin is registered. */
   fonts?: HarmonyFont[];
 }
 

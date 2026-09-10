@@ -3,12 +3,11 @@ import path from 'node:path';
 
 import { linkModulesAsync } from '@expo-harmony/expo-modules-autolinking';
 import {
-  getHarmonyConfigPlugins,
   recordManagedFile,
   stableHarmonyJson,
-  withCngManifest,
   withHarmonyAutolinking,
 } from '@expo-harmony/config-plugins';
+import { getHarmonyConfigPlugins, withCngManifest } from '@expo-harmony/config-plugins/internal';
 
 import { HarmonyPrebuildError } from '../errors';
 import {
