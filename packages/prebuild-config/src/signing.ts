@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
+import { HarmonyPaths } from '@expo-harmony/config-plugins';
 import JSON5 from 'json5';
 
 import { HarmonyPlatformDirectory } from './buildDescriptor';
@@ -30,11 +31,6 @@ interface HarmonySigningConfig {
   materialFiles: Partial<Record<'certpath' | 'profile' | 'storeFile', string>>;
   name: string;
   type: 'HarmonyOS';
-}
-
-function isInside(root, target) {
-  const relative = path.relative(root, target);
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
 function mirrorAbsolutePath(temp, source) {
@@ -83,9 +79,16 @@ function selectSigningConfig(parsed, file) {
 
 async function readSigningConfigFile(root: string, reference: string): Promise<SigningFile> {
   const file = resolveSigningPath(root, reference);
-  const harmony = path.join(root, HarmonyPlatformDirectory);
+  const native = path.resolve(root, HarmonyPlatformDirectory);
+  const harmony = await fs.realpath(native).catch((cause) => {
+    if (cause.code === 'ENOENT') return native;
 
-  if (isInside(harmony, file)) {
+    throw new HarmonyPrebuildError('ERR_HARMONY_SIGNING_INVALID', 'Cannot resolve the generated Harmony directory.', {
+      cause, file: native, operation: 'validate-signing',
+    });
+  });
+
+  if (HarmonyPaths.isInside(harmony, file)) {
     throw new HarmonyPrebuildError(
       'ERR_HARMONY_SIGNING_INVALID',
       'harmony.signingConfigFile must be outside the generated harmony directory so --clean cannot delete it.',
@@ -105,13 +108,19 @@ async function readSigningConfigFile(root: string, reference: string): Promise<S
       );
     }
 
+    if (HarmonyPaths.isInside(harmony, await fs.realpath(file))) {
+      throw new HarmonyPrebuildError(
+        'ERR_HARMONY_SIGNING_INVALID',
+        'harmony.signingConfigFile must not resolve into the generated harmony directory.',
+        { file, operation: 'validate-signing' }
+      );
+    }
+
     content = await fs.readFile(file, 'utf8');
   } catch (cause) {
-    if (cause?.code === 'ERR_HARMONY_SIGNING_INVALID') return Promise.reject(cause);
-
     throw new HarmonyPrebuildError(
       'ERR_HARMONY_SIGNING_INVALID',
-      'Cannot read harmony.signingConfigFile.',
+      cause.code === 'ERR_HARMONY_SIGNING_INVALID' ? cause.message : 'Cannot read harmony.signingConfigFile.',
       { cause, file, operation: 'validate-signing' }
     );
   }
@@ -168,7 +177,7 @@ async function readSigningConfigFile(root: string, reference: string): Promise<S
     if (MaterialPathFields.has(field)) {
       const resolved = resolveSigningPath(path.dirname(file), value);
 
-      if (isInside(harmony, resolved)) {
+      if (HarmonyPaths.isInside(harmony, resolved)) {
         throw new HarmonyPrebuildError(
           'ERR_HARMONY_SIGNING_INVALID',
           `Harmony signing material field ${field} must be outside the generated harmony directory so --clean cannot delete it.`,
@@ -185,17 +194,25 @@ async function readSigningConfigFile(root: string, reference: string): Promise<S
             { file, operation: 'validate-signing' }
           );
         }
-      } catch (cause) {
-        if (cause?.code === 'ERR_HARMONY_SIGNING_INVALID') return Promise.reject(cause);
 
+        if (HarmonyPaths.isInside(harmony, await fs.realpath(resolved))) {
+          throw new HarmonyPrebuildError(
+            'ERR_HARMONY_SIGNING_INVALID',
+            `Harmony signing material field ${field} must not resolve into the generated harmony directory.`,
+            { file, operation: 'validate-signing' }
+          );
+        }
+      } catch (cause) {
         throw new HarmonyPrebuildError(
           'ERR_HARMONY_SIGNING_INVALID',
-          `Cannot read the file referenced by Harmony signing material field ${field}.`,
+          cause.code === 'ERR_HARMONY_SIGNING_INVALID'
+            ? cause.message
+            : `Cannot read the file referenced by Harmony signing material field ${field}.`,
           { cause, file, operation: 'validate-signing' }
         );
       }
 
-      const relative = path.relative(harmony, resolved);
+      const relative = path.relative(native, resolved);
 
       if (!relative || path.isAbsolute(relative)) {
         throw new HarmonyPrebuildError(
@@ -242,7 +259,6 @@ async function validateHarmonySigningConfigFile(root: string, reference: string)
 }
 
 export {
-  MaterialFields,
   readSigningConfigFile,
   validateHarmonySigningConfigFile,
 };

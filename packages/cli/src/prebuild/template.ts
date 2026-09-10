@@ -19,11 +19,11 @@ function resolve(project: string) {
   let api: Api;
 
   try {
-    api = load('@expo-harmony/prebuild-config/template');
+    api = load('@expo-harmony/prebuild-config/internal/template');
   } catch (cause) {
     throw new HarmonyCliError(
       'ERR_HARMONY_TEMPLATE_INVALID',
-      'Cannot load @expo-harmony/prebuild-config/template from the project. Update the project-local prebuild config to a compatible version.',
+      'Cannot load @expo-harmony/prebuild-config/internal/template from the project. Update the project-local prebuild config to a compatible version.',
       { cause, operation: 'resolve-template' }
     );
   }

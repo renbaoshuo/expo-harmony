@@ -5,7 +5,7 @@ import path from 'node:path';
 import {
   compareAsync,
   stageAsync,
-} from '@expo-harmony/prebuild-config/check';
+} from '@expo-harmony/prebuild-config/internal';
 
 import { HarmonyCliError } from '../errors';
 import { isInside } from '../path';
@@ -15,7 +15,7 @@ import { createHarmonyToolchainEnv, resolveHarmonyBuildPlanAsync, type HarmonyBu
 import { resolveExpoCli } from '../expo';
 import { packAsync } from './template';
 
-export type { Change as CheckChange } from '@expo-harmony/prebuild-config/check';
+export type { Change as CheckChange } from '@expo-harmony/prebuild-config/internal';
 
 const IgnoredProjectDirectories = new Set(['.expo', '.git', '.hvigor', '.yarn', 'node_modules']);
 const IgnoredHarmonyGeneratedDirectories = new Set([

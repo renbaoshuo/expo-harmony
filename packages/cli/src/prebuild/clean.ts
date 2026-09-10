@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { HarmonyPlatformDirectory } from '@expo-harmony/prebuild-config/build-descriptor';
+import { HarmonyPlatformDirectory } from '@expo-harmony/prebuild-config/internal';
 
 import { HarmonyCliError } from '../errors';
 import { isInside } from '../path';

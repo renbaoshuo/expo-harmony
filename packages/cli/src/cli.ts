@@ -81,9 +81,9 @@ function parseInvocation(argv: string[]): Invocation {
               : parseRunArgs(argv.slice(1));
   if (parsed.help) return { command: 'help' };
 
-  const projectRoot = resolveProject(parsed.project ? path.resolve(parsed.project) : process.cwd());
+  const root = resolveProject(parsed.project ? path.resolve(parsed.project) : process.cwd());
 
-  return { command, parsed, projectRoot } as Invocation;
+  return { command, parsed, projectRoot: root } as Invocation;
 }
 
 async function runAsync(

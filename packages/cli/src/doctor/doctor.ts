@@ -5,8 +5,7 @@ import path from 'node:path';
 import { getConfig } from '@expo/config';
 import { normalizeHarmonyConfig } from '@expo-harmony/config-plugins';
 import { verifyModulesAsync } from '@expo-harmony/expo-modules-autolinking';
-import { isRnohAutolinkingDisabled } from '@expo-harmony/prebuild-config/native-project';
-import { validateHarmonySigningConfigFile } from '@expo-harmony/prebuild-config/signing';
+import { isRnohAutolinkingDisabled, validateHarmonySigningConfigFile } from '@expo-harmony/prebuild-config/internal';
 
 import { spawnAsync } from '../process';
 import { withHarmonyProjectLockAsync } from '../projectLock';

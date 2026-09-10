@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import {
-  withAppJson,
+  normalizeHarmonyConfig, withAppJson,
   withHvigorConfig,
   withProjectBuildProfile,
   withReactNativeConfig,
@@ -43,16 +43,11 @@ async function loadReactNativeConfigAsync(root, file) {
   }
 }
 
-export function withProjectMods(config, harmony) {
+export function withProjectMods(config) {
   config = withReactNativeConfig(config, async (mod) => {
-    const root = mod.modRequest.projectRoot;
-    const request = mod.modRequest as typeof mod.modRequest & {
-      modFile: string;
-      modFileExists: boolean;
-    };
-    const file = request.modFile;
+    const { projectRoot: root, modFile: file, modFileExists: exists } = mod.modRequest;
 
-    if (request.modFileExists) {
+    if (exists) {
       if (!hasRnohLinkCommand(await loadReactNativeConfigAsync(root, file))) {
         throw new HarmonyPrebuildError(
           'ERR_HARMONY_CONFIG_INVALID',
@@ -70,6 +65,7 @@ export function withProjectMods(config, harmony) {
   });
 
   config = withAppJson(config, (mod) => {
+    const harmony = normalizeHarmonyConfig(mod.modRawConfig);
     const app = mod.modResults.app && typeof mod.modResults.app === 'object'
       ? mod.modResults.app
       : {};
@@ -91,6 +87,7 @@ export function withProjectMods(config, harmony) {
   });
 
   config = withProjectBuildProfile(config, (mod) => {
+    const harmony = normalizeHarmonyConfig(mod.modRawConfig);
     const build = createHarmonyBuildDescriptor(
       harmony,
       mod._internal?.harmonySigningConfig?.name ?? null
@@ -185,6 +182,7 @@ export function withProjectMods(config, harmony) {
   });
 
   config = withRootOhPackage(config, (mod) => {
+    const harmony = normalizeHarmonyConfig(mod.modRawConfig);
     const version = resolvePackageVersion(
       mod.modRequest.projectRoot,
       '@react-native-oh/react-native-harmony'
@@ -211,6 +209,7 @@ export function withProjectMods(config, harmony) {
   });
 
   config = withRootHvigor(config, async (mod) => {
+    const harmony = normalizeHarmonyConfig(mod.modRawConfig);
     const build = createHarmonyBuildDescriptor(
       harmony,
       mod._internal?.harmonySigningConfig?.name ?? null
@@ -224,6 +223,7 @@ export function withProjectMods(config, harmony) {
   });
 
   config = withNativeInputsStamp(config, async (mod) => {
+    const harmony = normalizeHarmonyConfig(mod.modRawConfig);
     const build = createHarmonyBuildDescriptor(harmony, mod._internal?.harmonySigningConfig?.name ?? null);
     const relative = path.posix.relative(build.harmonyRoot, build.projectFiles.nativeInputsStamp);
     const source = await readTemplateSource(relative);
@@ -234,6 +234,7 @@ export function withProjectMods(config, harmony) {
   });
 
   config = withHvigorConfig(config, (mod) => {
+    const harmony = normalizeHarmonyConfig(mod.modRawConfig);
     const root = mod.modRequest.projectRoot;
     const build = createHarmonyBuildDescriptor(harmony, mod._internal?.harmonySigningConfig?.name ?? null);
     const directory = path.dirname(resolveHarmonyBuildPath(root, build.projectFiles.hvigorConfig));

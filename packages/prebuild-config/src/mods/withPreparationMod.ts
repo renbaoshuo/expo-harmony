@@ -1,31 +1,29 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import {
-  recordManagedFile,
-  withHarmonyDangerousMod,
-} from '@expo-harmony/config-plugins';
-import { getHarmonyConfigPlugins } from '@expo-harmony/config-plugins/internal';
+import { normalizeHarmonyConfig, recordManagedFile, withHarmonyDangerousMod } from '@expo-harmony/config-plugins';
+import { getHarmonyConfigPlugins, withPreparation } from '@expo-harmony/config-plugins/internal';
 
-import { createHarmonyBuildDescriptor } from '../buildDescriptor';
 import { HarmonyPrebuildError } from '../errors';
-import { ensureGitignoreEntryAsync } from '../generatedFiles';
 import { readSigningConfigFile } from '../signing';
+import { resolve as resolveTemplate } from '../template';
 import {
   findStaleConfigPlugins,
   readPreviousCngManifestAsync,
   removeStalePluginFilesAsync,
 } from '../stale';
 
-function withPreparationMod(config, harmony) {
-  return withHarmonyDangerousMod(config, async (mod) => {
+function withPreparationMod(config) {
+  const prepare = async (mod) => {
+    const harmony = normalizeHarmonyConfig(mod.modRawConfig);
     const root = mod.modRequest.projectRoot;
     const platform = mod.modRequest.platformProjectRoot;
-    const manifest = await readPreviousCngManifestAsync(root);
+    const manifest = mod.modRequest.ignoreExistingNativeFiles ? null : await readPreviousCngManifestAsync(root);
     const plugins = getHarmonyConfigPlugins(mod);
     const stale = findStaleConfigPlugins(manifest, plugins);
 
     mod._internal ??= {};
+    if (mod.modRequest.introspect) mod._internal.harmonyTemplateDirectory = path.join(resolveTemplate().root, 'harmony');
     mod._internal.harmonyPreviousSigningConfigName
       = typeof manifest?.signingConfigName === 'string'
         ? manifest.signingConfigName
@@ -37,7 +35,16 @@ function withPreparationMod(config, harmony) {
     mod._internal.harmonyConfigPlugins = plugins;
     mod._internal.harmonyStaleConfigPlugins = stale;
 
-    mod._internal.harmonyStalePluginFiles = await removeStalePluginFilesAsync(root, manifest, stale);
+    mod._internal.harmonyStalePluginFiles = await removeStalePluginFilesAsync(
+      root, manifest, stale, plugins, mod.modRequest.introspect
+    );
+
+    if (harmony.signingConfigFile) {
+      const signing = await readSigningConfigFile(root, harmony.signingConfigFile);
+      mod._internal.harmonySigningConfig = signing.config;
+    }
+
+    if (mod.modRequest.introspect) return mod;
 
     const packed = path.join(platform, 'gitignore');
     const gitignore = path.join(platform, '.gitignore');
@@ -63,23 +70,14 @@ function withPreparationMod(config, harmony) {
       }
     }
 
-    const build = createHarmonyBuildDescriptor(harmony, null);
-    const profile = path.posix.relative(build.harmonyRoot, build.projectFiles.projectBuildProfile);
-
-    await ensureGitignoreEntryAsync(gitignore, `/${profile}`);
     recordManagedFile(mod, gitignore, 'dangerous');
 
-    if (harmony.signingConfigFile) {
-      const signing = await readSigningConfigFile(
-        root,
-        harmony.signingConfigFile
-      );
-
-      mod._internal.harmonySigningConfig = signing.config;
-    }
-
     return mod;
-  });
+  };
+
+  config = withHarmonyDangerousMod(config, prepare);
+
+  return withPreparation(config, mod => mod.modRequest.introspect ? prepare(mod) : mod);
 }
 
 export { withPreparationMod };

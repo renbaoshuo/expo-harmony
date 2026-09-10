@@ -3,10 +3,10 @@ import path from 'node:path';
 import { resolveHarmonyCommand } from '@expo-harmony/expo-modules-autolinking/tool-command';
 
 import {
+  readManifestIfPresentAsync,
   resolveHarmonyBuildPath,
   type HarmonyBuildDescriptor,
-} from '@expo-harmony/prebuild-config/build-descriptor';
-import { readManifestIfPresentAsync } from '@expo-harmony/prebuild-config/check';
+} from '@expo-harmony/prebuild-config/internal';
 
 import { HarmonyCliError } from './errors';
 

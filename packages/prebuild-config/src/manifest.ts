@@ -2,12 +2,13 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-import { stableHarmonyJson } from '@expo-harmony/config-plugins';
+import { HarmonyPaths, stableHarmonyJson } from '@expo-harmony/config-plugins';
 import { normalizeHarmonyConfigPlugins } from '@expo-harmony/config-plugins/internal';
 import type {
   HarmonyConfigPluginOwnership,
   NormalizedHarmonyConfig,
 } from '@expo-harmony/config-plugins';
+import JSON5 from 'json5';
 
 import { HarmonyPrebuildError } from './errors';
 import {
@@ -250,7 +251,10 @@ async function createCngManifest(
   signing: string | null = null,
   plugins: readonly HarmonyConfigPluginOwnership[] = []
 ): Promise<CngManifest> {
-  const build = createHarmonyBuildDescriptor(config, signing);
+  const file = path.join(root, 'harmony', HarmonyPaths.HARMONY_PATHS.projectBuildProfile);
+  const profile = JSON5.parse(await fs.readFile(file, 'utf8'));
+  const product = profile.app?.products?.find(item => item.name === config.productName);
+  const build = createHarmonyBuildDescriptor(config, product?.signingConfig ?? null);
   const files = [];
 
   for (const item of managed) {
@@ -258,16 +262,29 @@ async function createCngManifest(
 
     try {
       files.push({ owner: item.owner, path: item.path, sha256: await hashFile(target) });
-    } catch (error) {
-      if (error.code !== 'ENOENT') return Promise.reject(error);
+    } catch (cause) {
+      if (cause.code !== 'ENOENT') {
+        throw new HarmonyPrebuildError(
+          cause.code || 'ERR_HARMONY_MANIFEST_INVALID',
+          cause.message || `Cannot hash managed file ${target}.`,
+          { cause, file: target, operation: 'create-manifest' }
+        );
+      }
     }
   }
 
   files.sort((left, right) => left.path.localeCompare(right.path, 'en'));
 
-  const autolinkingFile = path.join(root, '.expo/harmony/autolinking.json');
-  const autolinkingHash = await hashFile(autolinkingFile)
-    .catch(error => error.code === 'ENOENT' ? hashSha256('') : Promise.reject(error));
+  const autolinking = path.join(root, '.expo/harmony/autolinking.json');
+  const hash = await hashFile(autolinking).catch((cause) => {
+    if (cause.code === 'ENOENT') return hashSha256('');
+
+    throw new HarmonyPrebuildError(
+      cause.code || 'ERR_HARMONY_MANIFEST_INVALID',
+      cause.message || `Cannot hash autolinking manifest ${autolinking}.`,
+      { cause, file: autolinking, operation: 'create-manifest' }
+    );
+  });
 
   return validateCngManifest({
     build,
@@ -275,7 +292,7 @@ async function createCngManifest(
     configPlugins: normalizeHarmonyConfigPlugins(plugins),
     generator: { package: '@expo-harmony/prebuild-config', version: GeneratorVersion },
     inputs: {
-      autolinkingHash,
+      autolinkingHash: hash,
       configHash: hashSha256(stableHarmonyJson(config)),
     },
     managedFiles: files,

@@ -2,7 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  normalizeHarmonyConfig,
   HarmonyPaths,
+  HarmonyResources,
   withColors,
   withEntryBuildProfile,
   withEntryHvigor,
@@ -28,16 +30,6 @@ import {
 } from '../reconcile';
 import * as render from '../renderers';
 import { removeStaleExtensionAbilities, removeStaleResources } from '../stale';
-
-function setResource(items, name, value) {
-  const resources = (Array.isArray(items) ? items : [])
-    .filter(item => item?.name !== name);
-
-  resources.push({ name, value });
-  resources.sort((left, right) => left.name.localeCompare(right.name, 'en'));
-
-  return resources;
-}
 
 function replaceMediaBase(files, base, descriptor?) {
   for (const name of Object.keys(files)) {
@@ -109,8 +101,9 @@ function resolveInputFile(root, value) {
   return file;
 }
 
-function withEntryMods(config, harmony) {
+function withEntryMods(config) {
   config = withEntryBuildProfile(config, (mod) => {
+    const harmony = normalizeHarmonyConfig(mod.modRawConfig);
     const build = readRecord(mod.modResults.buildOption);
     const native = readRecord(build.externalNativeOptions);
 
@@ -140,6 +133,8 @@ function withEntryMods(config, harmony) {
   });
 
   config = withEntryOhPackage(config, (mod) => {
+    const harmony = normalizeHarmonyConfig(mod.modRawConfig);
+
     mod.modResults = {
       ...mod.modResults,
       name: harmony.moduleName,
@@ -153,6 +148,7 @@ function withEntryMods(config, harmony) {
   });
 
   config = withEntryHvigor(config, async (mod) => {
+    const harmony = normalizeHarmonyConfig(mod.modRawConfig);
     const build = createHarmonyBuildDescriptor(harmony, mod._internal?.harmonySigningConfig?.name ?? null);
     const relative = path.posix.relative(build.harmonyRoot, build.projectFiles.moduleHvigor);
 
@@ -165,6 +161,7 @@ function withEntryMods(config, harmony) {
   });
 
   config = withModuleJson(config, (mod) => {
+    const harmony = normalizeHarmonyConfig(mod.modRawConfig);
     const home = {
       entities: ['entity.system.home'],
       actions: ['action.system.home'],
@@ -238,57 +235,46 @@ function withEntryMods(config, harmony) {
   });
 
   config = withStrings(config, (mod) => {
+    const harmony = normalizeHarmonyConfig(mod.modRawConfig);
+
     mod.modResults = removeStaleResources(
       mod.modResults,
       'strings',
       mod._internal?.harmonyStaleConfigPlugins || []
     );
-    mod.modResults.app ??= {};
-    mod.modResults.entry ??= {};
+    const app = mod.modResults.app ??= {};
+    const entry = mod.modResults.entry ??= {};
 
-    mod.modResults.app.string = setResource(
-      mod.modResults.app.string,
-      'app_name',
-      harmony.label
-    );
+    HarmonyResources.setString(app, { name: 'app_name', value: harmony.label });
+    HarmonyResources.setString(entry, { name: 'expo_harmony_ability_desc', value: `${harmony.label} main ability` });
+    HarmonyResources.setString(entry, { name: 'expo_harmony_ability_label', value: harmony.label });
+    HarmonyResources.setString(entry, { name: 'expo_harmony_module_desc', value: `${harmony.label} entry module` });
 
-    let strings = mod.modResults.entry.string || [];
-
-    strings = setResource(
-      strings,
-      'expo_harmony_ability_desc',
-      `${harmony.label} main ability`
-    );
-    strings = setResource(strings, 'expo_harmony_ability_label', harmony.label);
-    strings = setResource(
-      strings,
-      'expo_harmony_module_desc',
-      `${harmony.label} entry module`
-    );
-    mod.modResults.entry.string = strings;
+    for (const file of [app, entry]) file.string.sort((left, right) => left.name.localeCompare(right.name, 'en'));
 
     return mod;
   });
 
   config = withColors(config, (mod) => {
+    const harmony = normalizeHarmonyConfig(mod.modRawConfig);
+
     mod.modResults = removeStaleResources(
       mod.modResults,
       'colors',
       mod._internal?.harmonyStaleConfigPlugins || []
     );
-    mod.modResults.entry ??= {};
+    const entry = mod.modResults.entry ??= {};
     mod.modResults.entryDark ??= {};
 
-    mod.modResults.entry.color = setResource(
-      mod.modResults.entry.color,
-      'expo_harmony_start_window_background',
-      harmony.backgroundColor
-    );
+    HarmonyResources.setColor(entry, { name: 'expo_harmony_start_window_background', value: harmony.backgroundColor });
+    entry.color.sort((left, right) => left.name.localeCompare(right.name, 'en'));
 
     return mod;
   });
 
   config = withMedia(config, (mod) => {
+    const harmony = normalizeHarmonyConfig(mod.modRawConfig);
+
     mod.modResults = removeStaleResources(
       mod.modResults,
       'media',

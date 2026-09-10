@@ -2,12 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
-import { getConfig } from '@expo/config';
-import { normalizeHarmonyConfig, stableHarmonyJson } from '@expo-harmony/config-plugins';
+import { HarmonyPaths, normalizeHarmonyConfig, stableHarmonyJson } from '@expo-harmony/config-plugins';
 import { canonicalizeAutolinkingArtifacts } from '@expo-harmony/expo-modules-autolinking';
 import JSON5 from 'json5';
 
 import { HarmonyPrebuildError } from './errors';
+import { getPrebuildConfigAsync } from './getPrebuildConfig';
 import {
   createHarmonyBuildDescriptor,
   resolveHarmonyBuildPath,
@@ -29,12 +29,6 @@ interface Result {
   changes: Change[];
   clean: boolean;
   expected: CngManifest;
-}
-
-function isInside(root: string, target: string): boolean {
-  const relative = path.relative(root, target);
-  return relative === ''
-    || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
 function mirrorPath(temp: string, source: string): string {
@@ -189,10 +183,7 @@ async function stageManifestAsync(project: string, target: string): Promise<void
     );
   }
 
-  const config = getConfig(project, {
-    isModdedConfig: true,
-    skipSDKVersionRequirement: true,
-  }).exp;
+  const { exp: config } = await getPrebuildConfigAsync(project);
 
   const harmony = normalizeHarmonyConfig(config);
   const hash = hashSha256(stableHarmonyJson(harmony));
@@ -236,10 +227,7 @@ async function stageSigningAsync(
   project: string,
   temp: string
 ): Promise<void> {
-  const config = getConfig(project, {
-    isModdedConfig: true,
-    skipSDKVersionRequirement: true,
-  }).exp;
+  const { exp: config } = await getPrebuildConfigAsync(project);
 
   const reference = (config as typeof config & {
     harmony?: { signingConfigFile?: string };
@@ -251,11 +239,11 @@ async function stageSigningAsync(
   const inputs = [signing.file, ...Object.values(signing.materialFiles)];
 
   for (const source of inputs) {
-    if (isInside(project, source)) continue;
+    if (HarmonyPaths.isInside(project, source)) continue;
 
     const target = mirrorPath(temp, source);
 
-    if (!isInside(temp, target)) {
+    if (!HarmonyPaths.isInside(temp, target)) {
       throw new HarmonyPrebuildError(
         'ERR_HARMONY_SIGNING_INVALID',
         `External Harmony signing input escapes the isolated --check workspace: ${source}`,
