@@ -15,28 +15,28 @@ function pascalCase(value) {
     .join('');
 }
 
-function deriveNames(packageName) {
-  if (typeof packageName !== 'string' || !NPM_NAME.test(packageName)) {
-    throw new TypeError(`Invalid npm package name: ${packageName}`);
+function deriveNames(name) {
+  if (typeof name !== 'string' || !NPM_NAME.test(name)) {
+    throw new TypeError(`Invalid npm package name: ${name}`);
   }
 
-  const parts = packageName.replace(/^@/, '').split('/');
+  const parts = name.replace(/^@/, '').split('/');
   const basename = parts.at(-1);
-  const moduleName = pascalCase(basename);
+  const module = pascalCase(basename);
 
-  if (moduleName.length === 0 || /^[0-9]/.test(moduleName)) {
+  if (module.length === 0 || /^[0-9]/.test(module)) {
     throw new TypeError('The package name must produce a valid ArkTS identifier.');
   }
 
-  const harmonyName = parts.join('_').replace(/[^A-Za-z0-9_]/g, '_').toLowerCase();
+  const harmony = parts.join('_').replace(/[^A-Za-z0-9_]/g, '_').toLowerCase();
 
   return {
-    packageName,
+    packageName: name,
     packageBasename: basename,
-    moduleBase: moduleName,
-    moduleName,
-    harmonyModule: harmonyName,
-    bundleName: `dev.expo.modules.${harmonyName.replace(/_/g, '.')}`,
+    moduleBase: module,
+    moduleName: module,
+    harmonyModule: harmony,
+    bundleName: `dev.expo.modules.${harmony.replace(/_/g, '.')}`,
   };
 }
 
@@ -87,7 +87,7 @@ async function detectExpoSdkMajor(cwd) {
   }
 }
 
-function replacements(names, sdkMajor, version = DEFAULT_VERSION) {
+function replacements(names, sdk, version = DEFAULT_VERSION) {
   return {
     NPM_NAME: names.packageName,
     PACKAGE_VERSION: version,
@@ -96,7 +96,7 @@ function replacements(names, sdkMajor, version = DEFAULT_VERSION) {
     MODULE_NAME: names.moduleName,
     HARMONY_MODULE: names.harmonyModule,
     BUNDLE_NAME: names.bundleName,
-    SDK_MAJOR: String(sdkMajor),
+    SDK_MAJOR: String(sdk),
   };
 }
 
@@ -110,16 +110,16 @@ function replaceTokens(source, values) {
   return output;
 }
 
-async function renderDirectory(sourceDir, targetDir, values) {
-  const entries = await fs.promises.readdir(sourceDir, { withFileTypes: true });
+async function renderDirectory(template, directory, values) {
+  const entries = await fs.promises.readdir(template, { withFileTypes: true });
 
   for (const entry of entries) {
     let name = entry.name;
     if (name.endsWith('.tpl')) name = name.slice(0, -4);
     name = replaceTokens(name, values);
 
-    const source = path.join(sourceDir, entry.name);
-    const target = path.join(targetDir, name);
+    const source = path.join(template, entry.name);
+    const target = path.join(directory, name);
 
     if (entry.isDirectory()) {
       await fs.promises.mkdir(target, { recursive: true });
@@ -189,6 +189,7 @@ function setScriptIfAvailable(scripts, name, command) {
   if (scripts[name] !== undefined && scripts[name] !== command) {
     throw new Error(`package.json#scripts.${name} already exists; refusing to overwrite it.`);
   }
+
   scripts[name] = command;
 }
 
@@ -196,10 +197,10 @@ async function addHarmonyToExisting(options, cwd, sdk, templates) {
   const target = path.resolve(cwd, options.target ?? '.');
   if (target === path.parse(target).root) throw new Error('Refusing to modify a filesystem root.');
 
-  const packagePath = path.join(target, 'package.json');
-  const configPath = path.join(target, 'expo-module.config.json');
-  const pkg = await readJson(packagePath);
-  const config = await readJson(configPath);
+  const manifest = path.join(target, 'package.json');
+  const file = path.join(target, 'expo-module.config.json');
+  const pkg = await readJson(manifest);
+  const config = await readJson(file);
 
   if (!pkg) throw new Error(`Cannot add Harmony support: package.json is missing in ${target}.`);
   if (!config) throw new Error(`Cannot add Harmony support: expo-module.config.json is missing in ${target}.`);
@@ -263,8 +264,8 @@ async function addHarmonyToExisting(options, cwd, sdk, templates) {
       errorOnExist: true,
       force: false,
     });
-    await writeJsonAtomic(configPath, nextConfig);
-    await writeJsonAtomic(packagePath, nextPackage);
+    await writeJsonAtomic(file, nextConfig);
+    await writeJsonAtomic(manifest, nextPackage);
 
     complete = true;
   } finally {
@@ -294,7 +295,7 @@ export async function createModule(options) {
     throw new TypeError('--local and --add-to-existing cannot be combined.');
   }
 
-  const appRoot = local ? await findAppRoot(cwd) : undefined;
+  const project = local ? await findAppRoot(cwd) : undefined;
   const sdk = options.sdkMajor
     ? { major: Number(options.sdkMajor), source: 'explicit' }
     : await detectExpoSdkMajor(cwd);
@@ -310,10 +311,10 @@ export async function createModule(options) {
   }
 
   const names = deriveNames(options.name);
-  const defaultPath = local
-    ? path.join(appRoot, 'modules', names.packageBasename)
+  const fallback = local
+    ? path.join(project, 'modules', names.packageBasename)
     : path.join(cwd, names.packageBasename);
-  const target = path.resolve(options.target ?? defaultPath);
+  const target = path.resolve(options.target ?? fallback);
 
   if (target === path.parse(target).root) throw new Error('Refusing to generate into a filesystem root.');
 
@@ -338,7 +339,7 @@ export async function createModule(options) {
     await fs.promises.rm(staging, { recursive: true, force: true });
   }
 
-  return { target, appRoot, local, added: false, sdkMajor: sdk.major, sdkSource: sdk.source };
+  return { target, appRoot: project, local, added: false, sdkMajor: sdk.major, sdkSource: sdk.source };
 }
 
 function parseCli(argv) {
