@@ -1,7 +1,7 @@
 import { Blob } from 'expo-blob';
 import { useState } from 'react';
 
-import { ActionButton, DataRow, Field, Note, Panel, ResultPanel, useAsyncResult } from './ui';
+import { ActionButton, DataRow, Field, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
 
 async function binary() {
   const views = [

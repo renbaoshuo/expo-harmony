@@ -3,7 +3,7 @@ import * as IntentLauncher from 'expo-intent-launcher';
 import { useState } from 'react';
 import { Image, Platform } from 'react-native';
 
-import { ActionButton, ActionRow, Field, Note, Panel, ResultPanel, useAsyncResult } from './ui';
+import { ActionButton, ActionRow, Field, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
 
 const ACTION = 'cn.baoshuo.expoharmonydemo.action.ECHO';
 const ABILITY = 'IntentLauncherAbility';

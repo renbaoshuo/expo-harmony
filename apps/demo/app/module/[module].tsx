@@ -1,7 +1,7 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
 
 import { findModule } from '../../src/catalog';
-import { ModuleDemo } from '../../src/modules';
+import { ModuleDemo } from '../../src/module-demo';
 import { LabScreen, Note } from '../../src/ui';
 
 export default function ModuleScreen() {

@@ -3,7 +3,7 @@ import * as Print from 'expo-print';
 import { useState } from 'react';
 import { Platform } from 'react-native';
 
-import { ActionButton, ActionRow, DataRow, Field, Note, Panel, ResultPanel, useAsyncResult } from './ui';
+import { ActionButton, ActionRow, DataRow, Field, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
 
 const HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><style>

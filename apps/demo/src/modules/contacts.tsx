@@ -2,7 +2,7 @@ import * as Contacts from 'expo-contacts';
 import { File } from 'expo-file-system';
 import { useState } from 'react';
 
-import { ActionButton, ActionRow, DataRow, Field, Note, Panel, ResultPanel, useAsyncResult } from './ui';
+import { ActionButton, ActionRow, DataRow, Field, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
 
 function fixture(): Contacts.Contact {
   return {

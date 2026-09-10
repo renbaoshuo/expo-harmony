@@ -7,14 +7,13 @@ import {
   ResultPanel,
   Tag,
   useAsyncResult,
-} from './ui';
+} from '../ui';
 import {
-  clearAppMetricsStorage,
   markAppMetricsFirstRender,
   markAppMetricsInteractive,
-  readAppMetricsStorage,
   runAppMetricsMatrix,
-} from './appMetricsProbe';
+} from './app-metrics/probe';
+import { clearAppMetricsStorage, readAppMetricsStorage } from './app-metrics/storage';
 
 export function AppMetricsDemo() {
   const matrix = useAsyncResult();

@@ -5,10 +5,10 @@ import type { ContentFit, LivePhotoAsset, LivePhotoViewType } from 'expo-live-ph
 import { useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
-import photoAsset from '../assets/live-photo/photo.jpg';
-import videoAsset from '../assets/live-photo/video.mp4';
-import { palette } from './theme';
-import { ActionButton, ActionRow, DataRow, Field, Note, Panel, ResultPanel, Tag, useAsyncResult } from './ui';
+import photoAsset from '../../assets/live-photo/photo.jpg';
+import videoAsset from '../../assets/live-photo/video.mp4';
+import { palette } from '../theme';
+import { ActionButton, ActionRow, DataRow, Field, Note, Panel, ResultPanel, Tag, useAsyncResult } from '../ui';
 
 const INITIAL_COUNTS = {
   onLoadStart: 0,

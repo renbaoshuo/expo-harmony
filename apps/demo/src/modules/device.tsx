@@ -1,7 +1,7 @@
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 
-import { ActionButton, DataRow, Note, Panel, ResultPanel, useAsyncResult } from './ui';
+import { ActionButton, DataRow, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
 
 const TYPES: Record<Device.DeviceType, string> = {
   [Device.DeviceType.UNKNOWN]: '未知',

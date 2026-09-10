@@ -2,7 +2,7 @@ import * as Calendar from 'expo-calendar';
 import { useState } from 'react';
 import { Platform } from 'react-native';
 
-import { ActionButton, ActionRow, DataRow, Note, Panel, ResultPanel, useAsyncResult } from './ui';
+import { ActionButton, ActionRow, DataRow, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;

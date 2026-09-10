@@ -2,7 +2,7 @@ import * as Cellular from 'expo-cellular';
 import { useState } from 'react';
 import { Platform } from 'react-native';
 
-import { ActionButton, ActionRow, DataRow, Note, Panel, ResultPanel, useAsyncResult } from './ui';
+import { ActionButton, ActionRow, DataRow, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
 
 const GENERATIONS: Record<Cellular.CellularGeneration, string> = {
   [Cellular.CellularGeneration.UNKNOWN]: '未知',

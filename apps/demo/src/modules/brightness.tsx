@@ -2,7 +2,7 @@ import * as Brightness from 'expo-brightness';
 import { useEffect, useState } from 'react';
 import { Platform } from 'react-native';
 
-import { ActionButton, ActionRow, DataRow, Field, Note, Panel, ResultPanel, useAsyncResult } from './ui';
+import { ActionButton, ActionRow, DataRow, Field, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
 
 // Allow the rounding of a brightness value to the system's 0–255 scale.
 const TOLERANCE = 1 / 255;

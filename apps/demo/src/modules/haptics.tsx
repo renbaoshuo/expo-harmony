@@ -4,7 +4,7 @@ import {
   HAPTICS_MANUAL_CASES,
   runHapticsArgumentProbe,
   runHapticsMatrix,
-} from './hapticsProbe';
+} from './haptics/probe';
 import {
   ActionButton,
   ActionRow,
@@ -14,7 +14,7 @@ import {
   ResultPanel,
   Tag,
   useAsyncResult,
-} from './ui';
+} from '../ui';
 
 export function HapticsDemo() {
   const matrix = useAsyncResult();

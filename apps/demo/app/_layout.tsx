@@ -9,8 +9,8 @@ import { Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-context';
 
-import '../src/backgroundFetch';
-import '../src/backgroundTask';
+import '../src/modules/background-fetch/tasks';
+import '../src/modules/background-task/tasks';
 import { palette } from '../src/theme';
 
 void SplashScreen.preventAutoHideAsync().catch(() => false);
