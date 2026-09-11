@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import JSON5 from 'json5';
-import tar from 'tar';
+import * as tar from 'tar';
 
 const localDependency = /^(?:file:|link:|workspace:|\.{1,2}[\\/])|^(?:\/|[A-Za-z]:[\\/])/u;
 const absoluteSourcePath = /(?:\/Users\/[^/]+\/|\/home\/[^/]+\/|[A-Za-z]:\\Users\\)/u;
