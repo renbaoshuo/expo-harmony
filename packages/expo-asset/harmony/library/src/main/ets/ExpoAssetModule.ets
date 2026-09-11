@@ -1,4 +1,5 @@
 import {
+  ExpoFileAccessKey,
   ExpoFunction,
   ExpoModule,
   ExpoModuleContext,
@@ -85,7 +86,10 @@ export class ExpoAssetModule extends ExpoModule {
 
   private async download(uri: string, md5: string | null, type: string): Promise<string> {
     const scheme = uriScheme(uri);
-    if (scheme === 'file') return uri;
+    if (scheme === 'file') {
+      if (this.context.services.get(ExpoFileAccessKey) !== undefined) this.context.filePathForRead(uri);
+      return uri;
+    }
 
     const ext = safeAssetType(type);
     const key = md5 === null ? md5String(uri) : safeMd5(md5);
