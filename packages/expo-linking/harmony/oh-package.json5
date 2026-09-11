@@ -1,7 +1,7 @@
 {
   "modelVersion": "5.0.0",
   "name": "expo-linking-harmony",
-  "version": "55.0.16-harmony.2",
+  "version": "55.0.16-harmony.3",
   "description": "HarmonyOS port of expo-linking",
   "keywords": [
     "react-native",
