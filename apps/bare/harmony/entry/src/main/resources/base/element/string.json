@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "expo_harmony_ability_desc", "value": "Expo Harmony 主 Ability" },
+    { "name": "expo_harmony_ability_label", "value": "Expo Harmony 演示（Bare 应用 · 电池）" },
+    { "name": "expo_harmony_module_desc", "value": "Expo Harmony entry 模块" }
+  ]
+}

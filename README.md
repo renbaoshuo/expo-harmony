@@ -6,6 +6,7 @@
 - 提供众多常用 Expo 模块的 HarmonyOS 实现，减少开发者自行编写原生适配代码的工作量。
 - 提供从开发调试到构建打包的完整工具链，支持环境诊断、原生工程生成、HAP 构建、设备安装、应用启动等多项能力。
 - 支持 [Expo CNG](https://docs.expo.dev/workflow/continuous-native-generation/)，通过配置生成 HarmonyOS 原生工程，省去人工维护的繁杂流程，也不需要将原生工程在仓库中手动维护，还支持通过 [patch-project](./packages/patch-project/README.md) 自定义可持久化地修改生成后的原生工程。[查看示例工程](https://github.com/renbaoshuo/expo-harmony/tree/master/apps/demo)。
+- 支持 Bare Installation，允许开发者在已有的 RNOH 原生工程中集成 Expo Harmony。[查看示例工程](https://github.com/renbaoshuo/expo-harmony/tree/master/apps/bare)。
 - 支持 [Autolinking](https://docs.expo.dev/modules/autolinking/)，自动链接 Expo 模块和 RNOH 原生模块，无需逐个注册模块、配置构建依赖。
 - 支持 [Expo Modules API](https://docs.expo.dev/modules/overview/)，可用 ArkTS 编写原生模块和视图组件，并提供脚手架，为已有 Expo 模块补充 HarmonyOS 支持。
 

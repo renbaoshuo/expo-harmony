@@ -1,0 +1,56 @@
+import type resmgr from '@ohos.resourceManager';
+import { MetroJSBundleProvider, RNOHCoreContext, RNOHErrorDialog, ResourceJSBundleProvider } from '@rnoh/react-native-openharmony';
+import { ExpoRNApp } from '@expo-harmony/expo-modules-core';
+import { getRNOHPackages } from '../PackageProvider';
+import { ExpoHarmonyRootView } from '../generated/ExpoHarmonyHostProvider';
+
+class InMemoryResourceJSBundleProvider extends ResourceJSBundleProvider {
+  private readonly ownedResourceManager: resmgr.ResourceManager;
+  private readonly ownedResourcePath: string;
+
+  constructor(resourceManager: resmgr.ResourceManager, resourcePath: string) {
+    super(resourceManager, resourcePath);
+    this.ownedResourceManager = resourceManager;
+    this.ownedResourcePath = resourcePath;
+  }
+
+  override async getBundle(): Promise<ArrayBuffer> {
+    const bytes = await this.ownedResourceManager.getRawFileContent(this.ownedResourcePath);
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  }
+}
+
+@Entry
+@Component
+struct Index {
+  @StorageLink('RNOHCoreContext') private rnohCoreContext: RNOHCoreContext | undefined = undefined;
+
+  build(): void {
+    Stack() {
+      ExpoHarmonyRootView()
+      Column() {
+        if (this.rnohCoreContext !== undefined) {
+          if (this.rnohCoreContext.isDebugModeEnabled) {
+            RNOHErrorDialog({ ctx: this.rnohCoreContext });
+          }
+          ExpoRNApp({
+            rnInstanceConfig: {
+              name: 'Expo Harmony 演示（Bare 应用 · 电池）',
+              createRNPackages: getRNOHPackages,
+              fontResourceByFontFamily: {},
+              enableDebugger: this.rnohCoreContext.isDebugModeEnabled,
+            },
+            appKey: 'BareBattery',
+            jsBundleProvider: this.rnohCoreContext.isDebugModeEnabled
+              ? new MetroJSBundleProvider()
+              : new InMemoryResourceJSBundleProvider(this.rnohCoreContext.uiAbilityContext.resourceManager, 'hermes_bundle.hbc'),
+          });
+        }
+      }
+      .height('100%')
+      .width('100%')
+    }
+    .height('100%')
+    .width('100%');
+  }
+}

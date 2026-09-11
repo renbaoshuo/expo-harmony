@@ -1,0 +1,18 @@
+{
+  modelVersion: '5.0.0',
+  name: 'cn.baoshuo.expoharmony.demo.bare',
+  version: '1.0.0',
+  license: 'MIT',
+  dependencies: {
+    '@rnoh/react-native-openharmony': '0.84.1',
+    '@expo-harmony/expo-battery': '../node_modules/@expo-harmony/expo-battery/harmony/library.har',
+    '@expo-harmony/expo-modules-core': '../node_modules/@expo-harmony/expo-modules-core/harmony/expo_modules_core.har',
+    '@react-native-ohos/react-native-worklets': '../node_modules/@react-native-ohos/react-native-worklets/harmony/worklets.har',
+  },
+  overrides: {
+    '@rnoh/react-native-openharmony': '0.84.1',
+    '@expo-harmony/expo-battery': '../node_modules/@expo-harmony/expo-battery/harmony/library.har',
+    '@expo-harmony/expo-modules-core': '../node_modules/@expo-harmony/expo-modules-core/harmony/expo_modules_core.har',
+    '@react-native-ohos/react-native-worklets': '../node_modules/@react-native-ohos/react-native-worklets/harmony/worklets.har',
+  },
+}
