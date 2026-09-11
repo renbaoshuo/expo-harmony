@@ -1,4 +1,4 @@
-import { ExpoModuleContext, ExpoModuleError, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
+import { ExpoRuntimePermissionsKey, ExpoModuleContext, ExpoModuleError, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
 import { Permissions } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { deviceInfo } from '@kit.BasicServicesKit';
@@ -49,14 +49,14 @@ export class CalendarPermissions {
     let denied: boolean = false;
 
     for (const permission of CALENDAR_PERMISSIONS) {
-      const status = this.context.permissionStatus(permission);
-      if (status === ExpoPermissionStatus.GRANTED) {
-        if (deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) await this.rememberDenial(permission, false);
-        continue;
-      }
+      const system = this.context.systemPermissionStatus(permission) === ExpoPermissionStatus.GRANTED;
+      if (system && deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) await this.rememberDenial(permission, false);
 
-      const isDenied =
-        deviceInfo.sdkApiVersion >= SELF_PERMISSION_STATUS_API ? status !== ExpoPermissionStatus.NOT_DETERMINED : await this.wasDenied(permission);
+      const history = deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API ? await this.wasDenied(permission) : undefined;
+      const status = this.context.permissionStatus(permission, history);
+      if (status === ExpoPermissionStatus.GRANTED) continue;
+
+      const isDenied = status !== ExpoPermissionStatus.NOT_DETERMINED;
       denied = denied || isDenied;
       undetermined = undetermined || !isDenied;
     }
@@ -78,33 +78,42 @@ export class CalendarPermissions {
   }
 
   private async requestOnce(): Promise<CalendarPermissionResponse> {
-    const result = await this.context.requestPermissions(CALENDAR_PERMISSIONS);
+    const request = await this.context.requestPermissions(CALENDAR_PERMISSIONS);
     let cannotAsk: boolean = false;
 
-    for (const permission of CALENDAR_PERMISSIONS) {
-      const index = result.permissions.indexOf(permission);
-      const reason = result.errorReasons?.[index] ?? RequestReason.Success;
-      const granted = result.authResults[index] === ExpoPermissionStatus.GRANTED;
-      if (
-        index < 0 ||
-        reason === RequestReason.InvalidPermission ||
-        reason === RequestReason.NotDeclared ||
-        (reason === RequestReason.Success && !granted && result.authResults[index] !== ExpoPermissionStatus.DENIED)
-      ) {
-        throw new ExpoModuleError('ERR_CALENDAR_PERMISSION_REQUEST', `Invalid permission result for ${permission}. Check module.json5 declarations.`);
-      }
+    for (const result of request.systemResults) {
+      for (const permission of CALENDAR_PERMISSIONS) {
+        const index = result.permissions.indexOf(permission);
+        const reason = result.errorReasons?.[index] ?? RequestReason.Success;
+        const granted = result.authResults[index] === ExpoPermissionStatus.GRANTED;
 
-      if (
-        deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API &&
-        reason === RequestReason.Success &&
-        (granted || result.dialogShownResults?.[index] === true)
-      ) {
-        await this.rememberDenial(permission, !granted);
+        if (
+          index < 0 ||
+          reason === RequestReason.InvalidPermission ||
+          reason === RequestReason.NotDeclared ||
+          (reason === RequestReason.Success && !granted && result.authResults[index] !== ExpoPermissionStatus.DENIED)
+        ) {
+          throw new ExpoModuleError(
+            'ERR_CALENDAR_PERMISSION_REQUEST',
+            `Invalid permission result for ${permission}. Check module.json5 declarations.`,
+          );
+        }
+
+        if (
+          deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API &&
+          ((reason === RequestReason.Success && (granted || result.dialogShownResults?.[index] === true)) ||
+            reason === RequestReason.CannotRequest ||
+            reason === RequestReason.ManualSettings)
+        ) {
+          await this.rememberDenial(permission, !granted);
+        }
+        if (!granted && (reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings)) cannotAsk = true;
       }
-      if (!granted && (reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings)) cannotAsk = true;
     }
 
     const response = await this.get();
+    if (this.context.services.get(ExpoRuntimePermissionsKey) !== undefined)
+      return cannotAsk && !response.granted ? new CalendarPermissionResponse('denied', false) : response;
     return response.granted ? response : new CalendarPermissionResponse('denied', response.canAskAgain && !cannotAsk);
   }
 
