@@ -2,7 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { listEmulatorsAsync, startEmulator } from './emulators';
 import { HarmonyCliError } from '../errors';
-import type { HarmonyTool } from '../tools';
+import { type HarmonyTool } from '../native/toolchain';
 import { formatDiagnostics, spawnAsync, type ProcessResult } from '../process';
 
 interface Device {
@@ -44,8 +44,6 @@ function parseHdcTargets(output: string): Device[] {
     }
 
     return {
-      // Only the first HDC column is a selectable target name. The remaining
-      // verbose columns describe transport, state, location and connect tool.
       aliases: [fields[0]],
       connectTool: fields[4] || null,
       id: fields[0],
@@ -59,10 +57,7 @@ function parseHdcTargets(output: string): Device[] {
 function hasCommandFailure(result: ProcessResult): boolean {
   const output = `${result.stdout || ''}\n${result.stderr || ''}`;
   return result.code !== 0 || result.timedOut
-    // HDC occasionally reports transport and package-manager failures on
-    // stdout while still returning exit code 0 (for example,
-    // "Connect server failed"). Treat its documented failure vocabulary as
-    // authoritative regardless of where it appears on the line.
+    // HDC can print failures to stdout while returning exit code 0.
     || /\[(?:Fail|Error)\]|\b(?:Failure|failed)\b|(?:失败|错误)/iu.test(output);
 }
 
@@ -146,7 +141,6 @@ async function selectDeviceAsync(
   }
 
   const instances = await listEmulatorsAsync(options.emulator, { cwd: options.cwd });
-  // Prefer an instance that is already booting when HDC is not connected yet.
   const running = instances.filter(instance => instance.running);
   const candidates = requested
     ? instances.filter(instance => instance.name === requested)
@@ -242,12 +236,23 @@ async function configureMetroPortAsync(
   const deviceEndpoint = `tcp:${options.devicePort || 8081}`;
   const hostEndpoint = `tcp:${port}`;
 
-  await runHdcAsync(hdc, ['-t', device.id, 'fport', 'rm', deviceEndpoint, hostEndpoint], {
-    allowFailure: true,
+  const forwards = await runHdcAsync(hdc, ['-t', device.id, 'fport', 'ls'], {
     cwd: options.cwd,
-    operation: 'remove-metro-port',
+    operation: 'list-metro-ports',
     timeoutMs: 15_000,
   });
+
+  for (const line of forwards.stdout.split(/\r?\n/u)) {
+    const [target, remote, local, direction] = line.trim().split(/\s+/u);
+    if (target !== device.id || remote !== deviceEndpoint || direction !== '[Reverse]') continue;
+    if (local === hostEndpoint) return;
+
+    await runHdcAsync(hdc, ['-t', device.id, 'fport', 'rm', remote, local], {
+      cwd: options.cwd,
+      operation: 'remove-metro-port',
+      timeoutMs: 15_000,
+    });
+  }
 
   await runHdcAsync(hdc, ['-t', device.id, 'rport', deviceEndpoint, hostEndpoint], {
     code: 'ERR_HARMONY_METRO_FORWARD',

@@ -162,6 +162,7 @@ async function acquireHarmonyProjectLockAsync(
         await handle.sync();
       } catch (cause) {
         await releaseOwnedLockAsync(handle, lockPath, owned);
+
         throw new HarmonyCliError(
           'ERR_HARMONY_PROJECT_LOCK',
           'Cannot initialize the Harmony native operation lock.',
@@ -183,7 +184,14 @@ async function acquireHarmonyProjectLockAsync(
         },
       };
     } catch (cause) {
-      if (cause instanceof HarmonyCliError) throw cause;
+      if (cause instanceof HarmonyCliError) {
+        throw new HarmonyCliError(cause.code, cause.message, {
+          cause,
+          exitCode: cause.exitCode,
+          operation: cause.operation,
+        });
+      }
+
       if (cause?.code !== 'EEXIST') {
         throw new HarmonyCliError(
           'ERR_HARMONY_PROJECT_LOCK',

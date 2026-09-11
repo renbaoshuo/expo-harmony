@@ -1,4 +1,4 @@
-import nodeCrypto from 'node:crypto';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -6,7 +6,7 @@ import { isInside } from './path';
 
 async function sha256File(file: string): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
-    const hash = nodeCrypto.createHash('sha256');
+    const hash = crypto.createHash('sha256');
     const input = fs.createReadStream(file);
 
     input.on('error', reject);
@@ -70,26 +70,26 @@ async function ensureSafeParent(root: string, destination: string): Promise<void
 async function atomicCopy(source: string, destination: string, root: string): Promise<void> {
   await ensureSafeParent(root, destination);
 
-  const temporary = path.join(path.dirname(destination), `.${path.basename(destination)}.expo-${nodeCrypto.randomUUID()}.tmp`);
+  const temp = path.join(path.dirname(destination), `.${path.basename(destination)}.expo-${crypto.randomUUID()}.tmp`);
 
   try {
-    await fs.promises.copyFile(source, temporary, fs.constants.COPYFILE_EXCL);
-    await fs.promises.rename(temporary, destination);
+    await fs.promises.copyFile(source, temp, fs.constants.COPYFILE_EXCL);
+    await fs.promises.rename(temp, destination);
   } finally {
-    await fs.promises.rm(temporary, { force: true });
+    await fs.promises.rm(temp, { force: true });
   }
 }
 
 async function atomicWriteJson(value: unknown, destination: string, root: string): Promise<void> {
   await ensureSafeParent(root, destination);
 
-  const temporary = path.join(path.dirname(destination), `.${path.basename(destination)}.expo-${nodeCrypto.randomUUID()}.tmp`);
+  const temp = path.join(path.dirname(destination), `.${path.basename(destination)}.expo-${crypto.randomUUID()}.tmp`);
 
   try {
-    await fs.promises.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
-    await fs.promises.rename(temporary, destination);
+    await fs.promises.writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
+    await fs.promises.rename(temp, destination);
   } finally {
-    await fs.promises.rm(temporary, { force: true });
+    await fs.promises.rm(temp, { force: true });
   }
 }
 
@@ -107,4 +107,13 @@ async function removeEmptyParents(file: string, stop: string): Promise<void> {
   }
 }
 
-export { atomicCopy, atomicWriteJson, describeFile, listFiles, removeEmptyParents };
+function isNonEmptyRegularFile(file: string): boolean {
+  try {
+    const stat = fs.lstatSync(file);
+    return !stat.isSymbolicLink() && stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+export { atomicCopy, atomicWriteJson, describeFile, isNonEmptyRegularFile, listFiles, removeEmptyParents };

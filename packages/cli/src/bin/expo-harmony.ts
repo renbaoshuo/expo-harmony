@@ -1,5 +1,5 @@
 #!/usr/bin/env node
 
-import { main } from '../cli';
+import { mainAsync } from '../cli';
 
-main();
+mainAsync();

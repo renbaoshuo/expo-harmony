@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 
 import { HarmonyCliError } from '../errors';
+import { isBareHarmonyProject } from '../native/bare';
 import { formatDiagnostics, spawnAsync } from '../process';
 import { withHarmonyProjectLockAsync } from '../projectLock';
 import { resolveExpoCli } from '../expo';
-import { createHarmonyToolchainEnv, resolveHarmonyBuildPlanAsync } from '../tools';
+import { createHarmonyToolchainEnv } from '../native/toolchain';
+import { resolveHarmonyBuildPlanAsync } from '../native/project';
 import { assertSafeCleanTarget } from './clean';
 import { packAsync } from './template';
 
@@ -18,6 +20,9 @@ async function prebuildParsedUnlockedAsync(
   passthrough: string[],
   options: PrebuildOptions = {}
 ) {
+  if (isBareHarmonyProject(projectRoot)) {
+    throw new HarmonyCliError('ERR_HARMONY_BARE_PREBUILD', 'This Harmony project is manually maintained. Build it directly; prebuild cannot overwrite a bare project.', { operation: 'prebuild' });
+  }
   if (passthrough.includes('--clean')) await assertSafeCleanTarget(projectRoot);
 
   const expo = resolveExpoCli(projectRoot);
@@ -44,6 +49,7 @@ async function prebuildParsedUnlockedAsync(
 
     if (result.code !== 0) {
       const diagnostics = options.capture ? formatDiagnostics(result) : '';
+
       throw new HarmonyCliError('ERR_HARMONY_PREBUILD_FAILED', `Expo prebuild exited with code ${result.code}.${diagnostics ? `\n${diagnostics}` : ''}`, {
         exitCode: result.code,
         operation: 'expo-prebuild',
@@ -54,6 +60,10 @@ async function prebuildParsedUnlockedAsync(
       const plan = await resolveHarmonyBuildPlanAsync(projectRoot, {
         buildMode: options.buildType,
       });
+      if (plan.workflow !== 'cng') {
+        throw new HarmonyCliError('ERR_HARMONY_TEMPLATE_INVALID', 'Prebuild did not produce a CNG project.', { operation: 'prebuild' });
+      }
+
       await fs.promises.access(plan.projectFiles.templateMarker, fs.constants.R_OK);
     } catch (cause) {
       throw new HarmonyCliError('ERR_HARMONY_TEMPLATE_INVALID', 'Expo prebuild exited successfully but the Harmony marker or CNG manifest is invalid.', { cause, operation: 'verify-prebuild' });

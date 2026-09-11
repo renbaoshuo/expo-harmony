@@ -7,7 +7,7 @@ import {
 } from '@expo-harmony/config-plugins/internal/native-inputs';
 
 import { HarmonyCliError } from '../errors';
-import type { HarmonyBuildPlan } from '../tools';
+import { type HarmonyBuildPlan } from './types';
 
 export interface HarmonyNativeBuildCacheState {
   artifactCount: number;

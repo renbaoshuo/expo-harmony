@@ -5,7 +5,7 @@ import { HarmonyPlatformDirectory } from '@expo-harmony/prebuild-config/internal
 
 import { HarmonyCliError } from '../errors';
 import { isInside } from '../path';
-import { resolveHarmonyBuildPlanIfPresentAsync } from '../tools';
+import { resolveHarmonyBuildPlanIfPresentAsync } from '../native/project';
 
 async function assertSafeCleanTarget(projectRoot) {
   const root = await fs.promises.realpath(projectRoot);
@@ -24,7 +24,7 @@ async function assertSafeCleanTarget(projectRoot) {
     );
   }
 
-  if (!plan) {
+  if (!plan || plan.workflow !== 'cng') {
     throw new HarmonyCliError(
       'ERR_HARMONY_CLEAN_TARGET',
       `Refusing to clean ${target} because its CNG manifest is missing. Please delete it manually or run prebuild without --clean.`,

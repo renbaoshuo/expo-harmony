@@ -9,12 +9,10 @@ import { isRnohAutolinkingDisabled, validateHarmonySigningConfigFile } from '@ex
 
 import { spawnAsync } from '../process';
 import { withHarmonyProjectLockAsync } from '../projectLock';
-import {
-  resolveHarmonyBuildPlanIfPresentAsync,
-  resolveHarmonyToolchain,
-  type HarmonyTool,
-} from '../tools';
+import { resolveHarmonyBuildPlanIfPresentAsync } from '../native/project';
+import { resolveHarmonyToolchain, type HarmonyTool } from '../native/toolchain';
 import { RequiredProjectPackages } from '../upstream';
+import { isBareHarmonyProject } from '../native/bare';
 
 export interface DoctorCheck {
   details?: unknown;
@@ -36,22 +34,23 @@ interface DoctorOptions {
   validateModules?: boolean;
 }
 
-function hasPlugin(plugins, packageName) {
-  return (plugins || []).some(plugin => (Array.isArray(plugin) ? plugin[0] : plugin) === packageName);
+function hasPlugin(plugins, name) {
+  return (plugins || []).some(plugin => (Array.isArray(plugin) ? plugin[0] : plugin) === name);
 }
 
 function check(id: string, status: DoctorCheck['status'], message: string, details?: unknown): DoctorCheck {
   return { id, status, message, ...(details ? { details } : {}) };
 }
 
-function canResolvePackage(projectRoot, packageName) {
-  const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
+function canResolvePackage(root, name) {
+  const require = createRequire(path.join(root, 'package.json'));
+
   try {
-    projectRequire.resolve(`${packageName}/package.json`);
+    require.resolve(`${name}/package.json`);
     return true;
   } catch {
     try {
-      projectRequire.resolve(packageName);
+      require.resolve(name);
       return true;
     } catch {
       return false;
@@ -59,20 +58,20 @@ function canResolvePackage(projectRoot, packageName) {
   }
 }
 
-async function validateMetroConfigAsync(projectRoot) {
-  const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
-  let metroConfig;
+async function validateMetroConfigAsync(root) {
+  const require = createRequire(path.join(root, 'package.json'));
+  let metro;
 
   try {
-    metroConfig = projectRequire('metro-config');
+    metro = require('metro-config');
   } catch (cause) {
     throw new Error('Cannot load the project-local metro-config package.', { cause });
   }
 
-  if (typeof metroConfig.resolveConfig !== 'function') {
+  if (typeof metro.resolveConfig !== 'function') {
     const version = (() => {
       try {
-        return projectRequire('metro-config/package.json').version;
+        return require('metro-config/package.json').version;
       } catch {
         return 'unknown';
       }
@@ -81,15 +80,15 @@ async function validateMetroConfigAsync(projectRoot) {
     throw new Error(`metro-config ${version} does not expose resolveConfig().`);
   }
 
-  const hadMetroTarget = Object.hasOwn(process.env, 'EXPO_METRO_TARGET');
-  const previousMetroTarget = process.env.EXPO_METRO_TARGET;
+  const present = Object.hasOwn(process.env, 'EXPO_METRO_TARGET');
+  const previous = process.env.EXPO_METRO_TARGET;
   let resolved;
 
   try {
     process.env.EXPO_METRO_TARGET = 'harmony';
-    resolved = await metroConfig.resolveConfig(undefined, projectRoot);
+    resolved = await metro.resolveConfig(undefined, root);
   } finally {
-    if (hadMetroTarget) process.env.EXPO_METRO_TARGET = previousMetroTarget;
+    if (present) process.env.EXPO_METRO_TARGET = previous;
     else delete process.env.EXPO_METRO_TARGET;
   }
 
@@ -104,33 +103,40 @@ async function validateMetroConfigAsync(projectRoot) {
   }
 }
 
-async function doctorUnlockedAsync(projectRoot: string, options: DoctorOptions = {}): Promise<DoctorResult> {
+async function doctorUnlockedAsync(root: string, options: DoctorOptions = {}): Promise<DoctorResult> {
   const checks: DoctorCheck[] = [];
-  const unavailableToolStatus = options.requireBuildTools ? 'error' : 'warn';
+  const unavailable = options.requireBuildTools ? 'error' : 'warn';
   let config;
+  const bare = isBareHarmonyProject(root);
 
   try {
-    config = getConfig(projectRoot, {
-      isModdedConfig: true,
-      skipSDKVersionRequirement: true,
-    }).exp;
-    normalizeHarmonyConfig(config);
-    checks.push(check('app-config', 'pass', 'Harmony app config is valid.'));
+    if (bare) {
+      const plan = await resolveHarmonyBuildPlanIfPresentAsync(root);
+      checks.push(check('native-config', 'pass', `Bare Harmony project: ${plan.bundleName} / ${plan.moduleName}. Native files own the configuration.`));
+    } else {
+      config = getConfig(root, {
+        isModdedConfig: true,
+        skipSDKVersionRequirement: true,
+      }).exp;
+      normalizeHarmonyConfig(config);
+      checks.push(check('app-config', 'pass', 'Harmony app config is valid.'));
+    }
   } catch (error) {
-    checks.push(check('app-config', 'error', error.message, { code: error.code || 'ERR_HARMONY_CONFIG_INVALID' }));
+    checks.push(check(bare ? 'native-config' : 'app-config', 'error', error.message, { code: error.code || 'ERR_HARMONY_CONFIG_INVALID' }));
   }
 
   if (config) {
     checks.push(hasPlugin(config.plugins, '@expo-harmony/prebuild-config')
       ? check('config-plugin', 'pass', '@expo-harmony/prebuild-config is registered.')
       : check('config-plugin', 'error', 'Add @expo-harmony/prebuild-config to expo.plugins.'));
+
     const harmony = (config as typeof config & {
       harmony?: { signingConfigFile?: string };
     }).harmony;
 
     if (harmony?.signingConfigFile) {
       try {
-        const signing = await validateHarmonySigningConfigFile(projectRoot, harmony.signingConfigFile);
+        const signing = await validateHarmonySigningConfigFile(root, harmony.signingConfigFile);
         checks.push(check('signing', 'pass', `Harmony signing config ${signing.name} is valid.`));
       } catch (error) {
         checks.push(check('signing', 'error', error.message, { code: error.code || 'ERR_HARMONY_SIGNING_INVALID' }));
@@ -141,23 +147,23 @@ async function doctorUnlockedAsync(projectRoot: string, options: DoctorOptions =
   }
 
   try {
-    await validateMetroConfigAsync(projectRoot);
+    await validateMetroConfigAsync(root);
     checks.push(check('metro', 'pass', 'The resolved Metro config enables Harmony.'));
   } catch (error) {
     checks.push(check('metro', 'error', `Cannot load a Harmony-enabled Metro config: ${error.message}`, { code: error.code || 'ERR_HARMONY_METRO_CONFIG' }));
   }
 
-  for (const packageName of RequiredProjectPackages) {
-    if (canResolvePackage(projectRoot, packageName)) {
-      checks.push(check(`package:${packageName}`, 'pass', `${packageName} is resolvable.`));
+  for (const name of RequiredProjectPackages) {
+    if (canResolvePackage(root, name)) {
+      checks.push(check(`package:${name}`, 'pass', `${name} is resolvable.`));
     } else {
-      checks.push(check(`package:${packageName}`, 'error', `${packageName} is not resolvable from the app.`));
+      checks.push(check(`package:${name}`, 'error', `${name} is not resolvable from the app.`));
     }
   }
 
   if (options.validateModules !== false) {
     try {
-      const result = await verifyModulesAsync({ platform: 'harmony', projectRoot });
+      const result = await verifyModulesAsync({ platform: 'harmony', projectRoot: root });
       const errors = result.diagnostics.filter(item => item.severity === 'error');
       const warnings = result.diagnostics.filter(item => item.severity === 'warning');
 
@@ -189,54 +195,55 @@ async function doctorUnlockedAsync(projectRoot: string, options: DoctorOptions =
   }
 
   const toolchain = resolveHarmonyToolchain();
-  let sdkCheck;
+  let sdk;
 
   if (toolchain.sdkHome) {
-    sdkCheck = check('harmony-sdk', 'pass', `Complete Harmony SDK root was resolved at ${toolchain.sdkHome}.`);
+    sdk = check('harmony-sdk', 'pass', `Complete Harmony SDK root was resolved at ${toolchain.sdkHome}.`);
   } else {
-    sdkCheck = check('harmony-sdk', unavailableToolStatus, 'No complete Harmony SDK root with HMS and OpenHarmony components was found; generation works but HAP build cannot be verified.');
+    sdk = check('harmony-sdk', unavailable, 'No complete Harmony SDK root with HMS and OpenHarmony components was found; generation works but HAP build cannot be verified.');
   }
 
-  checks.push(sdkCheck);
+  checks.push(sdk);
 
   const tools: Array<[string, HarmonyTool, string[], DoctorCheck['status']]> = [
-    ['ohpm', toolchain.ohpm, ['--version'], unavailableToolStatus],
-    ['hvigor-command', toolchain.hvigor, ['--version'], unavailableToolStatus],
+    ['ohpm', toolchain.ohpm, ['--version'], unavailable],
+    ['hvigor-command', toolchain.hvigor, ['--version'], unavailable],
   ];
   if (options.requireDeviceTools !== false) {
-    tools.unshift(['hdc', toolchain.hdc, ['-v'], unavailableToolStatus]);
+    tools.unshift(['hdc', toolchain.hdc, ['-v'], unavailable]);
   }
-  for (const [id, tool, versionArgs, unavailableStatus] of tools) {
+
+  for (const [id, tool, args, status] of tools) {
     const command = [tool.command, ...tool.args].map(value => JSON.stringify(value)).join(' ');
 
     try {
-      const result = await spawnAsync(tool.command, [...tool.args, ...versionArgs], {
+      const result = await spawnAsync(tool.command, [...tool.args, ...args], {
         capture: true,
-        cwd: projectRoot,
+        cwd: root,
         operation: `doctor-${id}`,
         timeoutMs: 10_000,
       });
 
       checks.push(result.code === 0 && !result.timedOut
         ? check(id, 'pass', `${command} is available through ${tool.source}.`)
-        : check(id, unavailableStatus, `${command} is unavailable or unhealthy; HAP build cannot be verified.`));
+        : check(id, status, `${command} is unavailable or unhealthy; HAP build cannot be verified.`));
     } catch {
-      checks.push(check(id, unavailableStatus, `${command} is unavailable; generation remains available.`));
+      checks.push(check(id, status, `${command} is unavailable; generation remains available.`));
     }
   }
 
   if (options.validateGeneratedProject !== false) {
     try {
-      const plan = await resolveHarmonyBuildPlanIfPresentAsync(projectRoot);
+      const plan = await resolveHarmonyBuildPlanIfPresentAsync(root);
       if (plan && fs.existsSync(plan.harmonyRoot)) {
         if (!fs.existsSync(plan.projectFiles.rootHvigor)
           || !fs.existsSync(plan.projectFiles.moduleHvigor)) {
-          checks.push(check('hvigor', 'error', 'Generated root and module Hvigor files are required.'));
+          checks.push(check('hvigor', 'error', 'Root and module Hvigor files are required.'));
         } else {
           const content = await fs.promises.readFile(plan.projectFiles.moduleHvigor, 'utf8');
           checks.push(isRnohAutolinkingDisabled(content)
             ? check('hvigor-autolinking', 'pass', 'RNOH duplicate autolinking is disabled.')
-            : check('hvigor-autolinking', 'error', 'The generated module Hvigor file must disable RNOH autolinking.'));
+            : check('hvigor-autolinking', 'error', 'The module Hvigor file must disable duplicate RNOH autolinking.'));
         }
       }
     } catch (error) {
@@ -247,16 +254,12 @@ async function doctorUnlockedAsync(projectRoot: string, options: DoctorOptions =
   return {
     checks,
     ok: checks.every(item => item.status !== 'error'),
-    projectRoot,
+    projectRoot: root,
   };
 }
 
-async function doctorAsync(projectRoot: string, options: DoctorOptions = {}): Promise<DoctorResult> {
-  return withHarmonyProjectLockAsync(
-    projectRoot,
-    'doctor',
-    () => doctorUnlockedAsync(projectRoot, options)
-  );
+async function doctorAsync(root: string, options: DoctorOptions = {}): Promise<DoctorResult> {
+  return withHarmonyProjectLockAsync(root, 'doctor', () => doctorUnlockedAsync(root, options));
 }
 
 function formatDoctor(result: DoctorResult): string {

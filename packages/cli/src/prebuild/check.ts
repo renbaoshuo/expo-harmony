@@ -12,7 +12,9 @@ import { HarmonyCliError } from '../errors';
 import { isInside } from '../path';
 import { spawnAsync } from '../process';
 import { withHarmonyProjectLockAsync } from '../projectLock';
-import { createHarmonyToolchainEnv, resolveHarmonyBuildPlanAsync, type HarmonyBuildPlan } from '../tools';
+import { createHarmonyToolchainEnv } from '../native/toolchain';
+import { resolveHarmonyBuildPlanAsync } from '../native/project';
+import { type HarmonyBuildPlan } from '../native/types';
 import { resolveExpoCli } from '../expo';
 import { packAsync } from './template';
 

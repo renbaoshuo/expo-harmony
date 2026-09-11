@@ -31,6 +31,11 @@
       "default": "./build/index.js"
     },
     "./bin/expo-harmony": "./build/bin/expo-harmony.js",
+    "./native-build": {
+      "types": "./build/native/hvigor.d.ts",
+      "require": "./build/native/hvigor.js",
+      "default": "./build/native/hvigor.js"
+    },
     "./internal/prebuild": {
       "types": "./build/internal/prebuild.d.ts",
       "require": "./build/internal/prebuild.js",

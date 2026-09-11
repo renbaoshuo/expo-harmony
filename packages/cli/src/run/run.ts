@@ -7,33 +7,18 @@ import {
   selectDeviceAsync,
 } from './devices';
 import { HarmonyCliError } from '../errors';
-import { exportEmbedAsync } from '../exportEmbed/export';
-import type { HarmonyExportManifest } from '../exportEmbed/manifest';
-import {
-  resolveHarmonyBuildPlanAsync,
-  resolveHarmonyEmulator,
-  resolveHarmonyToolchain,
-  type HarmonyBuildPlan,
-} from '../tools';
-import { installHarmonyDependenciesAsync } from './install';
+import { resolveHarmonyEmulator, resolveHarmonyToolchain } from '../native/toolchain';
+import { type HarmonyBuildPlan } from '../native/types';
 import {
   requireExistingMetroAsync,
   startExpoMetroAsync,
   type MetroSession,
 } from './metro';
-import {
-  commitHarmonyNativeBuildCacheAsync,
-  prepareHarmonyNativeBuildCacheAsync,
-} from './cache';
-import { toPosixPath } from '../path';
 import { withHarmonyProjectLockAsync } from '../projectLock';
-import {
-  ensureGeneratedProjectAsync,
-  isNonEmptyRegularFile,
-  progress,
-  runCheckedAsync,
-  timed,
-} from '../buildHap/common';
+import { buildNativeAsync, type NativeBuildResult } from '../native/build';
+import { prepareNativeProjectAsync } from '../native/prepareProject';
+import { progress } from '../log';
+import { timedAsync } from '../profile';
 
 export interface HarmonyRunOptions {
   appId?: string;
@@ -47,11 +32,9 @@ export interface HarmonyRunOptions {
   variant?: 'debug' | 'release';
 }
 
-export interface HarmonyRunResult {
+export interface HarmonyRunResult extends NativeBuildResult {
   bundleName: string;
   device: { id: string; transport: string };
-  export: null | { assetCount: number; bundleSha256: string; sourceMapSha256: string };
-  hapPath: string;
   installed: boolean;
   launched: true;
   metro: { owner: 'disabled' | 'existing' | 'started'; port: number };
@@ -62,7 +45,6 @@ export interface HarmonyRunResult {
 }
 
 interface HarmonyRunSessionOptions extends HarmonyRunOptions {
-  /** Give a CLI-started Metro process ownership of the current terminal. */
   interactiveBundler?: boolean;
 }
 
@@ -101,10 +83,10 @@ function resolveRunIdentity(plan: HarmonyBuildPlan, options: NormalizedRunOption
 }
 
 async function runHarmonyUnlockedAsync(
-  projectRoot: string,
+  root: string,
   options: HarmonyRunSessionOptions = {}
 ): Promise<HarmonyRunSession> {
-  const normalizedOptions: NormalizedRunOptions = {
+  const settings: NormalizedRunOptions = {
     appId: options.appId,
     device: options.device,
     interactiveBundler: Boolean(options.interactiveBundler),
@@ -118,105 +100,52 @@ async function runHarmonyUnlockedAsync(
   };
   const steps: Record<string, number> = {};
 
-  await ensureGeneratedProjectAsync(projectRoot, {
-    ...normalizedOptions,
-    skipGeneratedProjectCheck: true,
+  const plan = await prepareNativeProjectAsync(root, {
+    ...settings,
+    check: false,
   }, steps);
 
-  const plan = await timed(steps, 'buildPlan', () => resolveHarmonyBuildPlanAsync(
-    projectRoot,
-    { buildMode: normalizedOptions.variant }
-  ));
-  const identity = resolveRunIdentity(plan, normalizedOptions);
-  const toolchain = resolveHarmonyToolchain();
+  const identity = resolveRunIdentity(plan, settings);
+  const tools = resolveHarmonyToolchain();
 
-  progress(normalizedOptions, 'Selecting a Harmony device or emulator');
-  const device = await timed(steps, 'device', () => selectDeviceAsync(
-    toolchain.hdc,
-    normalizedOptions.device,
+  progress(settings, 'Selecting a Harmony device or emulator');
+  const device = await timedAsync(steps, 'device', () => selectDeviceAsync(
+    tools.hdc,
+    settings.device,
     {
       cwd: plan.harmonyRoot,
-      emulator: resolveHarmonyEmulator(toolchain),
-      emulatorLogFile: path.join(projectRoot, '.expo', 'harmony', 'emulator.log'),
-      onProgress: message => progress(normalizedOptions, message),
+      emulator: resolveHarmonyEmulator(tools),
+      emulatorLogFile: path.join(root, '.expo', 'harmony', 'emulator.log'),
+      onProgress: message => progress(settings, message),
     }
   ));
 
-  let exportManifest: HarmonyExportManifest | null = null;
-  if (normalizedOptions.variant === 'release') {
-    progress(normalizedOptions, 'Exporting the release Hermes bundle');
-    exportManifest = await timed(steps, 'export', () => exportEmbedAsync(
-      projectRoot,
-      { resetCache: normalizedOptions.resetCache, skipDoctor: true }
-    ));
-  } else {
-    steps.export = 0;
-  }
-
-  progress(normalizedOptions, 'Installing Harmony project dependencies');
-  await timed(steps, 'ohpm', () => installHarmonyDependenciesAsync(plan, toolchain));
+  const built = await buildNativeAsync(root, plan, tools, settings, steps);
 
   let metro: HarmonyRunSession['metro'] = {
     owner: 'disabled',
-    port: normalizedOptions.port,
+    port: settings.port,
     stop: async () => {},
     waitAsync: async () => {},
   };
+
   try {
-    progress(normalizedOptions, 'Checking Harmony native dependency cache');
-    const nativeBuildCache = await timed(steps, 'nativeCache', () => (
-      prepareHarmonyNativeBuildCacheAsync(projectRoot, plan)
-    ));
-
-    if (nativeBuildCache.changed) {
-      progress(normalizedOptions, 'Invalidated stale Harmony native build objects');
-    }
-
-    progress(normalizedOptions, `Building the ${normalizedOptions.variant} HAP`);
-    const buildEnv = {
-      ...process.env,
-      EXPO_HARMONY_NODE: process.env.EXPO_HARMONY_NODE || process.execPath,
-      EXPO_METRO_TARGET: 'harmony',
-      HERMES_V1_ENABLED: 'true',
-      ...(normalizedOptions.variant === 'release' ? { EXPO_HARMONY_BUNDLE_PREBUILT: '1' } : {}),
-      ...(toolchain.sdkHome && !process.env.DEVECO_SDK_HOME
-        ? { DEVECO_SDK_HOME: toolchain.sdkHome }
-        : {}),
-    };
-    await timed(steps, 'build', () => runCheckedAsync(toolchain.hvigor.command, [
-      ...toolchain.hvigor.args,
-      ...plan.hvigorArgs,
-    ], {
-      code: 'ERR_HARMONY_BUILD_FAILED',
-      cwd: plan.harmonyRoot,
-      env: buildEnv,
-      message: 'Hvigor build',
-      operation: 'hvigor-build',
-      timeoutMs: 15 * 60_000,
-    }));
-
-    if (!isNonEmptyRegularFile(plan.expectedHap)) {
-      throw new HarmonyCliError('ERR_HARMONY_HAP_MISSING', 'Hvigor completed without producing the expected non-empty regular HAP.', { operation: 'verify-hap' });
-    }
-
-    await timed(steps, 'nativeCacheCommit', () => commitHarmonyNativeBuildCacheAsync(nativeBuildCache));
-
-    if (normalizedOptions.variant === 'debug') {
-      progress(normalizedOptions, normalizedOptions.noBundler
+    if (settings.variant === 'debug') {
+      progress(settings, settings.noBundler
         ? 'Connecting to the existing Expo Metro server'
         : 'Starting Expo Metro');
-      metro = await timed(steps, 'metro', () => normalizedOptions.noBundler
-        ? requireExistingMetroAsync(normalizedOptions.port)
-        : startExpoMetroAsync(projectRoot, {
-            interactive: normalizedOptions.interactiveBundler,
-            port: normalizedOptions.port,
-            resetCache: normalizedOptions.resetCache,
+      metro = await timedAsync(steps, 'metro', () => settings.noBundler
+        ? requireExistingMetroAsync(settings.port)
+        : startExpoMetroAsync(root, {
+            interactive: settings.interactiveBundler,
+            port: settings.port,
+            resetCache: settings.resetCache,
           }));
 
-      await timed(steps, 'metroPort', () => configureMetroPortAsync(
-        toolchain.hdc,
+      await timedAsync(steps, 'metroPort', () => configureMetroPortAsync(
+        tools.hdc,
         device,
-        normalizedOptions.port,
+        settings.port,
         { cwd: plan.harmonyRoot }
       ));
     } else {
@@ -224,21 +153,21 @@ async function runHarmonyUnlockedAsync(
       steps.metroPort = 0;
     }
 
-    if (normalizedOptions.noInstall) {
+    if (settings.noInstall) {
       steps.install = 0;
     } else {
-      progress(normalizedOptions, `Installing the HAP on ${device.id}`);
-      await timed(steps, 'install', () => installHapAsync(
-        toolchain.hdc,
+      progress(settings, `Installing the HAP on ${device.id}`);
+      await timedAsync(steps, 'install', () => installHapAsync(
+        tools.hdc,
         device,
         plan.expectedHap,
         { cwd: plan.harmonyRoot }
       ));
     }
 
-    progress(normalizedOptions, `Launching ${identity.bundleName}`);
-    await timed(steps, 'launch', () => launchAppAsync(
-      toolchain.hdc,
+    progress(settings, `Launching ${identity.bundleName}`);
+    await timedAsync(steps, 'launch', () => launchAppAsync(
+      tools.hdc,
       device,
       identity.bundleName,
       identity.abilityName,
@@ -251,15 +180,8 @@ async function runHarmonyUnlockedAsync(
         id: device.id,
         transport: device.transport,
       },
-      export: exportManifest
-        ? {
-            assetCount: exportManifest.assets.length,
-            bundleSha256: exportManifest.bundle.sha256,
-            sourceMapSha256: exportManifest.sourceMap.sha256,
-          }
-        : null,
-      hapPath: toPosixPath(path.relative(projectRoot, plan.expectedHap)),
-      installed: !normalizedOptions.noInstall,
+      ...built,
+      installed: !settings.noInstall,
       launched: true,
       metro: {
         owner: metro.owner,
@@ -268,32 +190,37 @@ async function runHarmonyUnlockedAsync(
       ok: true,
       schemaVersion: 1,
       steps,
-      variant: normalizedOptions.variant,
+      variant: settings.variant,
     };
 
     return { metro, result };
   } catch (error) {
     await metro.stop();
-    throw error;
+
+    throw new HarmonyCliError(error?.code || 'ERR_HARMONY_UNKNOWN', error?.message || 'Harmony run failed.', {
+      cause: error,
+      exitCode: error?.exitCode,
+      operation: error?.operation,
+    });
   }
 }
 
 async function runHarmonySessionAsync(
-  projectRoot: string,
+  root: string,
   options: HarmonyRunSessionOptions = {}
 ): Promise<HarmonyRunSession> {
   return withHarmonyProjectLockAsync(
-    projectRoot,
+    root,
     'run',
-    () => runHarmonyUnlockedAsync(projectRoot, options)
+    () => runHarmonyUnlockedAsync(root, options)
   );
 }
 
 async function runHarmonyAsync(
-  projectRoot: string,
+  root: string,
   options: HarmonyRunOptions = {}
 ): Promise<HarmonyRunResult> {
-  const session = await runHarmonySessionAsync(projectRoot, options);
+  const session = await runHarmonySessionAsync(root, options);
 
   try {
     return session.result;

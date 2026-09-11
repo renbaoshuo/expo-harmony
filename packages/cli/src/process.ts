@@ -28,6 +28,16 @@ export interface ProcessResult {
   timedOut: boolean;
 }
 
+interface CheckedProcessOptions {
+  code: string;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  message: string;
+  operation: string;
+  outputLimit?: number;
+  timeoutMs?: number;
+}
+
 class BoundedCapture {
   private buffers: Uint8Array[] = [];
   private head = 0;
@@ -346,4 +356,31 @@ function startManagedProcess(command: string, args: string[], options: ProcessOp
   };
 }
 
-export { formatDiagnostics, spawnAsync, startManagedProcess };
+async function runCheckedAsync(
+  command: string,
+  args: string[],
+  options: CheckedProcessOptions
+) {
+  const result = await spawnAsync(command, args, {
+    capture: true,
+    cwd: options.cwd,
+    env: options.env,
+    operation: options.operation,
+    outputLimit: options.outputLimit || 2 * 1024 * 1024,
+    timeoutMs: options.timeoutMs,
+  });
+
+  if (result.code !== 0 || result.timedOut) {
+    const diagnostics = formatDiagnostics(result);
+
+    throw new HarmonyCliError(
+      options.code,
+      `${options.message} exited with code ${result.code}${result.timedOut ? ' after timing out' : ''}.${diagnostics ? `\n${diagnostics}` : ''}`,
+      { exitCode: result.code || 1, operation: options.operation }
+    );
+  }
+
+  return result;
+}
+
+export { formatDiagnostics, runCheckedAsync, spawnAsync, startManagedProcess };

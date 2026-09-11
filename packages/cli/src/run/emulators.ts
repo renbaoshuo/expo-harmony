@@ -4,7 +4,7 @@ import spawn from 'cross-spawn';
 
 import { HarmonyCliError } from '../errors';
 import { formatDiagnostics, spawnAsync } from '../process';
-import type { HarmonyTool } from '../tools';
+import { type HarmonyTool } from '../native/toolchain';
 
 interface HarmonyEmulator {
   name: string;
@@ -67,10 +67,9 @@ function startEmulator(tool: HarmonyTool, name: string, logFile: string, cwd?: s
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const log = fs.openSync(logFile, 'w', 0o600);
   let failure: string | null = null;
+
   try {
-    // Emulator may remain alive for the whole GUI session. Give it its own
-    // process group and file-backed output so it survives the CLI/Metro exit.
-    // Default instance/image paths match the ones used by -list -details.
+    // A detached process with file output lets the emulator survive CLI exit.
     const child = spawn(tool.command, [...tool.args, '-start', name], {
       cwd,
       detached: true,
@@ -82,8 +81,7 @@ function startEmulator(tool: HarmonyTool, name: string, logFile: string, cwd?: s
       failure = cause.message;
     });
     child.once('exit', (code, signal) => {
-      // Some versions use a short-lived launcher. A zero exit alone does not
-      // prove readiness; the caller still checks the guest's name and boot state.
+      // Some launchers exit before the guest boots; HDC still has to confirm readiness.
       if (code !== 0) failure = signal ? `terminated by ${signal}` : `exited with code ${code}`;
     });
     child.unref();

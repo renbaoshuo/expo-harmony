@@ -2,14 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveHarmonyCommand } from '@expo-harmony/expo-modules-autolinking/tool-command';
 
-import {
-  readManifestIfPresentAsync,
-  resolveHarmonyBuildPath,
-  type HarmonyBuildDescriptor,
-} from '@expo-harmony/prebuild-config/internal';
-
-import { HarmonyCliError } from './errors';
-
 export interface HarmonyTool {
   args: string[];
   command: string;
@@ -22,23 +14,6 @@ export interface HarmonyToolchain {
   ohpm: HarmonyTool;
   sdkHome: string | null;
   toolsRoot: string | null;
-}
-
-export interface HarmonyBuildPlan {
-  abilityName: string;
-  buildMode: 'debug' | 'release';
-  bundleName: string;
-  expectedHap: string;
-  exportPaths: HarmonyBuildDescriptor['export'];
-  harmonyRoot: string;
-  hvigorArgs: string[];
-  moduleName: string;
-  moduleRoot: string;
-  nativeCache: HarmonyBuildDescriptor['nativeCache'];
-  nativeInputs: HarmonyBuildDescriptor['nativeInputs'];
-  projectFiles: HarmonyBuildDescriptor['projectFiles'];
-  productName: string;
-  targetName: string;
 }
 
 function existingFile(candidates: string[]): string | null {
@@ -55,7 +30,7 @@ const RequiredSdkComponents = Object.freeze([
   'default/openharmony/toolchains/oh-uni-package.json',
 ]);
 
-function sdkRootsNear(seed) {
+function sdkRootsNear(seed: string): string[] {
   const roots = [];
   let cursor = path.resolve(seed);
 
@@ -75,7 +50,7 @@ function sdkRootsNear(seed) {
   return roots;
 }
 
-function resolveHarmonySdkRoot(env, platform) {
+function resolveHarmonySdkRoot(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string | null {
   const seeds = [
     env.DEVECO_SDK_HOME,
     env.HARMONY_HOME,
@@ -93,7 +68,7 @@ function resolveHarmonySdkRoot(env, platform) {
   )) || null;
 }
 
-function devEcoInstallRoots(sdkHome) {
+function devEcoInstallRoots(sdkHome: string): string[] {
   const ancestors = [sdkHome, path.dirname(sdkHome), path.dirname(path.dirname(sdkHome))];
   const sdkDirectory = ancestors.find(candidate => path.basename(candidate).toLowerCase() === 'sdk');
   const roots = [
@@ -105,7 +80,7 @@ function devEcoInstallRoots(sdkHome) {
   return [...new Set(roots)];
 }
 
-function devEcoLayouts(sdkHome) {
+function devEcoLayouts(sdkHome: string) {
   return devEcoInstallRoots(sdkHome).flatMap(root => [
     {
       nodeRoot: path.join(root, 'tools', 'node'),
@@ -118,7 +93,11 @@ function devEcoLayouts(sdkHome) {
   ]);
 }
 
-function devEcoNode(layout, platform, env) {
+function devEcoNode(
+  layout: { nodeRoot: string },
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv
+): Pick<HarmonyTool, 'command' | 'source'> | null {
   if (env.HARMONY_NODE) return { command: env.HARMONY_NODE, source: 'override' };
 
   const executable = platform === 'win32' ? 'node.exe' : 'node';
@@ -134,9 +113,7 @@ function resolveHarmonyToolchain(): HarmonyToolchain {
   const env = process.env;
   const platform = process.platform;
 
-  // Hvigor expects the SDK root containing default/, not default/ itself.
-  // Reject metadata-only candidates so doctor cannot claim an SDK is
-  // buildable without its HMS, OpenHarmony, native, ETS, and toolchain parts.
+  // Hvigor needs the complete SDK root containing default/, not default/ itself.
   const sdkHome = resolveHarmonySdkRoot(env, platform);
   const layouts = sdkHome ? devEcoLayouts(sdkHome) : [];
 
@@ -234,88 +211,4 @@ function resolveHarmonyEmulator(toolchain: HarmonyToolchain): HarmonyTool {
     : { args: [], command: executable, source: 'path' };
 }
 
-function createHarmonyBuildPlan(
-  projectRoot: string,
-  build: HarmonyBuildDescriptor,
-  mode: 'debug' | 'release'
-): HarmonyBuildPlan {
-  const resolve = relative => resolveHarmonyBuildPath(projectRoot, relative);
-  const variant = build.variants[mode];
-
-  return {
-    abilityName: build.identity.abilityName,
-    buildMode: mode,
-    bundleName: build.identity.bundleName,
-    expectedHap: resolve(variant.expectedHap),
-    exportPaths: Object.fromEntries(
-      Object.entries(build.export).map(([name, relative]) => [name, resolve(relative)])
-    ) as HarmonyBuildPlan['exportPaths'],
-    harmonyRoot: resolve(build.harmonyRoot),
-    hvigorArgs: [...variant.hvigorArgs],
-    moduleName: build.identity.moduleName,
-    moduleRoot: resolve(build.moduleRoot),
-    nativeCache: {
-      invalidationRoots: build.nativeCache.invalidationRoots.map(resolve),
-      stateFile: resolve(build.nativeCache.stateFile),
-    },
-    nativeInputs: {
-      lockfile: resolve(build.nativeInputs.lockfile),
-      manifest: resolve(build.nativeInputs.manifest),
-    },
-    productName: build.identity.productName,
-    projectFiles: Object.fromEntries(
-      Object.entries(build.projectFiles).map(([name, relative]) => [name, resolve(relative)])
-    ) as HarmonyBuildPlan['projectFiles'],
-    targetName: build.identity.targetName,
-  };
-}
-
-async function resolveHarmonyBuildPlanIfPresentAsync(
-  projectRoot: string,
-  options: { buildMode?: 'debug' | 'release' } = {}
-): Promise<HarmonyBuildPlan | null> {
-  const mode = options.buildMode || 'debug';
-  if (!['debug', 'release'].includes(mode)) {
-    throw new HarmonyCliError('ERR_HARMONY_CONFIG_INVALID', `Harmony buildMode must be debug or release, received: ${mode}`, { operation: 'resolve-build' });
-  }
-
-  let manifest;
-
-  try {
-    manifest = await readManifestIfPresentAsync(projectRoot);
-  } catch (cause) {
-    throw new HarmonyCliError(
-      cause.code || 'ERR_HARMONY_TEMPLATE_INVALID',
-      `Cannot read the generated Harmony build descriptor: ${cause.message}`,
-      { cause, operation: 'resolve-build' }
-    );
-  }
-
-  if (!manifest) return null;
-
-  return createHarmonyBuildPlan(projectRoot, manifest.build, mode);
-}
-
-async function resolveHarmonyBuildPlanAsync(
-  projectRoot: string,
-  options: { buildMode?: 'debug' | 'release' } = {}
-): Promise<HarmonyBuildPlan> {
-  const plan = await resolveHarmonyBuildPlanIfPresentAsync(projectRoot, options);
-  if (!plan) {
-    throw new HarmonyCliError(
-      'ERR_HARMONY_MANIFEST_DRIFT',
-      'Cannot read the generated Harmony build descriptor because the CNG manifest is missing.',
-      { operation: 'resolve-build' }
-    );
-  }
-
-  return plan;
-}
-
-export {
-  createHarmonyToolchainEnv,
-  resolveHarmonyBuildPlanAsync,
-  resolveHarmonyBuildPlanIfPresentAsync,
-  resolveHarmonyEmulator,
-  resolveHarmonyToolchain,
-};
+export { createHarmonyToolchainEnv, resolveHarmonyEmulator, resolveHarmonyToolchain };

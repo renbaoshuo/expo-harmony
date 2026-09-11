@@ -3,11 +3,11 @@ import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 
-import { doctorAsync, type DoctorResult } from '../doctor/doctor';
+import { doctorAsync } from '../doctor/doctor';
 import { resolveHarmonyEntryPoint } from '../entry';
 import { HarmonyCliError } from '../errors';
 import { withHarmonyProjectLockAsync } from '../projectLock';
-import { resolveHarmonyBuildPlanAsync } from '../tools';
+import { resolveHarmonyBuildPlanAsync } from '../native/project';
 import { formatDiagnostics, spawnAsync } from '../process';
 import { resolveExpoCli, resolveExpoHermesBuilder } from '../expo';
 import {
@@ -32,65 +32,65 @@ export interface ExportTemporary {
 }
 
 function createExpoExportEmbedArgs(
-  projectRoot: string,
-  entryFile: string,
-  temporary: ExportTemporary,
+  root: string,
+  entry: string,
+  temp: ExportTemporary,
   options: ExportOptions = {}
 ) {
   return [
     'export:embed',
     '--platform', 'harmony',
-    '--entry-file', entryFile,
-    '--bundle-output', temporary.javascript,
-    '--assets-dest', temporary.assets,
+    '--entry-file', entry,
+    '--bundle-output', temp.javascript,
+    '--assets-dest', temp.assets,
     '--dev', 'false',
     '--minify', 'false',
-    '--sourcemap-output', temporary.metroSourceMap,
+    '--sourcemap-output', temp.metroSourceMap,
     '--sourcemap-sources-root', '.',
     '--unstable-transform-profile', 'hermes-stable',
     ...(options.resetCache ? ['--reset-cache=true'] : []),
-    projectRoot,
+    root,
   ];
 }
 
-function assertDoctor(result: DoctorResult) {
-  if (result.ok) return;
-
-  const failing = result.checks.filter(check => check.status === 'error').map(check => check.id);
-  throw new HarmonyCliError('ERR_HARMONY_EXPORT_DOCTOR', `Harmony doctor found blocking checks: ${failing.join(', ') || 'unknown'}.`, { operation: 'doctor' });
-}
-
 async function exportEmbedUnlockedAsync(
-  projectRoot: string,
+  root: string,
   options: ExportOptions = {}
 ): Promise<HarmonyExportManifest> {
-  if (!options.skipDoctor) assertDoctor(await doctorAsync(projectRoot));
+  if (!options.skipDoctor) {
+    const doctor = await doctorAsync(root);
+    if (!doctor.ok) {
+      const checks = doctor.checks.filter(check => check.status === 'error').map(check => check.id);
 
-  const plan = await resolveHarmonyBuildPlanAsync(projectRoot, { buildMode: 'release' });
+      throw new HarmonyCliError('ERR_HARMONY_EXPORT_DOCTOR', `Harmony doctor found blocking checks: ${checks.join(', ') || 'unknown'}.`, { operation: 'doctor' });
+    }
+  }
+
+  const plan = await resolveHarmonyBuildPlanAsync(root, { buildMode: 'release' });
   const paths = exportPaths(plan);
 
   if (options.check) return await validatePublishedExportAsync(paths);
 
-  const entryFile = resolveHarmonyEntryPoint(projectRoot);
-  const temporaryRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'expo-harmony-export-'));
-  const temporary: ExportTemporary = {
-    assets: path.join(temporaryRoot, 'assets'),
-    bundle: path.join(temporaryRoot, 'hermes_bundle.hbc'),
-    javascript: path.join(temporaryRoot, 'index.js'),
-    metroSourceMap: path.join(temporaryRoot, 'index.js.map'),
-    sourceMap: path.join(temporaryRoot, 'hermes_bundle.hbc.map'),
+  const entry = resolveHarmonyEntryPoint(root);
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'expo-harmony-export-'));
+  const temp: ExportTemporary = {
+    assets: path.join(directory, 'assets'),
+    bundle: path.join(directory, 'hermes_bundle.hbc'),
+    javascript: path.join(directory, 'index.js'),
+    metroSourceMap: path.join(directory, 'index.js.map'),
+    sourceMap: path.join(directory, 'hermes_bundle.hbc.map'),
   };
 
   try {
-    await fs.promises.mkdir(temporary.assets, { recursive: true });
+    await fs.promises.mkdir(temp.assets, { recursive: true });
 
-    const expo = resolveExpoCli(projectRoot);
+    const expo = resolveExpoCli(root);
     const result = await spawnAsync(process.execPath, [
       expo.cliPath,
-      ...createExpoExportEmbedArgs(projectRoot, entryFile, temporary, options),
+      ...createExpoExportEmbedArgs(root, entry, temp, options),
     ], {
       capture: true,
-      cwd: projectRoot,
+      cwd: root,
       env: {
         ...process.env,
         EXPO_METRO_TARGET: 'harmony',
@@ -104,6 +104,7 @@ async function exportEmbedUnlockedAsync(
 
     if (result.code !== 0 || result.timedOut) {
       const diagnostics = formatDiagnostics(result);
+
       throw new HarmonyCliError(
         'ERR_HARMONY_EXPORT_FAILED',
         `Expo export:embed exited with code ${result.code}${result.timedOut ? ' after timing out' : ''}.${diagnostics ? `\n${diagnostics}` : ''}`,
@@ -115,24 +116,27 @@ async function exportEmbedUnlockedAsync(
     // then explicitly hand its JS and source map to Expo's own Hermes exporter.
     try {
       const [code, map] = await Promise.all([
-        fs.promises.readFile(temporary.javascript, 'utf8'),
-        fs.promises.readFile(temporary.metroSourceMap, 'utf8'),
+        fs.promises.readFile(temp.javascript, 'utf8'),
+        fs.promises.readFile(temp.metroSourceMap, 'utf8'),
       ]);
-      const buildHermesBundleAsync = resolveExpoHermesBuilder(projectRoot);
+      const buildHermesBundleAsync = resolveExpoHermesBuilder(root);
+
       // Expo resolves hermes-compiler from react-native. For Harmony, resolve it
       // from RNOH instead of the app's Android/iOS React Native installation.
-      const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
-      const harmonyRuntime = path.dirname(projectRequire.resolve('@react-native-oh/react-native-harmony/package.json'));
-      const compilerModules = path.join(temporaryRoot, 'node_modules');
-      await fs.promises.mkdir(compilerModules);
-      await fs.promises.symlink(harmonyRuntime, path.join(compilerModules, 'react-native'),
+      const require = createRequire(path.join(root, 'package.json'));
+      const runtime = path.dirname(require.resolve('@react-native-oh/react-native-harmony/package.json'));
+      const modules = path.join(directory, 'node_modules');
+
+      await fs.promises.mkdir(modules);
+      await fs.promises.symlink(runtime, path.join(modules, 'react-native'),
         process.platform === 'win32' ? 'junction' : 'dir');
+
       const output = await buildHermesBundleAsync({
         code,
-        filename: entryFile,
+        filename: entry,
         map,
         minify: true,
-        projectRoot: temporaryRoot,
+        projectRoot: directory,
       });
 
       if (!(output?.hbc instanceof Uint8Array) || typeof output.sourcemap !== 'string') {
@@ -140,11 +144,18 @@ async function exportEmbedUnlockedAsync(
       }
 
       await Promise.all([
-        fs.promises.writeFile(temporary.bundle, output.hbc),
-        fs.promises.writeFile(temporary.sourceMap, output.sourcemap),
+        fs.promises.writeFile(temp.bundle, output.hbc),
+        fs.promises.writeFile(temp.sourceMap, output.sourcemap),
       ]);
     } catch (cause) {
-      if (cause instanceof HarmonyCliError) throw cause;
+      if (cause instanceof HarmonyCliError) {
+        throw new HarmonyCliError(cause.code, cause.message, {
+          cause,
+          exitCode: cause.exitCode,
+          operation: cause.operation,
+        });
+      }
+
       throw new HarmonyCliError(
         'ERR_HARMONY_EXPORT_HERMES',
         'Expo failed to compile the Harmony bundle to Hermes bytecode.',
@@ -152,26 +163,24 @@ async function exportEmbedUnlockedAsync(
       );
     }
 
-    const bytecode = await assertHermesBundle(temporary.bundle);
-    await assertSourceMap(temporary.sourceMap);
+    const bytecode = await assertHermesBundle(temp.bundle);
+    await assertSourceMap(temp.sourceMap);
 
-    return await publishExportAsync(projectRoot, paths, temporary, entryFile, bytecode);
+    return await publishExportAsync(root, paths, temp, entry, bytecode);
   } finally {
-    await fs.promises.rm(temporaryRoot, { force: true, recursive: true });
+    await fs.promises.rm(directory, { force: true, recursive: true });
   }
 }
 
 async function exportEmbedAsync(
-  projectRoot: string,
+  root: string,
   options: ExportOptions = {}
 ): Promise<HarmonyExportManifest> {
   return withHarmonyProjectLockAsync(
-    projectRoot,
+    root,
     'export:embed',
-    () => exportEmbedUnlockedAsync(projectRoot, options)
+    () => exportEmbedUnlockedAsync(root, options)
   );
 }
 
-export {
-  exportEmbedAsync,
-};
+export { exportEmbedAsync };
