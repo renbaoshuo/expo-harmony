@@ -1,4 +1,5 @@
 import type { ExpoModuleContext } from './ExpoModule';
+import type { ExpoRuntimeSession } from '../appcontext/ExpoRuntimeSession';
 import {
   ExpoFunction0,
   ExpoFunction1,
@@ -339,7 +340,7 @@ export abstract class ExpoSharedObject {
     this.notifyWillRelease(definition.moduleNameValue(), definition.name());
 
     try {
-      this.sharedObjectDidRelease();
+      this.context.runCleanup((): void => this.sharedObjectDidRelease());
     } catch (error) {
       reportSharedObjectCallbackFailure(definition.moduleNameValue(), definition.name(), 'sharedObjectDidRelease', error);
     }
@@ -362,7 +363,7 @@ export abstract class ExpoSharedObject {
     this.ownerRegistry = undefined;
 
     try {
-      this.sharedObjectDidRelease();
+      this.context.runCleanup((): void => this.sharedObjectDidRelease());
     } catch (error) {
       reportSharedObjectCallbackFailure(binding.moduleName, binding.className, 'sharedObjectDidRelease', error);
     }
@@ -390,7 +391,7 @@ export abstract class ExpoSharedObject {
     if (this.willReleaseNotified) return;
     this.willReleaseNotified = true;
     try {
-      this.sharedObjectWillRelease();
+      this.context.runCleanup((): void => this.sharedObjectWillRelease());
     } catch (error) {
       reportSharedObjectCallbackFailure(moduleName, className, 'sharedObjectWillRelease', error);
     }
@@ -985,6 +986,7 @@ export class ExpoSharedObjectClassDefinition<ObjectType extends ExpoSharedObject
 /** @internal Runtime-scoped identity and invocation owner. */
 export class ExpoSharedObjectRegistry {
   private readonly runtimeEpoch: string;
+  private readonly session?: ExpoRuntimeSession;
   private readonly classes: Map<string, ExpoSharedObjectClassRuntime> = new Map<string, ExpoSharedObjectClassRuntime>();
   private readonly objects: Map<number, ExpoSharedObject> = new Map<number, ExpoSharedObject>();
   private readonly staged: Map<number, ExpoSharedObject> = new Map<number, ExpoSharedObject>();
@@ -992,8 +994,9 @@ export class ExpoSharedObjectRegistry {
   private nextAuthorId: number = 1;
   private valid: boolean = true;
 
-  constructor(runtimeEpoch: string) {
+  constructor(runtimeEpoch: string, session?: ExpoRuntimeSession) {
     this.runtimeEpoch = runtimeEpoch;
+    this.session = session;
   }
 
   registerClass(moduleName: string, definition: ExpoSharedObjectClassRuntime): void {
@@ -1190,6 +1193,18 @@ export class ExpoSharedObjectRegistry {
   }
 
   setObserving(objectId: number, moduleName: string, className: string, eventName: string, observing: boolean): void {
+    if (!observing) {
+      const object = this.objects.get(objectId);
+      const binding = object?.currentBinding();
+      if (object === undefined || binding === undefined) return;
+      if (binding.moduleName !== moduleName || binding.className !== className || !binding.events.has(eventName)) {
+        throw new Error(`Expo SharedObject '${moduleName}.${className}' has mismatched event metadata.`);
+      }
+
+      object.context.runCleanup((): void => object.onStopListeningToEvent(eventName));
+      return;
+    }
+
     const object = this.requireObject(objectId, moduleName, className);
     this.requireClass(moduleName, className).notifyObserving(object, eventName, observing);
   }
@@ -1200,6 +1215,7 @@ export class ExpoSharedObjectRegistry {
   }
 
   memoryPressure(objectId: number): number {
+    this.assertValid();
     const object = this.objects.get(objectId);
     if (object === undefined) {
       throw new Error(`Cannot read memory pressure for unknown Expo SharedObject ${objectId}.`);
@@ -1282,6 +1298,7 @@ export class ExpoSharedObjectRegistry {
   }
 
   decodeArguments(args: ESObject[]): ESObject[] {
+    this.assertValid();
     return args.map((value: ESObject): ESObject => this.decodeValue(value, 0));
   }
 
@@ -1681,6 +1698,7 @@ export class ExpoSharedObjectRegistry {
 
   private assertValid(): void {
     if (!this.valid) throw new Error('The ArkTS Expo SharedObject registry has been invalidated.');
+    this.session?.assertOpen();
   }
 }
 

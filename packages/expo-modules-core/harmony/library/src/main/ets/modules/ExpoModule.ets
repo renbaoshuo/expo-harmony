@@ -2,6 +2,13 @@ import { AbilityConstant, abilityAccessCtrl, common, PermissionRequestResult, Pe
 import { window } from '@kit.ArkUI';
 import { lang } from '@kit.ArkTS';
 import deviceInfo from '@ohos.deviceInfo';
+import { ExpoRuntimeConfig } from '../appcontext/ExpoRuntimeConfig';
+import type { ExpoRuntimeSession } from '../appcontext/ExpoRuntimeSession';
+import { ExpoPermissionStatus, ExpoPermissionRequestResult, ExpoRuntimePermissionsKey } from '../appcontext/ExpoRuntimePermissions';
+import { ExpoAppDirectories, ExpoRuntimeDirectoriesKey } from '../appcontext/ExpoRuntimeDirectories';
+import { ExpoServiceClass, ExpoServiceContext, ExpoServicesRegistry } from '../appcontext/ExpoServicesRegistry';
+import { ExpoFileAccessMode, ExpoFileAccessKey } from '../appcontext/ExpoFileAccess';
+import fs from '@ohos.file.fs';
 import { LifecycleState, UITurboModuleContext } from '@rnoh/react-native-openharmony';
 import {
   EXPO_LIFECYCLE_ACTIVITY_DESTROY,
@@ -54,8 +61,10 @@ import { ExpoModuleError } from './ExpoModuleError';
 import { createExpoModuleLogger, ExpoModuleLogger } from '../appcontext/ExpoModuleLogger';
 import { ExpoLifecycleEventQueue, ExpoLifecycleSink } from '../appcontext/LifecycleDispatcher';
 import { snapshotExpoEventArguments } from './ExpoEventValueSnapshot';
-import { ensureDirectoryUri } from '../appcontext/FileUri';
+import { ensureDirectoryUri, filePathFromUri } from '../appcontext/FileUri';
 import { ExpoRnohWorkerParams, ExpoRnohWorkerTask, runOnRnohWorker } from '../appcontext/RnohWorkerAdapter';
+
+export { ExpoPermissionStatus } from '../appcontext/ExpoRuntimePermissions';
 
 export type ExpoModuleLifecycleBody = () => void;
 
@@ -81,15 +90,6 @@ export enum ExpoAppLifecycleState {
   BEFORE_CREATE = 'beforeCreate',
   BACKGROUND = 'background',
   FOREGROUND = 'foreground',
-}
-
-/** API-level-independent permission state exposed to module authors. */
-export enum ExpoPermissionStatus {
-  DENIED = -1,
-  GRANTED = 0,
-  NOT_DETERMINED = 1,
-  INVALID = 2,
-  RESTRICTED = 3,
 }
 
 /** A closure that remains on the current Modules/UI ArkTS actor. */
@@ -171,6 +171,23 @@ export interface ExpoModuleRegistration {
   readonly registrationId: string;
   readonly moduleClassName: string;
   readonly factory: ExpoModuleFactory;
+}
+
+function overrideExpoModules(registrations: ExpoModuleRegistration[], overrides: ExpoModuleRegistration[]): ExpoModuleRegistration[] {
+  const ids = new Set<string>();
+  registrations.forEach((entry: ExpoModuleRegistration): void => {
+    if (ids.has(entry.registrationId)) throw new Error(`Duplicate Expo registration '${entry.registrationId}'.`);
+    ids.add(entry.registrationId);
+  });
+
+  const factories = new Map<string, ExpoModuleRegistration>();
+  overrides.forEach((entry: ExpoModuleRegistration): void => {
+    if (!ids.has(entry.registrationId)) throw new Error(`Unknown Expo override target '${entry.registrationId}'.`);
+    if (factories.has(entry.registrationId)) throw new Error(`Duplicate Expo override '${entry.registrationId}'.`);
+    factories.set(entry.registrationId, entry);
+  });
+
+  return registrations.map((entry: ExpoModuleRegistration): ExpoModuleRegistration => factories.get(entry.registrationId) ?? entry);
 }
 
 interface ExpoResolvedModuleRegistration {
@@ -346,6 +363,8 @@ export class ExpoModuleContext {
   private readonly reloadRuntime: ExpoRuntimeReload;
   private readonly epoch: string;
   private readonly initialWantValue?: Want;
+  readonly session?: ExpoRuntimeSession;
+  private readonly serviceRegistry: ExpoServicesRegistry;
   private moduleName?: string = undefined;
   private declaredEvents: Set<string> = new Set<string>();
   private declaredEventPayloadTypes: Map<string, ExpoValueType<ESObject>> = new Map<string, ExpoValueType<ESObject>>();
@@ -355,15 +374,18 @@ export class ExpoModuleContext {
   private scopedLogger?: ExpoModuleLogger = undefined;
   private acceptsEvents: boolean = true;
   private valid: boolean = true;
+  private cleanupDepth: number = 0;
 
   constructor(
     coreContext: UITurboModuleContext,
+    services: ExpoServicesRegistry,
     runtimeEpoch: string,
     hostId: string,
     hostRuntimeGeneration: number,
     dispatchRuntimeLifecycle: ExpoRuntimeLifecycleDispatcher,
     reloadRuntime: ExpoRuntimeReload,
     initialWant?: Want,
+    session?: ExpoRuntimeSession,
   ) {
     this.coreContext = coreContext;
     this.epoch = runtimeEpoch;
@@ -374,6 +396,8 @@ export class ExpoModuleContext {
     this.dispatchRuntimeLifecycle = dispatchRuntimeLifecycle;
     this.reloadRuntime = reloadRuntime;
     this.initialWantValue = initialWant;
+    this.session = session;
+    this.serviceRegistry = services;
   }
 
   /** @internal Called exactly once by ExpoModulesRegistry. */
@@ -408,13 +432,13 @@ export class ExpoModuleContext {
   /** Initial launch URI captured by RNOH when this Host/runtime was created. */
   get launchUri(): string | undefined {
     this.assertValid();
-    return this.coreContext.launchUri;
+    return this.session === undefined ? this.coreContext.launchUri : this.session.initialWant?.uri;
   }
 
   /** Initial Ability Want for modules that need launch parameters beyond the URI. */
   get initialWant(): Want | undefined {
     this.assertValid();
-    return this.initialWantValue;
+    return this.session === undefined ? this.initialWantValue : this.session.initialWant;
   }
 
   /** Debug state of the consuming RNOH application, not the prebuilt module HAR. */
@@ -452,19 +476,44 @@ export class ExpoModuleContext {
   /** `file://` URI for disposable cache files. */
   get cacheDirectory(): string {
     this.assertValid();
-    return ensureDirectoryUri(this.uiAbilityContext.cacheDir);
+    return ensureDirectoryUri(this.cachePath);
   }
 
   /** `file://` URI for persistent application files. */
   get persistentFilesDirectory(): string {
     this.assertValid();
-    return ensureDirectoryUri(this.uiAbilityContext.filesDir);
+    return ensureDirectoryUri(this.persistentFilesPath);
   }
 
   /** `file://` URI for temporary files owned by the current application. */
   get temporaryDirectory(): string {
     this.assertValid();
-    return ensureDirectoryUri(this.uiAbilityContext.tempDir);
+    return ensureDirectoryUri(this.temporaryPath);
+  }
+
+  get services(): ExpoServicesRegistry {
+    this.assertValid();
+    return this.serviceRegistry;
+  }
+
+  get cachePath(): string {
+    this.assertValid();
+    return this.services.require(ExpoRuntimeDirectoriesKey).directory(this.uiAbilityContext.cacheDir);
+  }
+
+  get persistentFilesPath(): string {
+    this.assertValid();
+    return this.services.require(ExpoRuntimeDirectoriesKey).directory(this.uiAbilityContext.filesDir);
+  }
+
+  get temporaryPath(): string {
+    this.assertValid();
+    return this.services.require(ExpoRuntimeDirectoriesKey).directory(this.uiAbilityContext.tempDir);
+  }
+
+  preferenceName(name: string): string {
+    this.assertValid();
+    return this.services.require(ExpoRuntimeDirectoriesKey).preferenceName(name);
   }
 
   get logger(): ExpoModuleLogger {
@@ -476,27 +525,92 @@ export class ExpoModuleContext {
   }
 
   get isValid(): boolean {
-    return this.valid;
+    return this.valid && this.acceptsEvents && (this.session?.isOpen ?? true);
   }
 
-  permissionStatus(permission: Permissions): ExpoPermissionStatus {
+  /** Optional OS history is only used to recover API <20's missing undetermined state. */
+  permissionStatus(permission: Permissions, denied?: boolean): ExpoPermissionStatus {
+    this.assertValid();
+
+    let system = this.systemPermissionStatus(permission);
+    if (deviceInfo.sdkApiVersion < 20 && system === ExpoPermissionStatus.DENIED && denied === false) {
+      system = ExpoPermissionStatus.NOT_DETERMINED;
+    }
+
+    const project = this.services.get(ExpoRuntimePermissionsKey)?.getPermissionStatus(permission, system) ?? system;
+    if (system === ExpoPermissionStatus.INVALID || system === ExpoPermissionStatus.RESTRICTED) return system;
+    if (project === ExpoPermissionStatus.INVALID || project === ExpoPermissionStatus.RESTRICTED) return project;
+    if (system === ExpoPermissionStatus.DENIED || project === ExpoPermissionStatus.DENIED) return ExpoPermissionStatus.DENIED;
+    if (system === ExpoPermissionStatus.GRANTED && project === ExpoPermissionStatus.GRANTED) return ExpoPermissionStatus.GRANTED;
+    return ExpoPermissionStatus.NOT_DETERMINED;
+  }
+
+  systemPermissionStatus(permission: Permissions): ExpoPermissionStatus {
     this.assertValid();
 
     const manager = abilityAccessCtrl.createAtManager();
-
-    if (deviceInfo.sdkApiVersion >= 20) {
-      return manager.getSelfPermissionStatus(permission) as number as ExpoPermissionStatus;
-    }
+    if (deviceInfo.sdkApiVersion >= 20) return manager.getSelfPermissionStatus(permission) as number as ExpoPermissionStatus;
 
     const token = this.uiAbilityContext.applicationInfo.accessTokenId;
-    const granted = manager.checkAccessTokenSync(token, permission) === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED;
-
-    return granted ? ExpoPermissionStatus.GRANTED : ExpoPermissionStatus.DENIED;
+    return manager.checkAccessTokenSync(token, permission) === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED
+      ? ExpoPermissionStatus.GRANTED : ExpoPermissionStatus.DENIED;
   }
 
-  async requestPermissions(permissions: Permissions[]): Promise<PermissionRequestResult> {
+  async requestPermissions(permissions: Permissions[]): Promise<ExpoPermissionRequestResult> {
     this.assertValid();
-    return await abilityAccessCtrl.createAtManager().requestPermissionsFromUser(this.uiAbilityContext, permissions);
+
+    const requested = permissions.slice();
+    const results: PermissionRequestResult[] = [];
+    const request = async (): Promise<PermissionRequestResult> => {
+      this.assertValid();
+
+      const result = await abilityAccessCtrl.createAtManager().requestPermissionsFromUser(this.uiAbilityContext, requested.slice());
+      this.assertValid();
+      // Snapshot before handing the OS result to the host. It cannot forge or
+      // mutate the metadata used by module-owned system permission history.
+      results.push(JSON.parse(JSON.stringify(result)) as PermissionRequestResult);
+
+      return result;
+    };
+
+    const service = this.services.get(ExpoRuntimePermissionsKey);
+    if (service === undefined) await request();
+    else await service.requestPermissions(requested.slice(), request);
+    this.assertValid();
+
+    return new ExpoPermissionRequestResult(requested, requested.map((permission: Permissions): number =>
+      this.permissionStatus(permission) === ExpoPermissionStatus.GRANTED ? 0 : -1), results);
+  }
+
+  assertFileAccess(path: string, mode: ExpoFileAccessMode = 'read'): void {
+    this.assertValid();
+    this.services.get(ExpoFileAccessKey)?.assertAccess(path, mode);
+  }
+
+  filePathForRead(value: string): string {
+    this.assertValid();
+
+    let path: string;
+    if (value.startsWith('/')) path = value;
+    else if (/^file:\/\/(?:localhost)?\//i.test(value)) path = filePathFromUri(value);
+    else {
+      if (!/^file:\/\//i.test(value)) throw new Error('Expected a local file path or URI.');
+
+      const file = fs.openSync(value, fs.OpenMode.READ_ONLY);
+      try {
+        path = file.path;
+      } finally {
+        fs.closeSync(file.fd);
+      }
+    }
+
+    this.assertFileAccess(path, 'read');
+    return path;
+  }
+
+  grantFileAccess(path: string, directory: boolean, writable: boolean): void {
+    this.assertValid();
+    this.services.get(ExpoFileAccessKey)?.grantExternalPath(path, directory, writable);
   }
 
   async startAbilityForResult(want: Want, requestCode: number = 0): Promise<ExpoModuleAbilityResult> {
@@ -721,29 +835,45 @@ export class ExpoModuleContext {
     this.acceptsEvents = false;
   }
 
+  /** @internal Cleanup may access native capabilities but cannot reopen public calls. */
+  runCleanup(body: () => void): void {
+    this.cleanupDepth += 1;
+    try {
+      body();
+    } finally {
+      this.cleanupDepth -= 1;
+    }
+  }
+
+  /** @internal Checked independently of cleanup capability access. */
+  assertActive(): void {
+    if (!this.valid || !this.acceptsEvents) {
+      throw new ExpoModuleError('ERR_RUNTIME_INVALIDATED', 'The Expo module runtime no longer accepts calls.');
+    }
+    this.session?.assertOpen();
+  }
+
   private assertValid(): void {
     if (!this.valid) {
       throw new Error('The Expo module runtime has been invalidated.');
     }
+    if (this.cleanupDepth === 0) this.assertActive();
   }
 
   private assertEventAdmission(): void {
-    this.assertValid();
-    if (!this.acceptsEvents) {
-      throw new ExpoModuleError('ERR_RUNTIME_INVALIDATED', 'The Expo module runtime is invalidating and no longer accepts events.');
-    }
+    this.assertActive();
   }
 
   private async runOnCurrentActor<Result>(body: ExpoModuleActorTask<Result>): Promise<Result> {
-    this.assertValid();
+    this.assertActive();
 
     await Promise.resolve();
 
-    this.assertValid();
+    this.assertActive();
 
     const result: Result = await body();
 
-    this.assertValid();
+    this.assertActive();
 
     return result;
   }
@@ -1086,7 +1216,7 @@ export class ExpoModuleDefinition {
     const disposers: (() => void)[] = [];
     try {
       this.viewValues.forEach((definition: ExpoViewDefinitionRuntime, index: number): void => {
-        disposers.push(definition.bindModule(moduleName, index === 0, context.runtimeId, context.runtimeEpochValue()));
+        disposers.push(definition.bindModule(moduleName, index === 0, context.runtimeId, context.runtimeEpochValue(), context));
       });
 
       return disposers;
@@ -1339,6 +1469,7 @@ class ScopedExpoModule {
 /** Module instances and SharedObject state for one RuntimeContext epoch. */
 class ExpoModulesRuntimeScope implements ExpoLifecycleSink {
   private readonly runtimeEpoch: string;
+  private readonly session?: ExpoRuntimeSession;
   private readonly runtimeId: number;
   private readonly modules: Map<string, ScopedExpoModule> = new Map<string, ScopedExpoModule>();
   private readonly order: ScopedExpoModule[] = [];
@@ -1347,6 +1478,7 @@ class ExpoModulesRuntimeScope implements ExpoLifecycleSink {
 
   constructor(
     coreContext: UITurboModuleContext,
+    services: ExpoServicesRegistry,
     runtimeEpoch: string,
     registrations: ExpoResolvedModuleRegistration[],
     typedEvents: ExpoTypedEventQueue,
@@ -1355,22 +1487,26 @@ class ExpoModulesRuntimeScope implements ExpoLifecycleSink {
     dispatchRuntimeLifecycle: ExpoRuntimeLifecycleDispatcher,
     reloadRuntime: ExpoRuntimeReload,
     initialWant?: Want,
+    session?: ExpoRuntimeSession,
   ) {
     this.runtimeEpoch = runtimeEpoch;
+    this.session = session;
     this.runtimeId = coreContext.rnInstance.getId();
-    this.sharedObjects = new ExpoSharedObjectRegistry(runtimeEpoch);
+    this.sharedObjects = new ExpoSharedObjectRegistry(runtimeEpoch, session);
 
     try {
       registrations.forEach((registration: ExpoResolvedModuleRegistration): void => {
         const registrationId = registration.registrationId;
         const context = new ExpoModuleContext(
           coreContext,
+          services,
           runtimeEpoch,
           hostId,
           hostRuntimeGeneration,
           dispatchRuntimeLifecycle,
           reloadRuntime,
           initialWant,
+          session,
         );
         let viewDisposers: (() => void)[] = [];
         let phase: string = 'constructing the module';
@@ -1411,7 +1547,7 @@ class ExpoModulesRuntimeScope implements ExpoLifecycleSink {
         } catch (error) {
           context.beginInvalidation();
           try {
-            definition?.dispatchLifecycle(EXPO_LIFECYCLE_DESTROY);
+            context.runCleanup((): void => definition?.dispatchLifecycle(EXPO_LIFECYCLE_DESTROY));
           } catch (cleanupError) {
             reportModuleLifecycleFailure(registrationId, 'registration rollback', cleanupError);
           }
@@ -1579,7 +1715,13 @@ class ExpoModulesRuntimeScope implements ExpoLifecycleSink {
   }
 
   setObserving(moduleName: string, eventName: string, observing: boolean): void {
-    this.requireModule(moduleName).definition.setObserving(eventName, observing);
+    if (observing) {
+      this.requireModule(moduleName).definition.setObserving(eventName, true);
+      return;
+    }
+
+    const entry = this.modules.get(moduleName);
+    entry?.module.context.runCleanup((): void => entry.definition.setObserving(eventName, false));
   }
 
   invalidate(): void {
@@ -1598,7 +1740,7 @@ class ExpoModulesRuntimeScope implements ExpoLifecycleSink {
       const entry = this.order[index];
       // Constructors and partial onCreate hooks may already own resources.
       try {
-        entry.definition.dispatchLifecycle(EXPO_LIFECYCLE_DESTROY);
+        entry.module.context.runCleanup((): void => entry.definition.dispatchLifecycle(EXPO_LIFECYCLE_DESTROY));
       } catch (error) {
         reportModuleLifecycleFailure(entry.descriptor.name, 'onDestroy', error);
       }
@@ -1625,17 +1767,20 @@ class ExpoModulesRuntimeScope implements ExpoLifecycleSink {
 
   private assertValid(): void {
     if (!this.valid) throw new Error(`The ArkTS Expo module scope '${this.runtimeEpoch}' was invalidated.`);
+    this.session?.assertOpen();
   }
 }
 
 /** Host-owned module factories and runtime-scoped instances. */
 export class ExpoModulesRegistry {
+  readonly services: ExpoServicesRegistry;
   private readonly coreContext: UITurboModuleContext;
   private readonly typedEvents: ExpoTypedEventQueue;
   private readonly registrations: ExpoResolvedModuleRegistration[];
   private readonly initialWant?: Want;
   private readonly hostId: string;
   private readonly hostRuntimeGeneration: number;
+  private readonly session?: ExpoRuntimeSession;
   private readonly pendingLifecycle: ExpoLifecycleEventQueue = new ExpoLifecycleEventQueue();
   private readonly scopes: Map<string, ExpoModulesRuntimeScope> = new Map<string, ExpoModulesRuntimeScope>();
   private reloadHost?: ExpoRuntimeReload = undefined;
@@ -1651,12 +1796,16 @@ export class ExpoModulesRegistry {
     initialWant: Want | undefined,
     hostId: string,
     hostRuntimeGeneration: number,
+    runtimeConfig: ExpoRuntimeConfig,
+    services: ExpoServiceClass[],
   ) {
     this.coreContext = coreContext;
     this.typedEvents = new ExpoTypedEventQueue(coreContext);
     this.initialWant = initialWant;
     this.hostId = hostId;
     this.hostRuntimeGeneration = hostRuntimeGeneration;
+    this.session = runtimeConfig.session;
+    this.services = new ExpoServicesRegistry(coreContext.uiAbilityContext, this.session);
 
     const identifiers: Set<string> = new Set<string>();
 
@@ -1679,6 +1828,20 @@ export class ExpoModulesRegistry {
         factory: registration.factory,
       };
     });
+
+    try {
+      runtimeConfig.session?.assertOpen();
+      this.services.registerClass({
+        name: 'ExpoAppDirectories',
+        create: (context: ExpoServiceContext) => new ExpoAppDirectories(context),
+      });
+      this.services.registerClasses(services);
+      this.services.registerOverrides(runtimeConfig.services);
+      runtimeConfig.session?.assertOpen();
+    } catch (error) {
+      this.services.invalidate();
+      throw new ExpoModuleError('ERR_SERVICE_REGISTRATION', 'Unable to register Expo services.', error as Object);
+    }
   }
 
   /** @internal Creates fresh module instances for one UITurboModuleContext. */
@@ -1688,8 +1851,10 @@ export class ExpoModulesRegistry {
     initialWant: Want | undefined,
     hostId: string,
     hostRuntimeGeneration: number,
+    runtimeConfig: ExpoRuntimeConfig = new ExpoRuntimeConfig(),
+    services: ExpoServiceClass[] = [],
   ): ExpoModulesRegistry {
-    return new ExpoModulesRegistry(coreContext, registrations, initialWant, hostId, hostRuntimeGeneration);
+    return new ExpoModulesRegistry(coreContext, overrideExpoModules(registrations, runtimeConfig.moduleOverrides), initialWant, hostId, hostRuntimeGeneration, runtimeConfig, services);
   }
 
   /** @internal Binds the owning TurboModule's cleanup-aware reload operation. */
@@ -1716,6 +1881,7 @@ export class ExpoModulesRegistry {
 
     const scope = new ExpoModulesRuntimeScope(
       this.coreContext,
+      this.services,
       runtimeEpoch,
       this.registrations,
       this.typedEvents,
@@ -1726,6 +1892,7 @@ export class ExpoModulesRegistry {
       },
       async (reason: string): Promise<void> => await this.reloadAppAsync(reason),
       this.initialWant,
+      this.session,
     );
 
     this.scopes.set(runtimeEpoch, scope);
@@ -1995,6 +2162,7 @@ export class ExpoModulesRegistry {
     });
 
     this.typedEvents.invalidate();
+    this.services.invalidate();
     this.scopes.clear();
     this.pendingLifecycle.clear();
 
@@ -2029,6 +2197,7 @@ export class ExpoModulesRegistry {
     if (!this.valid || this.reloadFailed) {
       throw new Error('The ArkTS Expo modules scope has been invalidated or its Host reload failed.');
     }
+    this.session?.assertOpen();
   }
 }
 

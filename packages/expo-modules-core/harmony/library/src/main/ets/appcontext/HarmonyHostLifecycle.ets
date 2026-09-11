@@ -1,6 +1,8 @@
+import type { ExpoServiceClass } from './ExpoServicesRegistry';
 import type { Want } from '@kit.AbilityKit';
 import { common } from '@kit.AbilityKit';
 import type { ExpoModuleRegistration } from '../modules/ExpoModule';
+import { ExpoRuntimeSession } from './ExpoRuntimeSession';
 import {
   EXPO_LIFECYCLE_ACTIVITY_DESTROY,
   EXPO_LIFECYCLE_NEW_INTENT,
@@ -20,6 +22,8 @@ class ExpoHarmonyAbilityState {
   readonly lifecycle: ExpoLifecycleChannel;
   readonly generations: Map<number, number> = new Map<number, number>();
   readonly openedRuntimeIds: Set<number> = new Set<number>();
+  readonly sessionDisposers: Map<number, () => void> = new Map<number, () => void>();
+  readonly bindings: Map<number, ExpoHarmonyHostBinding> = new Map<number, ExpoHarmonyHostBinding>();
   readonly bootstrapEvents: Map<string, ExpoLifecycleEvent> = new Map<string, ExpoLifecycleEvent>();
   initialWant?: Want = undefined;
   nextRuntimeGeneration: number = 1;
@@ -60,7 +64,9 @@ export class ExpoHarmonyHostState {
     state.initialWant = want;
   }
 
-  openHost(context: common.UIAbilityContext, runtimeId: number): ExpoHarmonyHostBinding {
+  openHost(context: common.UIAbilityContext, runtimeId: number, session?: ExpoRuntimeSession): ExpoHarmonyHostBinding {
+    session?.assertOpen();
+
     const state: ExpoHarmonyAbilityState = this.ensureAbility(context);
 
     if (state.generations.has(runtimeId)) {
@@ -68,13 +74,27 @@ export class ExpoHarmonyHostState {
     }
 
     const generation: number = state.nextRuntimeGeneration++;
-    const firstHostGeneration: boolean = !state.openedRuntimeIds.has(runtimeId);
+    const first: boolean = !state.openedRuntimeIds.has(runtimeId);
 
-    state.lifecycle.openHost(runtimeId, firstHostGeneration ? Array.from(state.bootstrapEvents.values()) : []);
+    state.lifecycle.openHost(
+      runtimeId,
+      first ? Array.from(state.bootstrapEvents.values()) : [],
+      session === undefined ? [] : [EXPO_LIFECYCLE_NEW_INTENT],
+    );
     state.openedRuntimeIds.add(runtimeId);
     state.generations.set(runtimeId, generation);
 
-    return new ExpoHarmonyHostBinding(context, runtimeId, expoLifecycleHostIdentity(state.abilityId, runtimeId), generation, state.initialWant);
+    const binding = new ExpoHarmonyHostBinding(
+      context,
+      runtimeId,
+      expoLifecycleHostIdentity(state.abilityId, runtimeId),
+      generation,
+      session === undefined ? state.initialWant : session.initialWant,
+    );
+    state.bindings.set(runtimeId, binding);
+    if (session !== undefined) state.sessionDisposers.set(runtimeId, session.onClose((): void => this.releaseHost(binding)));
+
+    return binding;
   }
 
   bindHost(binding: ExpoHarmonyHostBinding, sink: ExpoLifecycleSink): () => void {
@@ -88,6 +108,9 @@ export class ExpoHarmonyHostState {
 
       if (current === state && current.generations.get(binding.runtimeId) === binding.runtimeGeneration) {
         current.generations.delete(binding.runtimeId);
+        current.bindings.delete(binding.runtimeId);
+        current.sessionDisposers.get(binding.runtimeId)?.();
+        current.sessionDisposers.delete(binding.runtimeId);
       }
     };
   }
@@ -104,7 +127,19 @@ export class ExpoHarmonyHostState {
     }
 
     state.generations.delete(binding.runtimeId);
+    state.bindings.delete(binding.runtimeId);
+    state.sessionDisposers.get(binding.runtimeId)?.();
+    state.sessionDisposers.delete(binding.runtimeId);
     state.lifecycle.releaseHost(binding.runtimeId);
+  }
+
+  dispatchWant(binding: ExpoHarmonyHostBinding, want: Want): void {
+    const state = this.requireBinding(binding);
+    state.lifecycle.dispatchToHost(binding.runtimeId, EXPO_LIFECYCLE_NEW_INTENT, JSON.parse(JSON.stringify(want)) as Want);
+  }
+
+  getHostBinding(context: common.UIAbilityContext, runtimeId: number): ExpoHarmonyHostBinding | undefined {
+    return this.abilities.get(context)?.bindings.get(runtimeId);
   }
 
   dispatch(context: common.UIAbilityContext, eventName: string, payload?: ESObject): void {
@@ -133,6 +168,9 @@ export class ExpoHarmonyHostState {
 
     this.abilities.delete(context);
     state.generations.clear();
+    state.bindings.clear();
+    state.sessionDisposers.forEach((dispose: () => void): void => dispose());
+    state.sessionDisposers.clear();
     state.openedRuntimeIds.clear();
     state.bootstrapEvents.clear();
     this.lifecycle.closeScope(context, EXPO_LIFECYCLE_ACTIVITY_DESTROY);
@@ -165,6 +203,7 @@ export class ExpoHarmonyHostState {
 }
 
 export interface ExpoHarmonyHostProvider {
+  readonly expoServices: ExpoServiceClass[];
   readonly expoModules: ExpoModuleRegistration[];
   readonly hostState: ExpoHarmonyHostState;
 }

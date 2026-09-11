@@ -13,6 +13,18 @@ export function fileUriFromPath(path: string): string {
     .join('/')}`;
 }
 
+export function filePathFromUri(uri: string): string {
+  const match = /^file:\/\/([^/?#]*)(\/[^?#]*)$/i.exec(uri);
+  if (match === null || (match[1].length > 0 && match[1].toLowerCase() !== 'localhost')) {
+    throw new Error('Expected an authority-free local file URI without query or fragment.');
+  }
+
+  const path = decodeURIComponent(match[2]);
+  if (path.includes('\0')) throw new Error('A file URI cannot contain a NUL character.');
+
+  return path;
+}
+
 /** Converts a platform path to a correctly escaped directory file URI. */
 export function ensureDirectoryUri(path: string): string {
   if (path.length === 0) {

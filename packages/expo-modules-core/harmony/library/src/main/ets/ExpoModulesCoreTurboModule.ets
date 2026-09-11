@@ -1,3 +1,7 @@
+import { ExpoRuntimeDirectoriesKey } from './appcontext/ExpoRuntimeDirectories';
+import type { ExpoServiceClass } from './appcontext/ExpoServicesRegistry';
+import { ExpoRuntimeConfig } from './appcontext/ExpoRuntimeConfig';
+import type { ExpoRuntimeSession } from './appcontext/ExpoRuntimeSession';
 import { EtsUITurboModule, RNInstanceImpl, UITurboModuleContext } from '@rnoh/react-native-openharmony';
 import type { ExpoHarmonyHostBinding, ExpoHarmonyHostState } from './appcontext/HarmonyHostLifecycle';
 import { ExpoViewAdapterRegistry } from './views/ExpoViewTypes';
@@ -34,10 +38,12 @@ export class ExpoModulesCoreTurboModule extends EtsUITurboModule {
     coreContext: UITurboModuleContext,
     registrations: ExpoModuleRegistration[],
     hostState: ExpoHarmonyHostState,
+    runtimeConfig: ExpoRuntimeConfig = new ExpoRuntimeConfig(),
+    services: ExpoServiceClass[] = [],
   ): Promise<ExpoModulesCoreTurboModule> {
     let hostBinding: ExpoHarmonyHostBinding | undefined = undefined;
     try {
-      hostBinding = hostState.openHost(coreContext.uiAbilityContext, coreContext.rnInstance.getId());
+      hostBinding = hostState.openHost(coreContext.uiAbilityContext, coreContext.rnInstance.getId(), runtimeConfig.session);
 
       const modules = ExpoModulesRegistry.createScope(
         coreContext,
@@ -45,9 +51,11 @@ export class ExpoModulesCoreTurboModule extends EtsUITurboModule {
         hostBinding.initialWant,
         hostBinding.hostId,
         hostBinding.runtimeGeneration,
+        runtimeConfig,
+        services,
       );
 
-      return new ExpoModulesCoreTurboModule(coreContext, modules, hostState, hostBinding);
+      return new ExpoModulesCoreTurboModule(coreContext, modules, hostState, hostBinding, runtimeConfig.session);
     } catch (error) {
       if (hostBinding !== undefined) hostState.releaseHost(hostBinding);
 
@@ -59,9 +67,12 @@ export class ExpoModulesCoreTurboModule extends EtsUITurboModule {
     }
   }
 
-  constructor(coreContext: UITurboModuleContext, modules: ExpoModulesRegistry, hostState: ExpoHarmonyHostState, hostBinding: ExpoHarmonyHostBinding) {
+  private readonly session?: ExpoRuntimeSession;
+
+  constructor(coreContext: UITurboModuleContext, modules: ExpoModulesRegistry, hostState: ExpoHarmonyHostState, hostBinding: ExpoHarmonyHostBinding, session?: ExpoRuntimeSession) {
     super(coreContext);
     this.coreContext = coreContext;
+    this.session = session;
     this.modules = modules;
 
     this.modules.configureReloadHost(
@@ -271,11 +282,13 @@ export class ExpoModulesCoreTurboModule extends EtsUITurboModule {
   }
 
   getCacheDirectory(): string {
-    return ensureDirectoryUri(this.coreContext.uiAbilityContext.cacheDir);
+    this.session?.assertOpen();
+    return ensureDirectoryUri(this.modules.services.require(ExpoRuntimeDirectoriesKey).directory(this.coreContext.uiAbilityContext.cacheDir));
   }
 
   getDocumentsDirectory(): string {
-    return ensureDirectoryUri(this.coreContext.uiAbilityContext.filesDir);
+    this.session?.assertOpen();
+    return ensureDirectoryUri(this.modules.services.require(ExpoRuntimeDirectoriesKey).directory(this.coreContext.uiAbilityContext.filesDir));
   }
 
   getRuntimeId(): number {

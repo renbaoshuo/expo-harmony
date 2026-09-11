@@ -1,3 +1,4 @@
+import type { ExpoModuleContext } from '../modules/ExpoModule';
 import type { Descriptor, RNComponentContext } from '@rnoh/react-native-openharmony';
 import {
   EXPO_MODULE_NAME_PROP,
@@ -54,7 +55,7 @@ export interface ExpoViewDescriptor {
 
 /** @internal Type-erased runtime surface for a typed author View definition. */
 export interface ExpoViewDefinitionRuntime {
-  bindModule(moduleName: string, defaultView: boolean, instanceId: number, runtimeEpoch: string): () => void;
+  bindModule(moduleName: string, defaultView: boolean, instanceId: number, runtimeEpoch: string, moduleContext?: ExpoModuleContext): () => void;
   descriptor(): ExpoViewDescriptor;
 }
 
@@ -82,6 +83,7 @@ export class ExpoViewContext implements ExpoViewContentDelegate {
   private readonly declaredEvents: Set<string>;
   private readonly eventPayloadTypes: Map<string, ExpoValueType<ESObject>>;
   private sizeState: ExpoViewSizeState = {};
+  private readonly ownerModuleContext?: ExpoModuleContext;
   private valid: boolean = true;
 
   constructor(
@@ -90,12 +92,20 @@ export class ExpoViewContext implements ExpoViewContentDelegate {
     componentName: string,
     declaredEvents: string[],
     eventPayloadTypes: Map<string, ExpoValueType<ESObject>>,
+    moduleContext?: ExpoModuleContext,
   ) {
     this.rnComponentContext = rnComponentContext;
+    this.ownerModuleContext = moduleContext;
     this.tag = tag;
     this.componentName = componentName;
     this.declaredEvents = new Set<string>(declaredEvents);
     this.eventPayloadTypes = new Map<string, ExpoValueType<ESObject>>(eventPayloadTypes);
+  }
+
+  get moduleContext(): ExpoModuleContext {
+    if (!this.valid) throw new Error(`Expo view '${this.componentName}' has been invalidated.`);
+    if (this.ownerModuleContext === undefined) throw new Error('Expo view is not bound to a module context.');
+    return this.ownerModuleContext;
   }
 
   emit(eventName: string): void;
@@ -168,6 +178,7 @@ export class ExpoViewContext implements ExpoViewContentDelegate {
     if (!this.valid) {
       throw new Error(`Expo view '${this.componentName}' has been invalidated.`);
     }
+    this.ownerModuleContext?.assertActive();
   }
 
   private childTags(): number[] {
@@ -380,12 +391,13 @@ export class ExpoViewDefinition<ViewType extends ExpoView = ExpoView> implements
   }
 
   /** @internal Registers one runtime-scoped adapter for this RN instance. */
-  bindModule(moduleName: string, defaultView: boolean, instanceId: number, runtimeEpoch: string): () => void {
+  bindModule(moduleName: string, defaultView: boolean, instanceId: number, runtimeEpoch: string, moduleContext?: ExpoModuleContext): () => void {
     if (this.componentNameValue !== undefined) {
       throw new Error(`Expo view '${moduleName}.${this.name}' was bound more than once.`);
     }
 
     this.defaultViewValue = defaultView;
+    this.moduleContextValue = moduleContext;
     this.runtimeEpochValue = runtimeEpoch;
     this.componentNameValue = `ViewManagerAdapter_${moduleName}_${this.name}`;
     this.prototypeNameValue = `${moduleName}_${this.name}`;
@@ -426,24 +438,29 @@ export class ExpoViewDefinition<ViewType extends ExpoView = ExpoView> implements
     };
   }
 
+  private moduleContextValue?: ExpoModuleContext;
+
   create(rnComponentContext: RNComponentContext, tag: number, componentName: string): ESObject {
+    this.moduleContextValue?.assertActive();
     if (!this.componentNamesValue.has(componentName)) {
       throw new Error(`Expo view '${this.componentName}' cannot create '${componentName}'.`);
     }
 
-    const context = new ExpoViewContext(rnComponentContext, tag, componentName, Array.from(this.eventNames), this.eventPayloadTypes);
+    const context = new ExpoViewContext(rnComponentContext, tag, componentName, Array.from(this.eventNames), this.eventPayloadTypes, this.moduleContextValue);
     let mounted: MountedExpoView | undefined = undefined;
 
     try {
       const view: ViewType = this.factory(context);
       mounted = new MountedExpoView(view, context);
+      this.moduleContextValue?.assertActive();
       this.createBody?.(view);
+      this.moduleContextValue?.assertActive();
 
       return mounted;
     } catch (error) {
       if (mounted !== undefined) {
         try {
-          this.destroyBody?.(mounted.view as ViewType);
+          this.destroy(mounted);
         } catch (cleanupError) {
           reportViewDefinitionCleanupFailure(this.componentName, 'create rollback', cleanupError);
         }
@@ -493,6 +510,7 @@ export class ExpoViewDefinition<ViewType extends ExpoView = ExpoView> implements
     });
 
     converted.forEach((prop: ESObject, name: string): void => {
+      this.moduleContextValue?.assertActive();
       // A setter may mutate the view before throwing. Keep this dirty until the
       // complete update (including onDidUpdateProps) succeeds.
       mounted.dirtyProps.add(name);
@@ -505,7 +523,9 @@ export class ExpoViewDefinition<ViewType extends ExpoView = ExpoView> implements
         mounted.dirtyProps.add(name);
       }
     });
+    this.moduleContextValue?.assertActive();
     this.updateBody?.(mounted.view as ViewType);
+    this.moduleContextValue?.assertActive();
 
     mounted.previousProps.clear();
     next.forEach((prop: ESObject, name: string): void => {
@@ -543,7 +563,8 @@ export class ExpoViewDefinition<ViewType extends ExpoView = ExpoView> implements
 
     mounted.destroyed = true;
     try {
-      this.destroyBody?.(mounted.view as ViewType);
+      if (this.moduleContextValue === undefined) this.destroyBody?.(mounted.view as ViewType);
+      else this.moduleContextValue.runCleanup((): void => this.destroyBody?.(mounted.view as ViewType));
     } finally {
       mounted.context.invalidate();
       mounted.previousProps.clear();
@@ -584,6 +605,7 @@ export class ExpoViewDefinition<ViewType extends ExpoView = ExpoView> implements
   }
 
   private requireMounted(value: ESObject): MountedExpoView {
+    this.moduleContextValue?.assertActive();
     const mounted = value as MountedExpoView;
     if (mounted.destroyed) {
       throw new Error(`Expo view '${this.componentName}' is no longer mounted.`);

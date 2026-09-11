@@ -15,7 +15,7 @@ export {
 } from './modules/ExpoModule';
 export { ExpoModuleError } from './modules/ExpoModuleError';
 export { ExpoModuleLogger } from './appcontext/ExpoModuleLogger';
-export { fileUriFromPath } from './appcontext/FileUri';
+export { fileUriFromPath, filePathFromUri } from './appcontext/FileUri';
 export {
   ExpoEither,
   ExpoEitherOfFour,
@@ -33,3 +33,11 @@ export {
 export { ExpoSharedObject, ExpoSharedObjectTypes, ExpoSharedRef, ExpoSharedObjectClassDefinition } from './modules/ExpoSharedObject';
 
 export { ExpoRNApp } from './ExpoRNApp';
+
+export { ExpoRuntimeConfig, ExpoRuntimeOptions } from './appcontext/ExpoRuntimeConfig';
+
+export { ExpoRuntimePermissions, ExpoRuntimePermissionsKey, ExpoPermissionRequestResult } from './appcontext/ExpoRuntimePermissions';
+export { ExpoRuntimeDirectories, ExpoRuntimeDirectoriesKey, ExpoAppDirectories, ExpoScopedDirectories } from './appcontext/ExpoRuntimeDirectories';
+export { ExpoRuntimeSession } from './appcontext/ExpoRuntimeSession';
+export { ExpoFileAccessPolicy, ExpoFileAccessKey, ExpoFileAccessMode, ExpoScopedFileAccess } from './appcontext/ExpoFileAccess';
+export { ExpoService, ExpoServiceContext, ExpoServiceKey, ExpoServiceBinding, ExpoServiceClass, ExpoServiceOverride, ExpoServicesRegistry } from './appcontext/ExpoServicesRegistry';

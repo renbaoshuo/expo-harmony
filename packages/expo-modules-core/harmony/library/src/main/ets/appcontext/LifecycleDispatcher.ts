@@ -50,7 +50,15 @@ class ExpoLifecycleHostEntry implements ExpoLifecycleSink {
   sink?: ExpoLifecycleSink = undefined;
   draining: boolean = false;
 
+  constructor(private readonly excludedEvents: string[]) {}
+
   postLifecycleEvent(eventName: string, payload?: ESObject): void {
+    if (this.excludedEvents.includes(eventName)) return;
+
+    this.postRoutedEvent(eventName, payload);
+  }
+
+  postRoutedEvent(eventName: string, payload?: ESObject): void {
     const sink: ExpoLifecycleSink | undefined = this.sink;
     if (sink === undefined || this.draining) {
       this.pending.enqueue(eventName, payload);
@@ -75,17 +83,17 @@ export class ExpoLifecycleChannel {
     this.began = true;
   }
 
-  openHost(hostKey: number, bootstrapEvents: ExpoLifecycleEvent[] = []): void {
+  openHost(hostKey: number, bootstrapEvents: ExpoLifecycleEvent[] = [], excludedEvents: string[] = []): void {
     this.assertValid();
     if (this.hosts.has(hostKey)) {
       throw new Error(`Expo lifecycle Host '${hostKey}' is already open.`);
     }
 
-    const entry = new ExpoLifecycleHostEntry();
+    const entry = new ExpoLifecycleHostEntry(excludedEvents.slice());
     bootstrapEvents.forEach((event: ExpoLifecycleEvent): void => {
       // Avoid duplicating a persistent event already in the FIFO.
       if (this.hosts.size > 0 || !this.beforeFirstHost.hasEvent(event.eventName)) {
-        entry.pending.enqueue(event.eventName, event.payload);
+        entry.postLifecycleEvent(event.eventName, event.payload);
       }
     });
 
@@ -142,6 +150,11 @@ export class ExpoLifecycleChannel {
     this.hosts.forEach((entry: ExpoLifecycleHostEntry): void => {
       entry.postLifecycleEvent(eventName, payload);
     });
+  }
+
+  dispatchToHost(hostKey: number, eventName: string, payload?: ESObject): void {
+    this.assertValid();
+    this.requireHost(hostKey).postRoutedEvent(eventName, payload);
   }
 
   /** Delivers terminal Ability events only to bound Hosts. */
