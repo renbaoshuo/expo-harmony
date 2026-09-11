@@ -3,15 +3,9 @@ import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
 export const PROGRESS_EVENT_INTERVAL_MS: number = 100;
 
 export class ExpoFileSystemError extends ExpoModuleError {
-  constructor(code: string, message?: string, cause?: Object) {
-    super(code, message ?? code, cause);
+  constructor(code: string, message?: string, cause?: Object, path?: string) {
+    super(code, message ?? code, cause, path);
   }
-}
-
-export function asFileSystemError(error: Object, code: string = 'ERR_FILE_SYSTEM'): ExpoModuleError {
-  if (error instanceof ExpoModuleError) return error;
-  const message = error instanceof Error ? error.message : String(error);
-  return new ExpoFileSystemError(code, message, error);
 }
 
 export interface ContentRange {

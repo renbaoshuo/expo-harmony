@@ -1,4 +1,6 @@
 import {
+  ExpoFileAccessKey,
+  ExpoFileAccessMode,
   ExpoFunction,
   ExpoEither,
   ExpoModule,
@@ -25,7 +27,7 @@ import url from '@ohos.url';
 import util from '@ohos.util';
 import atomicFileOperations from 'libexpo_file_system_atomic.so';
 import { PickerPermissionStore } from './PickerPermissionStore';
-import { ExpoFileSystemError, ProgressCadence, uploadMethodPolicy, asFileSystemError, parseContentRange, isRedirectStatus } from './NetworkPolicy';
+import { ExpoFileSystemError, ProgressCadence, uploadMethodPolicy, parseContentRange, isRedirectStatus } from './NetworkPolicy';
 
 const NETWORK_FILE_BUFFER_BYTES: number = 64 * 1024;
 // Match the system redirect limit, while handling each response before publishing a file.
@@ -221,7 +223,12 @@ class ExpoFileSystemService {
       return new PermissionRecord(true, await this.pickDirectory(initialUri));
     } catch (error) {
       if (error instanceof ExpoModuleError && error.code === 'ERR_FILE_SYSTEM_PICKER_CANCELLED') return new PermissionRecord(false);
-      throw asFileSystemError(error as Object);
+      throw new ExpoFileSystemError(
+        error instanceof ExpoModuleError ? error.code : 'ERR_FILE_SYSTEM',
+        error instanceof Error ? error.message : String(error),
+        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.path : undefined,
+      );
     }
   }
 
@@ -284,7 +291,7 @@ class ExpoFileSystemService {
     task.paused = true;
     this.cancelTask(task);
     await task.done;
-    if (task.failure !== undefined) throw task.failure;
+    if (task.failure !== undefined) throw new ExpoFileSystemError(task.failure.code, task.failure.message, task.failure.cause, task.failure.path);
     return new ResumeRecord(String(task.transferred));
   }
 
@@ -303,7 +310,13 @@ class ExpoFileSystemService {
       return await this.downloadHttp(input, uuid, task);
     } catch (error) {
       if (task.cancelled && task.failure === undefined) return null;
-      throw task.failure ?? asFileSystemError(error as Object, 'ERR_UNABLE_TO_DOWNLOAD');
+      if (task.failure !== undefined) throw new ExpoFileSystemError(task.failure.code, task.failure.message, task.failure.cause, task.failure.path);
+      throw new ExpoFileSystemError(
+        error instanceof ExpoModuleError ? error.code : 'ERR_UNABLE_TO_DOWNLOAD',
+        error instanceof Error ? error.message : String(error),
+        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.path : undefined,
+      );
     } finally {
       this.finishTask(uuid, task);
     }
@@ -376,8 +389,13 @@ class ExpoFileSystemService {
               task.expectedTransfer = expectedDownloadSize(receivedHeaders, progressPrefix, callerRange);
               if (input.emitProgress) this.emitDownloadProgress(task, uuid, false);
             } catch (error) {
-              callbackFailure = asFileSystemError(error as Object, 'ERR_FILE_SYSTEM_WRITE_FAILED');
-              throw callbackFailure;
+              callbackFailure = new ExpoFileSystemError(
+                error instanceof ExpoModuleError ? error.code : 'ERR_FILE_SYSTEM_WRITE_FAILED',
+                error instanceof Error ? error.message : String(error),
+                error instanceof ExpoModuleError ? error.cause : error as Object,
+                error instanceof ExpoModuleError ? error.path : undefined,
+              );
+              throw new ExpoFileSystemError(callbackFailure.code, callbackFailure.message, callbackFailure.cause, callbackFailure.path);
             }
           };
           // RCP awaits the destination promise before delivering the next chunk.
@@ -452,15 +470,27 @@ class ExpoFileSystemService {
             committed = true;
             task.transferred = effectiveResumeFrom + receivedBytes;
           } catch (commitError) {
-            task.failure = asFileSystemError(commitError as Object, 'ERR_FILE_SYSTEM_WRITE_FAILED');
+            task.failure = new ExpoFileSystemError(
+              commitError instanceof ExpoModuleError ? commitError.code : 'ERR_FILE_SYSTEM_WRITE_FAILED',
+              commitError instanceof Error ? commitError.message : String(commitError),
+              commitError instanceof ExpoModuleError ? commitError.cause : commitError as Object,
+              commitError instanceof ExpoModuleError ? commitError.path : undefined,
+            );
             task.transferred = resumeFrom;
           }
         } else if (callerRange) {
           // Even a published range is not a prefix of the full resource (e.g. pause during hashing).
           task.transferred = 0;
         } else if (!committed) task.transferred = resumeFrom;
-        if (callbackFailure !== undefined && !task.cancelled) throw callbackFailure;
-        throw error as Error;
+        if (callbackFailure !== undefined && !task.cancelled) {
+          throw new ExpoFileSystemError(callbackFailure.code, callbackFailure.message, callbackFailure.cause, callbackFailure.path);
+        }
+        throw new ExpoFileSystemError(
+          error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
+          error instanceof Error ? error.message : String(error),
+          error instanceof ExpoModuleError ? error.cause : error as Object,
+          error instanceof ExpoModuleError ? error.path : undefined,
+        );
       } finally {
         await closeOutput();
         try {
@@ -569,7 +599,12 @@ class ExpoFileSystemService {
       return new UploadResult(responseParts.join(''), response.statusCode, normalizedResponseHeaders(response.headers));
     } catch (error) {
       if (task.cancelled) return null;
-      throw asFileSystemError(error as Object, 'ERR_FILE_SYSTEM_UPLOAD_FAILED');
+      throw new ExpoFileSystemError(
+        error instanceof ExpoModuleError ? error.code : 'ERR_FILE_SYSTEM_UPLOAD_FAILED',
+        error instanceof Error ? error.message : String(error),
+        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.path : undefined,
+      );
     } finally {
       this.finishTask(uuid, task);
     }
@@ -750,7 +785,12 @@ function mimeSuffixFilters(mimeType?: string): string[] | null {
     if (extensions.length === 0) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_UNSUPPORTED_MIME_TYPE', mimeType);
     return [`${normalized}|${extensions.join(',')}`];
   } catch (error) {
-    throw asFileSystemError(error as Object, 'ERR_FILE_SYSTEM_UNSUPPORTED_MIME_TYPE');
+    throw new ExpoFileSystemError(
+      error instanceof ExpoModuleError ? error.code : 'ERR_FILE_SYSTEM_UNSUPPORTED_MIME_TYPE',
+      error instanceof Error ? error.message : String(error),
+      error instanceof ExpoModuleError ? error.cause : error as Object,
+      error instanceof ExpoModuleError ? error.path : undefined,
+    );
   }
 }
 
@@ -997,14 +1037,18 @@ class FileSystemState {
   grant(uri: string, directory: boolean): void {
     const path = decodeFileUri(uri);
     this.assertNoSymlinkSegments(path);
+    this.context.grantFileAccess(path, directory, true);
+
     if (!this.capabilities.some((capability: Capability): boolean => capability.path === path && capability.directory === directory)) {
       this.capabilities.push(new Capability(path, directory));
     }
   }
 
-  resolve(uri: string, mustExist: boolean = false): string {
+  resolve(uri: string, mustExist: boolean = false, mode: ExpoFileAccessMode = 'read'): string {
     const path = decodeFileUri(uri);
-    let allowed = isInside(this.documentPath, path) || isInside(this.cachePath, path);
+    this.context.assertFileAccess(path, mode);
+
+    let allowed = this.context.services.get(ExpoFileAccessKey) !== undefined || isInside(this.documentPath, path) || isInside(this.cachePath, path);
 
     if (!allowed) {
       allowed = this.capabilities.some((capability: Capability): boolean =>
@@ -1019,6 +1063,7 @@ class FileSystemState {
     if (mustExist && !fs.accessSync(path)) {
       throw new ExpoFileSystemError('ERR_FILE_SYSTEM_FILE_NOT_FOUND', `Path '${path}' does not exist`);
     }
+
     return path;
   }
 
@@ -1072,7 +1117,14 @@ class FileSystemState {
         await manager.closeRawFd(name);
       }
     } catch (error) {
-      if (!isMissingRawResource(error as Object)) throw error as Error;
+      if (!isMissingRawResource(error as Object)) {
+        throw new ExpoFileSystemError(
+          error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
+          error instanceof Error ? error.message : String(error),
+          error instanceof ExpoModuleError ? error.cause : error as Object,
+          error instanceof ExpoModuleError ? error.path : undefined,
+        );
+      }
       const missing = new FileSystemInfo(false);
       missing.isDirectory = false;
       return missing;
@@ -1123,7 +1175,12 @@ class FileSystemState {
       return true;
     } catch (error) {
       if (isMissingRawResource(error as Object)) return false;
-      throw error as Error;
+      throw new ExpoFileSystemError(
+        error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
+        error instanceof Error ? error.message : String(error),
+        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.path : undefined,
+      );
     }
   }
 
@@ -1133,7 +1190,12 @@ class FileSystemState {
       return name.length === 0 || this.context.uiAbilityContext.resourceManager.isRawDir(name);
     } catch (error) {
       if (isMissingRawResource(error as Object)) return false;
-      throw error as Error;
+      throw new ExpoFileSystemError(
+        error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
+        error instanceof Error ? error.message : String(error),
+        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.path : undefined,
+      );
     }
   }
 
@@ -1276,11 +1338,11 @@ class FileSystemFile extends ExpoSharedObject {
     if (!this.bundled) this.pathValue = decodeFileUri(uri);
   }
 
-  path(): string {
+  path(mode: ExpoFileAccessMode = 'read'): string {
     if (this.bundled) {
       throw new ExpoFileSystemError('ERR_FILE_SYSTEM_UNSUPPORTED_SCHEME', 'Bundled resources are read-only');
     }
-    return this.state.resolve(toFileUri(this.pathValue));
+    return this.state.resolve(toFileUri(this.pathValue), false, mode);
   }
 
   probePath(): string | null {
@@ -1314,11 +1376,11 @@ class FileSystemDirectory extends ExpoSharedObject {
     if (!this.bundled) this.pathValue = decodeFileUri(uri);
   }
 
-  path(): string {
+  path(mode: ExpoFileAccessMode = 'read'): string {
     if (this.bundled) {
       throw new ExpoFileSystemError('ERR_FILE_SYSTEM_UNSUPPORTED_SCHEME', 'Bundled resources are read-only');
     }
-    return this.state.resolve(toFileUri(this.pathValue));
+    return this.state.resolve(toFileUri(this.pathValue), false, mode);
   }
 
   probePath(): string | null {
@@ -1570,7 +1632,7 @@ export class ExpoFileSystemModule extends ExpoModule {
       .syncFunction(
         'createDirectory',
         ExpoFunction.ownedTyped1(ExpoValueTypes.string(), (owner: FileSystemDirectory, name: string): FileSystemDirectory => {
-          const target = joinPath(requireDirectory(owner.path()), safeName(name));
+          const target = joinPath(requireDirectory(owner.path('write')), safeName(name));
           fs.mkdirSync(target, false);
           return directoryClass.instance(new FileSystemDirectory(this.context, owner.state, toFileUri(target, true)));
         }).returns(directoryClass.valueType()),
@@ -1581,7 +1643,7 @@ export class ExpoFileSystemModule extends ExpoModule {
           ExpoValueTypes.string(),
           ExpoValueTypes.string().nullable(),
           (owner: FileSystemDirectory, name: string, _mimeType: string | null): FileSystemFile => {
-            const target = joinPath(requireDirectory(owner.path()), safeName(name));
+            const target = joinPath(requireDirectory(owner.path('write')), safeName(name));
             if (fs.accessSync(target)) throw new ExpoFileSystemError('ERR_UNABLE_TO_CREATE', 'Child file already exists');
             createEmptyFile(target, true);
             return fileClass.instance(new FileSystemFile(this.context, owner.state, toFileUri(target)));
@@ -1720,7 +1782,7 @@ export class ExponentFileSystemModule extends ExpoModule {
             const state = this.fileState();
             await state.ready();
             const bytes = recordEncoding(options) === 'base64' ? base64Decode(value) : new util.TextEncoder('utf-8').encode(value);
-            await writeBytesFileAsync(state.resolve(uri), bytes, recordBoolean(options, 'append'));
+            await writeBytesFileAsync(state.resolve(uri, false, 'write'), bytes, recordBoolean(options, 'append'));
           },
         ),
       )
@@ -1729,7 +1791,7 @@ export class ExponentFileSystemModule extends ExpoModule {
         ExpoFunction.typed2(ExpoValueTypes.string(), RECORD_TYPE.optional(), async (uri: string, options?: FileSystemRecord): Promise<void> => {
           const state = this.fileState();
           await state.ready();
-          const path = state.resolve(uri);
+          const path = state.resolve(uri, false, 'write');
           if (!(await fs.access(path))) {
             if (recordBoolean(options, 'idempotent')) return;
             throw new ExpoFileSystemError('ERR_FILE_SYSTEM_FILE_NOT_FOUND', 'Path does not exist');
@@ -1746,7 +1808,7 @@ export class ExponentFileSystemModule extends ExpoModule {
           if (isPackagedResource(sourceUri)) {
             throw new ExpoFileSystemError('ERR_FILE_SYSTEM_UNSUPPORTED_SCHEME', 'Bundled resources are read-only and cannot be moved');
           }
-          await movePathAsync(state.resolve(sourceUri, true), state.resolve(requiredRecordString(options, 'to')));
+          await movePathAsync(state.resolve(sourceUri, true, 'write'), state.resolve(requiredRecordString(options, 'to'), false, 'write'));
         }),
       )
       .asyncFunction(
@@ -1755,7 +1817,7 @@ export class ExponentFileSystemModule extends ExpoModule {
           const state = this.fileState();
           await state.ready();
           const sourceUri = requiredRecordString(options, 'from');
-          const target = state.resolve(requiredRecordString(options, 'to'));
+          const target = state.resolve(requiredRecordString(options, 'to'), false, 'write');
           if (isPackagedResource(sourceUri)) {
             await this.service.download({ url: sourceUri, destination: target, idempotent: true });
             return;
@@ -1768,7 +1830,7 @@ export class ExponentFileSystemModule extends ExpoModule {
         ExpoFunction.typed2(ExpoValueTypes.string(), RECORD_TYPE.optional(), async (uri: string, options?: FileSystemRecord): Promise<void> => {
           const state = this.fileState();
           await state.ready();
-          await makeDirectoryPathAsync(state.resolve(uri), recordBoolean(options, 'intermediates'));
+          await makeDirectoryPathAsync(state.resolve(uri, false, 'write'), recordBoolean(options, 'intermediates'));
         }),
       )
       .asyncFunction(
@@ -1890,7 +1952,7 @@ export class ExponentFileSystemModule extends ExpoModule {
         ExpoFunction.typed2(ExpoValueTypes.string(), ExpoValueTypes.string(), async (uri: string, name: string): Promise<string> => {
           const state = this.fileState();
           await state.ready();
-          const target = joinPath(requireDirectory(state.resolve(uri, true)), safeName(name));
+          const target = joinPath(requireDirectory(state.resolve(uri, true, 'write')), safeName(name));
           await fs.mkdir(target, false);
           return toFileUri(target, true);
         }),
@@ -1905,7 +1967,7 @@ export class ExponentFileSystemModule extends ExpoModule {
             await this.fileState().ready();
             const extension = requested.includes('.') ? null : extensionForMimeType(mime);
             const name = safeName(extension === null ? requested : `${requested}.${extension}`);
-            const target = joinPath(requireDirectory(this.fileState().resolve(uri, true)), name);
+            const target = joinPath(requireDirectory(this.fileState().resolve(uri, true, 'write')), name);
             createEmptyFile(target, true);
             return toFileUri(target);
           },
@@ -2034,20 +2096,34 @@ function ensureDirectoryExists(path: string): void {
   try {
     fs.mkdirSync(path, true);
   } catch (error) {
-    if (Number(Reflect.get(error as Object, 'code')) !== FILE_EXISTS_ERROR) throw error as Error;
+    if (Number(Reflect.get(error as Object, 'code')) !== FILE_EXISTS_ERROR) {
+      throw new ExpoFileSystemError(
+        error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
+        error instanceof Error ? error.message : String(error),
+        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.path : undefined,
+      );
+    }
   }
   // Recursive mkdir still reports EEXIST on Harmony. Only an actual directory
   // may satisfy an ensure operation, including when another Host created it.
-  if (!fs.lstatSync(path).isDirectory()) throw invalidType(path, 'directory');
+  if (!fs.lstatSync(path).isDirectory()) throw new ExpoModuleError('ERR_INVALID_ARGUMENT_TYPE', `${path} expected directory`);
 }
 
 async function makeDirectoryPathAsync(path: string, intermediates: boolean): Promise<void> {
   try {
     await fs.mkdir(path, intermediates);
   } catch (error) {
-    if (!intermediates || Number(Reflect.get(error as Object, 'code')) !== FILE_EXISTS_ERROR) throw error as Error;
+    if (!intermediates || Number(Reflect.get(error as Object, 'code')) !== FILE_EXISTS_ERROR) {
+      throw new ExpoFileSystemError(
+        error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
+        error instanceof Error ? error.message : String(error),
+        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.path : undefined,
+      );
+    }
   }
-  if (!(await fs.lstat(path)).isDirectory()) throw invalidType(path, 'directory');
+  if (!(await fs.lstat(path)).isDirectory()) throw new ExpoModuleError('ERR_INVALID_ARGUMENT_TYPE', `${path} expected directory`);
 }
 
 function createEmptyFile(path: string, exclusive: boolean = false): void {
@@ -2207,7 +2283,12 @@ function copyPathOverwrite(source: string, target: string): void {
           );
         }
       }
-      throw error as Error;
+      throw new ExpoFileSystemError(
+        error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
+        error instanceof Error ? error.message : String(error),
+        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.path : undefined,
+      );
     }
   } finally {
     if (!preservePrevious) removePath(staging);
@@ -2232,7 +2313,14 @@ function movePathNoReplace(source: string, target: string): void {
     atomicFileOperations.publishNoReplace(source, target);
     return;
   } catch (error) {
-    if (Reflect.get(error as Object, 'code') !== 'ERR_FILE_SYSTEM_CROSS_DEVICE') throw error as Error;
+    if (Reflect.get(error as Object, 'code') !== 'ERR_FILE_SYSTEM_CROSS_DEVICE') {
+      throw new ExpoFileSystemError(
+        error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
+        error instanceof Error ? error.message : String(error),
+        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.path : undefined,
+      );
+    }
   }
   // Stage on the destination volume and retain the same no-replace contract.
   copyPathNoReplace(source, target);
@@ -2294,18 +2382,15 @@ function assertOutsideDirectory(source: string, target: string): void {
 
 function requireRecord(value: ESObject, path: string): FileSystemRecord {
   if (value === null || typeof value !== 'object' || Array.isArray(value) || value instanceof ArrayBuffer) {
-    throw invalidType(path, 'plain object');
+    throw new ExpoModuleError('ERR_INVALID_ARGUMENT_TYPE', `${path} expected plain object`);
   }
   return value as FileSystemRecord;
 }
 
 function openFileHandle(owner: FileSystemFile): fs.File {
-  const path = requireFile(owner.path());
+  owner.path();
+  const path = requireFile(owner.path('write'));
   return fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.NOFOLLOW);
-}
-
-function invalidType(path: string, expected: string): ExpoModuleError {
-  return new ExpoModuleError('ERR_INVALID_ARGUMENT_TYPE', `${path} expected ${expected}`);
 }
 
 function recordBoolean(record: FileSystemRecord | undefined, key: string): boolean {
@@ -2372,16 +2457,19 @@ function requiredRecordString(record: FileSystemRecord, key: string): string {
 }
 
 function createFile(owner: FileSystemFile, options?: FileSystemRecord): void {
-  const path = owner.path();
+  const path = owner.path('write');
   const overwrite = recordBoolean(options, 'overwrite');
+
   if (recordBoolean(options, 'intermediates')) ensureDirectoryExists(parentPath(path));
   if (fs.accessSync(path)) {
     if (!fs.statSync(path).isFile()) {
       throw new ExpoFileSystemError('ERR_FILE_SYSTEM_INVALID_FILE_TYPE', 'Cannot replace a directory with a file');
     }
     if (!overwrite) throw new ExpoFileSystemError('ERR_UNABLE_TO_CREATE', 'File already exists');
+
     fs.unlinkSync(path);
   }
+
   createEmptyFile(path, !overwrite);
 }
 
@@ -2390,12 +2478,14 @@ function writeFileContent(owner: FileSystemFile, content: ExpoEither<string, Uin
   if (encoding !== undefined && encoding !== 'utf8' && encoding !== 'base64') {
     throw new ExpoFileSystemError('ERR_FILE_SYSTEM_INVALID_ENCODING', `Unsupported file encoding '${encoding}'`);
   }
+
   const bytes = content.isFirst
     ? encoding === 'base64'
       ? base64Decode(content.first as string)
       : new util.TextEncoder('utf-8').encode(content.first as string)
     : (content.second as Uint8Array);
-  writeBytesFile(owner.path(), bytes, recordBoolean(options, 'append'));
+
+  writeBytesFile(owner.path('write'), bytes, recordBoolean(options, 'append'));
 }
 
 function fileExists(owner: FileSystemFile): boolean {
@@ -2447,47 +2537,51 @@ function fileInfo(owner: FileSystemFile, includeMd5: boolean): FileSystemInfo {
 }
 
 function deleteFile(owner: FileSystemFile): void {
-  const path = owner.path();
+  const path = owner.path('write');
   if (!fs.accessSync(path)) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_CANNOT_DELETE', 'File does not exist');
   requireFile(path);
+
   fs.unlinkSync(path);
 }
 
 function fileTarget(owner: FileSystemFile, destination: FileSystemDestination): string {
   if (destination instanceof FileSystemDirectory) {
-    return joinPath(requireDirectory(destination.path()), leafName(owner.path()));
+    return joinPath(requireDirectory(destination.path('write')), leafName(owner.path()));
   }
-  requireDirectory(parentPath(destination.path()));
-  return destination.path();
+  requireDirectory(parentPath(destination.path('write')));
+  return destination.path('write');
 }
 
 function copyFile(owner: FileSystemFile, destination: FileSystemDestination): void {
   const source = requireFile(owner.path());
   const target = fileTarget(owner, destination);
   if (fs.accessSync(target)) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_DESTINATION_EXISTS', 'Copy destination exists');
+
   copyPathNoReplace(source, target);
 }
 
 function moveFile(owner: FileSystemFile, destination: FileSystemDestination): void {
-  const source = requireFile(owner.path());
+  const source = requireFile(owner.path('write'));
   const target = fileTarget(owner, destination);
   if (fs.accessSync(target)) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_DESTINATION_EXISTS', 'Move destination exists');
+
   movePathNoReplace(source, target);
   owner.setPath(target);
 }
 
 function renameFile(owner: FileSystemFile, name: string): void {
-  const source = requireFile(owner.path());
+  const source = requireFile(owner.path('write'));
   const target = joinPath(parentPath(source), safeName(name));
   if (source === target) return;
   if (fs.accessSync(target)) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_DESTINATION_EXISTS', 'Rename destination exists');
-  owner.state.resolve(toFileUri(target));
+  owner.state.resolve(toFileUri(target), false, 'write');
+
   atomicFileOperations.publishNoReplace(source, target);
   owner.setPath(target);
 }
 
 function createDirectory(owner: FileSystemDirectory, options?: FileSystemRecord): void {
-  const path = owner.path();
+  const path = owner.path('write');
   if (fs.accessSync(path)) {
     if (!fs.statSync(path).isDirectory()) {
       throw new ExpoFileSystemError('ERR_FILE_SYSTEM_INVALID_DIRECTORY_TYPE', 'Path points to a file');
@@ -2499,13 +2593,15 @@ function createDirectory(owner: FileSystemDirectory, options?: FileSystemRecord)
     // Match iOS: creating an existing directory with overwrite preserves its children.
     return;
   }
+
   fs.mkdirSync(path, recordBoolean(options, 'intermediates'));
 }
 
 function deleteDirectory(owner: FileSystemDirectory): void {
-  const path = owner.path();
+  const path = owner.path('write');
   if (!fs.accessSync(path)) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_CANNOT_DELETE', 'Directory does not exist');
   requireDirectory(path);
+
   removePath(path);
 }
 
@@ -2513,7 +2609,8 @@ function directoryTarget(owner: FileSystemDirectory, destination: FileSystemDest
   if (!(destination instanceof FileSystemDirectory)) {
     throw new ExpoFileSystemError('ERR_FILE_SYSTEM_DESTINATION', 'A directory cannot be copied or moved to a File');
   }
-  const path = destination.path();
+
+  const path = destination.path('write');
   if (fs.accessSync(path) && fs.statSync(path).isDirectory()) return joinPath(path, leafName(owner.path()));
   requireDirectory(parentPath(path));
   return path;
@@ -2524,24 +2621,27 @@ function copyDirectory(owner: FileSystemDirectory, destination: FileSystemDestin
   const target = directoryTarget(owner, destination);
   assertOutsideDirectory(source, target);
   if (fs.accessSync(target)) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_DESTINATION_EXISTS', 'Copy destination exists');
+
   copyPathNoReplace(source, target);
 }
 
 function moveDirectory(owner: FileSystemDirectory, destination: FileSystemDestination): void {
-  const source = requireDirectory(owner.path());
+  const source = requireDirectory(owner.path('write'));
   const target = directoryTarget(owner, destination);
   assertOutsideDirectory(source, target);
   if (fs.accessSync(target)) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_DESTINATION_EXISTS', 'Move destination exists');
+
   movePathNoReplace(source, target);
   owner.setPath(target);
 }
 
 function renameDirectory(owner: FileSystemDirectory, name: string): void {
-  const source = requireDirectory(owner.path());
+  const source = requireDirectory(owner.path('write'));
   const target = joinPath(parentPath(source), safeName(name));
   if (source === target) return;
   if (fs.accessSync(target)) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_DESTINATION_EXISTS', 'Rename destination exists');
-  owner.state.resolve(toFileUri(target));
+  owner.state.resolve(toFileUri(target), false, 'write');
+
   atomicFileOperations.publishNoReplace(source, target);
   owner.setPath(target);
 }
@@ -2619,10 +2719,11 @@ function pathInfo(state: FileSystemState, uri: string): FileSystemInfo {
 
 function modernDownloadRequest(url: string, destination: FileSystemDestination, options?: FileSystemRecord): DownloadRequest {
   const directory = destination instanceof FileSystemDirectory;
-  const path = directory ? requireDirectory(destination.path()) : destination.path();
+  const path = directory ? requireDirectory(destination.path('write')) : destination.path('write');
   if (!directory && fs.accessSync(path) && !recordBoolean(options, 'idempotent')) {
     throw new ExpoFileSystemError('ERR_DESTINATION_ALREADY_EXISTS', 'Download destination already exists');
   }
+
   return {
     url,
     destination: path,
@@ -2637,7 +2738,7 @@ function modernDownloadRequest(url: string, destination: FileSystemDestination, 
 function legacyDownloadRequest(state: FileSystemState, url: string, destinationUri: string, options?: FileSystemRecord): DownloadRequest {
   return {
     url,
-    destination: state.resolve(destinationUri),
+    destination: state.resolve(destinationUri, false, 'write'),
     headers: recordObject(options, 'headers'),
     md5: recordBoolean(options, 'md5'),
     idempotent: true,
@@ -2746,7 +2847,12 @@ async function copyPathOverwriteAsync(source: string, target: string): Promise<v
           );
         }
       }
-      throw error as Error;
+      throw new ExpoFileSystemError(
+        error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
+        error instanceof Error ? error.message : String(error),
+        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.path : undefined,
+      );
     }
   } finally {
     if (!preservePrevious) await removePathAsync(staging);
@@ -2760,7 +2866,14 @@ async function movePathAsync(source: string, target: string): Promise<void> {
     return;
   } catch (error) {
     // The platform documents this code as EXDEV: the source is on another volume.
-    if (Number(Reflect.get(error as Object, 'code')) !== 13900016) throw error as Error;
+    if (Number(Reflect.get(error as Object, 'code')) !== 13900016) {
+      throw new ExpoFileSystemError(
+        error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
+        error instanceof Error ? error.message : String(error),
+        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.path : undefined,
+      );
+    }
   }
   await copyPathOverwriteAsync(source, target);
   try {
@@ -2788,7 +2901,14 @@ async function legacyInfoAsync(state: FileSystemState, uri: string, includeMd5: 
   try {
     stat = await fs.stat(path);
   } catch (error) {
-    if (Number(Reflect.get(error as Object, 'code')) !== 13900002) throw error as Error;
+    if (Number(Reflect.get(error as Object, 'code')) !== 13900002) {
+      throw new ExpoFileSystemError(
+        error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
+        error instanceof Error ? error.message : String(error),
+        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.path : undefined,
+      );
+    }
     const missing = new FileSystemInfo(false);
     missing.isDirectory = false;
     return missing;

@@ -16,8 +16,9 @@ export class PickerPermissionStore {
 
   constructor(context: ExpoModuleContext) {
     this.context = context;
-    this.storageScope = context.uiAbilityContext.preferencesDir;
-    this.storage = preferences.getPreferencesSync(context.uiAbilityContext, { name: 'expo_file_system_permissions' });
+    const name = context.preferenceName('expo_file_system_permissions');
+    this.storageScope = `${context.uiAbilityContext.preferencesDir}/${name}`;
+    this.storage = preferences.getPreferencesSync(context.uiAbilityContext, { name });
   }
 
   private readEntries(): SavedPermission[] {
