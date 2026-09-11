@@ -10,7 +10,9 @@
 npm install @expo-harmony/expo-constants expo-constants@55.0.17
 ```
 
-安装本包后必须在 `app.json` 的 `plugins` 中传入 `@expo-harmony/expo-constants`，并启用 `@expo-harmony/prebuild-config`：
+鸿蒙适配的原生模块会通过 Autolinking 自动接入。最低支持 HarmonyOS 5.0.2（API 14），宿主的 `compatibleSdkVersion` 也需满足此要求。
+
+本包需要在 `app.json` 的 `plugins` 中传入 `@expo-harmony/expo-constants`，并将 `@expo-harmony/prebuild-config` 放在它后面：
 
 ```json
 {
@@ -23,7 +25,16 @@ npm install @expo-harmony/expo-constants expo-constants@55.0.17
 }
 ```
 
-应用代码仍从官方 `expo-constants` 包导入，HarmonyOS 原生模块由 Expo Modules 自动链接；Constants Config Plugin 会将公开的 Expo 配置写入应用资源，供运行时读取。
+Constants Config Plugin 会把公开的 Expo 配置写入应用资源（`entry/src/main/resources/rawfile/app.config`），供运行时读取 `expoConfig`、`easConfig` 等配置字段；并在生成的 `harmony/hvigorfile.ts` 中注册构建期刷新，公开配置变更后无需重新 prebuild，下次构建会自动更新。
+
+业务代码依旧使用官方包：
+
+```ts
+import Constants from 'expo-constants';
+
+const config = Constants.expoConfig;
+const { bundleName, deviceType } = Constants.platform.harmony;
+```
 
 ## API 对照表
 

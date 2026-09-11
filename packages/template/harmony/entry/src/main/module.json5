@@ -13,12 +13,6 @@
         "name": "ohos.permission.INTERNET"
       }
     ],
-    "metadata": [
-      {
-        "name": "expo.harmony.userInterfaceStyle",
-        "value": "light"
-      }
-    ],
     "abilities": [
       {
         "name": "EntryAbility",

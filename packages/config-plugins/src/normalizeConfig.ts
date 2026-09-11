@@ -311,11 +311,6 @@ function normalizeHarmonyConfig(config: HarmonyExpoConfig): NormalizedHarmonyCon
     throw new HarmonyConfigError(`Unsupported Harmony orientation: ${orientation}`);
   }
 
-  const style = harmony.userInterfaceStyle || config.userInterfaceStyle || 'light';
-  if (!['light', 'dark', 'automatic'].includes(style)) {
-    throw new HarmonyConfigError(`Unsupported Harmony UI style: ${style}`);
-  }
-
   const background = normalizeColor(
     harmony.backgroundColor || config.backgroundColor,
     'harmony.backgroundColor',

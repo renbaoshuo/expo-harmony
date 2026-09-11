@@ -51,7 +51,7 @@ module.exports = defineExpoHarmonyConfig({
 | `label` | 配置里的 `name` |
 | `backgroundColor` | 配置里的 `backgroundColor`，没有则 `#FFFFFF` |
 | `orientation` | 配置里的 `orientation`，没有则 `default` |
-| `userInterfaceStyle` | 配置里的 `userInterfaceStyle`，没有则 `light` |
+| `userInterfaceStyle` | 供 `expo-system-ui` 和 `expo-splash-screen` 插件读取的 HarmonyOS 外观覆盖值，由模块插件校验和应用 |
 | `jsEngine` | `hermes` |
 | `abiFilters` | `['arm64-v8a', 'x86_64']` |
 | `signingConfigFile` | 签名配置文件路径，不设置则忽略 |
