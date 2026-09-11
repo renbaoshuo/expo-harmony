@@ -1,9 +1,12 @@
 import {
+  ExpoFileAccessKey,
+  fileUriFromPath,
   ExpoFunction,
   ExpoModule,
   ExpoModuleContext,
   ExpoModuleDefinition,
   ExpoModuleError,
+  ExpoPermissionStatus,
   ExpoSharedObjectClassDefinition,
   ExpoSharedRef,
   ExpoValueType,
@@ -11,12 +14,13 @@ import {
   ExpoViewContext,
   ExpoViewDefinition,
 } from '@expo-harmony/expo-modules-core';
-import { abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
+import { Permissions } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { camera } from '@kit.CameraKit';
 import { media } from '@kit.MediaKit';
 import { http } from '@kit.NetworkKit';
 import { detectBarcode, scanBarcode, scanCore } from '@kit.ScanKit';
+import deviceInfo from '@ohos.deviceInfo';
 import fs from '@ohos.file.fs';
 import image from '@ohos.multimedia.image';
 import util from '@ohos.util';
@@ -602,25 +606,16 @@ export class ExpoCameraModule extends ExpoModule {
   }
 
   private getPermission(permission: Permissions): PermissionRecord {
-    const manager = abilityAccessCtrl.createAtManager();
-
-    try {
-      const status = manager.getSelfPermissionStatus(permission);
-      if (status === abilityAccessCtrl.PermissionStatus.GRANTED) return new PermissionRecord('granted', true);
-      if (status === abilityAccessCtrl.PermissionStatus.NOT_DETERMINED) return new PermissionRecord('undetermined', true);
-
-      return new PermissionRecord('denied', false);
-    } catch (_) {
-      const token = this.context.uiAbilityContext.applicationInfo.accessTokenId;
-      const granted = manager.checkAccessTokenSync(token, permission) === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED;
-
-      return new PermissionRecord(granted ? 'granted' : 'denied', true);
-    }
+    const status = this.context.permissionStatus(permission);
+    if (status === ExpoPermissionStatus.GRANTED) return new PermissionRecord('granted', true);
+    if (status === ExpoPermissionStatus.NOT_DETERMINED) return new PermissionRecord('undetermined', true);
+    // Older SDKs cannot distinguish a first request from a permanent denial.
+    return new PermissionRecord('denied', deviceInfo.sdkApiVersion < 20);
   }
 
   private async requestPermission(permission: Permissions): Promise<PermissionRecord> {
     try {
-      await abilityAccessCtrl.createAtManager().requestPermissionsFromUser(this.context.uiAbilityContext, [permission]);
+      await this.context.requestPermissions([permission]);
 
       return this.getPermission(permission);
     } catch (error) {
@@ -676,13 +671,13 @@ export class ExpoCameraModule extends ExpoModule {
           throw new ExpoCameraError('ERR_CAMERA_IMAGE_TOO_LARGE', 'The barcode image exceeds the 10 MB limit.');
         }
 
-        const dir = `${this.context.uiAbilityContext.cacheDir}/expo-camera`;
+        const dir = `${this.context.cachePath}/expo-camera`;
         await ensureDirectory(dir);
         path = uniquePath(dir, 'barcode', 'img');
 
         await writeBuffer(path, response.result);
 
-        uri = `file://${path}`;
+        uri = fileUriFromPath(path);
       } catch (error) {
         console.error(`Expo Camera barcode image download failed: ${String(error)}`);
         if (error instanceof ExpoCameraError && error.code === 'ERR_CAMERA_IMAGE_TOO_LARGE') {
@@ -711,18 +706,21 @@ export class ExpoCameraModule extends ExpoModule {
         throw new ExpoCameraError('ERR_CAMERA_IMAGE_TOO_LARGE', 'The barcode image exceeds the 10 MB limit.');
       }
 
-      const dir = `${this.context.uiAbilityContext.cacheDir}/expo-camera`;
+      const dir = `${this.context.cachePath}/expo-camera`;
       await ensureDirectory(dir);
       path = uniquePath(dir, 'barcode', 'img');
 
       await writeBuffer(path, data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
 
-      uri = `file://${path}`;
+      uri = fileUriFromPath(path);
     }
 
     try {
       if (requested.length === 0) return [];
 
+      if (this.context.services.get(ExpoFileAccessKey) !== undefined || uri.startsWith('file://') || uri.startsWith('/')) {
+        uri = fileUriFromPath(this.context.filePathForRead(uri));
+      }
       const results = await detectBarcode.decode({ uri }, { scanTypes: requested });
 
       return results.map((result: scanBarcode.ScanResult): BarcodeResult => barcodeResult(result));
@@ -777,14 +775,14 @@ export class ExpoCameraModule extends ExpoModule {
         needsPackProperties: options.metadata !== undefined,
       });
 
-      const dir = `${this.context.uiAbilityContext.cacheDir}/expo-camera`;
+      const dir = `${this.context.cachePath}/expo-camera`;
       await ensureDirectory(dir);
       const path = uniquePath(dir, 'picture-ref', 'jpg');
 
       await writeBuffer(path, buffer);
       await writeMetadata(path, options.metadata);
 
-      const result = new SavedPicture(`file://${path}`, info.size.width, info.size.height);
+      const result = new SavedPicture(fileUriFromPath(path), info.size.width, info.size.height);
       if (options.base64 === true) {
         const saved = options.metadata === undefined ? buffer : await readBuffer(path);
         result.base64 = await new util.Base64Helper().encodeToString(new Uint8Array(saved));

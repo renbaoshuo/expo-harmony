@@ -1,5 +1,12 @@
-import { ExpoView, ExpoViewContentContext, ExpoViewContext } from '@expo-harmony/expo-modules-core';
-import { abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
+import {
+  fileUriFromPath,
+  filePathFromUri,
+  ExpoPermissionStatus,
+  ExpoView,
+  ExpoViewContentContext,
+  ExpoViewContext,
+} from '@expo-harmony/expo-modules-core';
+import { Permissions } from '@kit.AbilityKit';
 import { camera } from '@kit.CameraKit';
 import { media } from '@kit.MediaKit';
 import { sensor } from '@kit.SensorServiceKit';
@@ -123,6 +130,7 @@ interface ReadyWaiter {
 
 type ControllableSession = camera.PhotoSession | camera.VideoSession;
 
+const CAMERA_PERMISSION: Permissions = 'ohos.permission.CAMERA';
 const MICROPHONE_PERMISSION: Permissions = 'ohos.permission.MICROPHONE';
 const CAPTURE_TIMEOUT_MS: number = 15_000;
 const GRAVITY_THRESHOLD: number = 9.80665 * 0.75;
@@ -769,6 +777,10 @@ export class ExpoCameraViewState extends ExpoView {
     const preview = choosePreviewProfile(capability.previewProfiles, output);
 
     const generation: number = this.pipelineGeneration;
+    if (this.context.moduleContext.permissionStatus(CAMERA_PERMISSION) !== ExpoPermissionStatus.GRANTED) {
+      throw new ExpoCameraError('ERR_CAMERA_PERMISSION', 'Camera permission is required to open the camera.');
+    }
+
     const input = this.manager.createCameraInput(device);
     this.device = device;
     this.input = input;
@@ -807,7 +819,7 @@ export class ExpoCameraViewState extends ExpoView {
       this.emit('onCameraReady');
     } catch (error) {
       await this.releasePipeline();
-      if (error instanceof ExpoCameraError) throw error;
+      if (error instanceof ExpoCameraError) throw new ExpoCameraError(error.code, error.message, error.cause);
       throw new ExpoCameraError('ERR_CAMERA_INITIALIZATION', `The Harmony camera pipeline could not be initialized: ${String(error)}`);
     }
   }
@@ -949,7 +961,7 @@ export class ExpoCameraViewState extends ExpoView {
       }
     } catch (error) {
       this.captureStarting = false;
-      if (error instanceof ExpoCameraError) throw error;
+      if (error instanceof ExpoCameraError) throw new ExpoCameraError(error.code, error.message, error.cause);
       throw new ExpoCameraError('ERR_CAMERA_NOT_READY', `The Harmony camera did not become ready for capture: ${String(error)}`);
     }
 
@@ -1047,7 +1059,7 @@ export class ExpoCameraViewState extends ExpoView {
       } else {
         let output: ESObject = result;
         if (pending.options.pictureRef === true) {
-          const source: image.ImageSource = image.createImageSource(result.uri.slice('file://'.length));
+          const source: image.ImageSource = image.createImageSource(filePathFromUri(result.uri));
           let pixel: image.PixelMap | undefined = undefined;
           try {
             pixel = await source.createPixelMap();
@@ -1119,7 +1131,7 @@ export class ExpoCameraViewState extends ExpoView {
         });
       }
 
-      const dir = `${this.context.rnComponentContext.uiAbilityContext.cacheDir}/expo-camera`;
+      const dir = `${this.context.moduleContext.cachePath}/expo-camera`;
       await ensureDirectory(dir);
       const path = uniquePath(dir, 'photo', format, this.tag);
 
@@ -1156,7 +1168,7 @@ export class ExpoCameraViewState extends ExpoView {
         }
       }
 
-      const result = new PictureResult(`file://${path}`, width, height, format);
+      const result = new PictureResult(fileUriFromPath(path), width, height, format);
       if (options.base64 === true) {
         const finalBytes: ArrayBuffer = options.exif === true && !skip ? await readBuffer(path) : buffer;
         result.base64 = await new util.Base64Helper().encodeToString(new Uint8Array(finalBytes));
@@ -1249,9 +1261,7 @@ export class ExpoCameraViewState extends ExpoView {
       if (this.props.mode !== 'video') throw new ExpoCameraError('ERR_CAMERA_WRONG_MODE', 'Cannot record while the camera is in picture mode.');
       if (this.surfaceId === undefined) throw new ExpoCameraError('ERR_CAMERA_NOT_READY', 'The camera preview surface is unavailable.');
       if (this.props.mute !== true) {
-        const token = this.context.rnComponentContext.uiAbilityContext.applicationInfo.accessTokenId;
-        const granted =
-          abilityAccessCtrl.createAtManager().checkAccessTokenSync(token, MICROPHONE_PERMISSION) === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED;
+        const granted = this.context.moduleContext.permissionStatus(MICROPHONE_PERMISSION) === ExpoPermissionStatus.GRANTED;
         if (!granted) {
           throw new ExpoCameraError('ERR_CAMERA_MICROPHONE_PERMISSION', 'Microphone permission is required to record video with audio.');
         }
@@ -1311,7 +1321,7 @@ export class ExpoCameraViewState extends ExpoView {
     const video = chooseVideoProfile(capability.videoProfiles, this.props.videoQuality);
     const preview = choosePreviewProfile(capability.previewProfiles, video);
 
-    const dir = `${this.context.rnComponentContext.uiAbilityContext.cacheDir}/expo-camera`;
+    const dir = `${this.context.moduleContext.cachePath}/expo-camera`;
     await ensureDirectory(dir);
     this.assertRecordingStart(generation);
     const path = uniquePath(dir, 'video', 'mp4', this.tag);
@@ -1372,6 +1382,10 @@ export class ExpoCameraViewState extends ExpoView {
     this.assertRecordingStart(generation);
     const inputSurface = await recorder.getInputSurface();
     this.assertRecordingStart(generation);
+    if (this.context.moduleContext.permissionStatus(CAMERA_PERMISSION) !== ExpoPermissionStatus.GRANTED) {
+      throw new ExpoCameraError('ERR_CAMERA_PERMISSION', 'Camera permission is required to open the camera.');
+    }
+
     const input = this.manager.createCameraInput(device);
     this.device = device;
     this.input = input;
@@ -1559,7 +1573,7 @@ export class ExpoCameraViewState extends ExpoView {
     } else if (path === undefined) {
       reject?.(new ExpoCameraError('ERR_CAMERA_RECORDING_FILE', 'The video recorder did not create an output file.'));
     } else {
-      resolve?.(new VideoResult(`file://${path}`));
+      resolve?.(new VideoResult(fileUriFromPath(path)));
     }
     if (!this.destroyed) this.scheduleReconfigure();
   }
