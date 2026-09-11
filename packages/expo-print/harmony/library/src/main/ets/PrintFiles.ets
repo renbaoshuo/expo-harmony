@@ -1,4 +1,4 @@
-import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
+import { ExpoFileAccessKey, ExpoModuleContext, ExpoModuleError } from '@expo-harmony/expo-modules-core';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { http } from '@kit.NetworkKit';
@@ -45,7 +45,7 @@ export async function writeBytes(path: string, bytes: Uint8Array): Promise<void>
   }
 }
 
-export async function materializePdf(source: string, path: string, requests: Set<http.HttpRequest>, assertActive: () => void): Promise<void> {
+export async function materializePdf(source: string, path: string, requests: Set<http.HttpRequest>, assertActive: () => void, context: ExpoModuleContext): Promise<void> {
   try {
     assertActive();
     const parsed = new uri.URI(source);
@@ -80,10 +80,14 @@ export async function materializePdf(source: string, path: string, requests: Set
       }
       if (inputPath.includes('\0')) throw new Error('File paths must not contain a NUL character.');
 
+      if (context.services.get(ExpoFileAccessKey) !== undefined) context.filePathForRead(inputPath);
+
       const input = await fileIo.open(inputPath, fileIo.OpenMode.READ_ONLY);
       try {
         assertActive();
+        context.assertFileAccess(input.path);
         if (!(await fileIo.stat(input.fd)).isFile()) throw new Error('The URI must refer to a file.');
+
         await fileIo.copyFile(input.fd, path);
       } finally {
         await fileIo.close(input);

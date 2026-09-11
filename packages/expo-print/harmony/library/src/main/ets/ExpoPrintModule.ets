@@ -72,12 +72,12 @@ export class ExpoPrintModule extends ExpoModule {
     this.printing = true;
     let path: string | undefined;
     try {
-      path = await outputPath(this.context.uiAbilityContext.cacheDir, true);
+      path = await outputPath(this.context.cachePath, true);
       this.assertActive(generation);
       if (options.html !== undefined) {
         await writeBytes(path, await this.render(options, generation));
       } else {
-        await materializePdf(options.uri!, path, this.requests, (): void => this.assertActive(generation));
+        await materializePdf(options.uri!, path, this.requests, (): void => this.assertActive(generation), this.context);
       }
 
       this.assertActive(generation);
@@ -108,7 +108,7 @@ export class ExpoPrintModule extends ExpoModule {
       const bytes = await this.render(options, generation);
       this.assertActive(generation);
 
-      path = await outputPath(this.context.uiAbilityContext.cacheDir);
+      path = await outputPath(this.context.cachePath);
       await writeBytes(path, bytes);
       this.assertActive(generation);
 
