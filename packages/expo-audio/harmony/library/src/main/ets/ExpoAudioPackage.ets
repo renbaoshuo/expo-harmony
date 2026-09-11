@@ -1,15 +1,18 @@
 import {
+  ExpoFileAccessKey,
+  fileUriFromPath,
   ExpoFunction,
   ExpoModule,
   ExpoModuleContext,
   ExpoModuleDefinition,
   ExpoModuleError,
+  ExpoPermissionStatus,
   ExpoSharedObject,
   ExpoSharedObjectClassDefinition,
   ExpoValueType,
   ExpoValueTypes,
 } from '@expo-harmony/expo-modules-core';
-import { abilityAccessCtrl, Permissions, wantAgent, WantAgent } from '@kit.AbilityKit';
+import { Permissions, wantAgent, WantAgent } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { audio } from '@kit.AudioKit';
 import { avSession } from '@kit.AVSessionKit';
@@ -683,9 +686,13 @@ async function assignSource(
 
   const path = localFilePath(uri);
   if (path !== undefined) {
+    if (context.services.get(ExpoFileAccessKey) !== undefined) context.filePathForRead(path);
+
     const file = openSourceFile(path, false);
 
     try {
+      context.assertFileAccess(file.file.path);
+
       player.fdSrc = {
         fd: file.file.fd,
         offset: file.offset,
@@ -698,6 +705,10 @@ async function assignSource(
     }
 
     return file;
+  }
+
+  if (context.services.get(ExpoFileAccessKey) !== undefined && !isRemoteAudioUri(uri)) {
+    throw new ExpoAudioError('ERR_AUDIO_INVALID_SOURCE', 'This URI scheme is not supported by the project file policy.');
   }
 
   if (isRemoteAudioUri(uri) && hasHeaders(source)) {
@@ -1863,7 +1874,7 @@ class AudioRecorderController extends OperationQueue {
     return this.elapsedBeforeStartMs + Math.max(0, uptimeMilliseconds() - this.startedAtMs);
   }
   get uri(): string | null {
-    return this.outputPath === null ? null : `file://${this.outputPath}`;
+    return this.outputPath === null ? null : fileUriFromPath(this.outputPath);
   }
   get metering(): number | undefined {
     return this.meteringValue;
@@ -1953,7 +1964,7 @@ class AudioRecorderController extends OperationQueue {
     this.pendingDurationMs = -1;
 
     const profile = recordingProfile(options);
-    const folder = `${this.delegate.context.uiAbilityContext.cacheDir}/expo-audio`;
+    const folder = `${this.delegate.context.cachePath}/expo-audio`;
 
     if (!fs.accessSync(folder)) fs.mkdirSync(folder, true);
 
@@ -2432,7 +2443,11 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
       this.audioSessionActivated = false;
 
       if (!this.deactivatingAudioSession) {
-        if (deviceInfo.sdkApiVersion >= 20 && this.focusInterrupted && event.reason === audio.AudioSessionDeactivatedReason.DEACTIVATED_LOWER_PRIORITY) {
+        if (
+          deviceInfo.sdkApiVersion >= 20 &&
+          this.focusInterrupted &&
+          event.reason === audio.AudioSessionDeactivatedReason.DEACTIVATED_LOWER_PRIORITY
+        ) {
           return;
         }
 
@@ -2449,7 +2464,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   }
 
   get cacheDir(): string {
-    return this.context.uiAbilityContext.cacheDir;
+    return this.context.cachePath;
   }
 
   playbackUsage(): audio.StreamUsage {
@@ -2976,25 +2991,16 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   }
 
   getRecordingPermission(): PermissionRecord {
-    const manager = abilityAccessCtrl.createAtManager();
-
-    try {
-      const status = manager.getSelfPermissionStatus(MICROPHONE_PERMISSION);
-
-      if (status === abilityAccessCtrl.PermissionStatus.GRANTED) return new PermissionRecord('granted', true);
-      if (status === abilityAccessCtrl.PermissionStatus.NOT_DETERMINED) return new PermissionRecord('undetermined', true);
-      return new PermissionRecord('denied', false);
-    } catch (_) {
-      const token = this.context.uiAbilityContext.applicationInfo.accessTokenId;
-      const granted = manager.checkAccessTokenSync(token, MICROPHONE_PERMISSION) === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED;
-
-      return new PermissionRecord(granted ? 'granted' : 'denied', true);
-    }
+    const status = this.context.permissionStatus(MICROPHONE_PERMISSION);
+    if (status === ExpoPermissionStatus.GRANTED) return new PermissionRecord('granted', true);
+    if (status === ExpoPermissionStatus.NOT_DETERMINED) return new PermissionRecord('undetermined', true);
+    // Older SDKs cannot distinguish a first request from a permanent denial.
+    return new PermissionRecord('denied', deviceInfo.sdkApiVersion < 20);
   }
 
   async requestRecordingPermission(): Promise<PermissionRecord> {
     try {
-      await abilityAccessCtrl.createAtManager().requestPermissionsFromUser(this.context.uiAbilityContext, [MICROPHONE_PERMISSION]);
+      await this.context.requestPermissions([MICROPHONE_PERMISSION]);
 
       return this.getRecordingPermission();
     } catch (_) {
