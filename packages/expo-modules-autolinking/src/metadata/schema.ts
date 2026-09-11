@@ -80,29 +80,29 @@ function normalizeOhPackageName(
   });
 }
 
-function normalizeArkTsModules(value: unknown, record: MetadataRecord): ReadonlyArray<string> {
+function normalizeArkTsDeclarations(value: unknown, field: string, record: MetadataRecord): ReadonlyArray<string> {
   if (value === undefined) return [];
   if (!Array.isArray(value)) {
-    metadataError('expo-module.config.json#harmony.modules must be an array.', record);
+    throw new HarmonyAutolinkingError('INVALID_METADATA', `expo-module.config.json#harmony.${field} must be an array.`, { packageName: record.packageName, stage: 'metadata-normalize' });
   }
 
   const seen = new Set<string>();
-  const modules = value.map((item, index) => {
-    const moduleClass = requireNonEmptyString(
+  const names = value.map((item, index) => {
+    const name = requireNonEmptyString(
       item,
-      `expo-module.config.json#harmony.modules[${index}]`,
+      `expo-module.config.json#harmony.${field}[${index}]`,
       { packageName: record.packageName, stage: 'metadata-normalize' }
     );
-    if (!ArkTsIdentifierPattern.test(moduleClass)) {
-      metadataError(`expo-module.config.json#harmony.modules[${index}] must be an ArkTS identifier.`, record);
+    if (!ArkTsIdentifierPattern.test(name)) {
+      throw new HarmonyAutolinkingError('INVALID_METADATA', `expo-module.config.json#harmony.${field}[${index}] must be an ArkTS identifier.`, { packageName: record.packageName, stage: 'metadata-normalize' });
     }
-    if (seen.has(moduleClass)) {
-      metadataError(`expo-module.config.json#harmony.modules declares ${moduleClass} more than once.`, record);
+    if (seen.has(name)) {
+      throw new HarmonyAutolinkingError('INVALID_METADATA', `expo-module.config.json#harmony.${field} declares ${name} more than once.`, { packageName: record.packageName, stage: 'metadata-normalize' });
     }
-    seen.add(moduleClass);
-    return moduleClass;
+    seen.add(name);
+    return name;
   });
-  return modules.sort((left, right) => left.localeCompare(right, 'en'));
+  return field === 'services' ? names : names.sort((left, right) => left.localeCompare(right, 'en'));
 }
 
 function normalizeHarmonyModuleMetadata(
@@ -115,7 +115,8 @@ function normalizeHarmonyModuleMetadata(
   const host = normalizeHostMetadata(harmony, record) as unknown as HostMetadata;
   return {
     ...host,
-    modules: normalizeArkTsModules(harmony.modules, record),
+    modules: normalizeArkTsDeclarations(harmony.modules, 'modules', record),
+    services: normalizeArkTsDeclarations(harmony.services, 'services', record),
   };
 }
 

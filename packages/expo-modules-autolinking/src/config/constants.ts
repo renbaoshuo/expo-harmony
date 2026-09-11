@@ -4,7 +4,7 @@ import path from 'node:path';
 const Platform = 'harmony';
 const RnohCliPackage = '@react-native-oh/react-native-harmony-cli';
 const ToolVersion = JSON.parse(readFileSync(path.resolve(__dirname, '../../../package.json'), 'utf8')).version;
-const ManifestSchemaVersion = 3;
+const ManifestSchemaVersion = 4;
 
 const RnohArtifacts = Object.freeze({
   etsFactory: 'entry/src/main/ets/RNOHPackagesFactory.ets',

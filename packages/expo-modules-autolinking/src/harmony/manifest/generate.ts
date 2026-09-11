@@ -20,6 +20,7 @@ function createManifestEntry(descriptor) {
     source: descriptor.source,
     harmony: {
       modules: [...descriptor.harmony.modules],
+      services: [...descriptor.harmony.services],
     },
     ...(descriptor.arkTs ? { arkTs: { ...descriptor.arkTs } } : {}),
     expo: {

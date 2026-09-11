@@ -11,6 +11,10 @@
       "default": [],
       "description": "ArkTS Expo Module classes exported by the conventional Harmony library."
     },
+    "services": {
+      "$ref": "#/$defs/arkTsIdentifiers",
+      "description": "ArkTS service classes exported by the conventional Harmony library. Classes extend ExpoService and accept an ExpoServiceContext constructor argument."
+    },
     "rootViewComponents": { "$ref": "#/$defs/arkTsIdentifiers" }
   },
   "$defs": {

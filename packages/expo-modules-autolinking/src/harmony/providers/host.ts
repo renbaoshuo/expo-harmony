@@ -63,6 +63,17 @@ function collectArkTsModuleRegistrations(descriptors) {
 function renderArkTsHostProviderSource(descriptors) {
   const extensions = collectHostExtensions(descriptors);
   const registrations = collectArkTsModuleRegistrations(descriptors);
+  const services = [...descriptors]
+    .sort((left, right) => left.packageName.localeCompare(right.packageName, 'en'))
+    .flatMap(descriptor => descriptor.harmony.services.map((name) => {
+      if (!descriptor.arkTs) {
+        throw new HarmonyAutolinkingError('INVALID_METADATA', 'Harmony services require the conventional Harmony library package.', {
+          packageName: descriptor.packageName,
+          stage: 'generate-host-provider',
+        });
+      }
+      return { name, package: descriptor.arkTs.ohPackageName };
+    }));
   const imports = new Map();
 
   for (const field of HostMetadataFields) {
@@ -91,6 +102,8 @@ function renderArkTsHostProviderSource(descriptors) {
     '  ExpoHarmonyHostProvider,',
     ...(registrations.length > 0 ? ['  ExpoModuleContext,'] : []),
     '  ExpoModuleRegistration,',
+    '  ExpoServiceClass,',
+    ...(services.length > 0 ? ['  ExpoServiceContext,'] : []),
     `} from '@expo-harmony/expo-modules-core/Autolinking';`
   );
 
@@ -99,6 +112,10 @@ function renderArkTsHostProviderSource(descriptors) {
     lines.push(
       `import { ${registration.moduleClass} as ${registration.alias} } from '${registration.ohPackageName}';`
     );
+  });
+
+  services.forEach((service, index) => {
+    lines.push(`import { ${service.name} as ExpoHarmonyService${index} } from '${service.package}';`);
   });
 
   for (const extension of imports.values()) {
@@ -124,6 +141,15 @@ function renderArkTsHostProviderSource(descriptors) {
     );
   }
   lines.push(
+    '  ];',
+    '',
+    '  readonly expoServices: ExpoServiceClass[] = [',
+    ...services.flatMap((service, index) => [
+      '    {',
+      `      name: ${JSON.stringify(service.name)},`,
+      `      create: (context: ExpoServiceContext) => new ExpoHarmonyService${index}(context),`,
+      '    },',
+    ]),
     '  ];',
     '}',
     '',

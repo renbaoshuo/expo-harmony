@@ -9,6 +9,12 @@ import { isObject } from '../../utilities/values';
 
 const ModuleSources = new Set(['dependency', 'searchPath', 'nativeModulesDir', 'reactNativeProjectConfig']);
 
+function isClassList(value: unknown): value is string[] {
+  return Array.isArray(value)
+    && value.every(name => typeof name === 'string' && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name))
+    && new Set(value).size === value.length;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function validateManifest(manifest: unknown, options: Record<string, any> = {}): Manifest {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -36,17 +42,15 @@ function validateManifest(manifest: unknown, options: Record<string, any> = {}):
       || typeof entry.packageLinkPath !== 'string'
       || !path.isAbsolute(entry.packageLinkPath)
       || !ModuleSources.has(entry.source)
-      || (entry.harmony !== undefined && (
-        !isObject(entry.harmony)
-        || !Array.isArray(entry.harmony.modules)
-        || entry.harmony.modules.some(moduleClass => typeof moduleClass !== 'string' || !moduleClass)
-      ))
+      || !isObject(entry.harmony)
+      || !isClassList(entry.harmony.modules)
+      || !isClassList(entry.harmony.services)
       || (entry.arkTs !== undefined && (
         !isObject(entry.arkTs)
         || entry.arkTs.harPath !== 'harmony/library.har'
         || !isValidOhpmPackageName(entry.arkTs.ohPackageName)
       ))
-      || (entry.harmony?.modules.length > 0 && !isObject(entry.arkTs))
+      || ((entry.harmony.modules.length > 0 || entry.harmony.services.length > 0) && !isObject(entry.arkTs))
       || !isObject(entry.expo)
       || !Array.isArray(entry.expo.rootViewComponents)
       || !isObject(entry.rnoh)

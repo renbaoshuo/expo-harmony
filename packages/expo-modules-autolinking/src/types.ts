@@ -36,6 +36,7 @@ export interface RnohMetadata {
 export interface HarmonyModuleMetadata extends HostMetadata {
   /** ArkTS Module classes exported by the conventional Harmony library. */
   readonly modules: ReadonlyArray<string>;
+  readonly services: ReadonlyArray<string>;
 }
 
 export interface FixedHvigorBuildDescriptor {
@@ -127,7 +128,7 @@ export interface VerificationResult {
 }
 
 export interface Manifest {
-  readonly schemaVersion: 3;
+  readonly schemaVersion: 4;
   readonly platform: 'harmony';
   readonly buildType: BuildType;
   readonly modules: ReadonlyArray<ModuleDescriptor>;

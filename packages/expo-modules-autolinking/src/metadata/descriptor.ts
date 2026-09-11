@@ -132,7 +132,7 @@ function resolveOhpmPackageName(raw, harPaths, record) {
 
 async function resolveArkTsModulePackageAsync(record, harmony) {
   const hasHostExtensions = harmony.rootViewComponents.length > 0;
-  if (harmony.modules.length === 0 && !hasHostExtensions) return undefined;
+  if (harmony.modules.length === 0 && harmony.services.length === 0 && !hasHostExtensions) return undefined;
 
   const manifestPath = await resolveInsideAsync(
     record.packageRoot,

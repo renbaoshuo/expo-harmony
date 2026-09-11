@@ -206,9 +206,14 @@ function searchRecordFromDescriptor(descriptor, declared) {
   }
 
   const host = HostMetadataFields.some(field => descriptor.expo[field]?.length > 0);
-  const modules = Array.isArray(descriptor.harmony.modules)
-    ? [...descriptor.harmony.modules]
-    : [];
+  if (!Array.isArray(descriptor.harmony.modules) || !Array.isArray(descriptor.harmony.services)) {
+    throw new HarmonyAutolinkingError('INVALID_METADATA', 'descriptor.harmony must declare module and service class lists.', {
+      packageName: descriptor.packageName,
+      stage: 'verify',
+    });
+  }
+  const modules = [...descriptor.harmony.modules];
+  const services = [...descriptor.harmony.services];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rnoh: Record<string, any> = {};
   if (descriptor.rnoh.ohPackageName !== undefined) {
@@ -236,12 +241,13 @@ function searchRecordFromDescriptor(descriptor, declared) {
     packageVersion: descriptor.packageVersion,
     packageRoot: descriptor.packageRoot,
     source: descriptor.source,
-    supportsHarmony: modules.length > 0 || host,
-    expoModuleConfig: modules.length > 0 || host
+    supportsHarmony: modules.length > 0 || services.length > 0 || host,
+    expoModuleConfig: modules.length > 0 || services.length > 0 || host
       ? {
           platforms: ['harmony'],
           harmony: {
             modules,
+            services,
             ...Object.fromEntries(HostMetadataFields.map(field => [
               field,
               [...(descriptor.expo[field] || [])],
