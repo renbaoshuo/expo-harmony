@@ -18,7 +18,7 @@ npm install --save-dev @expo-harmony/expo-module-scripts
 
 ```
 my-expo-module/
-├── expo-module.config.json    # platforms 须包含 "harmony"，harmony.modules 声明 ArkTS 模块类名
+├── expo-module.config.json    # platforms 须包含 "harmony"，harmony.modules 声明模块类名，或 harmony.services 声明服务类名
 ├── package.json
 └── harmony/
     ├── build-profile.json5    # 可选，其中的模块名用于定位构建产物

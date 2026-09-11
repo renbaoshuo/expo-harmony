@@ -53,14 +53,14 @@ function normalizeConfig(raw, pkg) {
     throw new TypeError('expo-module.config.json#platforms must include harmony.');
   }
 
-  const { modules } = normalizeHarmonyModuleMetadata(raw.harmony, {
+  const { modules, services } = normalizeHarmonyModuleMetadata(raw.harmony, {
     packageName: requiredString(pkg.name, 'package.json#name'),
     packageVersion: typeof pkg.version === 'string' ? pkg.version : undefined,
   });
 
-  if (modules.length === 0) throw new TypeError('harmony.modules must declare at least one ArkTS module.');
+  if (modules.length === 0 && services.length === 0) throw new TypeError('harmony.modules or harmony.services must declare at least one module or service.');
 
-  return { modules };
+  return { modules, services };
 }
 
 async function readJson(file) {
@@ -133,14 +133,14 @@ async function loadBuildConfig(root, manifest) {
   // RNOH runtime packages (including expo-modules-core) have no Expo module
   // registration. Keep their existing HAR filename and metadata contract.
   const linking = manifest.harmony?.autolinking;
-  if (linking?.mainHarPath === 'harmony' && linking.ohPackageName === manifest.name) return { modules: [] };
+  if (linking?.mainHarPath === 'harmony' && linking.ohPackageName === manifest.name) return { modules: [], services: [] };
 
   throw new TypeError(`${manifest.name} must declare an Expo Harmony module or a Harmony RNOH package.`);
 }
 
 function projectPaths(root, config) {
   const paths = modulePaths(root);
-  if (config.modules.length === 0) {
+  if (config.modules.length === 0 && config.services.length === 0) {
     paths.bundledHar = inside(root, `harmony/${paths.moduleName}.har`, 'Bundled HAR');
   }
   return paths;
