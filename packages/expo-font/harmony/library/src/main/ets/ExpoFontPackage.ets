@@ -1,4 +1,4 @@
-import { ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoValueType, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
+import { ExpoFileAccessKey, ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoValueType, ExpoValueTypes, fileUriFromPath } from '@expo-harmony/expo-modules-core';
 import fs from '@ohos.file.fs';
 import fileHash from '@ohos.file.hash';
 import util from '@ohos.util';
@@ -32,7 +32,8 @@ class ExpoFontRegistrationCoordinator {
   private tail: Promise<void> = Promise.resolve();
 
   registerSync(context: ExpoModuleContext, family: string, path: string): void {
-    const source = fontCollectionSource(path);
+    // FontCollection strips file:// without URL-decoding the remaining native path.
+    const source = `file://${path}`;
     const collection = text.FontCollection.getGlobalInstance();
     if (deviceInfo.sdkApiVersion >= 23) collection.loadFontSyncWithCheck(family, source);
     else collection.loadFontSync(family, source);
@@ -43,7 +44,7 @@ class ExpoFontRegistrationCoordinator {
     const operation = this.tail
       .catch((): void => {})
       .then(async (): Promise<void> => {
-        const source = fontCollectionSource(path);
+        const source = `file://${path}`;
         const collection = text.FontCollection.getGlobalInstance();
         if (deviceInfo.sdkApiVersion >= 23) await collection.loadFontWithCheck(family, source);
         else if (deviceInfo.sdkApiVersion >= 18) await collection.loadFont(family, source);
@@ -179,7 +180,7 @@ export class ExpoFontLoaderModule extends ExpoModule {
         }
         return (manifestValue as BundledFontManifest).fonts.slice();
       } catch (error) {
-        if (error instanceof ExpoFontError) throw error;
+        if (error instanceof ExpoFontError) throw new ExpoFontError(error.code, error.message, error.cause);
         throw new ExpoFontError('ERR_FONT_BUNDLED_MANIFEST', `Unable to read expo-fonts.json: ${errorMessage(error as Object)}`, error as Object);
       }
     }
@@ -236,19 +237,22 @@ export class ExpoFontLoaderModule extends ExpoModule {
     this.assertActive();
     let path: string;
     if (uri.startsWith('asset://') || uri.startsWith('rawfile://')) {
-      const directory = `${this.context.uiAbilityContext.cacheDir}/expo-fonts`;
+      const directory = `${this.context.cachePath}/expo-fonts`;
       ensureDirectory(directory);
       path = materializeRawFont(this.context, uri, directory, this.materializedFonts, expectedDigest, expectedSize);
     } else {
-      path = localPathFromFileUri(uri, this.context.uiAbilityContext.abilityInfo.bundleName);
+      path = this.context.services.get(ExpoFileAccessKey) === undefined
+        ? localPathFromFileUri(uri, this.context.uiAbilityContext.abilityInfo.bundleName) : this.context.filePathForRead(uri);
     }
 
-    const roots: string[] = [this.context.uiAbilityContext.filesDir, this.context.uiAbilityContext.cacheDir, this.context.uiAbilityContext.tempDir];
+    const roots: string[] = [this.context.persistentFilesPath, this.context.cachePath, this.context.temporaryPath];
     const root = roots.find((candidate: string): boolean => isInside(candidate, path));
-    if (root === undefined) {
+    if (root === undefined && this.context.services.get(ExpoFileAccessKey) === undefined) {
       throw new ExpoFontError('ERR_FONT_SOURCE_OUTSIDE_SANDBOX', 'Font URI is outside the application sandbox.');
     }
-    assertNoSymlinkSegments(root, path);
+
+    this.context.assertFileAccess(path);
+    if (root !== undefined) assertNoSymlinkSegments(root, path);
 
     try {
       const stat = fs.lstatSync(path);
@@ -262,7 +266,7 @@ export class ExpoFontLoaderModule extends ExpoModule {
         throw new ExpoFontError('ERR_FONT_SOURCE_TOO_LARGE', `Font files cannot exceed ${MAX_FONT_BYTES} bytes.`);
       }
     } catch (error) {
-      if (error instanceof ExpoFontError) throw error;
+      if (error instanceof ExpoFontError) throw new ExpoFontError(error.code, error.message, error.cause);
       throw new ExpoFontError('ERR_FONT_SOURCE', `Font file '${uri}' does not exist.`, error as Object);
     }
     return path;
@@ -371,8 +375,8 @@ export class ExpoFontUtilsModule extends ExpoModule {
       alphaType: image.AlphaType.PREMUL,
     });
     const id = util.generateRandomUUID();
-    const temp = `${this.context.uiAbilityContext.cacheDir}/.expo-font-${id}.tmp`;
-    const output = `${this.context.uiAbilityContext.cacheDir}/expo-font-${id}.png`;
+    const temp = `${this.context.cachePath}/.expo-font-${id}.tmp`;
+    const output = `${this.context.cachePath}/expo-font-${id}.png`;
     let committed = false;
     try {
       const packer = image.createImagePacker();
@@ -385,7 +389,7 @@ export class ExpoFontUtilsModule extends ExpoModule {
         await fs.moveFile(temp, output, 0);
         this.assertActive();
         committed = true;
-        return new FontRenderResult(`file://${output}`, width / scale, height / scale, scale);
+        return new FontRenderResult(fileUriFromPath(output), width / scale, height / scale, scale);
       } finally {
         try {
           await packer.release();
@@ -394,7 +398,7 @@ export class ExpoFontUtilsModule extends ExpoModule {
         }
       }
     } catch (error) {
-      if (error instanceof ExpoFontError) throw error;
+      if (error instanceof ExpoFontError) throw new ExpoFontError(error.code, error.message, error.cause);
       throw new ExpoFontError('ERR_FONT_RENDER', errorMessage(error as Object), error as Object);
     } finally {
       try {
@@ -741,10 +745,6 @@ async function unlinkIfExists(path: string): Promise<void> {
   try {
     if (await fs.access(path)) await fs.unlink(path);
   } catch (_) {}
-}
-
-function fontCollectionSource(path: string): string {
-  return path.startsWith('file://') ? path : `file://${path}`;
 }
 
 function errorMessage(error: Object): string {
