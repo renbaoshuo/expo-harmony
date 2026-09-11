@@ -40,7 +40,7 @@ export class ExpoClipboardModule extends ExpoModule {
   private listening: boolean = false;
 
   private readonly changed = (): void => {
-    if (!this.observing || this.destroyed || this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) return;
+    if (!this.observing || this.destroyed || !this.context.isValid || this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) return;
 
     try {
       const contentTypes: ContentType[] = [];
@@ -204,7 +204,7 @@ export class ExpoClipboardModule extends ExpoModule {
     let path: string | undefined;
 
     try {
-      const name = `${this.context.uiAbilityContext.tempDir}/expo-clipboard-${util.generateRandomUUID()}`;
+      const name = `${this.context.temporaryPath}/expo-clipboard-${util.generateRandomUUID()}`;
       file = await fileIo.open(name, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
       path = name;
 
