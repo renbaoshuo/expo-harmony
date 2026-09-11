@@ -1,4 +1,4 @@
-import { ExpoModuleContext, ExpoModuleError, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
+import { ExpoRuntimePermissionsKey, ExpoModuleContext, ExpoModuleError, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
 import { abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { deviceInfo } from '@kit.BasicServicesKit';
@@ -76,20 +76,15 @@ export class LocationPermissions {
   }
 
   async getForeground(): Promise<PermissionResponse> {
-    const status = this.context.permissionStatus(APPROXIMATE_PERMISSION);
-    if (status === ExpoPermissionStatus.GRANTED) {
-      if (deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) await this.setDenied(false);
-      return new PermissionResponse('granted', true);
-    }
-    if (deviceInfo.sdkApiVersion >= SELF_PERMISSION_STATUS_API) {
-      const canAsk = status === ExpoPermissionStatus.NOT_DETERMINED;
-      return new PermissionResponse(canAsk ? 'undetermined' : 'denied', canAsk);
-    }
+    const system = this.context.systemPermissionStatus(APPROXIMATE_PERMISSION) === ExpoPermissionStatus.GRANTED;
+    if (system && deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) await this.setDenied(false);
 
-    // Before API 20, persist explicit denials without treating expired temporary grants as denials.
-    const denied = await this.wasDenied();
+    const history = deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API ? await this.wasDenied() : undefined;
+    const status = this.context.permissionStatus(APPROXIMATE_PERMISSION, history);
+    if (status === ExpoPermissionStatus.GRANTED) return new PermissionResponse('granted', true);
 
-    return new PermissionResponse(denied ? 'denied' : 'undetermined', !denied);
+    const canAsk = status === ExpoPermissionStatus.NOT_DETERMINED;
+    return new PermissionResponse(canAsk ? 'undetermined' : 'denied', canAsk);
   }
 
   private async wasDenied(): Promise<boolean> {
@@ -135,44 +130,51 @@ export class LocationPermissions {
   }
 
   private async requestOnce(): Promise<PermissionResponse> {
-    const result = await this.context.requestPermissions([APPROXIMATE_PERMISSION, PRECISE_PERMISSION]);
-    const index = result.permissions.indexOf(APPROXIMATE_PERMISSION);
-    const reasons = deviceInfo.sdkApiVersion >= REQUEST_ERROR_REASONS_API ? result.errorReasons : undefined;
-    const reason = reasons?.[index] ?? RequestReason.Success;
+    const request = await this.context.requestPermissions([APPROXIMATE_PERMISSION, PRECISE_PERMISSION]);
+    let cannotAsk = false;
 
-    if (
-      index < 0 ||
-      (reason === RequestReason.Success &&
-        result.authResults[index] !== ExpoPermissionStatus.GRANTED &&
-        result.authResults[index] !== ExpoPermissionStatus.DENIED)
-    ) {
-      throw new ExpoModuleError(
-        'ERR_LOCATION_PERMISSION_REQUEST',
-        'HarmonyOS returned an invalid location permission result. Check the permission declarations in module.json5.',
-      );
-    }
+    for (const result of request.systemResults) {
+      const index = result.permissions.indexOf(APPROXIMATE_PERMISSION);
+      const reasons = deviceInfo.sdkApiVersion >= REQUEST_ERROR_REASONS_API ? result.errorReasons : undefined;
+      const reason = reasons?.[index] ?? RequestReason.Success;
 
-    for (let i = 0; i < result.permissions.length; i += 1) {
-      if (reasons?.[i] === RequestReason.InvalidPermission || reasons?.[i] === RequestReason.NotDeclared) {
-        throw new ExpoModuleError('ERR_LOCATION_PERMISSION_REQUEST', `Invalid or undeclared permission in module.json5: ${result.permissions[i]}.`);
+      if (
+        index < 0 ||
+        (reason === RequestReason.Success &&
+          result.authResults[index] !== ExpoPermissionStatus.GRANTED &&
+          result.authResults[index] !== ExpoPermissionStatus.DENIED)
+      ) {
+        throw new ExpoModuleError(
+          'ERR_LOCATION_PERMISSION_REQUEST',
+          'HarmonyOS returned an invalid location permission result. Check the permission declarations in module.json5.',
+        );
       }
-    }
 
-    // A completed API call without a dialog is not proof of a user decision.
-    if (
-      deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API &&
-      reason === RequestReason.Success &&
-      (result.authResults[index] === ExpoPermissionStatus.GRANTED || result.dialogShownResults?.[index] === true)
-    ) {
-      await this.setDenied(result.authResults[index] === ExpoPermissionStatus.DENIED);
+      for (let i = 0; i < result.permissions.length; i += 1) {
+        if (reasons?.[i] === RequestReason.InvalidPermission || reasons?.[i] === RequestReason.NotDeclared) {
+          throw new ExpoModuleError('ERR_LOCATION_PERMISSION_REQUEST', `Invalid or undeclared permission in module.json5: ${result.permissions[i]}.`);
+        }
+      }
+
+      // A completed API call without a dialog is not proof of a user decision.
+      if (
+        deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API &&
+        ((reason === RequestReason.Success && (result.authResults[index] === ExpoPermissionStatus.GRANTED || result.dialogShownResults?.[index] === true)) ||
+          reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings)
+      ) {
+        await this.setDenied(result.authResults[index] === ExpoPermissionStatus.DENIED);
+      }
+
+      cannotAsk = cannotAsk || reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings;
     }
 
     const response = await this.getForeground();
+    if (this.context.services.get(ExpoRuntimePermissionsKey) !== undefined) return cannotAsk && !response.granted ? new PermissionResponse('denied', false) : response;
     if (response.granted) return response;
 
     return new PermissionResponse(
       'denied',
-      response.canAskAgain && reason !== RequestReason.CannotRequest && reason !== RequestReason.ManualSettings,
+      response.canAskAgain && !cannotAsk,
     );
   }
 }
