@@ -1,6 +1,7 @@
 {
   "platforms": ["harmony"],
   "harmony": {
-    "modules": ["ExpoConstantsModule"]
+    "modules": ["ExpoConstantsModule"],
+    "services": ["ExpoConstantsService"]
   }
 }
