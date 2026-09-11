@@ -45,8 +45,7 @@ class AbilityLinkingState {
   }
 }
 
-// A UIAbility owns the linking URL across React runtime reloads. The WeakMap
-// also isolates multiple hosts and lets abandoned abilities be reclaimed.
+const sessionOwners: WeakSet<Object> = new WeakSet<Object>();
 const states: WeakMap<Object, AbilityLinkingState> = new WeakMap<Object, AbilityLinkingState>();
 
 function stateForAbility(context: Object, url: string | null): AbilityLinkingState {
@@ -65,13 +64,28 @@ function nonEmptyURL(value: string | undefined): string | null {
 
 export class ExpoLinkingModule extends ExpoModule {
   private readonly state: AbilityLinkingState;
+  private readonly owner: Object;
   private observing: boolean = false;
   private destroyed: boolean = false;
   private abilityDestroyed: boolean = false;
 
   constructor(context: ExpoModuleContext) {
     super(context);
-    this.state = stateForAbility(context.uiAbilityContext, nonEmptyURL(context.launchUri));
+
+    const session = context.session;
+    const owner: Object = session ?? context.uiAbilityContext;
+    this.owner = owner;
+    this.state = stateForAbility(owner, nonEmptyURL(context.launchUri));
+
+    if (session !== undefined && !sessionOwners.has(owner)) {
+      sessionOwners.add(owner);
+      const state = this.state;
+      session.onClose((): void => {
+        state.destroy();
+        states.delete(owner);
+        sessionOwners.delete(owner);
+      });
+    }
   }
 
   definition(): ExpoModuleDefinition {
@@ -201,7 +215,7 @@ export class ExpoLinkingModule extends ExpoModule {
     this.observing = false;
 
     this.state.destroy();
-    states.delete(this.context.uiAbilityContext);
+    states.delete(this.owner);
   }
 }
 
