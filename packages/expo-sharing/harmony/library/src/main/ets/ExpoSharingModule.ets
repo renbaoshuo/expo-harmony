@@ -1,4 +1,6 @@
 import {
+  ExpoFileAccessKey,
+  ExpoFileAccessPolicy,
   ExpoFunction,
   ExpoModule,
   ExpoModuleContext,
@@ -8,11 +10,11 @@ import {
   ExpoValueTypes,
   fileUriFromPath,
 } from '@expo-harmony/expo-modules-core';
+import { util } from '@kit.ArkTS';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { uniformTypeDescriptor } from '@kit.ArkData';
 import { http } from '@kit.NetworkKit';
 import { systemShare } from '@kit.ShareKit';
-import { common } from '@kit.AbilityKit';
 import type { Want } from '@kit.AbilityKit';
 import uri from '@ohos.uri';
 
@@ -111,18 +113,28 @@ class IncomingGeneration {
   }
 }
 
-const incomingStates: WeakMap<common.UIAbilityContext, IncomingShareState> = new WeakMap<common.UIAbilityContext, IncomingShareState>();
+const incomingStates: WeakMap<Object, IncomingShareState> = new WeakMap<Object, IncomingShareState>();
 
 class IncomingShareState {
-  private readonly context: common.UIAbilityContext;
+  private readonly cachePath: string;
+  private readonly fileAccess?: ExpoFileAccessPolicy;
+  private initialized: boolean = false;
   private revision: number = 0;
   private generation: IncomingGeneration = new IncomingGeneration(0);
   private readonly listeners: Set<() => void> = new Set<() => void>();
   private lastWant?: Want = undefined;
 
-  constructor(context: common.UIAbilityContext) {
-    this.context = context;
+  constructor(context: ExpoModuleContext) {
+    this.cachePath = context.cachePath;
+    this.fileAccess = context.services.get(ExpoFileAccessKey);
     this.generation.ready = true;
+  }
+
+  receiveInitial(want?: Want): void {
+    if (this.initialized) return;
+
+    this.initialized = true;
+    if (want !== undefined) this.receive(want);
   }
 
   receive(want: Want): void {
@@ -236,10 +248,11 @@ class IncomingShareState {
 
         const result = await resolvedPayloadFromRecord(
           generation.records[index],
-          this.context.cacheDir,
+          this.cachePath,
           generation.revision,
           index,
           MAX_INCOMING_TOTAL_BYTES - total,
+          this.fileAccess,
         );
         if (result === undefined) continue;
         if (result.file !== undefined) generation.files.add(result.file);
@@ -293,11 +306,17 @@ class IncomingShareState {
   }
 }
 
-function incomingState(context: common.UIAbilityContext): IncomingShareState {
-  let state = incomingStates.get(context);
+function incomingState(context: ExpoModuleContext): IncomingShareState {
+  const owner: Object = context.session ?? context.uiAbilityContext;
+  let state = incomingStates.get(owner);
   if (state === undefined) {
     state = new IncomingShareState(context);
-    incomingStates.set(context, state);
+    incomingStates.set(owner, state);
+    const owned = state;
+    context.session?.onClose((): void => {
+      owned.destroy();
+      incomingStates.delete(owner);
+    });
   }
 
   return state;
@@ -315,7 +334,7 @@ export class ExpoSharingModule extends ExpoModule {
 
   constructor(context: ExpoModuleContext) {
     super(context);
-    this.incoming = incomingState(context.uiAbilityContext);
+    this.incoming = incomingState(context);
   }
 
   definition(): ExpoModuleDefinition {
@@ -342,7 +361,7 @@ export class ExpoSharingModule extends ExpoModule {
       .syncFunction('clearSharedPayloads', (): void => this.incoming.clear())
       .onCreate((): void => {
         const want: Want | undefined = this.context.initialWant;
-        if (want !== undefined) this.incoming.receive(want);
+        this.incoming.receiveInitial(want);
       })
       .onStartObserving(INCOMING_SHARE_EVENT, (): void => this.startObserving())
       .onStopObserving(INCOMING_SHARE_EVENT, (): void => this.stopObserving())
@@ -380,7 +399,7 @@ export class ExpoSharingModule extends ExpoModule {
   private destroyAbility(): void {
     this.destroy();
     this.incoming.destroy();
-    incomingStates.delete(this.context.uiAbilityContext);
+    incomingStates.delete(this.context.session ?? this.context.uiAbilityContext);
   }
 
   private async share(url: string, options: SharingOptions): Promise<void> {
@@ -400,7 +419,7 @@ export class ExpoSharingModule extends ExpoModule {
         this.context.logger.warn('HarmonyOS Share Kit does not support a custom sharing panel title; dialogTitle was ignored.');
       }
 
-      const file = await prepareShareFile(url);
+      const file = await prepareShareFile(url, this.context);
 
       const preview = resolvePreview(file.name, mime);
       this.assertActive();
@@ -476,7 +495,7 @@ async function showShare(
   }
 }
 
-async function prepareShareFile(url: string): Promise<ShareFile> {
+async function prepareShareFile(url: string, context: ExpoModuleContext): Promise<ShareFile> {
   let source: uri.URI;
   try {
     source = new uri.URI(url);
@@ -497,6 +516,7 @@ async function prepareShareFile(url: string): Promise<ShareFile> {
     let file: fileIo.File | undefined;
     try {
       file = await fileIo.open(url, fileIo.OpenMode.READ_ONLY);
+      context.assertFileAccess(file.path);
       const stat = await fileIo.stat(file.fd);
 
       if (!stat.isFile()) {
@@ -530,7 +550,9 @@ async function prepareShareFile(url: string): Promise<ShareFile> {
 
   let file: fileIo.File | undefined;
   try {
+    context.assertFileAccess(path);
     file = await fileIo.open(path, fileIo.OpenMode.READ_ONLY);
+    context.assertFileAccess(file.path);
     const stat = await fileIo.stat(file.fd);
 
     if (!stat.isFile()) {
@@ -630,6 +652,7 @@ async function resolvedPayloadFromRecord(
   revision: number,
   index: number,
   remaining: number,
+  fileAccess?: ExpoFileAccessPolicy,
 ): Promise<ResolvedRecord | undefined> {
   const payload = payloadFromRecord(record);
   if (payload === undefined) return undefined;
@@ -651,7 +674,7 @@ async function resolvedPayloadFromRecord(
 
   if (payload.shareType === 'url') return await resolveURLPayload(payload);
 
-  return await resolveFilePayload(record, payload, cache, revision, index, remaining);
+  return await resolveFilePayload(record, payload, cache, revision, index, remaining, fileAccess);
 }
 
 async function resolveURLPayload(payload: SharePayload): Promise<ResolvedRecord> {
@@ -724,6 +747,7 @@ async function resolveFilePayload(
   revision: number,
   index: number,
   remaining: number,
+  fileAccess?: ExpoFileAccessPolicy,
 ): Promise<ResolvedRecord> {
   const url = optionalString(record.uri);
   if (url === undefined) {
@@ -732,13 +756,17 @@ async function resolveFilePayload(
 
   const name = sharedFileName(record, url);
   const dir = `${cache}/expo-sharing`;
-  const file = `${dir}/${Date.now()}-${revision}-${index}-${safeFileName(name)}`;
+  const file = `${dir}/${util.generateRandomUUID()}-${revision}-${index}-${safeFileName(name)}`;
   let source: fileIo.File | undefined;
 
   try {
     if (!(await fileIo.access(dir))) await fileIo.mkdir(dir, true);
 
     source = await fileIo.open(url, fileIo.OpenMode.READ_ONLY);
+    fileAccess?.grantExternalPath(source.path, false, false);
+    fileAccess?.assertAccess(source.path, 'read');
+    fileAccess?.assertAccess(file, 'write');
+
     const bytes = (await fileIo.stat(source.fd)).size;
 
     if (!Number.isSafeInteger(bytes) || bytes < 0) {
