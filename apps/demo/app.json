@@ -105,7 +105,7 @@
       "@expo-harmony/prebuild-config"
     ],
     "harmony": {
-      "bundleName": "cn.baoshuo.expoharmonydemo",
+      "bundleName": "cn.baoshuo.expoharmony.demo",
       "label": "Expo Harmony 模块实验室",
       "icon": "./assets/app-icon.svg",
       "versionCode": 1,
@@ -143,7 +143,7 @@
       "userInterfaceStyle": "light"
     },
     "ios": {
-      "bundleIdentifier": "cn.baoshuo.expoharmonydemo",
+      "bundleIdentifier": "cn.baoshuo.expoharmony.demo",
       "infoPlist": {
         "UIViewControllerBasedStatusBarAppearance": true
       }
@@ -159,7 +159,7 @@
         "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
         "android.permission.FOREGROUND_SERVICE_MICROPHONE"
       ],
-      "package": "cn.baoshuo.expoharmonydemo"
+      "package": "cn.baoshuo.expoharmony.demo"
     }
   }
 }
