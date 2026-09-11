@@ -64,7 +64,7 @@
 - [expo-system-ui](./packages/expo-system-ui/)：与系统 UI 元素进行交互。
 - [expo-task-manager](./packages/expo-task-manager/)：支持可在后台运行的任务。
 
-可以查看 [快速开始](./docs/QUICK_START.md) 获得接入教程。
+可以查看 [快速开始](./docs/QuickStart.md) 获得接入教程。
 
 更多 Expo 库正在移植中，也欢迎贡献更多移植！
 
