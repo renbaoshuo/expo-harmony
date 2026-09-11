@@ -101,7 +101,7 @@ export class ContactsRepository {
   async serialize(entry: contact.Contact, fields: RequestedFields): Promise<ExpoContactRecord> {
     const result = mapContact(entry, fields);
     if (fields.has('image') && entry.portrait?.uri && deviceInfo.sdkApiVersion >= CONTACT_PORTRAIT_API) {
-      result.image = await cachePortrait(this.context.uiAbilityContext, entry.portrait.uri);
+      result.image = await cachePortrait(this.context, entry.portrait.uri);
     }
 
     return result;
@@ -131,7 +131,10 @@ export class ContactsRepository {
     }
 
     return await this.mutate(async (): Promise<string> => {
-      const id = await contact.addContact(this.context.uiAbilityContext, nativeContactFromExpo(record));
+      const entry = nativeContactFromExpo(record);
+      if (entry.portrait?.uri) this.context.filePathForRead(entry.portrait.uri);
+
+      const id = await contact.addContact(this.context.uiAbilityContext, entry);
       if (!Number.isSafeInteger(id) || id < 0) throw new ExpoContactsError('ERR_CONTACTS_ADD', 'HarmonyOS did not return a valid contact ID.');
 
       return String(id);
@@ -149,6 +152,7 @@ export class ContactsRepository {
       if (attrs.attributes.length === 0) return id;
 
       mergeExpoContact(entry, record);
+      if (hasConcreteField(record, 'image') && entry.portrait?.uri) this.context.filePathForRead(entry.portrait.uri);
 
       this.permissions.ensureWrite();
       if (attrs.attributes.includes(contact.Attribute.ATTR_CONTACT_EVENT)) {
@@ -185,12 +189,12 @@ export class ContactsRepository {
     for (const entry of page) {
       const record = await this.serialize(entry, new RequestedFields());
       records.push(record);
-      photos.push(record.image?.uri ? await readBase64(record.image.uri) : '');
+      photos.push(record.image?.uri ? await readBase64(this.context, record.image.uri) : '');
     }
 
     const bytes = new util.TextEncoder().encodeInto(serializeVCard(records, photos));
 
-    return await writeCacheFile(this.context.uiAbilityContext, 'vcf', bytes.buffer as ArrayBuffer);
+    return await writeCacheFile(this.context, 'vcf', bytes.buffer as ArrayBuffer);
   }
 
   private async findHolder(id: string): Promise<contact.Holder | undefined> {

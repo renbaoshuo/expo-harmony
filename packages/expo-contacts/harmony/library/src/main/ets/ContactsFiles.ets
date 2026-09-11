@@ -1,9 +1,8 @@
 import { util } from '@kit.ArkTS';
-import { common } from '@kit.AbilityKit';
-import { fileIo, fileUri } from '@kit.CoreFileKit';
+import { fileIo } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
 import { ExpoImageRecord } from './ContactsRecords';
-import { ExpoModuleError, fileUriFromPath } from '@expo-harmony/expo-modules-core';
+import { ExpoModuleContext, ExpoModuleError, fileUriFromPath } from '@expo-harmony/expo-modules-core';
 import { ExpoContactsError } from './ContactsError';
 
 const CACHE_DIRECTORY: string = 'expo-contacts';
@@ -36,11 +35,14 @@ async function withCleanup<Result>(operation: () => Promise<Result>, releases: (
   }
 }
 
-export async function writeCacheFile(context: common.UIAbilityContext, extension: string, bytes: ArrayBuffer): Promise<string> {
-  const directory = `${context.cacheDir}/${CACHE_DIRECTORY}`;
+export async function writeCacheFile(context: ExpoModuleContext, extension: string, bytes: ArrayBuffer): Promise<string> {
+  const directory = `${context.cachePath}/${CACHE_DIRECTORY}`;
+  context.assertFileAccess(directory, 'write');
+
   if (!(await fileIo.access(directory))) await fileIo.mkdir(directory, true);
 
   const path = `${directory}/${util.generateRandomUUID()}.${extension}`;
+  context.assertFileAccess(path, 'write');
   const file = await fileIo.open(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
 
   try {
@@ -70,7 +72,10 @@ export async function writeCacheFile(context: common.UIAbilityContext, extension
   return fileUriFromPath(path);
 }
 
-export async function cachePortrait(context: common.UIAbilityContext, uri: string): Promise<ExpoImageRecord> {
+export async function cachePortrait(context: ExpoModuleContext, uri: string): Promise<ExpoImageRecord> {
+  context.assertActive();
+
+  // This URI comes from Contacts Kit under the contacts read grant, never from JS input.
   const file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
   let source: image.ImageSource | undefined;
   let packer: image.ImagePacker | undefined;
@@ -101,8 +106,8 @@ export async function cachePortrait(context: common.UIAbilityContext, uri: strin
   ]);
 }
 
-export async function readBase64(uri: string): Promise<string> {
-  const path = decodeURIComponent(new fileUri.FileUri(uri).path);
+export async function readBase64(context: ExpoModuleContext, uri: string): Promise<string> {
+  const path = context.filePathForRead(uri);
   const file = await fileIo.open(path, fileIo.OpenMode.READ_ONLY);
 
   return await withCleanup(async (): Promise<string> => {

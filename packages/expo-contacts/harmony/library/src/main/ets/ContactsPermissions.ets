@@ -1,4 +1,4 @@
-import { ExpoModuleContext, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
+import { ExpoRuntimePermissionsKey, ExpoModuleContext, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
 import { Permissions } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { deviceInfo } from '@kit.BasicServicesKit';
@@ -63,18 +63,15 @@ export class ContactsPermissions {
     let denied = false;
 
     for (const permission of PERMISSIONS) {
-      const status = this.context.permissionStatus(permission);
-      if (status === ExpoPermissionStatus.GRANTED) {
-        if (deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) await this.setDenied(permission, false);
-        continue;
-      }
+      const system = this.context.systemPermissionStatus(permission) === ExpoPermissionStatus.GRANTED;
+      if (system && deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) await this.setDenied(permission, false);
+
+      const history = deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API ? await this.wasDenied(permission) : undefined;
+      const status = this.context.permissionStatus(permission, history);
+      if (status === ExpoPermissionStatus.GRANTED) continue;
 
       granted = false;
-      if (deviceInfo.sdkApiVersion >= SELF_PERMISSION_STATUS_API) {
-        denied = denied || status !== ExpoPermissionStatus.NOT_DETERMINED;
-      } else {
-        denied = denied || (await this.wasDenied(permission));
-      }
+      denied = denied || status !== ExpoPermissionStatus.NOT_DETERMINED;
     }
 
     return new ContactsPermissionResponse(granted, denied, this.context.permissionStatus(READ_CONTACTS) === ExpoPermissionStatus.GRANTED);
@@ -94,36 +91,40 @@ export class ContactsPermissions {
   }
 
   private async requestOnce(): Promise<ContactsPermissionResponse> {
-    const result = await this.context.requestPermissions(PERMISSIONS);
+    const request = await this.context.requestPermissions(PERMISSIONS);
     let restricted = false;
 
-    for (const permission of PERMISSIONS) {
-      const index = result.permissions.indexOf(permission);
-      const reason = deviceInfo.sdkApiVersion >= REQUEST_ERROR_REASONS_API ? result.errorReasons?.[index] : undefined;
-      if (
-        index < 0 ||
-        reason === RequestReason.InvalidPermission ||
-        reason === RequestReason.NotDeclared ||
-        ((reason === undefined || reason === RequestReason.Success) &&
-          result.authResults[index] !== ExpoPermissionStatus.GRANTED &&
-          result.authResults[index] !== ExpoPermissionStatus.DENIED)
-      ) {
-        throw new ExpoContactsError('ERR_CONTACTS_PERMISSION_REQUEST', `Check the module.json5 declaration for ${permission}.`);
-      }
+    for (const result of request.systemResults) {
+      for (const permission of PERMISSIONS) {
+        const index = result.permissions.indexOf(permission);
+        const reason = deviceInfo.sdkApiVersion >= REQUEST_ERROR_REASONS_API ? result.errorReasons?.[index] : undefined;
 
-      const blocked = reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings;
-      restricted = restricted || blocked;
-      if (
-        deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API &&
-        (((reason === undefined || reason === RequestReason.Success) &&
-          (result.authResults[index] === ExpoPermissionStatus.GRANTED || result.dialogShownResults?.[index] === true)) ||
-          blocked)
-      ) {
-        await this.setDenied(permission, result.authResults[index] !== ExpoPermissionStatus.GRANTED);
+        if (
+          index < 0 ||
+          reason === RequestReason.InvalidPermission ||
+          reason === RequestReason.NotDeclared ||
+          ((reason === undefined || reason === RequestReason.Success) &&
+            result.authResults[index] !== ExpoPermissionStatus.GRANTED &&
+            result.authResults[index] !== ExpoPermissionStatus.DENIED)
+        ) {
+          throw new ExpoContactsError('ERR_CONTACTS_PERMISSION_REQUEST', `Check the module.json5 declaration for ${permission}.`);
+        }
+
+        const blocked = reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings;
+        restricted = restricted || blocked;
+        if (
+          deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API &&
+          (((reason === undefined || reason === RequestReason.Success) &&
+            (result.authResults[index] === ExpoPermissionStatus.GRANTED || result.dialogShownResults?.[index] === true)) ||
+            blocked)
+        ) {
+          await this.setDenied(permission, result.authResults[index] !== ExpoPermissionStatus.GRANTED);
+        }
       }
     }
 
     const response = await this.get();
+    if (this.context.services.get(ExpoRuntimePermissionsKey) !== undefined) return response;
     if (!response.granted) {
       response.status = 'denied';
       response.canAskAgain = response.canAskAgain && !restricted;

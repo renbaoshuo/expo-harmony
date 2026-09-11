@@ -285,7 +285,7 @@ export class ExpoContactsModule extends ExpoModule {
       this.ensureActive();
 
       // JS consumes standard file URLs; system sharing needs an app-scoped URI.
-      const path = decodeURIComponent(new fileUri.FileUri(uri).path);
+      const path = this.context.filePathForRead(uri);
       const record: systemShare.SharedRecord = {
         utd: uniformTypeDescriptor.UniformDataType.VCARD,
         uri: fileUri.getUriFromPath(path),
