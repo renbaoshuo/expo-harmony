@@ -1,4 +1,5 @@
 import {
+  ExpoAbilityLifecycleSubscriber,
   ExpoFileAccessKey,
   ExpoFileAccessPolicy,
   ExpoFunction,
@@ -15,8 +16,9 @@ import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { uniformTypeDescriptor } from '@kit.ArkData';
 import { http } from '@kit.NetworkKit';
 import { systemShare } from '@kit.ShareKit';
-import type { Want } from '@kit.AbilityKit';
+import type { Want, common } from '@kit.AbilityKit';
 import uri from '@ohos.uri';
+import urls from '@ohos.url';
 
 const SHARE_CAPABILITY: string = 'SystemCapability.Collaboration.SystemShare';
 const SEND_ACTION: string = 'ohos.want.action.sendData';
@@ -113,36 +115,27 @@ class IncomingGeneration {
   }
 }
 
-const incomingStates: WeakMap<Object, IncomingShareState> = new WeakMap<Object, IncomingShareState>();
+const states: WeakMap<Object, IncomingShareState> = new WeakMap<Object, IncomingShareState>();
 
 class IncomingShareState {
   private readonly cachePath: string;
   private readonly fileAccess?: ExpoFileAccessPolicy;
-  private initialized: boolean = false;
+  private destroyed: boolean = false;
   private revision: number = 0;
   private generation: IncomingGeneration = new IncomingGeneration(0);
   private readonly listeners: Set<() => void> = new Set<() => void>();
-  private lastWant?: Want = undefined;
 
-  constructor(context: ExpoModuleContext) {
-    this.cachePath = context.cachePath;
-    this.fileAccess = context.services.get(ExpoFileAccessKey);
+  constructor(cachePath: string, fileAccess?: ExpoFileAccessPolicy) {
+    this.cachePath = cachePath;
+    this.fileAccess = fileAccess;
     this.generation.ready = true;
   }
 
-  receiveInitial(want?: Want): void {
-    if (this.initialized) return;
-
-    this.initialized = true;
-    if (want !== undefined) this.receive(want);
-  }
-
   receive(want: Want): void {
-    if (!isShareWant(want)) return;
-    if (this.lastWant === want) return;
+    if (this.destroyed || !isShareWant(want)) return;
 
-    this.lastWant = want;
     const generation = new IncomingGeneration(++this.revision);
+
     this.replaceGeneration(generation);
     generation.loading = this.load(want, generation);
   }
@@ -152,9 +145,11 @@ class IncomingShareState {
     if (generation.failure !== undefined) {
       throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', `Failed to read incoming share data: ${generation.failure}`);
     }
+
     if (!generation.ready) return [];
 
     const payloads: SharePayload[] = [];
+
     generation.records.forEach((record: systemShare.SharedRecord): void => {
       const payload = payloadFromRecord(record);
       if (payload !== undefined) payloads.push(payload);
@@ -166,30 +161,38 @@ class IncomingShareState {
   async getResolvedPayloads(): Promise<ResolvedSharePayload[]> {
     while (true) {
       const generation = this.generation;
+
       await generation.loading;
 
       if (generation !== this.generation || generation.cancelled) continue;
       if (generation.failure !== undefined) {
         throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', `Failed to read incoming share data: ${generation.failure}`);
       }
+
       if (generation.resolved !== undefined) return generation.resolved;
 
       if (generation.resolving === undefined) {
-        generation.resolving = this.resolve(generation);
+        generation.resolving = this.resolve(generation).finally((): void => {
+          generation.resolving = undefined;
+        });
       }
-      await generation.resolving;
+      try {
+        await generation.resolving;
+      } catch (error) {
+        if (generation !== this.generation || generation.cancelled) continue;
+
+        throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', `Failed to resolve incoming share data: ${errorMessage(error as Object)}`);
+      }
 
       if (generation !== this.generation || generation.cancelled) continue;
-      if (generation.failure !== undefined) {
-        throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', `Failed to resolve incoming share data: ${generation.failure}`);
-      }
+
       if (generation.resolved !== undefined) return generation.resolved;
     }
   }
 
   clear(): void {
-    this.lastWant = undefined;
     const generation = new IncomingGeneration(++this.revision);
+
     generation.ready = true;
     generation.resolved = [];
     this.replaceGeneration(generation);
@@ -206,10 +209,11 @@ class IncomingShareState {
   }
 
   destroy(): void {
-    this.lastWant = undefined;
+    this.destroyed = true;
     this.listeners.clear();
 
     const generation = new IncomingGeneration(++this.revision);
+
     generation.ready = true;
     this.replaceGeneration(generation);
   }
@@ -225,6 +229,7 @@ class IncomingShareState {
           `Incoming share contains ${records.length} records; the limit is ${MAX_INCOMING_RECORDS}.`,
         );
       }
+
       if (!this.isCurrent(generation)) return;
 
       generation.records = records;
@@ -233,6 +238,7 @@ class IncomingShareState {
       generation.failure = errorMessage(error as Object);
     } finally {
       if (!this.isCurrent(generation)) return;
+
       generation.ready = true;
       this.notify();
     }
@@ -267,17 +273,17 @@ class IncomingShareState {
     } catch (error) {
       await this.cleanup(generation);
 
-      if (this.isCurrent(generation)) {
-        generation.failure = errorMessage(error as Object);
-      }
+      throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', errorMessage(error as Object), error as Object);
     }
   }
 
   private replaceGeneration(generation: IncomingGeneration): void {
     const previous = this.generation;
+
     previous.cancelled = true;
     this.generation = generation;
-    this.cleanup(previous).catch((): void => {});
+    // Returned cache URIs remain usable after another share or clear, as on upstream.
+    if (previous.resolved === undefined) this.cleanup(previous).catch((): void => {});
   }
 
   private isCurrent(generation: IncomingGeneration): boolean {
@@ -292,6 +298,7 @@ class IncomingShareState {
 
   private async cleanup(generation: IncomingGeneration): Promise<void> {
     const files = Array.from(generation.files);
+
     generation.files.clear();
 
     for (const file of files) {
@@ -302,28 +309,62 @@ class IncomingShareState {
   }
 
   private notify(): void {
-    this.listeners.forEach((listener: () => void): void => listener());
+    this.listeners.forEach((listener: () => void): void => {
+      try {
+        listener();
+      } catch (error) {
+        console.warn(`Unable to deliver Expo Sharing payloads: ${String(error)}`);
+      }
+    });
+  }
+}
+
+export class ExpoSharingLifecycleSubscriber extends ExpoAbilityLifecycleSubscriber {
+  private readonly incoming: IncomingShareState;
+
+  constructor(context: common.UIAbilityContext) {
+    super(context);
+    this.incoming = new IncomingShareState(context.cacheDir);
+    states.set(context, this.incoming);
+  }
+
+  override onCreate(want: Want): void {
+    this.incoming.receive(want);
+  }
+  override onNewWant(want: Want): void {
+    this.incoming.receive(want);
+  }
+  override onDestroy(): void {
+    this.incoming.destroy();
+    states.delete(this.context);
   }
 }
 
 function incomingState(context: ExpoModuleContext): IncomingShareState {
-  const owner: Object = context.session ?? context.uiAbilityContext;
-  let state = incomingStates.get(owner);
-  if (state === undefined) {
-    state = new IncomingShareState(context);
-    incomingStates.set(owner, state);
+  const session = context.session;
+  const owner: Object = session ?? context.uiAbilityContext;
+  let state = states.get(owner);
+  if (state === undefined && session !== undefined) {
+    state = new IncomingShareState(context.cachePath, context.services.get(ExpoFileAccessKey));
+    states.set(owner, state);
+    if (session.initialWant !== undefined) state.receive(session.initialWant);
+
     const owned = state;
-    context.session?.onClose((): void => {
+
+    session.onClose((): void => {
       owned.destroy();
-      incomingStates.delete(owner);
+      states.delete(owner);
     });
+  }
+  if (state === undefined) {
+    throw new ExpoSharingError('ERR_SHARING_ABILITY_NOT_INITIALIZED', 'Expo Sharing requires its autolinked Ability lifecycle subscriber.');
   }
 
   return state;
 }
 
 export class ExpoSharingModule extends ExpoModule {
-  private readonly incoming: IncomingShareState;
+  private readonly incoming?: IncomingShareState;
   private sharing: boolean = false;
   private observing: boolean = false;
   private destroyed: boolean = false;
@@ -334,7 +375,7 @@ export class ExpoSharingModule extends ExpoModule {
 
   constructor(context: ExpoModuleContext) {
     super(context);
-    this.incoming = incomingState(context);
+    if (!context.isHeadless) this.incoming = incomingState(context);
   }
 
   definition(): ExpoModuleDefinition {
@@ -352,21 +393,18 @@ export class ExpoSharingModule extends ExpoModule {
         }),
       )
       .asyncFunction('isAvailableAsync', async (): Promise<boolean> => {
-        return !this.destroyed && canIUse(SHARE_CAPABILITY);
+        return !this.destroyed && !this.context.isHeadless && canIUse(SHARE_CAPABILITY);
       })
-      .syncFunction('getSharedPayloads', (): SharePayload[] => this.incoming.getPayloads())
+      .syncFunction('getSharedPayloads', (): SharePayload[] => this.incoming?.getPayloads() ?? [])
       .asyncFunction('getResolvedSharedPayloadsAsync', async (): Promise<ResolvedSharePayload[]> => {
-        return await this.incoming.getResolvedPayloads();
+        return (await this.incoming?.getResolvedPayloads()) ?? [];
       })
-      .syncFunction('clearSharedPayloads', (): void => this.incoming.clear())
-      .onCreate((): void => {
-        const want: Want | undefined = this.context.initialWant;
-        this.incoming.receiveInitial(want);
-      })
+      .syncFunction('clearSharedPayloads', (): void => this.incoming?.clear())
       .onStartObserving(INCOMING_SHARE_EVENT, (): void => this.startObserving())
       .onStopObserving(INCOMING_SHARE_EVENT, (): void => this.stopObserving())
-      .onNewWant((want: Want): void => this.incoming.receive(want))
-      .onAbilityDestroy((): void => this.destroyAbility())
+      .onNewWant((want: Want): void => {
+        if (this.context.session !== undefined) this.incoming?.receive(want);
+      })
       .onDestroy((): void => this.destroy());
   }
 
@@ -374,14 +412,14 @@ export class ExpoSharingModule extends ExpoModule {
     if (this.destroyed || this.observing) return;
 
     this.observing = true;
-    this.incoming.addListener(this.onIncomingChange);
+    this.incoming?.addListener(this.onIncomingChange);
   }
 
   private stopObserving(): void {
     if (!this.observing) return;
 
     this.observing = false;
-    this.incoming.removeListener(this.onIncomingChange);
+    this.incoming?.removeListener(this.onIncomingChange);
   }
 
   private destroy(): void {
@@ -396,19 +434,16 @@ export class ExpoSharingModule extends ExpoModule {
     }
   }
 
-  private destroyAbility(): void {
-    this.destroy();
-    this.incoming.destroy();
-    incomingStates.delete(this.context.session ?? this.context.uiAbilityContext);
-  }
-
   private async share(url: string, options: SharingOptions): Promise<void> {
+    if (this.context.isHeadless) throw new ExpoSharingError('ERR_SHARING_UNAVAILABLE', 'Sharing requires a UIAbility window.');
+
     this.assertActive();
     if (this.sharing) {
       throw new ExpoSharingError('ERR_SHARING_IN_PROGRESS', 'Another share request is being processed now.');
     }
 
     const session: ShareSession = { cancelled: false };
+
     this.sharing = true;
     this.session = session;
 
@@ -422,6 +457,7 @@ export class ExpoSharingModule extends ExpoModule {
       const file = await prepareShareFile(url, this.context);
 
       const preview = resolvePreview(file.name, mime);
+
       this.assertActive();
 
       try {
@@ -497,6 +533,7 @@ async function showShare(
 
 async function prepareShareFile(url: string, context: ExpoModuleContext): Promise<ShareFile> {
   let source: uri.URI;
+
   try {
     source = new uri.URI(url);
   } catch (_) {
@@ -514,9 +551,11 @@ async function prepareShareFile(url: string, context: ExpoModuleContext): Promis
   const name = source.getLastSegment();
   if (authority.length > 0 && authority !== 'localhost') {
     let file: fileIo.File | undefined;
+
     try {
       file = await fileIo.open(url, fileIo.OpenMode.READ_ONLY);
       context.assertFileAccess(file.path);
+
       const stat = await fileIo.stat(file.fd);
 
       if (!stat.isFile()) {
@@ -549,10 +588,12 @@ async function prepareShareFile(url: string, context: ExpoModuleContext): Promis
   }
 
   let file: fileIo.File | undefined;
+
   try {
     context.assertFileAccess(path);
     file = await fileIo.open(path, fileIo.OpenMode.READ_ONLY);
     context.assertFileAccess(file.path);
+
     const stat = await fileIo.stat(file.fd);
 
     if (!stat.isFile()) {
@@ -573,6 +614,7 @@ async function prepareShareFile(url: string, context: ExpoModuleContext): Promis
   }
 
   let result: string;
+
   try {
     result = fileUri.getUriFromPath(path);
   } catch (error) {
@@ -618,9 +660,11 @@ function resolvePreview(name: string, mime: string | undefined): SharePreview {
     if (type.belongsTo(uniformTypeDescriptor.UniformDataType.IMAGE)) {
       return { utd, mode: systemShare.SharePreviewMode.DETAIL };
     }
+
     if (type.belongsTo(uniformTypeDescriptor.UniformDataType.VIDEO)) {
       return { utd, mode: systemShare.SharePreviewMode.DETAIL };
     }
+
     if (type.belongsTo(uniformTypeDescriptor.UniformDataType.AUDIO)) {
       return { utd, mode: systemShare.SharePreviewMode.DEFAULT };
     }
@@ -679,9 +723,9 @@ async function resolvedPayloadFromRecord(
 
 async function resolveURLPayload(payload: SharePayload): Promise<ResolvedRecord> {
   try {
-    const headers = await streamURLHeaders(payload.value);
-
-    const url = payload.value;
+    const response = await streamURLHeaders(payload.value);
+    const headers = response.headers;
+    const url = response.url;
     const mime = normalizedMimeType(headerValue(headers, 'content-type')) ?? 'text/plain';
     const disposition = headerValue(headers, 'content-disposition');
 
@@ -706,21 +750,30 @@ async function resolveURLPayload(payload: SharePayload): Promise<ResolvedRecord>
   }
 }
 
-async function streamURLHeaders(url: string): Promise<Object> {
+interface URLResponse {
+  url: string;
+  headers: Object;
+}
+
+async function streamURLHeaders(url: string): Promise<URLResponse> {
   const request = http.createHttp();
   try {
-    return await new Promise<Object>((resolve: (headers: Object) => void, reject: (error: Error) => void): void => {
+    return await new Promise<URLResponse>((resolve: (response: URLResponse) => void, reject: (error: Error) => void): void => {
       let headers: Object = new Object();
-      request.on('headersReceive', (value: Object): void => {
-        headers = value;
-      });
-      // Header events include intermediate responses without a reliable status
-      // code. NetStack follows redirects before delivering the target's body.
-      request.on('dataReceive', (_value: ArrayBuffer): void => resolve(headers));
+      let current = url;
 
-      // Keep GET for servers whose redirects or metadata differ for HEAD.
-      // Read only the first chunk, then destroy without waiting for the full body.
-      // Completion handles empty bodies; rejection after destroy is consumed.
+      request.on('headersReceive', (value: Object): void => {
+        try {
+          const location = headerValue(headers, 'location');
+          // A following response confirms the previous Location was followed.
+          if (location !== undefined) current = new urls.URL(location, current).href;
+          headers = value;
+        } catch (error) {
+          reject(new Error(`Invalid sharing redirect: ${String(error)}`));
+        }
+      });
+      // GET preserves server redirect semantics; stop after the first body chunk.
+      request.on('dataReceive', (_value: ArrayBuffer): void => resolve({ url: current, headers }));
       request
         .requestInStream(url, {
           method: http.RequestMethod.GET,
@@ -729,7 +782,7 @@ async function streamURLHeaders(url: string): Promise<Object> {
           usingCache: false,
         })
         .then(
-          (): void => resolve(headers),
+          (): void => resolve({ url: current, headers }),
           (error: Error): void => reject(error),
         );
     });
@@ -772,9 +825,11 @@ async function resolveFilePayload(
     if (!Number.isSafeInteger(bytes) || bytes < 0) {
       throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', 'Shared file has an invalid size.');
     }
+
     if (bytes > MAX_INCOMING_FILE_BYTES) {
       throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', `Shared file exceeds the ${MAX_INCOMING_FILE_BYTES}-byte per-file limit.`);
     }
+
     if (bytes > remaining) {
       throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', `Incoming share exceeds the ${MAX_INCOMING_TOTAL_BYTES}-byte total limit.`);
     }
@@ -823,12 +878,17 @@ function shareTypeFromRecord(record: systemShare.SharedRecord, value: string): S
     const type = uniformTypeDescriptor.getTypeDescriptor(record.utd);
     if (type !== null) {
       if (type.belongsTo(uniformTypeDescriptor.UniformDataType.AUDIO)) return 'audio';
+
       if (type.belongsTo(uniformTypeDescriptor.UniformDataType.IMAGE)) return 'image';
+
       if (type.belongsTo(uniformTypeDescriptor.UniformDataType.VIDEO)) return 'video';
+
       if (type.belongsTo(uniformTypeDescriptor.UniformDataType.HYPERLINK)) return 'url';
+
       if (type.belongsTo(uniformTypeDescriptor.UniformDataType.TEXT)) {
         return isWebURL(value) ? 'url' : 'text';
       }
+
       if (type.belongsTo(uniformTypeDescriptor.UniformDataType.FILE)) return 'file';
     }
   } catch (_) {}
@@ -853,20 +913,30 @@ function isWebURL(value: string): boolean {
 
 function defaultMimeType(type: ShareType): string {
   if (type === 'text' || type === 'url') return 'text/plain';
+
   if (type === 'audio') return 'audio/*';
+
   if (type === 'image') return 'image/*';
+
   if (type === 'video') return 'video/*';
+
   return 'application/octet-stream';
 }
 
 function contentTypeFromMime(mime: string, fallback: ShareType = 'file'): ContentType {
   const value = mime.toLowerCase();
   if (value.startsWith('text/html') || value.startsWith('application/xhtml+xml')) return 'website';
+
   if (value.startsWith('audio/')) return 'audio';
+
   if (value.startsWith('image/')) return 'image';
+
   if (value.startsWith('video/')) return 'video';
+
   if (value.startsWith('text/')) return 'text';
+
   if (fallback === 'url') return 'website';
+
   return fallback;
 }
 
@@ -906,6 +976,7 @@ function normalizedMimeType(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
 
   const mime = value.split(';')[0].trim().toLowerCase();
+
   return mime.length > 0 ? mime : undefined;
 }
 
@@ -918,7 +989,9 @@ function headerValue(headers: Object, name: string): string | undefined {
 
     const raw: HeaderValue = record[key];
     if (typeof raw === 'string') return raw;
+
     if (typeof raw === 'number') return String(raw);
+
     if (Array.isArray(raw) && raw.length > 0 && typeof raw[0] === 'string') return raw[0];
   }
 
@@ -929,6 +1002,7 @@ function contentLength(value: string | undefined): number | null {
   if (value === undefined) return null;
 
   const size = Number.parseInt(value, 10);
+
   return Number.isSafeInteger(size) && size >= 0 ? size : null;
 }
 
@@ -973,6 +1047,7 @@ function decodeSharingOptions(value: ESObject, path: string): SharingOptions {
 
   const record = value as Record<string, ESObject>;
   const options = new SharingOptions();
+
   options.mimeType = decodeOptionalString(record['mimeType'], `${path}.mimeType`);
   options.UTI = decodeOptionalString(record['UTI'], `${path}.UTI`);
   options.dialogTitle = decodeOptionalString(record['dialogTitle'], `${path}.dialogTitle`);
@@ -983,12 +1058,14 @@ function decodeSharingOptions(value: ESObject, path: string): SharingOptions {
 
 function decodeAnchor(value: ESObject, path: string): SharingAnchor | undefined {
   if (value === undefined) return undefined;
+
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new ExpoSharingError('ERR_INVALID_ARGUMENT_TYPE', `${path} expected an anchor object, received ${value === null ? 'null' : typeof value}.`);
   }
 
   const record = value as Record<string, ESObject>;
   const anchor = new SharingAnchor();
+
   anchor.x = decodeOptionalNumber(record['x'], `${path}.x`);
   anchor.y = decodeOptionalNumber(record['y'], `${path}.y`);
   anchor.width = decodeOptionalNumber(record['width'], `${path}.width`);
@@ -999,6 +1076,7 @@ function decodeAnchor(value: ESObject, path: string): SharingAnchor | undefined 
 
 function decodeOptionalString(value: ESObject, path: string): string | undefined {
   if (value === undefined) return undefined;
+
   if (typeof value !== 'string') {
     throw new ExpoSharingError(
       'ERR_INVALID_ARGUMENT_TYPE',
@@ -1011,6 +1089,7 @@ function decodeOptionalString(value: ESObject, path: string): string | undefined
 
 function decodeOptionalNumber(value: ESObject, path: string): number {
   if (value === undefined) return 0;
+
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new ExpoSharingError(
       'ERR_INVALID_ARGUMENT_TYPE',
