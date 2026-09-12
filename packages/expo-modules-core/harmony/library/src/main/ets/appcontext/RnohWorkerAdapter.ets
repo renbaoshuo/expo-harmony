@@ -1,6 +1,13 @@
-import { UITurboModuleContext } from '@rnoh/react-native-openharmony';
+import { RNOHCoreContext, UITurboModuleContext } from '@rnoh/react-native-openharmony';
 import { lang } from '@kit.ArkTS';
 import { EtsUITurboModuleContext, SupportedTaskParams, WorkerTaskRunnable } from '@rnoh/react-native-openharmony/src/main/ets/RNOH/ets';
+
+export function setRnohWorkerLaunchUri(context: RNOHCoreContext): void {
+  // RNOH 0.84.1 omits launchUri when constructing RNInstanceRegistry.
+  // Set its existing field before any worker instance is created.
+  const registry: ESObject = context._rnohCoreContextDeps.rnInstanceRegistry;
+  registry.launchUri = context.launchUri;
+}
 
 /** @internal Isolates the RNOH 0.84 worker API pending a package-root export. */
 export type ExpoRnohWorkerParams = SupportedTaskParams;

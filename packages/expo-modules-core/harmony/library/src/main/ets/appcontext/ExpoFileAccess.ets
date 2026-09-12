@@ -54,7 +54,13 @@ export class ExpoScopedFileAccess extends ExpoService implements ExpoFileAccessP
     protectedRoots.push(context.databaseDir, context.preferencesDir);
 
     const application = context.getApplicationContext();
-    protectedRoots.push(parentPath(application.filesDir), parentPath(application.cacheDir), parentPath(application.tempDir), application.databaseDir, application.preferencesDir);
+    protectedRoots.push(
+      parentPath(application.filesDir),
+      parentPath(application.cacheDir),
+      parentPath(application.tempDir),
+      application.databaseDir,
+      application.preferencesDir,
+    );
 
     return new ExpoScopedFileAccess(roots, protectedRoots);
   }
@@ -64,8 +70,13 @@ export class ExpoScopedFileAccess extends ExpoService implements ExpoFileAccessP
     if (this.roots.some((root: string): boolean => inside(root, canonical))) return;
 
     this.assertExternal(canonical);
-    if (this.grants.some((grant: ExternalGrant): boolean =>
-      (mode === 'read' || grant.writable) && (grant.directory ? inside(grant.path, canonical) : grant.path === canonical))) return;
+    if (
+      this.grants.some(
+        (grant: ExternalGrant): boolean =>
+          (mode === 'read' || grant.writable) && (grant.directory ? inside(grant.path, canonical) : grant.path === canonical),
+      )
+    )
+      return;
 
     throw new Error('The project has no file access grant for this path.');
   }

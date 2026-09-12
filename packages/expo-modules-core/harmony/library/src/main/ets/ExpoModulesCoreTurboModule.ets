@@ -69,7 +69,13 @@ export class ExpoModulesCoreTurboModule extends EtsUITurboModule {
 
   private readonly session?: ExpoRuntimeSession;
 
-  constructor(coreContext: UITurboModuleContext, modules: ExpoModulesRegistry, hostState: ExpoHarmonyHostState, hostBinding: ExpoHarmonyHostBinding, session?: ExpoRuntimeSession) {
+  constructor(
+    coreContext: UITurboModuleContext,
+    modules: ExpoModulesRegistry,
+    hostState: ExpoHarmonyHostState,
+    hostBinding: ExpoHarmonyHostBinding,
+    session?: ExpoRuntimeSession,
+  ) {
     super(coreContext);
     this.coreContext = coreContext;
     this.session = session;

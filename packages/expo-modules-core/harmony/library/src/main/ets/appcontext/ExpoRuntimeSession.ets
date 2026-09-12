@@ -10,7 +10,7 @@ export class ExpoRuntimeSession {
     if (projectId.length === 0) throw new Error('Expo session project ID cannot be empty.');
 
     this.projectId = projectId;
-    this.initialWant = initialWant === null ? undefined : JSON.parse(JSON.stringify(initialWant)) as Want;
+    this.initialWant = initialWant === null ? undefined : (JSON.parse(JSON.stringify(initialWant)) as Want);
   }
 
   assertOpen(): void {
@@ -25,7 +25,9 @@ export class ExpoRuntimeSession {
     this.assertOpen();
     this.cleanup.add(cleanup);
 
-    return (): void => { this.cleanup.delete(cleanup); };
+    return (): void => {
+      this.cleanup.delete(cleanup);
+    };
   }
 
   close(): void {

@@ -446,7 +446,14 @@ export class ExpoViewDefinition<ViewType extends ExpoView = ExpoView> implements
       throw new Error(`Expo view '${this.componentName}' cannot create '${componentName}'.`);
     }
 
-    const context = new ExpoViewContext(rnComponentContext, tag, componentName, Array.from(this.eventNames), this.eventPayloadTypes, this.moduleContextValue);
+    const context = new ExpoViewContext(
+      rnComponentContext,
+      tag,
+      componentName,
+      Array.from(this.eventNames),
+      this.eventPayloadTypes,
+      this.moduleContextValue,
+    );
     let mounted: MountedExpoView | undefined = undefined;
 
     try {

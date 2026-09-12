@@ -1,4 +1,5 @@
 import type { ExpoServiceClass } from './ExpoServicesRegistry';
+import type { ExpoHarmonyLifecycleDispatcher } from './ExpoHarmonyLifecycleDispatcher';
 import type { Want } from '@kit.AbilityKit';
 import { common } from '@kit.AbilityKit';
 import type { ExpoModuleRegistration } from '../modules/ExpoModule';
@@ -34,7 +35,6 @@ class ExpoHarmonyAbilityState {
   }
 }
 
-/** @internal One exact RN Host generation within a UIAbility scope. */
 export class ExpoHarmonyHostBinding {
   readonly abilityContext: common.UIAbilityContext;
   readonly runtimeId: number;
@@ -51,7 +51,6 @@ export class ExpoHarmonyHostBinding {
   }
 }
 
-/** Provider-owned Ability/Host state. */
 export class ExpoHarmonyHostState {
   private readonly lifecycle: ExpoLifecycleScopeRegistry<common.UIAbilityContext> = new ExpoLifecycleScopeRegistry<common.UIAbilityContext>();
   private readonly abilities: Map<common.UIAbilityContext, ExpoHarmonyAbilityState> = new Map<common.UIAbilityContext, ExpoHarmonyAbilityState>();
@@ -91,8 +90,13 @@ export class ExpoHarmonyHostState {
       generation,
       session === undefined ? state.initialWant : session.initialWant,
     );
+
     state.bindings.set(runtimeId, binding);
-    if (session !== undefined) state.sessionDisposers.set(runtimeId, session.onClose((): void => this.releaseHost(binding)));
+    if (session !== undefined)
+      state.sessionDisposers.set(
+        runtimeId,
+        session.onClose((): void => this.releaseHost(binding)),
+      );
 
     return binding;
   }
@@ -158,7 +162,6 @@ export class ExpoHarmonyHostState {
       state.bootstrapEvents.delete(EXPO_LIFECYCLE_WINDOW_STAGE_SETUP);
     }
 
-    // Preserve FIFO order and avoid duplicating persistent bootstrap events.
     state.lifecycle.dispatch(eventName, payload);
   }
 
@@ -203,6 +206,7 @@ export class ExpoHarmonyHostState {
 }
 
 export interface ExpoHarmonyHostProvider {
+  readonly lifecycle: ExpoHarmonyLifecycleDispatcher;
   readonly expoServices: ExpoServiceClass[];
   readonly expoModules: ExpoModuleRegistration[];
   readonly hostState: ExpoHarmonyHostState;

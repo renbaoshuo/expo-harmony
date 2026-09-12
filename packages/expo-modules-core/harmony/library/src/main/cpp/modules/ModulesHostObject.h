@@ -11,9 +11,7 @@ namespace expo::harmony {
 class RuntimeContext;
 struct ModuleDefinition;
 
-class ModulesHostObject final
-    : public facebook::jsi::HostObject,
-      public std::enable_shared_from_this<ModulesHostObject> {
+class ModulesHostObject final : public facebook::jsi::HostObject {
 public:
   explicit ModulesHostObject(std::shared_ptr<RuntimeContext> context);
 

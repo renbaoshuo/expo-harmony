@@ -11,3 +11,9 @@ export { ExpoRuntimeDirectories, ExpoRuntimeDirectoriesKey, ExpoAppDirectories, 
 export { ExpoRuntimeSession } from './src/main/ets/appcontext/ExpoRuntimeSession';
 export { ExpoFileAccessPolicy, ExpoFileAccessKey, ExpoFileAccessMode, ExpoScopedFileAccess } from './src/main/ets/appcontext/ExpoFileAccess';
 export { ExpoService, ExpoServiceContext, ExpoServiceKey, ExpoServiceBinding, ExpoServiceClass, ExpoServiceOverride, ExpoServicesRegistry } from './src/main/ets/appcontext/ExpoServicesRegistry';
+
+export { ExpoAppLifecycleSubscriber, ExpoAbilityLifecycleSubscriber, ExpoAppLifecycleSubscriberRegistration, ExpoAbilityLifecycleSubscriberRegistration } from './src/main/ets/appcontext/ExpoLifecycleSubscriber';
+export { ExpoHarmonyLifecycleDispatcher } from './src/main/ets/appcontext/ExpoHarmonyLifecycleDispatcher';
+export { ExpoAbilityStage } from './src/main/ets/appcontext/ExpoAbilityStage';
+
+export { ExpoReactHost, ExpoReactHostOptions } from './src/main/ets/appcontext/ExpoReactHost';

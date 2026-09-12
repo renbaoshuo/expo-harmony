@@ -442,6 +442,10 @@ export class ExpoModuleContext {
   }
 
   /** Debug state of the consuming RNOH application, not the prebuilt module HAR. */
+  get isHeadless(): boolean {
+    return this.serviceRegistry.isHeadless;
+  }
+
   get isDebug(): boolean {
     this.assertValid();
     return this.coreContext.isDebugModeEnabled;
@@ -553,7 +557,8 @@ export class ExpoModuleContext {
 
     const token = this.uiAbilityContext.applicationInfo.accessTokenId;
     return manager.checkAccessTokenSync(token, permission) === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED
-      ? ExpoPermissionStatus.GRANTED : ExpoPermissionStatus.DENIED;
+      ? ExpoPermissionStatus.GRANTED
+      : ExpoPermissionStatus.DENIED;
   }
 
   async requestPermissions(permissions: Permissions[]): Promise<ExpoPermissionRequestResult> {
@@ -578,8 +583,11 @@ export class ExpoModuleContext {
     else await service.requestPermissions(requested.slice(), request);
     this.assertValid();
 
-    return new ExpoPermissionRequestResult(requested, requested.map((permission: Permissions): number =>
-      this.permissionStatus(permission) === ExpoPermissionStatus.GRANTED ? 0 : -1), results);
+    return new ExpoPermissionRequestResult(
+      requested,
+      requested.map((permission: Permissions): number => (this.permissionStatus(permission) === ExpoPermissionStatus.GRANTED ? 0 : -1)),
+      results,
+    );
   }
 
   assertFileAccess(path: string, mode: ExpoFileAccessMode = 'read'): void {
@@ -1805,7 +1813,7 @@ export class ExpoModulesRegistry {
     this.hostId = hostId;
     this.hostRuntimeGeneration = hostRuntimeGeneration;
     this.session = runtimeConfig.session;
-    this.services = new ExpoServicesRegistry(coreContext.uiAbilityContext, this.session);
+    this.services = new ExpoServicesRegistry(coreContext.uiAbilityContext, this.session, runtimeConfig.isHeadless);
 
     const identifiers: Set<string> = new Set<string>();
 
@@ -1854,7 +1862,15 @@ export class ExpoModulesRegistry {
     runtimeConfig: ExpoRuntimeConfig = new ExpoRuntimeConfig(),
     services: ExpoServiceClass[] = [],
   ): ExpoModulesRegistry {
-    return new ExpoModulesRegistry(coreContext, overrideExpoModules(registrations, runtimeConfig.moduleOverrides), initialWant, hostId, hostRuntimeGeneration, runtimeConfig, services);
+    return new ExpoModulesRegistry(
+      coreContext,
+      overrideExpoModules(registrations, runtimeConfig.moduleOverrides),
+      initialWant,
+      hostId,
+      hostRuntimeGeneration,
+      runtimeConfig,
+      services,
+    );
   }
 
   /** @internal Binds the owning TurboModule's cleanup-aware reload operation. */

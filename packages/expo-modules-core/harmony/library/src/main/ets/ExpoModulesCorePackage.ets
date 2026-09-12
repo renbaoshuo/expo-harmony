@@ -15,7 +15,13 @@ export class ExpoModulesCorePackage extends RNOHPackage {
   private readonly services: ExpoServiceClass[];
   private readonly runtimeConfig: ExpoRuntimeConfig;
 
-  constructor(context: RNPackageContext, expoModules: ExpoModuleRegistration[], hostState: ExpoHarmonyHostState, runtimeConfig: ExpoRuntimeConfig = new ExpoRuntimeConfig(), services: ExpoServiceClass[] = []) {
+  constructor(
+    context: RNPackageContext,
+    expoModules: ExpoModuleRegistration[],
+    hostState: ExpoHarmonyHostState,
+    runtimeConfig: ExpoRuntimeConfig = new ExpoRuntimeConfig(),
+    services: ExpoServiceClass[] = [],
+  ) {
     super(context);
     this.expoModules = expoModules;
     this.hostState = hostState;

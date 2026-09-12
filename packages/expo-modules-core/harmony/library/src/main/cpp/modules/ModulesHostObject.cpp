@@ -6,7 +6,6 @@
 #include "api/Promise.h"
 #include "common/EventEmitter.h"
 #include "common/JSI/JSIUtils.h"
-#include "common/LazyObject.h"
 #include "common/NativeModule.h"
 #include "common/SharedObject.h"
 #include "common/SharedRef.h"
@@ -580,12 +579,7 @@ jsi::Value ModulesHostObject::get(
       return jsi::Value::undefined();
     }
 
-    auto lazyModule = std::make_shared<expo::LazyObject>(
-        [self = shared_from_this(), definition](jsi::Runtime &rt) {
-          return std::make_shared<jsi::Object>(
-              self->createModule(rt, *definition));
-        });
-    auto object = jsi::Object::createFromHostObject(runtime, lazyModule);
+    auto object = createModule(runtime, *definition);
     context_->retainModule(name, object);
 
     return jsi::Value(runtime, object);

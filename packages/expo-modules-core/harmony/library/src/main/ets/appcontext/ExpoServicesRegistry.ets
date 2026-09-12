@@ -77,11 +77,13 @@ export class ExpoServiceContext {
 }
 
 export class ExpoServicesRegistry {
+  readonly isHeadless: boolean;
   private readonly entries: Map<Object, Object> = new Map<Object, Object>();
   private readonly context: ExpoServiceContext;
   private valid: boolean = true;
 
-  constructor(context: common.UIAbilityContext, session?: ExpoRuntimeSession) {
+  constructor(context: common.UIAbilityContext, session?: ExpoRuntimeSession, isHeadless: boolean = false) {
+    this.isHeadless = isHeadless;
     this.context = new ExpoServiceContext(context, this, session);
   }
 
