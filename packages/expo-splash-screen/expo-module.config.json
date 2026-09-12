@@ -1,7 +1,16 @@
 {
-  "platforms": ["harmony"],
+  "platforms": [
+    "harmony"
+  ],
   "harmony": {
-    "modules": ["ExpoSplashScreenModule"],
-    "rootViewComponents": ["ExpoSplashScreenView"]
+    "modules": [
+      "ExpoSplashScreenModule"
+    ],
+    "rootViewComponents": [
+      "ExpoSplashScreenView"
+    ],
+    "abilityLifecycleSubscribers": [
+      "ExpoSplashScreenLifecycleSubscriber"
+    ]
   }
 }

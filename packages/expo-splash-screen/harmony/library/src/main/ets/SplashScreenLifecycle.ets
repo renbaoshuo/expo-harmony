@@ -1,7 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { DrawableDescriptor, UIContext } from '@kit.ArkUI';
 import { resourceManager } from '@kit.LocalizationKit';
-import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
+import { ExpoAbilityLifecycleSubscriber, ExpoModuleError } from '@expo-harmony/expo-modules-core';
 
 import { SplashScreenStateMachine } from './SplashScreenStateMachine';
 
@@ -106,6 +106,7 @@ class SplashScreenAbilityOwner {
         'Cannot attach the Expo splash screen after its UIAbility was destroyed.',
       );
     }
+
     if (this.listener !== undefined) {
       throw new ExpoSplashScreenError(
         'ERR_SPLASH_SCREEN_DUPLICATE_VIEW',
@@ -135,6 +136,7 @@ class SplashScreenAbilityOwner {
     if (this.state.isDestroyed()) {
       throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_ABILITY_DESTROYED', 'The Expo splash screen owner no longer has a live UIAbility/window.');
     }
+
     if (this.epoch === epoch) return;
 
     this.epoch = epoch;
@@ -166,6 +168,7 @@ class SplashScreenAbilityOwner {
     if (!Number.isFinite(duration) || duration < 0 || duration > MAX_TIMER_DELAY_MS - FADE_WATCHDOG_GRACE_MS) {
       throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_OPTIONS', 'Splash screen duration must be a non-negative finite number.');
     }
+
     if (this.state.isDestroyed()) return;
 
     this.duration = duration;
@@ -217,6 +220,7 @@ class SplashScreenAbilityOwner {
     if (!this.state.isVisible()) return;
 
     this.clearTimer();
+
     const generation = this.generation;
 
     if (!this.fade || this.duration <= 0) {
@@ -279,6 +283,7 @@ class SplashScreenAbilityOwner {
 
   private clearTimer(): void {
     if (this.timer === undefined) return;
+
     clearTimeout(this.timer);
     this.timer = undefined;
   }
@@ -293,18 +298,29 @@ class SplashScreenCoordinator {
     if (current !== undefined && !current.isDestroyed()) return current;
 
     const owner = new SplashScreenAbilityOwner(ability, resolveResources(ability.resourceManager));
+
     SplashScreenCoordinator.abilities.set(ability, owner);
 
     return owner;
   }
 
   static attachView(ability: common.UIAbilityContext, ui: UIContext, listener: SplashScreenRenderListener): () => void {
-    return SplashScreenCoordinator.prepareAbility(ability).attachView(ui, listener);
+    return SplashScreenCoordinator.requireAbility(ability).attachView(ui, listener);
   }
 
   static bindRuntimeForAbility(ability: common.UIAbilityContext, epoch: string): SplashScreenAbilityOwner {
-    const owner = SplashScreenCoordinator.prepareAbility(ability);
+    const owner = SplashScreenCoordinator.requireAbility(ability);
+
     SplashScreenCoordinator.bindRuntime(owner, epoch);
+
+    return owner;
+  }
+
+  private static requireAbility(ability: common.UIAbilityContext): SplashScreenAbilityOwner {
+    const owner = SplashScreenCoordinator.abilities.get(ability);
+    if (owner === undefined || owner.isDestroyed()) {
+      throw new Error('Expo SplashScreen requires its autolinked Ability lifecycle subscriber and an active window.');
+    }
 
     return owner;
   }
@@ -358,13 +374,29 @@ class SplashScreenCoordinator {
   }
 }
 
-export class ExpoSplashScreenLifecycle {
-  static onWindowStageSetup(ability: common.UIAbilityContext): void {
-    SplashScreenCoordinator.prepareAbility(ability);
+export class ExpoSplashScreenLifecycleSubscriber extends ExpoAbilityLifecycleSubscriber {
+  override onCreate(): void {
+    SplashScreenCoordinator.prepareAbility(this.context);
   }
 
-  static onWindowStageWillDestroy(ability: common.UIAbilityContext): void {
-    SplashScreenCoordinator.destroyAbility(ability);
+  override onWindowStageCreate(): void {
+    SplashScreenCoordinator.prepareAbility(this.context);
+  }
+
+  override onWindowStageRestore(): void {
+    SplashScreenCoordinator.prepareAbility(this.context);
+  }
+
+  override onWindowStageWillDestroy(): void {
+    SplashScreenCoordinator.destroyAbility(this.context);
+  }
+
+  override onWindowStageDestroy(): void {
+    SplashScreenCoordinator.destroyAbility(this.context);
+  }
+
+  override onDestroy(): void {
+    SplashScreenCoordinator.destroyAbility(this.context);
   }
 }
 
@@ -386,10 +418,6 @@ export function endSplashScreenRuntime(epoch: string): void {
 
 export function prepareSplashScreenRuntimeReload(epoch: string): void {
   SplashScreenCoordinator.prepareRuntimeReload(epoch);
-}
-
-export function destroySplashScreenAbility(ability: common.UIAbilityContext): void {
-  SplashScreenCoordinator.destroyAbility(ability);
 }
 
 function resolveResources(manager: resourceManager.ResourceManager): SplashScreenResources {

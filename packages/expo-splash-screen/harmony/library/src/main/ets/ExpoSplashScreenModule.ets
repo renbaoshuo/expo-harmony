@@ -1,15 +1,12 @@
-import { window } from '@kit.ArkUI';
 import { ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoValueType, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
 
 import {
   bindSplashScreenRuntime,
-  destroySplashScreenAbility,
   endSplashScreenRuntime,
   ExpoSplashScreenError,
   findSplashScreenRuntime,
   prepareSplashScreenRuntimeReload,
   SplashScreenRuntimeOwner,
-  ExpoSplashScreenLifecycle,
 } from './SplashScreenLifecycle';
 
 class SplashScreenOptions {
@@ -24,7 +21,6 @@ const SPLASH_SCREEN_OPTIONS_TYPE: ExpoValueType<SplashScreenOptions> = new ExpoV
 );
 
 export class ExpoSplashScreenModule extends ExpoModule {
-  private owner?: SplashScreenRuntimeOwner = undefined;
   private destroyed: boolean = false;
 
   constructor(context: ExpoModuleContext) {
@@ -32,44 +28,44 @@ export class ExpoSplashScreenModule extends ExpoModule {
   }
 
   definition(): ExpoModuleDefinition {
-    return new ExpoModuleDefinition()
-      .name('ExpoSplashScreen')
-      .syncFunction(
-        'setOptions',
-        ExpoFunction.typed1(SPLASH_SCREEN_OPTIONS_TYPE.nullable().optional(), (options?: SplashScreenOptions | null): void => {
-          const settings: SplashScreenOptions = options ?? new SplashScreenOptions();
-          this.resolveOwner()?.setOptions(settings.duration, settings.fade);
-        }),
-      )
-      .syncFunction('hide', (): void => {
-        this.resolveOwner()?.hide();
-      })
-      .asyncFunction('hideAsync', async (): Promise<void> => {
-        this.resolveOwner()?.hide();
-      })
-      .asyncFunction(
-        'preventAutoHideAsync',
-        ExpoFunction.typed0(async (): Promise<boolean> => {
-          return this.resolveOwner()?.prevent(true) ?? true;
-        }).returns(ExpoValueTypes.boolean()),
-      )
-      .asyncFunction('internalPreventAutoHideAsync', async (): Promise<void> => {
-        this.resolveOwner()?.prevent(false);
-      })
-      .asyncFunction('internalMaybeHideAsync', async (): Promise<void> => {
-        this.resolveOwner()?.internalMaybeHide();
-      })
-      .onCreate((): void => this.initialize())
-      .onWindowStageSetup((_stage: window.WindowStage): void => {
-        this.setupWindow();
-      })
-      .onContentAppeared((): void => this.contentAppeared())
-      .onPrepareForReload(async (): Promise<void> => {
-        if (!this.destroyed) prepareSplashScreenRuntimeReload(this.context.runtimeEpoch);
-      })
-      .onWindowStageWillDestroy((): void => this.destroyAbility())
-      .onAbilityDestroy((): void => this.destroyAbility())
-      .onDestroy((): void => this.destroy());
+    return (
+      new ExpoModuleDefinition()
+        .name('ExpoSplashScreen')
+        .syncFunction(
+          'setOptions',
+          ExpoFunction.typed1(SPLASH_SCREEN_OPTIONS_TYPE.nullable().optional(), (options?: SplashScreenOptions | null): void => {
+            const settings: SplashScreenOptions = options ?? new SplashScreenOptions();
+            this.resolveOwner()?.setOptions(settings.duration, settings.fade);
+          }),
+        )
+        .syncFunction('hide', (): void => {
+          this.resolveOwner()?.hide();
+        })
+        .asyncFunction('hideAsync', async (): Promise<void> => {
+          this.resolveOwner()?.hide();
+        })
+        .asyncFunction(
+          'preventAutoHideAsync',
+          ExpoFunction.typed0(async (): Promise<boolean> => {
+            return this.resolveOwner()?.prevent(true) ?? true;
+          }).returns(ExpoValueTypes.boolean()),
+        )
+        .asyncFunction('internalPreventAutoHideAsync', async (): Promise<void> => {
+          this.resolveOwner()?.prevent(false);
+        })
+        .asyncFunction('internalMaybeHideAsync', async (): Promise<void> => {
+          this.resolveOwner()?.internalMaybeHide();
+        })
+        .onCreate((): void => this.initialize())
+        // A WindowStage can be recreated while this runtime remains alive. The
+        // native subscriber owns window setup; this callback only rebinds JS APIs.
+        .onWindowStageSetup((): void => this.initialize())
+        .onContentAppeared((): void => this.contentAppeared())
+        .onPrepareForReload(async (): Promise<void> => {
+          if (!this.destroyed) prepareSplashScreenRuntimeReload(this.context.runtimeEpoch);
+        })
+        .onDestroy((): void => this.destroy())
+    );
   }
 
   private contentAppeared(): void {
@@ -77,26 +73,12 @@ export class ExpoSplashScreenModule extends ExpoModule {
   }
 
   private initialize(): void {
-    this.owner = bindSplashScreenRuntime(this.context.uiAbilityContext, this.context.runtimeEpoch);
-  }
-
-  private setupWindow(): void {
-    if (this.destroyed) return;
-
-    ExpoSplashScreenLifecycle.onWindowStageSetup(this.context.uiAbilityContext);
-    this.owner = bindSplashScreenRuntime(this.context.uiAbilityContext, this.context.runtimeEpoch);
+    if (!this.destroyed && !this.context.isHeadless) bindSplashScreenRuntime(this.context.uiAbilityContext, this.context.runtimeEpoch);
   }
 
   private resolveOwner(): SplashScreenRuntimeOwner | undefined {
     if (this.destroyed) return undefined;
-    return this.owner ?? findSplashScreenRuntime(this.context.runtimeEpoch);
-  }
-
-  private destroyAbility(): void {
-    if (this.destroyed) return;
-
-    destroySplashScreenAbility(this.context.uiAbilityContext);
-    this.owner = undefined;
+    return findSplashScreenRuntime(this.context.runtimeEpoch);
   }
 
   private destroy(): void {
@@ -104,7 +86,6 @@ export class ExpoSplashScreenModule extends ExpoModule {
 
     this.destroyed = true;
     endSplashScreenRuntime(this.context.runtimeEpoch);
-    this.owner = undefined;
   }
 }
 
