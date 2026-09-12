@@ -32,6 +32,8 @@ npm install @expo-harmony/expo-navigation-bar expo-modules-core@55.0.25 expo-nav
 
 仅在运行时调用导航栏 API 时，不需要配置插件。HarmonyOS 不支持设置导航栏分隔线颜色、Android 导航栏唤出行为或强制对比度；配置插件也不接受 `borderColor`、`behavior` 和 `enforceContrast` 选项。
 
+本包的原生实现依赖宿主 Ability 的生命周期事件，对应的订阅器已在包内声明，业务代码无需额外处理。CNG 工程由 prebuild 自动生成所需入口；Bare 工程需按 [接入说明](https://github.com/renbaoshuo/expo-harmony/blob/master/docs/BareInstallation.md) 手动接入 AbilityStage 和 ExpoRNAbility。
+
 ## Author
 
 **expo-harmony** © [Baoshuo](https://github.com/renbaoshuo), Released under the MIT License.<br>

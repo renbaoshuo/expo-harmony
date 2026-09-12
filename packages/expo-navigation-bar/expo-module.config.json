@@ -1,7 +1,13 @@
 {
-  "platforms": ["harmony"],
+  "platforms": [
+    "harmony"
+  ],
   "harmony": {
-    "modules": ["ExpoNavigationBarModule"],
-    "rootViewComponents": ["ExpoNavigationBarRootView"]
+    "modules": [
+      "ExpoNavigationBarModule"
+    ],
+    "abilityLifecycleSubscribers": [
+      "ExpoNavigationBarLifecycleSubscriber"
+    ]
   }
 }
