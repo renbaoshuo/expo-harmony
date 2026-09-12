@@ -27,6 +27,7 @@ export interface StartupMetricsStorage {
 export interface StartupFrameRecorder {
   start(): boolean;
   stop(): FrameMetricsRecord;
+  pause(): FrameMetricsRecord;
   snapshot(): FrameMetricsRecord;
   isRunning(): boolean;
 }
@@ -125,6 +126,7 @@ export class StartupCoordinator {
 
   retain(): number {
     const id = this.nextClientId;
+
     this.nextClientId += 1;
     this.clients.add(id);
 
@@ -153,15 +155,6 @@ export class StartupCoordinator {
     this.recordForeground(this.now());
   }
 
-  primeForeground(id: number, ageMs: number | undefined): void {
-    if (this.shutdown || !this.clients.has(id)) return;
-
-    this.foregroundClients.add(id);
-    if (this.foregroundSeen) return;
-
-    this.recordForeground(ageMs);
-  }
-
   private recordForeground(ageMs: number | undefined): void {
     if (ageMs === undefined) return;
 
@@ -184,6 +177,10 @@ export class StartupCoordinator {
 
     this.interrupted = true;
     this.finalFrames = this.frameRecorder.stop();
+  }
+
+  onUIContextUnavailable(): void {
+    this.frameRecorder.pause();
   }
 
   onUIContextAvailable(): void {
@@ -241,6 +238,7 @@ export class StartupCoordinator {
 
   getAppStartupTimes(): Record<string, number> {
     const times: Record<string, number> = {};
+
     this.metrics.forEach((metric: Metric): void => {
       times[metric.name] = metric.value;
     });
@@ -351,6 +349,7 @@ function mergeMetricParams(
 
   const json = params === undefined ? '{}' : JSON.stringify(params);
   const result: Record<string, ESObject> = JSON.parse(json) as Record<string, ESObject>;
+
   Object.keys(frames).forEach((key: string): void => {
     result[key] = frames[key];
   });

@@ -10,13 +10,12 @@ const PREFERENCES_NAME: string = 'dev.expo.app-metrics';
 const SESSIONS_KEY: string = 'sessions';
 const PENDING_SESSIONS_KEY: string = 'sessions.pending';
 const DEFAULT_DEBUG_ENVIRONMENT: string = 'development';
-// Preferences values are limited to 16 MiB. The code-unit bound remains below
-// that limit even when every UTF-16 code unit expands to four UTF-8 bytes.
+// Bound UTF-16 code units so encoded JSON stays below the Preferences 16 MiB limit.
 const MAX_PREFERENCES_PAYLOAD_CODE_UNITS: number = 3_500_000;
 
 let processStorage: AppMetricsStorage | undefined = undefined;
 
-export function appMetricsStorage(context: common.UIAbilityContext): AppMetricsStorage {
+export function appMetricsStorage(context: common.Context): AppMetricsStorage {
   if (processStorage === undefined) {
     processStorage = new AppMetricsStorage(context, context.applicationInfo.debug);
   }
@@ -32,9 +31,11 @@ export class AppMetricsStorage {
   private failure?: ExpoAppMetricsError;
   private queue: Promise<void> = Promise.resolve();
 
-  constructor(context: common.UIAbilityContext, debug: boolean) {
+  constructor(context: common.Context, debug: boolean) {
     this.environment = debug ? DEFAULT_DEBUG_ENVIRONMENT : undefined;
+
     let store: Promise<preferences.Preferences | null>;
+
     try {
       store = preferences.getPreferences(context, { name: PREFERENCES_NAME });
     } catch (error) {
@@ -42,6 +43,7 @@ export class AppMetricsStorage {
       console.warn(this.failure.message);
       store = Promise.resolve(null);
     }
+
     this.store = store.catch((error: Object): preferences.Preferences | null => {
       this.failure = new ExpoAppMetricsError('ERR_APP_METRICS_STORAGE', `Unable to open Expo App Metrics preferences: ${String(error)}`);
       console.warn(this.failure.message);
@@ -92,6 +94,7 @@ export class AppMetricsStorage {
       if (entry === undefined) {
         const info = await metadata;
         const session = new Session(sessionId, timestamp, this.environment, info);
+
         entry = new SessionWithMetrics(session);
 
         this.sessions.push(entry);
@@ -102,6 +105,7 @@ export class AppMetricsStorage {
       target.session.startTimestamp = timestamp;
 
       const ids = new Set<string>(target.metrics.map((metric: Metric): string => metric.metricId));
+
       metrics.forEach((metric: Metric): void => {
         if (ids.has(metric.metricId)) return;
 
@@ -141,9 +145,12 @@ export class AppMetricsStorage {
         .filter((entry: SessionWithMetrics): boolean => entry.session.isActive)
         .map((entry: SessionWithMetrics): SessionWithMetrics => {
           const copy = copyEntry(entry);
+
           copy.metrics = [];
+
           return copy;
         });
+
       await this.persistEntries(active);
 
       this.sessions = active;
@@ -165,6 +172,7 @@ export class AppMetricsStorage {
         if (!recover) this.assertStorageAvailable();
 
         const snapshot = this.sessions.map((entry: SessionWithMetrics): SessionWithMetrics => copyEntry(entry));
+
         try {
           await task();
         } catch (error) {
@@ -173,6 +181,7 @@ export class AppMetricsStorage {
           if (error instanceof ExpoAppMetricsError) {
             throw new ExpoAppMetricsError(error.code, error.message);
           }
+
           const message = `Unable to update Expo App Metrics preferences: ${String(error)}`;
 
           throw new ExpoAppMetricsError('ERR_APP_METRICS_STORAGE', message);
@@ -210,11 +219,13 @@ export class AppMetricsStorage {
 
         return;
       }
+
       let recovering = pending.length > 0;
       let raw = recovering ? pending : primary;
       if (raw.length === 0) return;
 
       let decoded: ESObject;
+
       try {
         decoded = JSON.parse(raw) as ESObject;
       } catch (error) {
@@ -233,6 +244,7 @@ export class AppMetricsStorage {
           console.warn(`Unable to remove an invalid Expo App Metrics recovery record: ${String(cleanupError)}`);
         }
       }
+
       if (!Array.isArray(decoded) && recovering && primary.length > 0) {
         console.warn('Ignoring an invalid Expo App Metrics recovery record: Stored sessions are not a JSON array.');
         recovering = false;
@@ -258,6 +270,7 @@ export class AppMetricsStorage {
       const sessionIds = new Set<string>();
       const metricIds = new Set<string>();
       let changed = recovering;
+
       (decoded as ESObject[]).forEach((value: ESObject): void => {
         const result = decodeEntry(value);
         if (result === undefined) {
@@ -329,12 +342,15 @@ export class AppMetricsStorage {
     const sessions = this.sessions
       .map((entry: SessionWithMetrics): SessionWithMetrics => {
         const copy = copyEntry(entry);
+
         copy.metrics = copy.metrics.filter((metric: Metric): boolean => Date.parse(metric.timestamp) >= cutoff);
+
         return copy;
       })
       .filter((entry: SessionWithMetrics): boolean => entry.session.isActive || entry.metrics.length > 0);
 
     let payload = JSON.stringify(sessions);
+
     while (payload.length > MAX_PREFERENCES_PAYLOAD_CODE_UNITS) {
       const removable = sessions.findIndex((entry: SessionWithMetrics): boolean => !entry.session.isActive);
       if (removable < 0) {

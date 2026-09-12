@@ -10,7 +10,7 @@
 npm install @expo-harmony/expo-app-metrics expo-app-metrics@0.2.2
 ```
 
-内存快照通过 HarmonyOS HiDebug 的异步接口读取，需要系统 API 版本 20 及以上。帧率指标基于系统帧回调统计，需要在 React Native UI 上下文就绪后才能获取。官方类型中标注为 Android 专属的会话 API（`startSession`、`stopSession`、`addCustomMetricToSession`）在 HarmonyOS 上同样可用。
+内存快照通过 HarmonyOS HiDebug 的异步接口读取，需要系统 API 版本 20 及以上。帧率指标基于系统帧回调统计，需要在原生窗口 UI 上下文就绪后才能获取。官方类型中标注为 Android 专属的会话 API（`startSession`、`stopSession`、`addCustomMetricToSession`）在 HarmonyOS 上同样可用。
 
 ## Author
 

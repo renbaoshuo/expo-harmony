@@ -27,6 +27,7 @@ export class FrameMetricsRecorder {
     this.baseline.reset();
 
     let context: UIContext | null;
+
     try {
       context = this.getUIContext();
     } catch (error) {
@@ -34,15 +35,14 @@ export class FrameMetricsRecorder {
 
       return false;
     }
-    if (context === null) {
-      this.warn('Unable to start HarmonyOS frame interval monitoring without an active UI context.');
 
-      return false;
-    }
+    if (context === null) return false;
 
     let observer: displaySync.DisplaySync | undefined;
+
     try {
       const current = displaySync.create();
+
       current.on('frame', this.callback);
       observer = current;
 
@@ -67,6 +67,7 @@ export class FrameMetricsRecorder {
 
   stop(): FrameMetricsRecord {
     const result = this.frames.finish();
+
     this.detachObserver();
 
     return result;
@@ -74,6 +75,7 @@ export class FrameMetricsRecorder {
 
   pause(): FrameMetricsRecord {
     const result = this.frames.pause();
+
     this.detachObserver();
 
     return result;
@@ -85,6 +87,7 @@ export class FrameMetricsRecorder {
 
   private detachObserver(): void {
     this.baseline.reset();
+
     const observer = this.observer;
     const context = this.uiContext;
 

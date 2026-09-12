@@ -1,6 +1,16 @@
 {
-  "platforms": ["harmony"],
+  "platforms": [
+    "harmony"
+  ],
   "harmony": {
-    "modules": ["ExpoAppMetricsModule"]
+    "modules": [
+      "ExpoAppMetricsModule"
+    ],
+    "appLifecycleSubscribers": [
+      "ExpoAppMetricsAppLifecycleSubscriber"
+    ],
+    "abilityLifecycleSubscribers": [
+      "ExpoAppMetricsAbilityLifecycleSubscriber"
+    ]
   }
 }

@@ -1,7 +1,8 @@
 import type common from '@ohos.app.ability.common';
-import type { UIContext } from '@kit.ArkUI';
+import type { UIContext, window } from '@kit.ArkUI';
 import {
-  ExpoAppLifecycleState,
+  ExpoAppLifecycleSubscriber,
+  ExpoAbilityLifecycleSubscriber,
   ExpoFunction,
   ExpoModule,
   ExpoModuleContext,
@@ -40,7 +41,7 @@ import { FrameMetricsRecorder } from './FrameMetricsRecorder';
 
 const HARMONY_OS_NAME: string = 'HarmonyOS';
 const MAX_PARAMS_CODE_UNITS: number = 256_000;
-let processStartupScope: StartupScope | undefined = undefined;
+let scope: StartupScope | undefined = undefined;
 type Warn = (message: string) => void;
 
 class MetricAttributes {
@@ -66,7 +67,9 @@ class CustomMetric {
 
 class StartupScope {
   readonly coordinator: StartupCoordinator;
+  readonly appClientId: number;
   private readonly uiContexts: Map<number, UIContext> = new Map<number, UIContext>();
+  private readonly foregroundWindows: Set<number> = new Set<number>();
   private readonly foregroundClients: Set<number> = new Set<number>();
   private readonly mainFrameRecorder: FrameMetricsRecorder;
 
@@ -83,8 +86,7 @@ class StartupScope {
       warn,
     });
     this.mainFrameRecorder = new FrameMetricsRecorder(context, warn);
-    // Keep startup ownership process-scoped across module reloads and abilities.
-    this.coordinator.retain();
+    this.appClientId = this.coordinator.retain();
   }
 
   retain(): number {
@@ -93,20 +95,19 @@ class StartupScope {
 
   setUIContext(id: number, context: UIContext): void {
     this.uiContexts.set(id, context);
-    this.coordinator.onUIContextAvailable();
-    if (this.foregroundClients.size > 0) this.mainFrameRecorder.start();
+    this.refreshUIContext();
+  }
+
+  setUIForeground(id: number, foreground: boolean): void {
+    this.foregroundWindows.delete(id);
+    if (foreground) this.foregroundWindows.add(id);
+    this.refreshUIContext();
   }
 
   onForeground(id: number): void {
     this.foregroundClients.add(id);
     this.coordinator.onForeground(id);
-    this.mainFrameRecorder.start();
-  }
-
-  primeForeground(id: number, ageMs: number | undefined): void {
-    this.foregroundClients.add(id);
-    this.coordinator.primeForeground(id, ageMs);
-    this.mainFrameRecorder.start();
+    if (this.getUIContext() !== null) this.mainFrameRecorder.start();
   }
 
   onBackground(id: number): void {
@@ -119,15 +120,30 @@ class StartupScope {
     if (!this.mainFrameRecorder.hasStarted()) {
       throw new ExpoAppMetricsError(
         'ERR_APP_METRICS_FRAME_METRICS_UNAVAILABLE',
-        'HarmonyOS frame metrics are not available until an active React Native UI context has been observed.',
+        'HarmonyOS frame metrics are not available until an active native window UI context has been observed.',
       );
     }
 
     return new FrameRateMetrics(this.mainFrameRecorder.snapshot());
   }
 
+  clearUIContext(id: number): void {
+    if (!this.uiContexts.delete(id)) return;
+    this.refreshUIContext();
+  }
+
+  private refreshUIContext(): void {
+    this.coordinator.onUIContextUnavailable();
+    this.mainFrameRecorder.pause();
+    if (this.getUIContext() !== null) {
+      this.coordinator.onUIContextAvailable();
+      if (this.foregroundClients.size > 0) this.mainFrameRecorder.start();
+    }
+  }
+
   release(id: number): boolean {
-    this.uiContexts.delete(id);
+    this.foregroundWindows.delete(id);
+    this.clearUIContext(id);
     this.foregroundClients.delete(id);
     if (this.foregroundClients.size === 0) this.mainFrameRecorder.pause();
 
@@ -135,9 +151,10 @@ class StartupScope {
   }
 
   private getUIContext(): UIContext | null {
-    const contexts = Array.from(this.uiContexts.values());
-    for (let index = contexts.length - 1; index >= 0; index -= 1) {
-      const context = contexts[index];
+    const ids = Array.from(this.foregroundWindows.values());
+
+    for (let index = ids.length - 1; index >= 0; index -= 1) {
+      const context = this.uiContexts.get(ids[index]);
       if (context !== null && context !== undefined) return context;
     }
 
@@ -145,19 +162,70 @@ class StartupScope {
   }
 }
 
-function startupScope(storage: AppMetricsStorage, metadata: () => Promise<AppMetadata>, warn: Warn): StartupScope {
-  if (processStartupScope === undefined) {
-    processStartupScope = new StartupScope(storage, metadata, warn);
+function requireStartupScope(): StartupScope {
+  if (scope === undefined) {
+    throw new ExpoAppMetricsError('ERR_APP_METRICS_NOT_INITIALIZED', 'Expo App Metrics requires its autolinked application lifecycle subscriber.');
+  }
+  return scope;
+}
+
+export class ExpoAppMetricsAppLifecycleSubscriber extends ExpoAppLifecycleSubscriber {
+  override onCreate(): void {
+    const warn: Warn = (message: string): void => console.warn(message);
+    scope = new StartupScope(appMetricsStorage(this.context), (): Promise<AppMetadata> => readAppMetadata(this.context, warn), warn);
   }
 
-  return processStartupScope;
+  override onForeground(): void {
+    const scope = requireStartupScope();
+    scope.onForeground(scope.appClientId);
+  }
+
+  override onBackground(): void {
+    const scope = requireStartupScope();
+    scope.onBackground(scope.appClientId);
+  }
+}
+
+export class ExpoAppMetricsAbilityLifecycleSubscriber extends ExpoAbilityLifecycleSubscriber {
+  private readonly scope: StartupScope = requireStartupScope();
+  private readonly id: number = this.scope.retain();
+  private stage?: window.WindowStage;
+  private destroyed: boolean = false;
+
+  override onForeground(): void {
+    this.scope.setUIForeground(this.id, true);
+  }
+  override onBackground(): void {
+    this.scope.setUIForeground(this.id, false);
+  }
+  override onWindowStageCreate(stage: window.WindowStage): void {
+    this.stage = stage;
+  }
+  override onWindowStageRestore(stage: window.WindowStage): void {
+    this.stage = stage;
+  }
+  override async onWindowStageReady(stage: window.WindowStage): Promise<void> {
+    const target = await stage.getMainWindow();
+    if (!this.destroyed && this.stage === stage) this.scope.setUIContext(this.id, target.getUIContext());
+  }
+  override onWindowStageWillDestroy(): void {
+    this.stage = undefined;
+    this.scope.clearUIContext(this.id);
+  }
+  override onWindowStageDestroy(): void {
+    this.onWindowStageWillDestroy();
+  }
+  override onDestroy(): void {
+    this.destroyed = true;
+    this.stage = undefined;
+    this.scope.release(this.id);
+  }
 }
 
 export class ExpoAppMetricsModule extends ExpoModule {
   private storage?: AppMetricsStorage;
   private scope?: StartupScope;
   private startup?: StartupCoordinator;
-  private startupClientId: number = -1;
   private readonly lifecycle: AppMetricsServiceLifecycle = new AppMetricsServiceLifecycle();
   private readonly sessionIds: Set<string> = new Set<string>();
   private readonly snapshots: Set<Promise<MemoryUsageSnapshot>> = new Set<Promise<MemoryUsageSnapshot>>();
@@ -182,11 +250,14 @@ export class ExpoAppMetricsModule extends ExpoModule {
       )
       .asyncFunction('getStoredEntries', async (): Promise<Metric[]> => {
         this.assertActive();
+
         const sessions = await this.requireStorage().getAllSessions();
         const metrics: Metric[] = [];
+
         sessions.forEach((entry: SessionWithMetrics): void => {
           metrics.push(...entry.metrics);
         });
+
         return metrics;
       })
       .asyncFunction('clearStoredEntries', async (): Promise<void> => {
@@ -203,7 +274,9 @@ export class ExpoAppMetricsModule extends ExpoModule {
         ExpoFunction.typed2(ExpoValueTypes.string(), CUSTOM_METRIC_TYPE, async (sessionId: string, metric: CustomMetric): Promise<void> => {
           this.assertActive();
           requireSessionId(sessionId);
+
           const storage = this.requireStorage();
+
           await storage.addMetrics(sessionId, [createCustomMetric(storage, sessionId, metric)]);
         }),
       )
@@ -225,8 +298,6 @@ export class ExpoAppMetricsModule extends ExpoModule {
         return this.requireScope().currentFrameMetrics();
       })
       .onCreate((): void => this.initialize())
-      .onForeground((): void => this.onForeground())
-      .onBackground((): void => this.onBackground())
       .onJavaScriptBundleLoaded((durationSeconds?: number): void => {
         this.onJavaScriptBundleLoaded(durationSeconds);
       })
@@ -238,65 +309,36 @@ export class ExpoAppMetricsModule extends ExpoModule {
 
   private initialize(): void {
     const logger = this.context.logger;
+
     this.warn = (message: string): void => logger.warn(message);
+
     const abilityContext = this.context.uiAbilityContext;
     const storage = appMetricsStorage(abilityContext);
-    const scope = startupScope(storage, (): Promise<AppMetadata> => readAppMetadata(abilityContext, this.warn), this.warn);
+    const scope = requireStartupScope();
+
     this.storage = storage;
     this.scope = scope;
     this.startup = scope.coordinator;
-    this.startupClientId = scope.retain();
-    const state = this.context.appLifecycleState;
-    if (state === ExpoAppLifecycleState.FOREGROUND) {
-      this.onForeground();
-    } else {
-      if (state === ExpoAppLifecycleState.BEFORE_CREATE) {
-        scope.primeForeground(this.startupClientId, monotonicNowMs(this.warn));
-      }
-      this.refreshUIContext();
-    }
   }
 
   private startSession(): string {
     this.assertActive();
+
     const storage = this.requireStorage();
     const id = storage.createSessionId();
+
     this.sessionIds.add(id);
     storage.scheduleStartSession(id, new Date().toISOString(), this.metadata());
+
     return id;
-  }
-
-  private onForeground(): void {
-    if (!this.lifecycle.isActive()) return;
-    this.refreshUIContext();
-    this.requireScope().onForeground(this.startupClientId);
-  }
-
-  private onBackground(): void {
-    if (!this.lifecycle.isActive()) return;
-    this.requireScope().onBackground(this.startupClientId);
   }
 
   private onJavaScriptBundleLoaded(durationSeconds?: number): void {
     if (!this.lifecycle.isActive()) return;
-    const startup = this.requireStartup();
-    startup.recordBundleLoad(durationSeconds);
-    this.requireScope().onForeground(this.startupClientId);
-  }
 
-  private refreshUIContext(): void {
-    if (!this.lifecycle.isActive()) return;
-    this.context
-      .getReactNativeWindow()
-      .then((target): void => {
-        if (!this.lifecycle.isActive()) return;
-        this.requireScope().setUIContext(this.startupClientId, target.getUIContext());
-      })
-      .catch((error: Object): void => {
-        if (this.lifecycle.isActive()) {
-          this.warn(`Unable to obtain the React Native UI context for frame metrics: ${String(error)}`);
-        }
-      });
+    const startup = this.requireStartup();
+
+    startup.recordBundleLoad(durationSeconds);
   }
 
   private scheduleStopSession(sessionId: string): void {
@@ -314,6 +356,7 @@ export class ExpoAppMetricsModule extends ExpoModule {
   private destroy(): void {
     const storage = this.storage;
     if (storage === undefined) return;
+
     this.beginShutdown().forEach((sessionId: string): void => {
       storage.scheduleStopSession(sessionId);
     });
@@ -322,7 +365,9 @@ export class ExpoAppMetricsModule extends ExpoModule {
   private async prepareForReload(): Promise<void> {
     const storage = this.storage;
     if (storage === undefined) return;
+
     const ids = this.beginShutdown();
+
     await Promise.all(
       Array.from(this.snapshots).map(async (snapshot: Promise<MemoryUsageSnapshot>): Promise<void> => {
         try {
@@ -339,14 +384,10 @@ export class ExpoAppMetricsModule extends ExpoModule {
   }
 
   private beginShutdown(): string[] {
-    const scope = this.scope;
-    const startup = this.startup;
     const started = this.lifecycle.beginShutdown();
     const ids: string[] = Array.from(this.sessionIds);
     if (!started) return ids;
-    if (scope !== undefined && startup !== undefined && scope.release(this.startupClientId)) {
-      ids.unshift(startup.appSessionId);
-    }
+
     return ids;
   }
 
@@ -358,7 +399,9 @@ export class ExpoAppMetricsModule extends ExpoModule {
 
   private async captureMemorySnapshot(sessionId?: string): Promise<MemoryUsageSnapshot> {
     this.assertActive();
+
     const snapshot = this.takeMemorySnapshot(sessionId);
+
     this.snapshots.add(snapshot);
     try {
       return await snapshot;
@@ -381,6 +424,7 @@ export class ExpoAppMetricsModule extends ExpoModule {
         const timestamp = new Date().toISOString();
 
         const storage = this.requireStorage();
+
         await storage.addMetrics(sessionId, [
           new Metric(storage.createSessionId(), sessionId, timestamp, MEMORY_CATEGORY, PHYSICAL_MEMORY_METRIC, physical),
           new Metric(storage.createSessionId(), sessionId, timestamp, MEMORY_CATEGORY, AVAILABLE_MEMORY_METRIC, available),
@@ -414,6 +458,7 @@ export class ExpoAppMetricsModule extends ExpoModule {
     if (this.storage === undefined) {
       throw new ExpoAppMetricsError('ERR_APP_METRICS_NOT_READY', 'Expo App Metrics has not finished module creation.');
     }
+
     return this.storage;
   }
 
@@ -422,6 +467,7 @@ export class ExpoAppMetricsModule extends ExpoModule {
     if (this.scope === undefined) {
       throw new ExpoAppMetricsError('ERR_APP_METRICS_NOT_READY', 'Expo App Metrics has not finished module creation.');
     }
+
     return this.scope;
   }
 
@@ -430,6 +476,7 @@ export class ExpoAppMetricsModule extends ExpoModule {
     if (this.startup === undefined) {
       throw new ExpoAppMetricsError('ERR_APP_METRICS_NOT_READY', 'Expo App Metrics has not finished module creation.');
     }
+
     return this.startup;
   }
 }
@@ -468,6 +515,7 @@ function optionalSessionId(value: string | null | undefined): string | undefined
 function parseMetricAttributes(value: ESObject, path: string): MetricAttributes {
   const input = requireRecord(value, path, 'metric attributes');
   const result = new MetricAttributes();
+
   result.routeName = optionalString(input['routeName'], `${path}.routeName`, 'routeName');
   result.params = optionalParams(input['params'], `${path}.params`);
 
@@ -523,6 +571,7 @@ function requireString(value: ESObject, path: string, field: string): string {
 
 function optionalString(value: ESObject, path: string, field: string): string | undefined {
   if (value === undefined || value === null) return undefined;
+
   if (typeof value !== 'string') {
     throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_ARGUMENT', `${path} expected '${field}' to be a string when provided.`);
   }
@@ -540,11 +589,15 @@ function optionalParams(value: ESObject, path: string): Record<string, ESObject>
     if (json.length > MAX_PARAMS_CODE_UNITS) {
       throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_ARGUMENT', `${path} exceeds the safe Expo App Metrics parameter size.`);
     }
+
     const result: ESObject = JSON.parse(json);
 
     return result as Record<string, ESObject>;
   } catch (error) {
-    if (error instanceof ExpoAppMetricsError) throw error;
+    if (error instanceof ExpoAppMetricsError) {
+      throw new ExpoAppMetricsError(error.code, error.message, error);
+    }
+
     throw new ExpoAppMetricsError(
       'ERR_APP_METRICS_INVALID_ARGUMENT',
       `${path} expected 'params' to contain JSON-serializable values: ${String(error)}`,
@@ -556,16 +609,19 @@ function encodeMetricAttributes(value: MetricAttributes): ESObject {
   const result: Record<string, ESObject> = {};
   if (value.routeName !== undefined) result['routeName'] = value.routeName;
   if (value.params !== undefined) result['params'] = value.params;
+
   return result;
 }
 
 function encodeCustomMetric(value: CustomMetric): ESObject {
   const result: Record<string, ESObject> = {};
+
   result['category'] = value.category;
   result['name'] = value.name;
   result['value'] = value.value;
   if (value.routeName !== undefined) result['routeName'] = value.routeName;
   if (value.params !== undefined) result['params'] = value.params;
+
   return result;
 }
 
@@ -581,20 +637,23 @@ const CUSTOM_METRIC_TYPE: ExpoValueType<CustomMetric> = new ExpoValueType<Custom
   (value: CustomMetric, _path: string): ESObject => encodeCustomMetric(value),
 );
 
-function availableMemoryBytes(residentKilobytes: bigint): number {
-  if (typeof hidebug.getAppMemoryLimit !== 'function') {
+function availableMemoryBytes(resident: bigint): number {
+  if (typeof hidebug.getAppMemoryLimit !== 'function' || typeof hidebug.getSystemMemInfo !== 'function') {
     throw new ExpoAppMetricsError(
       'ERR_APP_METRICS_MEMORY_API',
-      'HarmonyOS HiDebug does not expose the application RSS limit required by Expo App Metrics.',
+      'HarmonyOS HiDebug does not expose the application and system memory information required by Expo App Metrics.',
     );
   }
 
   try {
     const limit = hidebug.getAppMemoryLimit();
+    const system = hidebug.getSystemMemInfo();
+    const remaining = remainingKilobytes(resident, limit.rssLimit);
 
-    return kilobytesToBytes(remainingKilobytes(residentKilobytes, limit.rssLimit));
+    // An unlimited RSS limit exceeds JS integer precision; available RAM still bounds allocations.
+    return kilobytesToBytes(remaining < system.availableMem ? remaining : system.availableMem);
   } catch (error) {
-    throw new ExpoAppMetricsError('ERR_APP_METRICS_MEMORY_API', `Unable to read the HarmonyOS application RSS limit: ${String(error)}`);
+    throw new ExpoAppMetricsError('ERR_APP_METRICS_MEMORY_API', `Unable to read available HarmonyOS application memory: ${String(error)}`);
   }
 }
 
@@ -606,6 +665,7 @@ async function readNativeMemoryInfo(): Promise<hidebug.NativeMemInfo> {
       'HarmonyOS HiDebug does not expose the asynchronous application memory API required to avoid blocking the UI thread.',
     );
   }
+
   if (typeof hidebug.getAppNativeMemInfoAsync !== 'function') {
     throw new ExpoAppMetricsError(
       'ERR_APP_METRICS_MEMORY_API',
@@ -616,8 +676,9 @@ async function readNativeMemoryInfo(): Promise<hidebug.NativeMemInfo> {
   return await hidebug.getAppNativeMemInfoAsync();
 }
 
-async function readAppMetadata(context: common.UIAbilityContext, warn: Warn): Promise<AppMetadata> {
+async function readAppMetadata(context: common.Context, warn: Warn): Promise<AppMetadata> {
   const result = new AppMetadata();
+
   result.deviceOs = HARMONY_OS_NAME;
   result.deviceOsVersion = nonEmpty(deviceInfo.displayVersion);
   result.deviceModel = nonEmpty(deviceInfo.marketName) ?? nonEmpty(deviceInfo.productModel);
@@ -646,7 +707,7 @@ async function readAppMetadata(context: common.UIAbilityContext, warn: Warn): Pr
   return result;
 }
 
-function resolveApplicationName(context: common.UIAbilityContext, info: bundleManager.BundleInfo, warn: Warn): string | undefined {
+function resolveApplicationName(context: common.Context, info: bundleManager.BundleInfo, warn: Warn): string | undefined {
   const labelId = info.appInfo.labelId;
   if (Number.isSafeInteger(labelId) && labelId > 0) {
     try {
@@ -658,6 +719,7 @@ function resolveApplicationName(context: common.UIAbilityContext, info: bundleMa
   }
 
   const label = nonEmpty(info.appInfo.label);
+
   return label !== undefined && !label.startsWith('$') ? label : undefined;
 }
 
