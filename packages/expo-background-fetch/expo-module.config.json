@@ -1,6 +1,16 @@
 {
-  "platforms": ["harmony"],
+  "platforms": [
+    "harmony"
+  ],
   "harmony": {
-    "modules": ["ExpoBackgroundFetchModule"]
+    "modules": [
+      "ExpoBackgroundFetchModule"
+    ],
+    "abilityLifecycleSubscribers": [
+      "ExpoBackgroundFetchAbilityLifecycleSubscriber"
+    ],
+    "appLifecycleSubscribers": [
+      "ExpoBackgroundFetchLifecycleSubscriber"
+    ]
   }
 }

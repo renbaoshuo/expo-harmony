@@ -37,7 +37,7 @@ HarmonyOS Work Scheduler 的周期任务最短间隔为 2 小时，实际执行�
 
 返回 `Promise<void>`。任务先用 `TaskManager.defineTask` 定义，注册后写入 Work Scheduler，应用初始化时自动恢复。同名任务重复注册会替换之前的注册。
 
-`taskName` 需为非空字符串，`options` 默认 `{}`。应用在前台时任务暂停，切回后台后重新注册。单次回调最长运行 2 分钟，超时系统会终止承载任务的 Extension 进程。单个应用同一时刻最多注册 10 个延迟任务。
+`taskName` 需为非空字符串，`options` 默认 `{}`。应用在前台时暂停执行，切回后台后允许系统继续调度。单次回调最长运行 2 分钟，超时系统会终止承载任务的 Extension 进程。单个应用同一时刻最多注册 10 个延迟任务。
 
 Work Scheduler 不可用、config plugin 未应用、任务名或选项不合法时拒绝。
 
@@ -67,9 +67,18 @@ Work Scheduler 不可用、config plugin 未应用、任务名或选项不合法
 - 极少使用分组：48 小时
 - 受限使用分组、从未使用分组：不执行
 
-`stopOnTerminate` 默认 `true`，应用被终止后取消任务。
+`stopOnTerminate` 默认 `true`，最后一个 UIAbility 正常销毁后停止执行任务。后台无界面运行时释放和开发时重新加载不视为应用终止。
 
-`startOnBoot` 默认 `false`。为 `true` 时任务持久化到系统，设备重启后恢复，此时必须同时设置 `stopOnTerminate: false`，否则注册拒绝。
+`startOnBoot` 默认 `false`。为 `true` 时任务持久化到系统，设备重启后恢复。两个选项独立配置：
+
+| `stopOnTerminate` | `startOnBoot` | 正常终止后 | 设备重启后 |
+| ----------------- | ------------- | ---------- | ---------- |
+| `true`            | `false`       | 停止       | 不恢复     |
+| `true`            | `true`        | 停止       | 恢复       |
+| `false`           | `false`       | 继续调度   | 不恢复     |
+| `false`           | `true`        | 继续调度   | 恢复       |
+
+开机恢复使用系统持久化任务；前台暂停和终止状态按系统启动次数记录，扩展回调在加载 JS 前检查。系统重启后旧状态失效。系统强杀若不发送销毁回调，无法保证执行 `stopOnTerminate` 清理；系统强行停止应用时还受系统后台限制约束。
 
 `stopOnTerminate` 和 `startOnBoot` 官方标记为 Android 专属，在 HarmonyOS 上可用。传入未知字段时拒绝。
 
@@ -77,11 +86,11 @@ Work Scheduler 不可用、config plugin 未应用、任务名或选项不合法
 
 #### `BackgroundFetchResult`
 
-| 成员      | 值  | 含义                   |
-| --------- | --- | ---------------------- |
-| `NoData`  | 1   | 没有新数据             |
-| `NewData` | 2   | 成功获取到新数据       |
-| `Failed`  | 3   | 尝试获取数据但失败     |
+| 成员      | 值  | 含义               |
+| --------- | --- | ------------------ |
+| `NoData`  | 1   | 没有新数据         |
+| `NewData` | 2   | 成功获取到新数据   |
+| `Failed`  | 3   | 尝试获取数据但失败 |
 
 返回值在 HarmonyOS 上不影响后续调度。
 
@@ -94,6 +103,10 @@ Work Scheduler 不可用、config plugin 未应用、任务名或选项不合法
 | `Available`  | 3   | 后台更新可用                     |
 
 `getStatusAsync()` 在 HarmonyOS 上只会返回 `Restricted` 或 `Available`。
+
+## 原生初始化
+
+本模块自带一个应用级生命周期订阅器，应用一启动（AbilityStage 阶段）就会向 TaskManager 注册原生 consumer；即使进程由后台任务冷启动、尚未打开任何界面，注册也能完成。使用 CNG 时，AbilityStage 入口由 prebuild 自动生成；升级已有的 Bare 工程时，请按 [接入说明](../../docs/BareInstallation.md) 在 `module.json5` 中登记 `module.srcEntry`。系统的调度回调仍由 WorkScheduler Extension 接收，该订阅器只负责注册，不会替代 runtime loader，也不会自动启动 RN。
 
 ## Author
 

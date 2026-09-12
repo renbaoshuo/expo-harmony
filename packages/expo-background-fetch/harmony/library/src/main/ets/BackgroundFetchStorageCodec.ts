@@ -1,4 +1,4 @@
-export const PENDING_WORK_SCHEMA_VERSION: number = 2;
+export const PENDING_WORK_SCHEMA_VERSION: number = 3;
 export const MAXIMUM_PENDING_WORKS: number = 128;
 
 export class StoredPendingWork {
@@ -11,6 +11,7 @@ export class StoredPendingWork {
   ownerKey: string;
   schedulerGeneration: string;
   expiresAt: number;
+  registrationGeneration: number;
 
   constructor(
     requestId: string,
@@ -21,6 +22,7 @@ export class StoredPendingWork {
     ownerKey: string,
     schedulerGeneration: string,
     expiresAt: number,
+    registrationGeneration: number = 0,
   ) {
     this.requestId = requestId;
     this.workId = workId;
@@ -30,6 +32,7 @@ export class StoredPendingWork {
     this.ownerKey = ownerKey;
     this.schedulerGeneration = schedulerGeneration;
     this.expiresAt = expiresAt;
+    this.registrationGeneration = registrationGeneration;
   }
 }
 
@@ -68,9 +71,10 @@ export function decodePendingWorks(raw: ESObject): PendingWorkDecodeResult {
     const ownerKey = item['ownerKey'];
     const schedulerGeneration = item['schedulerGeneration'];
     const expiresAt = item['expiresAt'];
+    const generation = version === 2 ? 0 : item['registrationGeneration'];
 
     if (
-      version !== PENDING_WORK_SCHEMA_VERSION
+      (version !== 2 && version !== PENDING_WORK_SCHEMA_VERSION)
       || !isSafeString(requestId, 256)
       || requestIds.has(requestId as string)
       || typeof workId !== 'number'
@@ -82,6 +86,9 @@ export function decodePendingWorks(raw: ESObject): PendingWorkDecodeResult {
       || !isSafeString(taskName, 256)
       || !isSafeString(ownerKey, 1024)
       || !isSafeString(schedulerGeneration, 128)
+      || typeof generation !== 'number'
+      || !Number.isSafeInteger(generation)
+      || generation < 0
       || typeof expiresAt !== 'number'
       || !Number.isSafeInteger(expiresAt)
       || expiresAt <= 0
@@ -100,6 +107,7 @@ export function decodePendingWorks(raw: ESObject): PendingWorkDecodeResult {
       ownerKey as string,
       schedulerGeneration as string,
       expiresAt as number,
+      generation as number,
     ));
   }
 

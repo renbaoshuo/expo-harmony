@@ -20,3 +20,5 @@ export const BACKGROUND_FETCH_STATUS_AVAILABLE: number = 3;
 
 export const WORK_ID_MINIMUM: number = 1;
 export const WORK_ID_MAXIMUM: number = 0x7fffffff;
+
+export const REGISTRATION_GENERATION_PARAMETER: string = 'expo.backgroundFetch.registrationGeneration';

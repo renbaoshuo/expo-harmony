@@ -1,24 +1,30 @@
 import { WorkSchedulerExtensionAbility, workScheduler } from '@kit.BackgroundTasksKit';
 
+import { ExpoTaskManagerRegistry } from '@expo-harmony/expo-task-manager';
+import { SCHEDULER_GENERATION_PARAMETER, WORK_SCHEDULER_EXTENSION_NAME } from './BackgroundFetchConstants';
 import { BackgroundFetchRuntime } from './BackgroundFetchRuntime';
-import { registerBackgroundFetchConsumer } from './ExpoBackgroundFetchPackage';
 
 export class ExpoBackgroundFetchWorkSchedulerExtension extends WorkSchedulerExtensionAbility {
-  private readonly requests: Map<number, Promise<string | undefined>[]> = new Map();
+  private readonly requests: Map<string, Promise<string | undefined>[]> = new Map();
 
   override onWorkStart(work: workScheduler.WorkInfo): void {
-    registerBackgroundFetchConsumer();
+    ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
+
     const request = BackgroundFetchRuntime.start(this.context, work, Date.now());
-    const requests = this.requests.get(work.workId) ?? [];
+    const key = `${work.workId}:${work.parameters?.[SCHEDULER_GENERATION_PARAMETER] ?? ''}`;
+    const requests = this.requests.get(key) ?? [];
+
     requests.push(request);
-    this.requests.set(work.workId, requests);
+    this.requests.set(key, requests);
   }
 
   override onWorkStop(work: workScheduler.WorkInfo): void {
-    registerBackgroundFetchConsumer();
-    const requests = this.requests.get(work.workId);
+    ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
+
+    const key = `${work.workId}:${work.parameters?.[SCHEDULER_GENERATION_PARAMETER] ?? ''}`;
+    const requests = this.requests.get(key);
     const request = requests?.shift();
-    if (requests !== undefined && requests.length === 0) this.requests.delete(work.workId);
+    if (requests !== undefined && requests.length === 0) this.requests.delete(key);
     BackgroundFetchRuntime.stop(this.context, work, request);
   }
 }
