@@ -10,7 +10,20 @@
 npm install @expo-harmony/expo-keep-awake expo-keep-awake@55.0.8
 ```
 
-应用进入后台时会暂停屏幕常亮，返回前台后按仍然有效的标签恢复；所有标签释放后恢复系统默认的屏幕休眠行为。
+鸿蒙适配会通过 Autolinking 自动接入，无需额外配置。最低支持 HarmonyOS 5.0.1（API 13），宿主的 `compatibleSdkVersion` 也需满足此要求。
+
+保持屏幕常亮基于窗口能力实现，不需要任何权限，本包也未声明权限。应用进入后台时会暂停屏幕常亮，返回前台后按仍然有效的标签恢复；所有标签释放后恢复系统默认的屏幕休眠行为。
+
+本包的原生实现依赖宿主 Ability 的生命周期事件，对应的订阅器已在包内声明，业务代码无需额外处理。CNG 工程由 prebuild 自动生成所需入口；Bare 工程需按 [接入说明](https://github.com/renbaoshuo/expo-harmony/blob/master/docs/BareInstallation.md) 手动接入 AbilityStage 和 ExpoRNAbility。
+
+业务代码依旧使用官方包：
+
+```ts
+import * as KeepAwake from 'expo-keep-awake';
+
+await KeepAwake.activateKeepAwakeAsync('MyTag');
+await KeepAwake.deactivateKeepAwake('MyTag');
+```
 
 ## API 对照表
 

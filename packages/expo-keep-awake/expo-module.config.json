@@ -1,6 +1,13 @@
 {
-  "platforms": ["harmony"],
+  "platforms": [
+    "harmony"
+  ],
   "harmony": {
-    "modules": ["ExpoKeepAwakeModule"]
+    "modules": [
+      "ExpoKeepAwakeModule"
+    ],
+    "abilityLifecycleSubscribers": [
+      "ExpoKeepAwakeLifecycleSubscriber"
+    ]
   }
 }
