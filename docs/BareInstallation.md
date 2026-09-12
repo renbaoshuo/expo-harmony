@@ -155,7 +155,9 @@ SDK 版本在 `build-profile.json5` 中设置，示例使用最低兼容版本 A
 
 `RNOHPackagesFactory.h`、`RNOHPackagesFactory.ets` 和 `autolinking.cmake` 都由自动链接生成，无需逐个添加 Battery 等模块。已有的手工注册包可以保留，但同一个包不要同时通过两种方式注册。
 
-### 接入 Ability、页面和 Worker
+### 接入 AbilityStage、Ability、页面和 Worker
+
+先合并 [`EntryAbilityStage.ets`](../apps/bare/harmony/entry/src/main/ets/abilitystage/EntryAbilityStage.ets)，并在 `module.json5` 的 `module.srcEntry` 中登记 `./ets/abilitystage/EntryAbilityStage.ets`。`EntryAbilityStage` 继承 `ExpoAbilityStage`，会在 UIAbility 和后台 ExtensionAbility 启动之前初始化各模块贡献的应用级生命周期订阅器；`ExpoRNAbility` 中的初始化只是兜底，无法覆盖由后台任务冷启动的进程，因此这一步不能省略。如果工程已有自定义 AbilityStage，请在它的 `onCreate` 中先调用 `expoReactHost.initialize(this.context)`，再调用 `expoHarmonyHostProvider.lifecycle.initializeApplication(this.context.getApplicationContext())`，并保留原有的父类逻辑。
 
 [`EntryAbility.ets`](../apps/bare/harmony/entry/src/main/ets/entryability/EntryAbility.ets) 继承 `ExpoRNAbility`，提供页面、宿主扩展和 Worker 入口：
 
@@ -179,11 +181,11 @@ export default class EntryAbility extends ExpoRNAbility {
 }
 ```
 
-请将 [`Index.ets`](../apps/bare/harmony/entry/src/main/ets/pages/Index.ets) 的页面配置合并到原生首页。该页面从 `RNOHCoreContext` 获取运行环境，用 `ExpoRNApp` 创建 RN 实例，并传入 `getRNOHPackages` 和 `appKey: 'BareBattery'`；页面中还包含生成的 `ExpoHarmonyRootView`，供模块挂载宿主 UI。
+请将 [`Index.ets`](../apps/bare/harmony/entry/src/main/ets/pages/Index.ets) 的页面配置合并到原生首页。该页面从 `RNOHCoreContext` 获取运行环境，用 `ExpoRNApp` 创建 RN 实例，实例配置复用 `PackageProvider.ets` 中的 `expoReactHost`，`appKey` 为 `BareBattery`；页面中还包含生成的 `ExpoHarmonyRootView`，供模块挂载宿主 UI。
 
-Debug 构建使用 `MetroJSBundleProvider` 从开发服务加载 JS；Release 构建使用 `InMemoryResourceJSBundleProvider`，将 `rawfile/hermes_bundle.hbc` 读取为 `ArrayBuffer` 后交给运行时。合并页面时请保留这段 Release 加载逻辑。
+`PackageProvider.ets` 中的 `ExpoReactHost` 集中声明内嵌 bundle 路径、Worker 脚本和 RN 实例的完整配置。Debug 运行时从 Metro 开发服务加载 JS；Release 和后台冷启动读取的是同一份内嵌 bundle（`hermes_bundle.hbc`）。`ExpoAbilityStage` 会在初始化生命周期订阅器之前先初始化 `ExpoReactHost`，因此只启动后台 ExtensionAbility 的进程也能加载 bundle。
 
-Worker 使用 [`RNOHWorker.ets`](../apps/bare/harmony/entry/src/main/ets/workers/RNOHWorker.ets)，通过 `setupRNOHWorker` 接入同一份包列表。请确认 `module.json5` 的 `srcEntry`、页面路由和 Ability 中的 Worker 路径都指向这些文件。
+Worker 使用 [`RNOHWorker.ets`](../apps/bare/harmony/entry/src/main/ets/workers/RNOHWorker.ets)，通过 `setupRNOHWorker` 接入同一份包列表。请确认 `module.json5` 的 `abilities[].srcEntry`、页面路由和 Ability 中的 Worker 路径都指向这些文件。
 
 权限、URL Scheme、图标以及模块所需的原生资源都由项目自行维护，config plugin 的选项不会在 bare 构建时写入原生文件。例如，访问 Metro 开发服务需要 `ohos.permission.INTERNET` 权限。
 
