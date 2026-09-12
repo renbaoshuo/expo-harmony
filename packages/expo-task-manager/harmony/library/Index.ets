@@ -3,6 +3,7 @@ export {
   ExpoTaskExecutionResult,
   ExpoTaskManagerBackgroundQueue,
   ExpoTaskManagerModule,
+  ExpoTaskManagerLifecycleSubscriber,
   ExpoTaskManagerRegistry,
   ExpoTaskManagerRuntimeLoader,
   ExpoTaskManagerWorkMetadata,

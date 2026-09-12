@@ -1,6 +1,13 @@
 {
-  "platforms": ["harmony"],
+  "platforms": [
+    "harmony"
+  ],
   "harmony": {
-    "modules": ["ExpoTaskManagerModule"]
+    "modules": [
+      "ExpoTaskManagerModule"
+    ],
+    "appLifecycleSubscribers": [
+      "ExpoTaskManagerLifecycleSubscriber"
+    ]
   }
 }
