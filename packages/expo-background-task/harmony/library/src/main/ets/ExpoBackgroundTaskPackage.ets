@@ -1,6 +1,8 @@
 import { bundleManager } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
 import { WorkSchedulerExtensionAbility, workScheduler } from '@kit.BackgroundTasksKit';
 import {
+  ExpoAppLifecycleSubscriber,
   ExpoFunction,
   ExpoModule,
   ExpoModuleContext,
@@ -29,6 +31,7 @@ import {
   MILLISECONDS_PER_MINUTE,
   OWNER_PARAMETER,
   OWNER_PARAMETER_VALUE,
+  SCHEDULER_GENERATION_PARAMETER,
   WORK_ID_MAXIMUM,
   WORK_ID_MINIMUM,
   WORK_SCHEDULER_CAPABILITY,
@@ -52,10 +55,9 @@ class ExpoBackgroundTaskConsumer implements ExpoTaskConsumer {
   readonly taskType: string = BACKGROUND_TASK_TYPE;
   readonly consumerId: string = OWNER_PARAMETER_VALUE;
   readonly consumerVersion: number = 1;
-  private mutation: Promise<void> = Promise.resolve();
 
   async onTasksChanged(context: ExpoModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
-    await this.serialize(async (): Promise<void> => {
+    await BackgroundTaskRuntime.updateSchedule(context.uiAbilityContext, async (): Promise<void> => {
       await this.reconcile(context, tasks);
     });
   }
@@ -131,16 +133,7 @@ class ExpoBackgroundTaskConsumer implements ExpoTaskConsumer {
       cancelWorkBestEffort(owned[i], context);
     }
   }
-
-  private async serialize(operation: () => Promise<void>): Promise<void> {
-    const next = this.mutation.catch((): void => {}).then(operation);
-    this.mutation = next.catch((): void => {});
-    await next;
-  }
 }
-
-const backgroundTaskConsumer = new ExpoBackgroundTaskConsumer();
-let consumerRegistered: boolean = false;
 
 class BackgroundTaskOptions {
   minimumInterval?: number = undefined;
@@ -155,38 +148,40 @@ const BACKGROUND_TASK_OPTIONS_TYPE: ExpoValueType<BackgroundTaskOptions> = new E
 );
 
 export class ExpoBackgroundTaskWorkSchedulerExtension extends WorkSchedulerExtensionAbility {
-  private readonly requests: Map<number, Promise<string | undefined>[]> = new Map();
+  private readonly requests: Map<string, Promise<string | undefined>[]> = new Map();
 
   override onWorkStart(work: workScheduler.WorkInfo): void {
-    registerConsumer();
+    ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
+
     const request = BackgroundTaskRuntime.start(
       this.context,
       work,
       this.context.extensionAbilityInfo.bundleName,
       this.context.extensionAbilityInfo.name,
     );
-    const requests = this.requests.get(work.workId) ?? [];
+    const key = `${work.workId}:${work.parameters?.[SCHEDULER_GENERATION_PARAMETER] ?? ''}`;
+    const requests = this.requests.get(key) ?? [];
 
     requests.push(request);
-    this.requests.set(work.workId, requests);
+    this.requests.set(key, requests);
   }
 
   override onWorkStop(work: workScheduler.WorkInfo): void {
-    registerConsumer();
-    const requests = this.requests.get(work.workId);
+    ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
+
+    const key = `${work.workId}:${work.parameters?.[SCHEDULER_GENERATION_PARAMETER] ?? ''}`;
+    const requests = this.requests.get(key);
     const request = requests?.shift();
 
-    if (requests !== undefined && requests.length === 0) this.requests.delete(work.workId);
+    if (requests !== undefined && requests.length === 0) this.requests.delete(key);
 
     BackgroundTaskRuntime.stop(this.context, work, this.context.extensionAbilityInfo.bundleName, this.context.extensionAbilityInfo.name, request);
   }
 }
 
-/** ArkTS author implementation of Expo's BackgroundTask module. */
 export class ExpoBackgroundTaskModule extends ExpoModule {
   constructor(context: ExpoModuleContext) {
     super(context);
-    registerConsumer();
   }
 
   definition(): ExpoModuleDefinition {
@@ -194,6 +189,21 @@ export class ExpoBackgroundTaskModule extends ExpoModule {
       .name(BACKGROUND_TASK_MODULE_NAME)
       .events([EXPIRATION_EVENT_NAME])
       .asyncFunction('getStatusAsync', ExpoFunction.typed0(async (): Promise<number> => status(this.context)).returns(ExpoValueTypes.number()))
+      .asyncFunction(
+        'triggerTaskWorkerForTestingAsync',
+        ExpoFunction.typed0(async (): Promise<boolean> => {
+          if (!this.context.isDebug) {
+            throw new ExpoBackgroundTaskError(
+              'ERR_BACKGROUND_TASK_TESTING_UNAVAILABLE',
+              'Triggering background tasks is only available in debug builds.',
+            );
+          }
+
+          const results = await ExpoTaskManagerRegistry.executeTaskType(this.context, BACKGROUND_TASK_TYPE, true);
+
+          return results.length > 0;
+        }).returns(ExpoValueTypes.boolean()),
+      )
       .asyncFunction(
         'registerTaskAsync',
         ExpoFunction.typed2(
@@ -214,7 +224,6 @@ export class ExpoBackgroundTaskModule extends ExpoModule {
       );
   }
 
-  /** @internal Called by the TaskManager consumer in this RuntimeContext. */
   notifyTasksExpired(): void {
     if (this.context.isValid) this.sendEvent(EXPIRATION_EVENT_NAME, new EmptyEventPayload());
   }
@@ -285,12 +294,14 @@ function decodeOptions(value: ESObject): BackgroundTaskOptions {
   if (unknown.length > 0) {
     throw new ExpoBackgroundTaskError('ERR_BACKGROUND_TASK_INVALID_OPTIONS', `Unsupported BackgroundTask option '${unknown[0]}'.`);
   }
+
   const result = new BackgroundTaskOptions();
   const interval: ESObject = (raw as BackgroundTaskOptionsInput).minimumInterval;
   if (interval !== undefined && interval !== null) {
     minimumIntervalMilliseconds(raw);
     result.minimumInterval = interval as number;
   }
+
   return result;
 }
 
@@ -323,7 +334,9 @@ function intervalForTasks(tasks: ExpoTaskRecord[]): number {
 
 function createWorkInfo(context: ExpoModuleContext, id: number, interval: number): workScheduler.WorkInfo {
   const params: Record<string, number | string | boolean> = {};
+
   params[OWNER_PARAMETER] = OWNER_PARAMETER_VALUE;
+  params[SCHEDULER_GENERATION_PARAMETER] = util.generateRandomUUID(true);
   ExpoTaskManagerWorkMetadata.write(params, ExpoTaskManagerRegistry.ownerKey(context));
 
   return {
@@ -345,6 +358,8 @@ function workMatchesInterval(work: workScheduler.WorkInfo, interval: number, own
     work.isRepeat === true &&
     work.repeatCycleTime === interval &&
     work.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE &&
+    typeof work.parameters?.[SCHEDULER_GENERATION_PARAMETER] === 'string' &&
+    String(work.parameters?.[SCHEDULER_GENERATION_PARAMETER]).length > 0 &&
     ExpoTaskManagerWorkMetadata.owner(work.parameters) === ownerKey
   );
 }
@@ -374,6 +389,7 @@ function allocateWorkId(context: ExpoModuleContext, works: workScheduler.WorkInf
 
   let id = stableWorkId(`${BACKGROUND_TASK_TYPE}:${ExpoTaskManagerRegistry.ownerKey(context)}`);
   const first = id;
+
   do {
     if (!ids.has(id)) return id;
     id = id === WORK_ID_MAXIMUM ? WORK_ID_MINIMUM : id + 1;
@@ -384,6 +400,7 @@ function allocateWorkId(context: ExpoModuleContext, works: workScheduler.WorkInf
 
 function stableWorkId(value: string): number {
   let hash = FNV_OFFSET_BASIS;
+
   for (let i = 0; i < value.length; ++i) {
     hash ^= value.charCodeAt(i);
     hash = Math.imul(hash, FNV_PRIME);
@@ -408,8 +425,8 @@ function cancelWorkBestEffort(work: workScheduler.WorkInfo, context: ExpoModuleC
   }
 }
 
-function registerConsumer(): void {
-  if (consumerRegistered) return;
-  ExpoTaskManagerRegistry.registerConsumer(backgroundTaskConsumer);
-  consumerRegistered = true;
+export class ExpoBackgroundTaskLifecycleSubscriber extends ExpoAppLifecycleSubscriber {
+  override onCreate(): void {
+    ExpoTaskManagerRegistry.registerConsumer(new ExpoBackgroundTaskConsumer());
+  }
 }

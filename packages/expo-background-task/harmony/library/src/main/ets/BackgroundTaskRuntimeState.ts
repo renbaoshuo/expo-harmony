@@ -1,4 +1,4 @@
-export const PENDING_WORK_SCHEMA_VERSION: number = 1;
+export const PENDING_WORK_SCHEMA_VERSION: number = 2;
 export const PENDING_WORK_MAXIMUM_AGE_MS: number = 2 * 60 * 1000;
 
 export const PENDING_PHASE_ENQUEUING: string = 'enqueuing';
@@ -10,11 +10,13 @@ export class ScheduledWork {
   workId: number;
   bundleName: string;
   abilityName: string;
+  schedulerGeneration: string;
 
-  constructor(workId: number, bundleName: string, abilityName: string) {
+  constructor(workId: number, bundleName: string, abilityName: string, schedulerGeneration: string = '') {
     this.workId = workId;
     this.bundleName = bundleName;
     this.abilityName = abilityName;
+    this.schedulerGeneration = schedulerGeneration;
   }
 }
 
@@ -31,8 +33,9 @@ export class StoredPendingWork extends ScheduledWork {
     abilityName: string,
     startedAt: number,
     phase: string,
+    schedulerGeneration: string = '',
   ) {
-    super(workId, bundleName, abilityName);
+    super(workId, bundleName, abilityName, schedulerGeneration);
     this.requestId = requestId;
     this.startedAt = startedAt;
     this.phase = phase;
@@ -101,6 +104,7 @@ export class BackgroundTaskRuntimeState {
       work.abilityName,
       startedAt,
       PENDING_PHASE_ENQUEUING,
+      work.schedulerGeneration,
     );
     await this.driver.save(next);
 
@@ -227,9 +231,10 @@ function pendingWorkFromValue(value: ESObject): StoredPendingWork | undefined {
   const abilityName = item['abilityName'];
   const startedAt = item['startedAt'];
   const phase = item['phase'];
+  const generation = version === 1 ? '' : item['schedulerGeneration'];
 
   if (
-    version !== PENDING_WORK_SCHEMA_VERSION
+    (version !== PENDING_WORK_SCHEMA_VERSION && version !== 1)
     || typeof requestId !== 'string'
     || requestId.length === 0
     || typeof workId !== 'number'
@@ -241,11 +246,13 @@ function pendingWorkFromValue(value: ESObject): StoredPendingWork | undefined {
     || typeof startedAt !== 'number'
     || !Number.isFinite(startedAt)
     || !isPendingPhase(phase)
+    || typeof generation !== 'string'
+    || generation.length > 128
   ) {
     return undefined;
   }
 
-  return new StoredPendingWork(requestId, workId, bundleName, abilityName, startedAt, phase);
+  return new StoredPendingWork(requestId, workId, bundleName, abilityName, startedAt, phase, generation);
 }
 
 function isPendingPhase(value: ESObject): boolean {
@@ -258,5 +265,6 @@ function isPendingPhase(value: ESObject): boolean {
 function sameWork(left: ScheduledWork, right: ScheduledWork): boolean {
   return left.workId === right.workId
     && left.bundleName === right.bundleName
-    && left.abilityName === right.abilityName;
+    && left.abilityName === right.abilityName
+    && left.schedulerGeneration === right.schedulerGeneration;
 }

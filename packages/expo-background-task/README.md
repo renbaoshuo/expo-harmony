@@ -47,9 +47,11 @@ HarmonyOS Work Scheduler 的周期任务最短间隔为 2 小时，实际执行�
 
 注销任务，返回 `Promise<void>`。任务未注册时直接返回。取消最后一个任务后，对应的周期调度一并取消。
 
-> **未实现的内容**
->
-> - `triggerTaskWorkerForTestingAsync()`：HarmonyOS 没有手动触发周期任务的原生入口，调用会抛出 `UnavailabilityError`。
+#### `BackgroundTask.triggerTaskWorkerForTestingAsync()`
+
+公开的开发模式 API，返回 `Promise<boolean>`。Debug 构建通过 TaskManager 立即执行当前应用注册的全部 BackgroundTask，允许在前台调用，并等待任务完成；有任务完成返回 `true`，没有任务或执行被中止返回 `false`。任务仍使用正常的事件、结果回传和过期通知链路，不改变已有周期调度。
+
+Release 构建中，上游 JS API 直接返回 `false`；绕过 JS 直接调用原生方法会拒绝。
 
 ### Event Subscriptions
 
@@ -82,6 +84,10 @@ HarmonyOS Work Scheduler 的周期任务最短间隔为 2 小时，实际执行�
 | `Failed` | `2` | 任务执行失败 |
 
 任务返回值不影响后续调度，HarmonyOS 上仅作记录。
+
+## 原生初始化
+
+本模块自带一个应用级生命周期订阅器，应用一启动（AbilityStage 阶段）就会向 TaskManager 注册原生 consumer；即使进程由后台任务冷启动、尚未打开任何界面，注册也能完成。使用 CNG 时，AbilityStage 入口由 prebuild 自动生成；升级已有的 Bare 工程时，请按 [接入说明](../../docs/BareInstallation.md) 在 `module.json5` 中登记 `module.srcEntry`。系统的调度回调仍由 WorkScheduler Extension 接收，该订阅器只负责注册，不会替代 runtime loader，也不会自动启动 RN。
 
 ## Author
 

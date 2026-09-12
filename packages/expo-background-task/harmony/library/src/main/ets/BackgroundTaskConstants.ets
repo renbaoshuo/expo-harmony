@@ -18,3 +18,5 @@ export const WORK_ID_MINIMUM: number = 1;
 export const WORK_ID_MAXIMUM: number = 0x7fffffff;
 export const FNV_OFFSET_BASIS: number = 0x811c9dc5;
 export const FNV_PRIME: number = 0x01000193;
+
+export const SCHEDULER_GENERATION_PARAMETER: string = 'expo.backgroundTask.schedulerGeneration';

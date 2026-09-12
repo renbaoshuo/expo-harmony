@@ -1,10 +1,11 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { workScheduler } from '@kit.BackgroundTasksKit';
 import { ExpoTaskManagerBackgroundQueue, ExpoTaskManagerWorkMetadata } from '@expo-harmony/expo-task-manager';
 
-import { BACKGROUND_TASK_TYPE, OWNER_PARAMETER, OWNER_PARAMETER_VALUE } from './BackgroundTaskConstants';
+import { BACKGROUND_TASK_TYPE, OWNER_PARAMETER, OWNER_PARAMETER_VALUE, SCHEDULER_GENERATION_PARAMETER } from './BackgroundTaskConstants';
 import {
   BackgroundTaskRuntimeDriver,
   BackgroundTaskRuntimeState,
@@ -53,7 +54,7 @@ class PreferencesRuntimeDriver implements BackgroundTaskRuntimeDriver {
   }
 
   async stop(work: ScheduledWork): Promise<void> {
-    finishWork(toWorkInfo(work));
+    await finishWork(work);
   }
 
   report(message: string): void {
@@ -64,19 +65,34 @@ class PreferencesRuntimeDriver implements BackgroundTaskRuntimeDriver {
 export class BackgroundTaskRuntime {
   private static mutation: Promise<void> = Promise.resolve();
 
+  static async updateSchedule(context: common.Context, action: () => Promise<void>): Promise<void> {
+    await BackgroundTaskRuntime.serialize(context, action);
+  }
+
   static async start(context: common.Context, work: workScheduler.WorkInfo, bundleName: string, abilityName: string): Promise<string | undefined> {
     if (!isOwnedWork(work, bundleName, abilityName)) return undefined;
 
     let requestId: string | undefined;
     try {
-      await BackgroundTaskRuntime.serialize(async (): Promise<void> => {
+      await BackgroundTaskRuntime.serialize(context, async (): Promise<void> => {
+        const works = await workScheduler.obtainAllWorks();
+        const current = works.some(
+          (value: workScheduler.WorkInfo): boolean =>
+            value.workId === work.workId &&
+            value.bundleName === work.bundleName &&
+            value.abilityName === work.abilityName &&
+            isOwnedWork(value, bundleName, abilityName) &&
+            schedulerGenerationFromWork(value) === schedulerGenerationFromWork(work),
+        );
+        if (!current) return;
+
         const state = await createState(context, taskManagerOwnerFromWork(work));
         const id = createRequestId(work);
 
         requestId = await state.start(toScheduledWork(work), id, Date.now());
       });
     } catch (error) {
-      finishWorkBestEffort(work);
+      await BackgroundTaskRuntime.serialize(context, async (): Promise<void> => finishWorkBestEffort(work));
       console.error(String(error));
     }
 
@@ -92,18 +108,21 @@ export class BackgroundTaskRuntime {
   ): void {
     if (!isOwnedWork(work, bundleName, abilityName)) return;
 
-    BackgroundTaskRuntime.serialize(async (): Promise<void> => {
-      const requestId = request === undefined ? undefined : await request;
-      const state = await createState(context, taskManagerOwnerFromWork(work));
+    Promise.resolve(request)
+      .then(async (requestId: string | undefined): Promise<void> => {
+        await BackgroundTaskRuntime.serialize(context, async (): Promise<void> => {
+          const state = await createState(context, taskManagerOwnerFromWork(work));
 
-      await state.stop(toScheduledWork(work), requestId, Date.now());
-    }).catch((error: Object): void => {
-      console.error(`Unable to expire Expo BackgroundTask execution: ${String(error)}`);
-    });
+          await state.stop(toScheduledWork(work), requestId, Date.now());
+        });
+      })
+      .catch((error: Object): void => {
+        console.error(`Unable to expire Expo BackgroundTask execution: ${String(error)}`);
+      });
   }
 
   static async finish(context: common.Context, ownerKey: string, requestId?: string): Promise<void> {
-    await BackgroundTaskRuntime.serialize(async (): Promise<void> => {
+    await BackgroundTaskRuntime.serialize(context, async (): Promise<void> => {
       const state = await createState(context, ownerKey);
 
       await state.complete(requestId);
@@ -111,15 +130,27 @@ export class BackgroundTaskRuntime {
   }
 
   static async expire(context: common.Context, ownerKey: string, requestId?: string): Promise<void> {
-    await BackgroundTaskRuntime.serialize(async (): Promise<void> => {
+    await BackgroundTaskRuntime.serialize(context, async (): Promise<void> => {
       const state = await createState(context, ownerKey);
 
       await state.expire(requestId);
     });
   }
 
-  private static async serialize(action: () => Promise<void>): Promise<void> {
-    const next = BackgroundTaskRuntime.mutation.catch((): void => {}).then(action);
+  private static async serialize(context: common.Context, action: () => Promise<void>): Promise<void> {
+    const next = BackgroundTaskRuntime.mutation
+      .catch((): void => {})
+      .then(async (): Promise<void> => {
+        const app = context.getApplicationContext();
+        const file = await fs.open(`${app.filesDir}/ExpoBackgroundTask.lock`, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
+        try {
+          await file.lock(true);
+          await preferences.removePreferencesFromCache(app, PREFERENCES_NAME);
+          await action();
+        } finally {
+          fs.closeSync(file);
+        }
+      });
 
     BackgroundTaskRuntime.mutation = next.catch((): void => {});
     await next;
@@ -127,7 +158,7 @@ export class BackgroundTaskRuntime {
 }
 
 async function createState(context: common.Context, ownerKey: string): Promise<BackgroundTaskRuntimeState> {
-  const store = await preferences.getPreferences(context, { name: PREFERENCES_NAME });
+  const store = await preferences.getPreferences(context.getApplicationContext(), { name: PREFERENCES_NAME });
 
   return new BackgroundTaskRuntimeState(new PreferencesRuntimeDriver(context, store, ownerKey));
 }
@@ -196,30 +227,43 @@ function isOwnedWork(work: workScheduler.WorkInfo, bundleName: string, abilityNa
     work.abilityName === abilityName &&
     work.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE &&
     typeof taskManagerOwner === 'string' &&
-    taskManagerOwner.length > 0
+    taskManagerOwner.length > 0 &&
+    schedulerGenerationFromWork(work).length > 0
   );
 }
 
 function toScheduledWork(work: workScheduler.WorkInfo): ScheduledWork {
-  return new ScheduledWork(work.workId, work.bundleName, work.abilityName);
+  return new ScheduledWork(work.workId, work.bundleName, work.abilityName, schedulerGenerationFromWork(work));
 }
 
-function toWorkInfo(work: ScheduledWork): workScheduler.WorkInfo {
-  return {
-    workId: work.workId,
-    bundleName: work.bundleName,
-    abilityName: work.abilityName,
-  };
+function schedulerGenerationFromWork(work: workScheduler.WorkInfo): string {
+  const value = work.parameters?.[SCHEDULER_GENERATION_PARAMETER];
+
+  return typeof value === 'string' ? value : '';
 }
 
-function finishWorkBestEffort(work: workScheduler.WorkInfo): void {
+async function finishWorkBestEffort(work: workScheduler.WorkInfo): Promise<void> {
   try {
-    finishWork(work);
+    await finishWork(toScheduledWork(work));
   } catch (error) {
     console.error(`Unable to finish Expo BackgroundTask execution: ${String(error)}`);
   }
 }
 
-function finishWork(work: workScheduler.WorkInfo): void {
-  workScheduler.stopWork(work, false);
+async function finishWork(work: ScheduledWork): Promise<void> {
+  if (work.schedulerGeneration.length === 0) return;
+
+  const works = await workScheduler.obtainAllWorks();
+  const current = works.find((value: workScheduler.WorkInfo): boolean => {
+    return (
+      value.workId === work.workId &&
+      value.bundleName === work.bundleName &&
+      value.abilityName === work.abilityName &&
+      value.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE &&
+      ExpoTaskManagerWorkMetadata.owner(value.parameters) === work.bundleName &&
+      schedulerGenerationFromWork(value) === work.schedulerGeneration
+    );
+  });
+
+  if (current !== undefined) workScheduler.stopWork(current, false);
 }
