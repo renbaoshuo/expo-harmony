@@ -159,8 +159,10 @@ export class LocationPermissions {
       // A completed API call without a dialog is not proof of a user decision.
       if (
         deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API &&
-        ((reason === RequestReason.Success && (result.authResults[index] === ExpoPermissionStatus.GRANTED || result.dialogShownResults?.[index] === true)) ||
-          reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings)
+        ((reason === RequestReason.Success &&
+          (result.authResults[index] === ExpoPermissionStatus.GRANTED || result.dialogShownResults?.[index] === true)) ||
+          reason === RequestReason.CannotRequest ||
+          reason === RequestReason.ManualSettings)
       ) {
         await this.setDenied(result.authResults[index] === ExpoPermissionStatus.DENIED);
       }
@@ -169,12 +171,10 @@ export class LocationPermissions {
     }
 
     const response = await this.getForeground();
-    if (this.context.services.get(ExpoRuntimePermissionsKey) !== undefined) return cannotAsk && !response.granted ? new PermissionResponse('denied', false) : response;
+    if (this.context.services.get(ExpoRuntimePermissionsKey) !== undefined)
+      return cannotAsk && !response.granted ? new PermissionResponse('denied', false) : response;
     if (response.granted) return response;
 
-    return new PermissionResponse(
-      'denied',
-      response.canAskAgain && !cannotAsk,
-    );
+    return new PermissionResponse('denied', response.canAskAgain && !cannotAsk);
   }
 }
