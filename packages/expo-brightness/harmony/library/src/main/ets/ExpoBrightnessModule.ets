@@ -18,51 +18,49 @@ export class ExpoBrightnessModule extends ExpoModule {
   private destroyed: boolean = false;
 
   definition(): ExpoModuleDefinition {
-    return (
-      new ExpoModuleDefinition()
-        .name('ExpoBrightness')
-        .events([BRIGHTNESS_CHANGE_EVENT])
-        .asyncFunction('getPermissionsAsync', async (): Promise<BrightnessPermissionResponse> => {
+    return new ExpoModuleDefinition()
+      .name('ExpoBrightness')
+      .events([BRIGHTNESS_CHANGE_EVENT])
+      .asyncFunction('getPermissionsAsync', async (): Promise<BrightnessPermissionResponse> => {
+        this.assertActive();
+        return new BrightnessPermissionResponse();
+      })
+      .asyncFunction('requestPermissionsAsync', async (): Promise<BrightnessPermissionResponse> => {
+        this.assertActive();
+        return new BrightnessPermissionResponse();
+      })
+      .asyncFunction('getBrightnessAsync', async (): Promise<number> => {
+        return this.serialize(async (): Promise<number> => {
+          const win: window.Window = await this.context.getReactNativeWindow();
           this.assertActive();
-          return new BrightnessPermissionResponse();
-        })
-        .asyncFunction('requestPermissionsAsync', async (): Promise<BrightnessPermissionResponse> => {
-          this.assertActive();
-          return new BrightnessPermissionResponse();
-        })
-        .asyncFunction('getBrightnessAsync', async (): Promise<number> => {
-          return this.serialize(async (): Promise<number> => {
+
+          const value: number = win.getWindowProperties().brightness;
+          if (value === FOLLOW_SYSTEM_BRIGHTNESS) {
+            return this.readSystemBrightness();
+          }
+
+          return requireBrightness(value);
+        });
+      })
+      .asyncFunction(
+        'setBrightnessAsync',
+        ExpoFunction.typed1(ExpoValueTypes.number(), async (value: number): Promise<void> => {
+          requireBrightness(value);
+
+          await this.serialize(async (): Promise<void> => {
             const win: window.Window = await this.context.getReactNativeWindow();
             this.assertActive();
 
-            const value: number = win.getWindowProperties().brightness;
-            if (value === FOLLOW_SYSTEM_BRIGHTNESS) {
-              return this.readSystemBrightness();
-            }
-
-            return requireBrightness(value);
+            await win.setWindowBrightness(value);
           });
-        })
-        .asyncFunction(
-          'setBrightnessAsync',
-          ExpoFunction.typed1(ExpoValueTypes.number(), async (value: number): Promise<void> => {
-            requireBrightness(value);
-
-            await this.serialize(async (): Promise<void> => {
-              const win: window.Window = await this.context.getReactNativeWindow();
-              this.assertActive();
-
-              await win.setWindowBrightness(value);
-            });
-          }),
-        )
-        .onPrepareForReload(async (): Promise<void> => {
-          this.destroyed = true;
-        })
-        .onDestroy((): void => {
-          this.destroyed = true;
-        })
-    );
+        }),
+      )
+      .onPrepareForReload(async (): Promise<void> => {
+        this.destroyed = true;
+      })
+      .onDestroy((): void => {
+        this.destroyed = true;
+      });
   }
 
   private async readSystemBrightness(): Promise<number> {
