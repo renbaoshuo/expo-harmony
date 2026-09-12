@@ -1,7 +1,13 @@
 {
-  "platforms": ["harmony"],
+  "platforms": [
+    "harmony"
+  ],
   "harmony": {
-    "modules": ["ExpoSystemUIModule"],
-    "rootViewComponents": ["ExpoSystemUIRootView"]
+    "modules": [
+      "ExpoSystemUIModule"
+    ],
+    "abilityLifecycleSubscribers": [
+      "ExpoSystemUILifecycleSubscriber"
+    ]
   }
 }
