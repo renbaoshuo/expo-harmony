@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import JSON5 from 'json5';
 
 import { HarmonyAutolinkingError } from '../errors';
+import { HostMetadataFields } from './host';
 import type { BuildType, RnohMetadata } from '../types';
 import {
   isValidOhpmPackageName,
@@ -31,6 +32,7 @@ async function findHarPathsAsync(packageRoot, scanRoot, record): Promise<string[
   async function visit(directory) {
     let real;
     let entries;
+
     try {
       real = await fs.promises.realpath(directory);
       entries = await fs.promises.readdir(directory, { withFileTypes: true });
@@ -45,13 +47,16 @@ async function findHarPathsAsync(packageRoot, scanRoot, record): Promise<string[
     if (!isPathInside(packageRoot, real)) {
       throw new HarmonyAutolinkingError('PATH_OUTSIDE_PACKAGE', 'harmony.autolinking.mainHarPath resolves outside package root.', { packageName: record.packageName, stage: 'metadata' });
     }
+
     if (visited.has(real)) return;
+
     visited.add(real);
 
     entries.sort((left, right) => compareText(left.name, right.name));
     for (const entry of entries) {
       const target = path.join(directory, entry.name);
       let stat;
+
       try {
         stat = await fs.promises.lstat(target);
       } catch (cause) {
@@ -67,6 +72,7 @@ async function findHarPathsAsync(packageRoot, scanRoot, record): Promise<string[
         await visit(target);
       } else if (path.extname(entry.name) === '.har') {
         let realTarget;
+
         try {
           realTarget = await fs.promises.realpath(target);
           if (!(await fs.promises.stat(realTarget)).isFile()) continue;
@@ -123,6 +129,7 @@ function resolveOhpmPackageName(raw, harPaths, record) {
     return mapping;
   });
   const mapped = new Set(mappings.map(mapping => mapping.harName));
+
   for (const harPath of harPaths) {
     if (!mapped.has(path.basename(harPath))) mappings.push(fallback(harPath));
   }
@@ -131,7 +138,7 @@ function resolveOhpmPackageName(raw, harPaths, record) {
 }
 
 async function resolveArkTsModulePackageAsync(record, harmony) {
-  const hasHostExtensions = harmony.rootViewComponents.length > 0;
+  const hasHostExtensions = HostMetadataFields.some(field => harmony[field].length > 0);
   if (harmony.modules.length === 0 && harmony.services.length === 0 && !hasHostExtensions) return undefined;
 
   const manifestPath = await resolveInsideAsync(
@@ -141,6 +148,7 @@ async function resolveArkTsModulePackageAsync(record, harmony) {
     { packageName: record.packageName, type: 'file' }
   );
   let manifest;
+
   try {
     manifest = JSON5.parse(await fs.promises.readFile(manifestPath, 'utf8'));
   } catch (cause) {
@@ -150,6 +158,7 @@ async function resolveArkTsModulePackageAsync(record, harmony) {
       { cause, packageName: record.packageName, stage: 'metadata' }
     );
   }
+
   if (!isObject(manifest) || !isValidOhpmPackageName(manifest.name)) {
     throw new HarmonyAutolinkingError(
       'INVALID_METADATA',
@@ -157,6 +166,7 @@ async function resolveArkTsModulePackageAsync(record, harmony) {
       { packageName: record.packageName, stage: 'metadata' }
     );
   }
+
   return {
     harPath: ArkTsLibraryHarPath,
     ohPackageName: manifest.name,
@@ -164,13 +174,7 @@ async function resolveArkTsModulePackageAsync(record, harmony) {
 }
 
 function normalizeExpoMetadata(record, canonical) {
-  if (!record.supportsHarmony) return {
-    rootViewComponents: [],
-  };
-
-  return {
-    rootViewComponents: canonical.rootViewComponents,
-  };
+  return Object.fromEntries(HostMetadataFields.map(field => [field, record.supportsHarmony ? canonical[field] : []]));
 }
 
 async function normalizeRnohMetadataAsync(record) {
@@ -208,6 +212,7 @@ async function normalizeRnohMetadataAsync(record) {
     'harmony.autolinking.mainHarPath',
     { packageName: record.packageName, type: 'directory' }
   );
+
   main = normalizeSlashes(path.relative(record.packageRoot, scanRoot)) || '.';
 
   const harPaths = await findHarPathsAsync(record.packageRoot, scanRoot, record);
@@ -264,6 +269,7 @@ async function createDescriptorFromSearchRecordAsync(record, buildType: BuildTyp
   assertSearchRecord(record);
 
   let packageRoot;
+
   try {
     packageRoot = await fs.promises.realpath(record.packageRoot);
     if (!(await fs.promises.stat(packageRoot)).isDirectory()) throw new TypeError('not a directory');

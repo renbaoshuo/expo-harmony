@@ -5,6 +5,7 @@ import {
 } from '../../config/constants';
 import type { BuildType, Manifest } from '../../types';
 import { stringifyJson } from '../../utilities/values';
+import { HostMetadataFields } from '../../metadata/host';
 
 function cloneOhPackageName(value) {
   if (Array.isArray(value)) return value.map(mapping => ({ ...mapping }));
@@ -23,9 +24,7 @@ function createManifestEntry(descriptor) {
       services: [...descriptor.harmony.services],
     },
     ...(descriptor.arkTs ? { arkTs: { ...descriptor.arkTs } } : {}),
-    expo: {
-      rootViewComponents: [...descriptor.expo.rootViewComponents],
-    },
+    expo: Object.fromEntries(HostMetadataFields.map(field => [field, [...descriptor.expo[field]]])),
     rnoh: {
       ...(descriptor.rnoh.ohPackageName !== undefined
         ? { ohPackageName: cloneOhPackageName(descriptor.rnoh.ohPackageName) }

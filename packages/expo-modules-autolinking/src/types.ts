@@ -7,14 +7,14 @@ export type ModuleSource
     | 'reactNativeProjectConfig';
 
 export interface ArkTsModulePackage {
-  /** Conventional package-relative HAR exporting the ArkTS module classes. */
   readonly harPath: string;
-  /** OHPM package name read from the Harmony library manifest. */
   readonly ohPackageName: string;
 }
 
 export interface HostMetadata {
   readonly rootViewComponents: ReadonlyArray<string>;
+  readonly appLifecycleSubscribers: ReadonlyArray<string>;
+  readonly abilityLifecycleSubscribers: ReadonlyArray<string>;
 }
 
 export type ExpoMetadata = HostMetadata;
@@ -34,7 +34,6 @@ export interface RnohMetadata {
 }
 
 export interface HarmonyModuleMetadata extends HostMetadata {
-  /** ArkTS Module classes exported by the conventional Harmony library. */
   readonly modules: ReadonlyArray<string>;
   readonly services: ReadonlyArray<string>;
 }
@@ -59,16 +58,11 @@ export interface ModuleDescriptor {
   readonly packageName: string;
   readonly packageVersion: string;
   readonly packageRoot: string;
-  /** Reachable package path used to install the bundled HAR during a native build. */
   readonly packageLinkPath: string;
   readonly source: ModuleSource;
-  /** Host extension declarations consumed by the generated application provider. */
   readonly expo: ExpoMetadata;
-  /** RNOH package metadata read from package.json#harmony.autolinking. */
   readonly rnoh: RnohMetadata;
-  /** Expo module author metadata from expo-module.config.json#harmony. */
   readonly harmony: HarmonyModuleMetadata;
-  /** Build/package data derived from the conventional Harmony project, never author config. */
   readonly arkTs?: ArkTsModulePackage;
   readonly artifact: ModuleArtifactDescriptor;
 }

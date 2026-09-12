@@ -6,6 +6,7 @@ import { HarmonyAutolinkingError } from '../../errors';
 import { collectOhpmDeps, resolveOhpmSpecifier } from '../ohpm/dependencies';
 import { isValidOhpmPackageName } from '../../metadata/schema';
 import { isObject } from '../../utilities/values';
+import { HostMetadataFields } from '../../metadata/host';
 
 const ModuleSources = new Set(['dependency', 'searchPath', 'nativeModulesDir', 'reactNativeProjectConfig']);
 
@@ -31,6 +32,7 @@ function validateManifest(manifest: unknown, options: Record<string, any> = {}):
       stage: 'manifest',
     });
   }
+
   for (const [index, entry] of candidate.modules.entries()) {
     if (!isObject(entry)
       || typeof entry.packageName !== 'string'
@@ -52,7 +54,9 @@ function validateManifest(manifest: unknown, options: Record<string, any> = {}):
       ))
       || ((entry.harmony.modules.length > 0 || entry.harmony.services.length > 0) && !isObject(entry.arkTs))
       || !isObject(entry.expo)
-      || !Array.isArray(entry.expo.rootViewComponents)
+      || !isClassList(entry.expo.rootViewComponents)
+      || !HostMetadataFields.every(field => isClassList(entry.expo[field] ?? []))
+      || (HostMetadataFields.some(field => entry.expo[field]?.length > 0) && !isObject(entry.arkTs))
       || !isObject(entry.rnoh)
       || !Array.isArray(entry.rnoh.harPaths)) {
       throw new HarmonyAutolinkingError(
@@ -63,7 +67,15 @@ function validateManifest(manifest: unknown, options: Record<string, any> = {}):
     }
   }
 
-  return structuredClone(candidate) as Manifest;
+  // Schema 4 manifests generated before lifecycle contributions remain readable
+  // for stale dependency cleanup. New manifests always contain the full lists.
+  const normalized = structuredClone(candidate);
+
+  normalized.modules.forEach((entry) => {
+    for (const field of HostMetadataFields) entry.expo[field] ??= [];
+  });
+
+  return normalized as Manifest;
 }
 
 function ohpmDependenciesFromManifest(

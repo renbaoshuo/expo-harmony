@@ -4,6 +4,8 @@ import { sortedUniqueStrings } from '../utilities/values';
 const ArkTsIdentifierPattern = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const HostMetadataFields = Object.freeze([
   'rootViewComponents',
+  'appLifecycleSubscribers',
+  'abilityLifecycleSubscribers',
 ]);
 
 function normalizeIdentifiers(value, field, packageName) {
@@ -15,6 +17,7 @@ function normalizeIdentifiers(value, field, packageName) {
       stage: 'metadata',
     });
   }
+
   const values = value.map((item, index) => {
     if (typeof item !== 'string' || !ArkTsIdentifierPattern.test(item)) {
       throw new HarmonyAutolinkingError('INVALID_METADATA', `harmony.${field}[${index}] must be a valid ArkTS identifier.`, {
@@ -25,7 +28,15 @@ function normalizeIdentifiers(value, field, packageName) {
     return item;
   });
 
-  return sortedUniqueStrings(values);
+  if (field === 'rootViewComponents') return sortedUniqueStrings(values);
+
+  if (new Set(values).size !== values.length) {
+    throw new HarmonyAutolinkingError('INVALID_METADATA', `harmony.${field} must not declare a subscriber more than once.`, {
+      packageName,
+      stage: 'metadata',
+    });
+  }
+  return values;
 }
 
 function normalizeHostMetadata(harmony, record) {

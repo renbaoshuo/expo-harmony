@@ -40,6 +40,7 @@ function collectArkTsModuleRegistrations(descriptors) {
     left.packageName.localeCompare(right.packageName, 'en')
   ))) {
     if (descriptor.harmony.modules.length === 0) continue;
+
     const arkTs = descriptor.arkTs;
     if (!arkTs) {
       throw new HarmonyAutolinkingError(
@@ -48,6 +49,7 @@ function collectArkTsModuleRegistrations(descriptors) {
         { packageName: descriptor.packageName, stage: 'generate-host-provider' }
       );
     }
+
     for (const moduleClass of descriptor.harmony.modules) {
       registrations.push({
         moduleClass,
@@ -57,6 +59,7 @@ function collectArkTsModuleRegistrations(descriptors) {
       });
     }
   }
+
   return registrations;
 }
 
@@ -97,7 +100,8 @@ function renderArkTsHostProviderSource(descriptors) {
   ];
 
   lines.push(
-    `import { ExpoHarmonyHostState } from '@expo-harmony/expo-modules-core/Autolinking';`,
+    ...(extensions.appLifecycleSubscribers.length || extensions.abilityLifecycleSubscribers.length ? [`import type { common } from '@kit.AbilityKit';`] : []),
+    `import { ExpoHarmonyHostState, ExpoHarmonyLifecycleDispatcher } from '@expo-harmony/expo-modules-core/Autolinking';`,
     'import type {',
     '  ExpoHarmonyHostProvider,',
     ...(registrations.length > 0 ? ['  ExpoModuleContext,'] : []),
@@ -129,8 +133,27 @@ function renderArkTsHostProviderSource(descriptors) {
     'class GeneratedExpoHarmonyHostProvider implements ExpoHarmonyHostProvider {',
     '  readonly hostState: ExpoHarmonyHostState = new ExpoHarmonyHostState();',
     '',
-    '  readonly expoModules: ExpoModuleRegistration[] = ['
+    '  readonly lifecycle: ExpoHarmonyLifecycleDispatcher = new ExpoHarmonyLifecycleDispatcher(',
+    '    ['
   );
+  for (const extension of extensions.appLifecycleSubscribers) {
+    lines.push(
+      '      {',
+      `        registrationId: ${JSON.stringify(moduleRegistrationId(extension.ohPackageName, extension.className))},`,
+      `        create: (context: common.ApplicationContext) => new ${extension.alias}(context),`,
+      '      },'
+    );
+  }
+  lines.push('    ],', '    [');
+  for (const extension of extensions.abilityLifecycleSubscribers) {
+    lines.push(
+      '      {',
+      `        registrationId: ${JSON.stringify(moduleRegistrationId(extension.ohPackageName, extension.className))},`,
+      `        create: (context: common.UIAbilityContext) => new ${extension.alias}(context),`,
+      '      },'
+    );
+  }
+  lines.push('    ],', '  );', '', '  readonly expoModules: ExpoModuleRegistration[] = [');
   for (const registration of registrations) {
     lines.push(
       '    {',
@@ -164,6 +187,7 @@ function renderArkTsHostProviderSource(descriptors) {
     lines.push(`  ${extension.alias}()`);
   }
   lines.push('}', '');
+
   return lines.join('\n');
 }
 

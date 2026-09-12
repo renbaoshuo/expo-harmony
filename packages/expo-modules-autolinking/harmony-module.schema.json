@@ -15,7 +15,15 @@
       "$ref": "#/$defs/arkTsIdentifiers",
       "description": "ArkTS service classes exported by the conventional Harmony library. Classes extend ExpoService and accept an ExpoServiceContext constructor argument."
     },
-    "rootViewComponents": { "$ref": "#/$defs/arkTsIdentifiers" }
+    "rootViewComponents": { "$ref": "#/$defs/arkTsIdentifiers" },
+    "appLifecycleSubscribers": {
+      "$ref": "#/$defs/arkTsIdentifiers",
+      "description": "Process-owned native subscriber classes extending ExpoAppLifecycleSubscriber, constructed with ApplicationContext before RN initialization. Declaration order is preserved."
+    },
+    "abilityLifecycleSubscribers": {
+      "$ref": "#/$defs/arkTsIdentifiers",
+      "description": "UIAbility-owned native subscriber classes extending ExpoAbilityLifecycleSubscriber, constructed with UIAbilityContext independently of ExpoModule and RN runtime lifetimes. Declaration order is preserved."
+    }
   },
   "$defs": {
     "arkTsIdentifier": {
