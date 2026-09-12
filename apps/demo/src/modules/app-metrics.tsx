@@ -34,8 +34,8 @@ export function AppMetricsDemo() {
         />
         <Note>
           该矩阵使用官方 expo-app-metrics JavaScript 门面：仅清空 App Metrics 存储、创建真实会话、持久化一条自定义指标、
-          标记启动生命周期、读取 Harmony 诊断快照、验证会话已结束、校验必需的启动耗时与可选字段、
-          校验存储的指标标识与内存快照，并验证原生返回的无效会话错误码。
+          结束会话、标记启动生命周期、读取 Harmony 诊断快照、校验必需的启动耗时与可选字段、
+          校验存储的指标与内存快照，并验证原生返回的无效会话错误码。
         </Note>
         <ResultPanel state={matrix.state} />
       </Panel>
@@ -81,7 +81,7 @@ export function AppMetricsDemo() {
           />
         </ActionRow>
         <Note>
-          getStoredEntries() 以 Harmony 上兼容 Android 的会话结构展示：每条记录包含会话元数据与指标。清空操作便于失败后重跑，同时也可验证存储恢复能力。
+          getStoredEntries() 按上游接口返回指标数组，每条指标通过 sessionId 关联会话。清空操作便于重新运行和验证持久化行为。
         </Note>
         <ResultPanel state={storage.state} />
       </Panel>

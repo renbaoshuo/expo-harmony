@@ -3,7 +3,7 @@ import AppMetrics from 'expo-app-metrics';
 import { json } from '../../format';
 import { expectErrorCode, isRecord } from './assertions';
 import { assertFrameMetrics, assertMemorySnapshot, assertStartupTimes, diagnostics } from './diagnostics';
-import { storedEntries, type StoredEntry } from './storage';
+import { storedEntries } from './storage';
 
 const PROBE_CATEGORY = 'expo-app-metrics-demo';
 
@@ -18,31 +18,6 @@ const MEMORY_CATEGORY = 'memory';
 const PHYSICAL_MEMORY_METRIC = 'physical';
 
 const AVAILABLE_MEMORY_METRIC = 'available';
-
-const POLL_INTERVAL_MS = 25;
-
-const POLL_TIMEOUT_MS = 5_000;
-
-async function waitForProbeMetric(sessionId: string): Promise<StoredEntry[]> {
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
-  let entries = await storedEntries();
-
-  while (Date.now() < deadline) {
-    const session = entries.find(entry => entry.session.id === sessionId);
-    if (
-      session !== undefined
-      && !session.session.isActive
-      && session.metrics.some(metric => metric.name === PROBE_METRIC)
-    ) {
-      return entries;
-    }
-
-    await new Promise<void>(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
-    entries = await storedEntries();
-  }
-
-  throw new Error(`在 ${POLL_TIMEOUT_MS}ms 内未观测到持久化的检测指标。`);
-}
 
 export async function runAppMetricsMatrix(): Promise<string> {
   await AppMetrics.clearStoredEntries();
@@ -63,12 +38,8 @@ export async function runAppMetricsMatrix(): Promise<string> {
     routeName: PROBE_ROUTE,
   });
 
-  const entries = await waitForProbeMetric(sessionId);
-  const session = entries.find(entry => entry.session.id === sessionId);
-  if (session === undefined) throw new Error('新创建的指标会话未被持久化。');
-  if (session.session.isActive) throw new Error('stopSession() 之后会话仍处于活跃状态。');
-
-  const metric = session.metrics.find(item => item.name === PROBE_METRIC);
+  const entries = await storedEntries();
+  const metric = entries.find(item => item.sessionId === sessionId && item.name === PROBE_METRIC);
   if (
     metric === undefined
     || metric.sessionId !== sessionId
@@ -95,11 +66,9 @@ export async function runAppMetricsMatrix(): Promise<string> {
   assertFrameMetrics(frames);
 
   const persistedEntries = await storedEntries();
-  const persistedSession = persistedEntries.find(entry => entry.session.id === sessionId);
-  if (persistedSession === undefined) throw new Error('内存快照会话未被持久化。');
-
-  const persistedMemory = persistedSession.metrics.filter(
-    metric => metric.category === MEMORY_CATEGORY
+  const persistedMemory = persistedEntries.filter(
+    metric => metric.sessionId === sessionId
+      && metric.category === MEMORY_CATEGORY
       && (metric.name === PHYSICAL_MEMORY_METRIC || metric.name === AVAILABLE_MEMORY_METRIC)
   );
   if (
@@ -132,14 +101,10 @@ export async function runAppMetricsMatrix(): Promise<string> {
     frameMetrics: frames,
     invalidSession,
     memoryBytes: memory,
-    session: {
-      id: sessionId,
-      isActive: session.session.isActive,
-      startTimestamp: session.session.startTimestamp,
-    },
+    sessionId,
     startupTimesSeconds: startup,
     storedMemoryBytes: storedMemory,
-    storedSessionCount: persistedEntries.length,
+    storedMetricCount: persistedEntries.length,
   });
 }
 

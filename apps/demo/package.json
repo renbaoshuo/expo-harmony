@@ -16,7 +16,7 @@
   "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/apps/demo#readme",
   "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "private": true,
-  "main": "expo-router/entry",
+  "main": "index.js",
   "author": "Baoshuo <i@baoshuo.ren>",
   "scripts": {
     "start": "expo start",

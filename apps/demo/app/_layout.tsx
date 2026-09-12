@@ -9,8 +9,6 @@ import { Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-context';
 
-import '../src/modules/background-fetch/tasks';
-import '../src/modules/background-task/tasks';
 import { palette } from '../src/theme';
 
 void SplashScreen.preventAutoHideAsync().catch(() => false);
@@ -22,7 +20,7 @@ export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts(AntDesign.font);
 
   useEffect(() => {
-    if (fontError) throw fontError;
+    if (fontError) throw new Error(fontError.message, { cause: fontError });
   }, [fontError]);
 
   useEffect(() => {

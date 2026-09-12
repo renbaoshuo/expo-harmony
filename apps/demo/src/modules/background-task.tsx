@@ -41,6 +41,7 @@ export function BackgroundTaskDemo() {
     const task = tasks.find(value => value.taskName === BACKGROUND_TASK) ?? null;
 
     setRegistered(isRegistered);
+    setExecution(getBackgroundTaskExecution());
 
     return json({
       available,
@@ -54,9 +55,13 @@ export function BackgroundTaskDemo() {
   const register = () => action.run(async () => {
     await BackgroundTask.registerTaskAsync(BACKGROUND_TASK, BACKGROUND_TASK_OPTIONS);
 
-    setRegistered(true);
+    const registered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_TASK);
+    setRegistered(registered);
+    if (!registered) {
+      throw new Error('任务未注册。请先检查原生状态；Harmony 宿主需要配置 TaskManager 冷启动 runtime loader。');
+    }
 
-    return `已注册 ${BACKGROUND_TASK}，最小间隔为不精确的 20 分钟。`;
+    return `已注册 ${BACKGROUND_TASK}，最小间隔为不精确的 2 小时。`;
   });
 
   const unregister = () => action.run(async () => {
@@ -108,7 +113,7 @@ export function BackgroundTaskDemo() {
           />
         </ActionRow>
         <Note>
-          HarmonyOS 强制最小间隔 20 分钟，并可能出于功耗策略推迟周期任务。即使 JavaScript 运行时重启，注册信息与任务元数据也会保留。
+          Release demo 已配置无界面冷启动。系统最小间隔为 2 小时，并可能出于功耗策略推迟周期任务。
         </Note>
       </Panel>
 
@@ -122,6 +127,7 @@ export function BackgroundTaskDemo() {
         <DataRow label="回调次数" value={String(execution?.count ?? 0)} />
         <DataRow label="最近事件" value={execution?.eventId ?? '尚未观测到'} />
         <DataRow label="发生时间" value={execution?.occurredAt ?? '尚未观测到'} />
+        <DataRow label="执行环境" value={execution ? (execution.headless ? '无界面后台运行时' : '页面运行时') : '尚未观测到'} />
         <DataRow label="错误" value={execution?.error ?? '无'} />
         <DataRow label="过期事件数" value={String(expirations)} />
         <Note>

@@ -1,6 +1,7 @@
 import * as BackgroundFetch from 'expo-background-fetch';
 import * as TaskManager from 'expo-task-manager';
 import { useEffect, useState } from 'react';
+import { Switch } from 'react-native';
 import { BACKGROUND_FETCH_OPTIONS, BACKGROUND_FETCH_TASK, getBackgroundFetchExecution, subscribeToBackgroundFetchExecution } from './background-fetch/tasks';
 import { ActionButton, ActionRow, DataRow, Note, Panel, ResultPanel, Tag, useAsyncResult } from '../ui';
 import { json } from '../format';
@@ -15,6 +16,8 @@ export function BackgroundFetchDemo() {
   const action = useAsyncResult();
   const [registered, setRegistered] = useState(false);
   const [execution, setExecution] = useState(getBackgroundFetchExecution);
+  const [boot, setBoot] = useState(BACKGROUND_FETCH_OPTIONS.startOnBoot ?? false);
+  const [terminate, setTerminate] = useState(BACKGROUND_FETCH_OPTIONS.stopOnTerminate ?? true);
 
   useEffect(() => subscribeToBackgroundFetchExecution(setExecution), []);
 
@@ -29,16 +32,25 @@ export function BackgroundFetchDemo() {
       : null;
 
     setRegistered(isRegistered);
+    setExecution(getBackgroundFetchExecution());
+    if (options) {
+      setBoot(options.startOnBoot ?? false);
+      setTerminate(options.stopOnTerminate ?? true);
+    }
 
     return json({ available, options, registered: isRegistered, status: backgroundFetchStatusLabel(status) });
   });
 
   const register = () => action.run(async () => {
-    await BackgroundFetch.registerTaskAsync(BACKGROUND_FETCH_TASK, BACKGROUND_FETCH_OPTIONS);
+    await BackgroundFetch.registerTaskAsync(BACKGROUND_FETCH_TASK, {
+      ...BACKGROUND_FETCH_OPTIONS,
+      startOnBoot: boot,
+      stopOnTerminate: terminate,
+    });
 
     setRegistered(true);
 
-    return `已注册 ${BACKGROUND_FETCH_TASK}，最小间隔为不精确的 20 分钟。`;
+    return `已注册 ${BACKGROUND_FETCH_TASK}，最小间隔为不精确的 2 小时。`;
   });
 
   const unregister = () => action.run(async () => {
@@ -63,6 +75,14 @@ export function BackgroundFetchDemo() {
       </Panel>
 
       <Panel eyebrow="WORKSCHEDULER" title="注册 Expo 后台拉取任务">
+        <DataRow
+          label="设备重启后恢复"
+          value={<Switch disabled={registered || action.state.phase === 'running'} onValueChange={setBoot} value={boot} testID="background-fetch-boot" />}
+        />
+        <DataRow
+          label="应用终止后停止"
+          value={<Switch disabled={registered || action.state.phase === 'running'} onValueChange={setTerminate} value={terminate} testID="background-fetch-terminate" />}
+        />
         <ActionRow>
           <ActionButton
             disabled={registered || action.state.phase === 'running'}
@@ -79,7 +99,7 @@ export function BackgroundFetchDemo() {
           />
         </ActionRow>
         <Note>
-          HarmonyOS 对延迟任务的调度并不精确，且强制最小间隔 20 分钟。请保持应用进程存活，将其切到后台并等待系统回调；出于功耗策略，调度器可能会推迟执行。
+          Release demo 已配置无界面冷启动。系统最小间隔为 2 小时，并可能出于功耗策略推迟周期任务。
         </Note>
       </Panel>
 
@@ -87,9 +107,10 @@ export function BackgroundFetchDemo() {
         <DataRow label="回调次数" value={String(execution?.count ?? 0)} />
         <DataRow label="最近事件" value={execution?.eventId ?? '尚未观测到'} />
         <DataRow label="发生时间" value={execution?.occurredAt ?? '尚未观测到'} />
+        <DataRow label="执行环境" value={execution ? (execution.headless ? '无界面后台运行时' : '页面运行时') : '尚未观测到'} />
         <DataRow label="错误" value={execution?.error ?? '无'} />
         <Note>
-          回调记录保存在当前 JavaScript 运行时中。进程重启后此处会清空，但原生注册仍会保留，可在上方查看。
+          回调记录保存在应用目录，进程重启后仍可读取。点击“读取原生状态”可刷新后台执行结果。
         </Note>
       </Panel>
 
