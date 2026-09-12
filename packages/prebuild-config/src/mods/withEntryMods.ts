@@ -218,6 +218,7 @@ function withEntryMods(config) {
         ...module,
         name: harmony.moduleName,
         type: 'entry',
+        srcEntry: './ets/abilitystage/EntryAbilityStage.ets',
         description: '$string:expo_harmony_module_desc',
         mainElement: harmony.abilityName,
         deviceTypes: harmony.deviceTypes,
@@ -242,6 +243,7 @@ function withEntryMods(config) {
       'strings',
       mod._internal?.harmonyStaleConfigPlugins || []
     );
+
     const app = mod.modResults.app ??= {};
     const entry = mod.modResults.entry ??= {};
 
@@ -263,7 +265,9 @@ function withEntryMods(config) {
       'colors',
       mod._internal?.harmonyStaleConfigPlugins || []
     );
+
     const entry = mod.modResults.entry ??= {};
+
     mod.modResults.entryDark ??= {};
 
     HarmonyResources.setColor(entry, { name: 'expo_harmony_start_window_background', value: harmony.backgroundColor });

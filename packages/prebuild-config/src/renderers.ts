@@ -57,8 +57,8 @@ function renderEntryAbility(source, harmony) {
   );
 }
 
-function renderIndexPage(source, harmony) {
-  source = renderCanonical(source, 'Index.ets');
+function renderPackageProvider(source, harmony) {
+  source = renderCanonical(source, 'PackageProvider.ets');
 
   return replacePlaceholder(
     source,
@@ -71,7 +71,7 @@ function renderIndexPage(source, harmony) {
 export {
   renderCanonical,
   renderEntryAbility,
-  renderIndexPage,
+  renderPackageProvider,
   renderReactNativeConfig,
   renderRootHvigor,
 };
