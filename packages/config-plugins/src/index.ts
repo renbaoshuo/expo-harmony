@@ -30,6 +30,7 @@ export {
   withCMakeLists,
   withColors,
   withCppPackageProvider,
+  withAbilityStage,
   withEntryAbility,
   withEntryBuildProfile,
   withEntryHvigor,

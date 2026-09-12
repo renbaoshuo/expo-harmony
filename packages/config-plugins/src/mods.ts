@@ -34,6 +34,7 @@ export type HarmonyModName
     | 'colors'
     | 'media'
     | 'profiles'
+    | 'abilityStage'
     | 'entryAbility'
     | 'indexPage'
     | 'worker'
@@ -97,6 +98,7 @@ const TextMods = new Set<FileModName>([
   'rootHvigor',
   'nativeInputsStamp',
   'entryHvigor',
+  'abilityStage',
   'entryAbility',
   'indexPage',
   'worker',
@@ -126,6 +128,7 @@ const AllModNames: readonly AnyModName[] = Object.freeze([
   'colors',
   'media',
   'profiles',
+  'abilityStage',
   'entryAbility',
   'indexPage',
   'worker',
@@ -195,6 +198,7 @@ function withFileProvider(config: ExpoConfig, name: FileModName): ExpoConfig {
 
       const context = { ...request, modFile: file, modFileExists: exists } as typeof value.modRequest;
       const result = await next!({ ...value, modRequest: context, modResults: data });
+
       assertModResults(name, result.modResults, JsonMods.has(name) ? 'json' : 'text');
 
       if (!result.modRequest.introspect) {
@@ -239,6 +243,7 @@ async function readMediaMap(root: string): Promise<HarmonyMediaMap> {
     const directory = await resolveHarmonyPath(root, relative);
 
     media[scope] = {};
+
     let names: string[] = [];
 
     try {
@@ -292,6 +297,7 @@ async function writeMediaMap(
           { operation: 'harmony.media.write' }
         );
       }
+
       if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
         throw new HarmonyConfigPluginError(
           'ERR_HARMONY_CONFIG_INVALID',
@@ -308,6 +314,7 @@ async function writeMediaMap(
           { operation: 'harmony.media.write' }
         );
       }
+
       if (item.replaceBase !== undefined && typeof item.replaceBase !== 'boolean') {
         throw new HarmonyConfigPluginError(
           'ERR_HARMONY_CONFIG_INVALID',
@@ -414,6 +421,7 @@ function withResourceProvider(config: ExpoConfig, name: ResourceModName): ExpoCo
         : {};
 
       const result = await next!({ ...value, modRequest: request, modResults: data });
+
       assertModResults(name, result.modResults, 'resource');
 
       if (!result.modRequest.introspect) {
@@ -563,6 +571,7 @@ export function registerMod<T, Config extends ExpoConfigWithHarmony>(
       action: action as unknown as Parameters<typeof withMod<T>>[1]['action'],
     });
     const interceptor = (carrier.mods as unknown as Record<string, Record<string, HarmonyModAction>>).harmony[name];
+
     provider.expoHarmonyLateActions.push(interceptor);
 
     return config;
@@ -605,6 +614,8 @@ export const withMedia: HarmonyConfigPlugin<HarmonyModAction<HarmonyMediaMap>>
   = (config, action) => withHarmonyMod(config, ['media', action]);
 export const withProfiles: HarmonyConfigPlugin<HarmonyModAction<HarmonyJson>>
   = (config, action) => withHarmonyMod(config, ['profiles', action]);
+export const withAbilityStage: HarmonyConfigPlugin<HarmonyModAction<string>>
+  = (config, action) => withHarmonyMod(config, ['abilityStage', action]);
 export const withEntryAbility: HarmonyConfigPlugin<HarmonyModAction<string>>
   = (config, action) => withHarmonyMod(config, ['entryAbility', action]);
 export const withIndexPage: HarmonyConfigPlugin<HarmonyModAction<string>>

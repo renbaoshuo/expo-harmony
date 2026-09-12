@@ -14,6 +14,7 @@ export interface HarmonyManagedPaths {
   readonly entryHvigor: string;
   readonly moduleJson: string;
   readonly profiles: string;
+  readonly abilityStage: string;
   readonly entryAbility: string;
   readonly indexPage: string;
   readonly worker: string;
@@ -60,6 +61,7 @@ const ManagedPaths: HarmonyManagedPaths & { readonly nativeInputsStamp: string }
   entryHvigor: 'entry/hvigorfile.ts',
   moduleJson: 'entry/src/main/module.json5',
   profiles: 'entry/src/main/resources/base/profile/main_pages.json',
+  abilityStage: 'entry/src/main/ets/abilitystage/EntryAbilityStage.ets',
   entryAbility: 'entry/src/main/ets/entryability/EntryAbility.ets',
   indexPage: 'entry/src/main/ets/pages/Index.ets',
   worker: 'entry/src/main/ets/workers/RNOHWorker.ets',
@@ -114,6 +116,7 @@ export async function assertNoExternalSymlink(root: string, target: string): Pro
     current = path.join(current, segment);
 
     let stat: fs.Stats;
+
     try {
       stat = await fs.promises.lstat(current);
     } catch (cause) {
@@ -173,6 +176,7 @@ export async function resolveProjectPath(
   name: keyof HarmonyProjectPaths
 ): Promise<string> {
   const candidates = ProjectPathCandidates[name] || [ProjectPaths[name]];
+
   for (const candidate of candidates) {
     if (fs.existsSync(path.join(root, candidate))) return resolveHarmonyPath(root, candidate);
   }
