@@ -226,7 +226,7 @@ class ExpoFileSystemService {
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : 'ERR_FILE_SYSTEM',
         error instanceof Error ? error.message : String(error),
-        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.cause : (error as Object),
         error instanceof ExpoModuleError ? error.path : undefined,
       );
     }
@@ -314,7 +314,7 @@ class ExpoFileSystemService {
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : 'ERR_UNABLE_TO_DOWNLOAD',
         error instanceof Error ? error.message : String(error),
-        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.cause : (error as Object),
         error instanceof ExpoModuleError ? error.path : undefined,
       );
     } finally {
@@ -392,7 +392,7 @@ class ExpoFileSystemService {
               callbackFailure = new ExpoFileSystemError(
                 error instanceof ExpoModuleError ? error.code : 'ERR_FILE_SYSTEM_WRITE_FAILED',
                 error instanceof Error ? error.message : String(error),
-                error instanceof ExpoModuleError ? error.cause : error as Object,
+                error instanceof ExpoModuleError ? error.cause : (error as Object),
                 error instanceof ExpoModuleError ? error.path : undefined,
               );
               throw new ExpoFileSystemError(callbackFailure.code, callbackFailure.message, callbackFailure.cause, callbackFailure.path);
@@ -473,7 +473,7 @@ class ExpoFileSystemService {
             task.failure = new ExpoFileSystemError(
               commitError instanceof ExpoModuleError ? commitError.code : 'ERR_FILE_SYSTEM_WRITE_FAILED',
               commitError instanceof Error ? commitError.message : String(commitError),
-              commitError instanceof ExpoModuleError ? commitError.cause : commitError as Object,
+              commitError instanceof ExpoModuleError ? commitError.cause : (commitError as Object),
               commitError instanceof ExpoModuleError ? commitError.path : undefined,
             );
             task.transferred = resumeFrom;
@@ -488,7 +488,7 @@ class ExpoFileSystemService {
         throw new ExpoFileSystemError(
           error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
           error instanceof Error ? error.message : String(error),
-          error instanceof ExpoModuleError ? error.cause : error as Object,
+          error instanceof ExpoModuleError ? error.cause : (error as Object),
           error instanceof ExpoModuleError ? error.path : undefined,
         );
       } finally {
@@ -602,7 +602,7 @@ class ExpoFileSystemService {
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : 'ERR_FILE_SYSTEM_UPLOAD_FAILED',
         error instanceof Error ? error.message : String(error),
-        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.cause : (error as Object),
         error instanceof ExpoModuleError ? error.path : undefined,
       );
     } finally {
@@ -788,7 +788,7 @@ function mimeSuffixFilters(mimeType?: string): string[] | null {
     throw new ExpoFileSystemError(
       error instanceof ExpoModuleError ? error.code : 'ERR_FILE_SYSTEM_UNSUPPORTED_MIME_TYPE',
       error instanceof Error ? error.message : String(error),
-      error instanceof ExpoModuleError ? error.cause : error as Object,
+      error instanceof ExpoModuleError ? error.cause : (error as Object),
       error instanceof ExpoModuleError ? error.path : undefined,
     );
   }
@@ -1121,7 +1121,7 @@ class FileSystemState {
         throw new ExpoFileSystemError(
           error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
           error instanceof Error ? error.message : String(error),
-          error instanceof ExpoModuleError ? error.cause : error as Object,
+          error instanceof ExpoModuleError ? error.cause : (error as Object),
           error instanceof ExpoModuleError ? error.path : undefined,
         );
       }
@@ -1178,7 +1178,7 @@ class FileSystemState {
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
         error instanceof Error ? error.message : String(error),
-        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.cause : (error as Object),
         error instanceof ExpoModuleError ? error.path : undefined,
       );
     }
@@ -1193,7 +1193,7 @@ class FileSystemState {
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
         error instanceof Error ? error.message : String(error),
-        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.cause : (error as Object),
         error instanceof ExpoModuleError ? error.path : undefined,
       );
     }
@@ -2100,7 +2100,7 @@ function ensureDirectoryExists(path: string): void {
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
         error instanceof Error ? error.message : String(error),
-        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.cause : (error as Object),
         error instanceof ExpoModuleError ? error.path : undefined,
       );
     }
@@ -2118,7 +2118,7 @@ async function makeDirectoryPathAsync(path: string, intermediates: boolean): Pro
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
         error instanceof Error ? error.message : String(error),
-        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.cause : (error as Object),
         error instanceof ExpoModuleError ? error.path : undefined,
       );
     }
@@ -2286,7 +2286,7 @@ function copyPathOverwrite(source: string, target: string): void {
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
         error instanceof Error ? error.message : String(error),
-        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.cause : (error as Object),
         error instanceof ExpoModuleError ? error.path : undefined,
       );
     }
@@ -2317,7 +2317,7 @@ function movePathNoReplace(source: string, target: string): void {
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
         error instanceof Error ? error.message : String(error),
-        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.cause : (error as Object),
         error instanceof ExpoModuleError ? error.path : undefined,
       );
     }
@@ -2850,7 +2850,7 @@ async function copyPathOverwriteAsync(source: string, target: string): Promise<v
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
         error instanceof Error ? error.message : String(error),
-        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.cause : (error as Object),
         error instanceof ExpoModuleError ? error.path : undefined,
       );
     }
@@ -2870,7 +2870,7 @@ async function movePathAsync(source: string, target: string): Promise<void> {
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
         error instanceof Error ? error.message : String(error),
-        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.cause : (error as Object),
         error instanceof ExpoModuleError ? error.path : undefined,
       );
     }
@@ -2905,7 +2905,7 @@ async function legacyInfoAsync(state: FileSystemState, uri: string, includeMd5: 
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
         error instanceof Error ? error.message : String(error),
-        error instanceof ExpoModuleError ? error.cause : error as Object,
+        error instanceof ExpoModuleError ? error.cause : (error as Object),
         error instanceof ExpoModuleError ? error.path : undefined,
       );
     }
