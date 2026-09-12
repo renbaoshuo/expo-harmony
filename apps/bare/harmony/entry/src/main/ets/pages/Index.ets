@@ -1,29 +1,22 @@
-import type resmgr from '@ohos.resourceManager';
-import { MetroJSBundleProvider, RNOHCoreContext, RNOHErrorDialog, ResourceJSBundleProvider } from '@rnoh/react-native-openharmony';
+import {
+  RNOHCoreContext,
+  RNOHErrorDialog,
+} from '@rnoh/react-native-openharmony';
+import type { RNInstanceOptions } from '@rnoh/react-native-openharmony';
 import { ExpoRNApp } from '@expo-harmony/expo-modules-core';
-import { getRNOHPackages } from '../PackageProvider';
+import { expoReactHost } from '../PackageProvider';
 import { ExpoHarmonyRootView } from '../generated/ExpoHarmonyHostProvider';
-
-class InMemoryResourceJSBundleProvider extends ResourceJSBundleProvider {
-  private readonly ownedResourceManager: resmgr.ResourceManager;
-  private readonly ownedResourcePath: string;
-
-  constructor(resourceManager: resmgr.ResourceManager, resourcePath: string) {
-    super(resourceManager, resourcePath);
-    this.ownedResourceManager = resourceManager;
-    this.ownedResourcePath = resourcePath;
-  }
-
-  override async getBundle(): Promise<ArrayBuffer> {
-    const bytes = await this.ownedResourceManager.getRawFileContent(this.ownedResourcePath);
-    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-  }
-}
 
 @Entry
 @Component
 struct Index {
   @StorageLink('RNOHCoreContext') private rnohCoreContext: RNOHCoreContext | undefined = undefined;
+
+  private instanceOptions(): RNInstanceOptions {
+    const options = expoReactHost.createRNInstanceOptions();
+    options.enableDebugger = this.rnohCoreContext?.isDebugModeEnabled ?? false;
+    return options;
+  }
 
   build(): void {
     Stack() {
@@ -34,21 +27,17 @@ struct Index {
             RNOHErrorDialog({ ctx: this.rnohCoreContext });
           }
           ExpoRNApp({
-            rnInstanceConfig: {
-              name: 'Expo Harmony 演示（Bare 应用 · 电池）',
-              createRNPackages: getRNOHPackages,
-              fontResourceByFontFamily: {},
-              enableDebugger: this.rnohCoreContext.isDebugModeEnabled,
-            },
+            rnInstanceConfig: this.instanceOptions(),
             appKey: 'BareBattery',
-            jsBundleProvider: this.rnohCoreContext.isDebugModeEnabled
-              ? new MetroJSBundleProvider()
-              : new InMemoryResourceJSBundleProvider(this.rnohCoreContext.uiAbilityContext.resourceManager, 'hermes_bundle.hbc'),
+            jsBundleProvider: expoReactHost.createJSBundleProvider(
+              this.rnohCoreContext.uiAbilityContext,
+              this.rnohCoreContext.isDebugModeEnabled,
+            ),
           });
         }
       }
       .height('100%')
-      .width('100%')
+      .width('100%');
     }
     .height('100%')
     .width('100%');
