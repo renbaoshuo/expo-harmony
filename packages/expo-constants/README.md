@@ -92,7 +92,9 @@ HarmonyOS 上不运行 Expo Go，取值与 `expoConfig` 相同；读不到配置
 
 类型：`boolean`
 
-恒为 `false`。
+表示当前 React Native 实例是否以无界面方式启动。TaskManager 为后台任务冷启动的实例返回 `true`；普通 UI 实例默认返回 `false`，进入后台不会改变该值。该状态由原生宿主传入，应用无需根据它选择 JavaScript 入口。
+
+宿主也可通过 `ExpoConstantsConfig` 的 `isHeadless: true` 显式标记无界面运行；配置为 `false` 不会覆盖实例自身的无界面状态。
 
 #### `Constants.manifest`
 

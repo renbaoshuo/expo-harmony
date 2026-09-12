@@ -58,7 +58,7 @@ export class ExpoConstantsService extends ExpoService implements ExpoConstantsPr
       'deviceName': deviceName(),
       'deviceYearClass': null,
       'executionEnvironment': this.config.executionEnvironment,
-      'isHeadless': this.config.isHeadless,
+      'isHeadless': context.isHeadless || this.config.isHeadless,
       'manifest': (): string | null => this.config.manifest ?? this.readAppConfig(context),
       'linkingUri': this.config.linkingUri ?? null,
       'experienceUrl': this.config.experienceUrl ?? null,
@@ -103,6 +103,8 @@ export class ExpoConstantsService extends ExpoService implements ExpoConstantsPr
   }
 
   private readStatusBarHeight(context: ExpoModuleContext): number {
+    if (context.isHeadless) return 0;
+
     try {
       const stage = context.uiAbilityContext.windowStage;
       const mainWindow = stage.getMainWindowSync();
@@ -116,6 +118,8 @@ export class ExpoConstantsService extends ExpoService implements ExpoConstantsPr
   }
 
   private readSystemFonts(context: ExpoModuleContext): string[] {
+    if (context.isHeadless) return [];
+
     try {
       const names = context.uiAbilityContext.windowStage.getMainWindowSync().getUIContext().getFont().getSystemFontList();
       const unique = new Set<string>();
