@@ -1,6 +1,13 @@
 {
-  "platforms": ["harmony"],
+  "platforms": [
+    "harmony"
+  ],
   "harmony": {
-    "modules": ["ExpoLinkingModule"]
+    "modules": [
+      "ExpoLinkingModule"
+    ],
+    "abilityLifecycleSubscribers": [
+      "ExpoLinkingLifecycleSubscriber"
+    ]
   }
 }

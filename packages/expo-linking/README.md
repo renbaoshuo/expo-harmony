@@ -7,10 +7,10 @@
 ## 安装
 
 ```bash
-npm install @expo-harmony/expo-linking expo-linking@55.0.16 expo-modules-core@55.0.25
+npm install @expo-harmony/expo-linking expo-linking@55.0.16
 ```
 
-鸿蒙适配通过 Autolinking 自动接入，无需额外配置。最低支持 HarmonyOS 5.0.1（API 13），宿主的 `compatibleSdkVersion` 也需满足这一要求。
+鸿蒙适配会通过 Autolinking 自动接入，无需额外配置。最低支持 HarmonyOS 5.0.1（API 13），宿主的 `compatibleSdkVersion` 也需满足此要求。
 
 预构建时会自动把 `http`、`https`、`tel`、`sms` 和应用自身 scheme 加入可查询列表。要用 `canOpenURL` 查询其他 scheme，需要在 `app.json` 的 `expo.harmony.querySchemes` 中声明，没有声明的 scheme 查不到：
 
@@ -25,6 +25,17 @@ npm install @expo-harmony/expo-linking expo-linking@55.0.16 expo-modules-core@55
 ```
 
 电话和短信链接需要设备支持对应的系统能力。
+
+本包的原生实现依赖宿主 Ability 的生命周期事件，对应的订阅器已在包内声明，业务代码无需额外处理。CNG 工程由 prebuild 自动生成所需入口；Bare 工程需按 [接入说明](https://github.com/renbaoshuo/expo-harmony/blob/master/docs/BareInstallation.md) 手动接入 AbilityStage 和 ExpoRNAbility。
+
+业务代码依旧使用官方包：
+
+```ts
+import * as Linking from 'expo-linking';
+
+await Linking.openURL('https://example.com');
+const initialUrl = await Linking.getInitialURL();
+```
 
 ## API 对照表
 
