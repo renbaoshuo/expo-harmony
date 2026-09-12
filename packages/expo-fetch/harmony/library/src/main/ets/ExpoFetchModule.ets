@@ -259,11 +259,13 @@ class ExpoFetchRuntime {
         return new FetchResult(status, target, redirects > 0, task.headers);
       }
     } catch (error) {
-      const failure = task.error ?? new ExpoFetchError(
-        error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_UNKNOWN',
-        error instanceof ExpoFetchError ? error.message : errorMessage(error as Object),
-        error instanceof ExpoFetchError ? error.cause : error as Object,
-      );
+      const failure =
+        task.error ??
+        new ExpoFetchError(
+          error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_UNKNOWN',
+          error instanceof ExpoFetchError ? error.message : errorMessage(error as Object),
+          error instanceof ExpoFetchError ? error.cause : (error as Object),
+        );
       if (!task.completed) this.failTask(task, failure);
       else this.disposeTask(task);
       this.tasks.delete(id);
@@ -293,7 +295,7 @@ class ExpoFetchRuntime {
         throw new ExpoFetchError(
           error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_FILE_READ',
           error instanceof ExpoFetchError ? error.message : `${task.localFilePath}: ${errorMessage(error as Object)}`,
-          error instanceof ExpoFetchError ? error.cause : error as Object,
+          error instanceof ExpoFetchError ? error.cause : (error as Object),
         );
       }
     }
@@ -325,7 +327,7 @@ class ExpoFetchRuntime {
         throw new ExpoFetchError(
           error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_FILE_READ',
           error instanceof ExpoFetchError ? error.message : `${task.localFilePath}: ${errorMessage(error as Object)}`,
-          error instanceof ExpoFetchError ? error.cause : error as Object,
+          error instanceof ExpoFetchError ? error.cause : (error as Object),
         );
       }
     }
@@ -352,19 +354,21 @@ class ExpoFetchRuntime {
       await this.awaitCompletion(task);
       this.assertActive();
       if (task.error !== null) throw new ExpoFetchError(task.error.code, task.error.message, task.error.cause);
-      return task.localFilePath === null ? chunksToBuffer(task.queued) : await readFileBuffer(this.context.filePathForRead(task.localFilePath), task.localFileSize);
+      return task.localFilePath === null
+        ? chunksToBuffer(task.queued)
+        : await readFileBuffer(this.context.filePathForRead(task.localFilePath), task.localFileSize);
     } catch (error) {
       if (task.localFilePath !== null) {
         throw new ExpoFetchError(
           error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_FILE_READ',
           error instanceof ExpoFetchError ? error.message : `${task.localFilePath}: ${errorMessage(error as Object)}`,
-          error instanceof ExpoFetchError ? error.cause : error as Object,
+          error instanceof ExpoFetchError ? error.cause : (error as Object),
         );
       }
       throw new ExpoFetchError(
         error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_UNKNOWN',
         error instanceof ExpoFetchError ? error.message : errorMessage(error as Object),
-        error instanceof ExpoFetchError ? error.cause : error as Object,
+        error instanceof ExpoFetchError ? error.cause : (error as Object),
       );
     } finally {
       await this.closeLocalFile(task);
@@ -380,20 +384,23 @@ class ExpoFetchRuntime {
       await this.awaitCompletion(task);
       this.assertActive();
       if (task.error !== null) throw new ExpoFetchError(task.error.code, task.error.message, task.error.cause);
-      const buffer = task.localFilePath === null ? chunksToBuffer(task.queued) : await readFileBuffer(this.context.filePathForRead(task.localFilePath), task.localFileSize);
+      const buffer =
+        task.localFilePath === null
+          ? chunksToBuffer(task.queued)
+          : await readFileBuffer(this.context.filePathForRead(task.localFilePath), task.localFileSize);
       return new util.TextDecoder('utf-8').decode(new Uint8Array(buffer));
     } catch (error) {
       if (task.localFilePath !== null) {
         throw new ExpoFetchError(
           error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_FILE_READ',
           error instanceof ExpoFetchError ? error.message : `${task.localFilePath}: ${errorMessage(error as Object)}`,
-          error instanceof ExpoFetchError ? error.cause : error as Object,
+          error instanceof ExpoFetchError ? error.cause : (error as Object),
         );
       }
       throw new ExpoFetchError(
         error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_UNKNOWN',
         error instanceof ExpoFetchError ? error.message : errorMessage(error as Object),
-        error instanceof ExpoFetchError ? error.cause : error as Object,
+        error instanceof ExpoFetchError ? error.cause : (error as Object),
       );
     } finally {
       await this.closeLocalFile(task);
@@ -471,7 +478,7 @@ class ExpoFetchRuntime {
       throw new ExpoFetchError(
         error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_FILE_READ',
         error instanceof ExpoFetchError ? error.message : `${path}: ${errorMessage(error as Object)}`,
-        error instanceof ExpoFetchError ? error.cause : error as Object,
+        error instanceof ExpoFetchError ? error.cause : (error as Object),
       );
     }
   }
@@ -516,11 +523,14 @@ class ExpoFetchRuntime {
       .catch((error: Object): void => {
         // Closing a redirect's session must not fail the next request.
         if (attempt.discarded || task.completed) return;
-        this.failTask(task, new ExpoFetchError(
-          error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_UNKNOWN',
-          error instanceof ExpoFetchError ? error.message : errorMessage(error as Object),
-          error instanceof ExpoFetchError ? error.cause : error as Object,
-        ));
+        this.failTask(
+          task,
+          new ExpoFetchError(
+            error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_UNKNOWN',
+            error instanceof ExpoFetchError ? error.message : errorMessage(error as Object),
+            error instanceof ExpoFetchError ? error.cause : (error as Object),
+          ),
+        );
       });
   }
 
@@ -704,19 +714,23 @@ class NativeResponse extends ExpoSharedObject {
         this.sendEvent('didReceiveResponseData', packet.data);
       }
       this.pumpStream().catch((error: Object): void => {
-        this.emitStreamFailure(new ExpoFetchError(
-          error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_UNKNOWN',
-          error instanceof ExpoFetchError ? error.message : errorMessage(error as Object),
-          error instanceof ExpoFetchError ? error.cause : error as Object,
-        ));
+        this.emitStreamFailure(
+          new ExpoFetchError(
+            error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_UNKNOWN',
+            error instanceof ExpoFetchError ? error.message : errorMessage(error as Object),
+            error instanceof ExpoFetchError ? error.cause : (error as Object),
+          ),
+        );
       });
       return null;
     } catch (error) {
-      this.emitStreamFailure(new ExpoFetchError(
-        error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_UNKNOWN',
-        error instanceof ExpoFetchError ? error.message : errorMessage(error as Object),
-        error instanceof ExpoFetchError ? error.cause : error as Object,
-      ));
+      this.emitStreamFailure(
+        new ExpoFetchError(
+          error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_UNKNOWN',
+          error instanceof ExpoFetchError ? error.message : errorMessage(error as Object),
+          error instanceof ExpoFetchError ? error.cause : (error as Object),
+        ),
+      );
       return null;
     }
   }
@@ -856,7 +870,7 @@ class NativeRequest extends ExpoSharedObject {
       throw new ExpoFetchError(
         error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_UNKNOWN',
         error instanceof ExpoFetchError ? error.message : errorMessage(error as Object),
-        error instanceof ExpoFetchError ? error.cause : error as Object,
+        error instanceof ExpoFetchError ? error.cause : (error as Object),
       );
     }
   }
