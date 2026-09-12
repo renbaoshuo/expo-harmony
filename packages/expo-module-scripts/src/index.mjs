@@ -18,15 +18,18 @@ const OH_PACKAGE_MANIFEST = 'harmony/library/oh-package.json5';
 
 async function fingerprint(project) {
   const hash = createHash('sha256');
+
   for (const file of ['package.json', 'harmony/oh-package.json5', 'harmony/library/oh-package.json5']) {
     hash.update(await fs.promises.readFile(path.join(project.packageRoot, file)));
   }
   hash.update(await fs.promises.readFile(project.bundledHar));
+
   return hash.digest('hex');
 }
 
 export async function writeBuildReceipt(file, projects) {
   const records = {};
+
   for (const project of projects) records[project.packageRoot] = await fingerprint(project);
   await fs.promises.writeFile(file, JSON.stringify(records));
 }
@@ -36,10 +39,12 @@ export async function writeBuildReceipt(file, projects) {
 async function hasBuildReceipt(project) {
   const file = process.env.EXPO_HARMONY_BUILD_RECEIPT;
   if (!file) return false;
+
   const records = JSON.parse(await fs.promises.readFile(file, 'utf8'));
   if (records[project.packageRoot] !== await fingerprint(project)) {
     throw new Error(`Release build receipt does not match ${project.packageRoot}. Run release preparation again.`);
   }
+
   return true;
 }
 
@@ -53,14 +58,16 @@ function normalizeConfig(raw, pkg) {
     throw new TypeError('expo-module.config.json#platforms must include harmony.');
   }
 
-  const { modules, services } = normalizeHarmonyModuleMetadata(raw.harmony, {
+  const config = normalizeHarmonyModuleMetadata(raw.harmony, {
     packageName: requiredString(pkg.name, 'package.json#name'),
     packageVersion: typeof pkg.version === 'string' ? pkg.version : undefined,
   });
 
-  if (modules.length === 0 && services.length === 0) throw new TypeError('harmony.modules or harmony.services must declare at least one module or service.');
+  if (Object.values(config).every(declarations => declarations.length === 0)) {
+    throw new TypeError('harmony must declare at least one module, service, root view component, or lifecycle subscriber.');
+  }
 
-  return { modules, services };
+  return config;
 }
 
 async function readJson(file) {
@@ -80,6 +87,7 @@ function inside(root, relative, field) {
 
 async function assertExistingAncestorInside(root, target, field) {
   let ancestor = target;
+
   while (!(await exists(ancestor))) {
     const parent = path.dirname(ancestor);
     if (parent === ancestor) throw new TypeError(`${field} has no package-contained parent.`);
@@ -130,8 +138,6 @@ async function loadBuildConfig(root, manifest) {
     return normalizeConfig(await readJson(file), manifest);
   }
 
-  // RNOH runtime packages (including expo-modules-core) have no Expo module
-  // registration. Keep their existing HAR filename and metadata contract.
   const linking = manifest.harmony?.autolinking;
   if (linking?.mainHarPath === 'harmony' && linking.ohPackageName === manifest.name) return { modules: [], services: [] };
 
@@ -140,9 +146,10 @@ async function loadBuildConfig(root, manifest) {
 
 function projectPaths(root, config) {
   const paths = modulePaths(root);
-  if (config.modules.length === 0 && config.services.length === 0) {
+  if (Object.values(config).every(declarations => declarations.length === 0)) {
     paths.bundledHar = inside(root, `harmony/${paths.moduleName}.har`, 'Bundled HAR');
   }
+
   return paths;
 }
 
@@ -154,10 +161,14 @@ export async function loadModuleProject(root = process.cwd()) {
   const paths = projectPaths(packageRoot, config);
 
   await assertExistingAncestorInside(packageRoot, paths.projectRoot, 'Harmony project');
+
   const projectRoot = await fs.promises.realpath(paths.projectRoot);
   const modulePath = inside(projectRoot, HARMONY_MODULE, 'Harmony module');
+
   await assertExistingAncestorInside(packageRoot, modulePath, 'Harmony module');
+
   const moduleRoot = await fs.promises.realpath(modulePath);
+
   await assertExistingAncestorInside(packageRoot, paths.sourceOutput, 'Hvigor HAR output');
   await assertExistingAncestorInside(packageRoot, paths.bundledHar, 'Bundled HAR');
   await assertNonEmptyRegularFile(paths.ohPackageManifest, 'OHPM package manifest', moduleRoot);
@@ -210,6 +221,7 @@ export async function inspectModule(root = process.cwd()) {
 
 async function assertNonEmptyRegularFile(file, label, allowedRoot) {
   let stat;
+
   try {
     stat = await fs.promises.lstat(file);
   } catch (cause) {
@@ -219,7 +231,9 @@ async function assertNonEmptyRegularFile(file, label, allowedRoot) {
   }
 
   if (stat.isSymbolicLink()) throw new Error(`${label} must not be a symbolic link: ${file}`);
+
   if (!stat.isFile()) throw new Error(`${label} must be a regular file: ${file}`);
+
   if (stat.size === 0) throw new Error(`${label} must not be empty: ${file}`);
 
   if (allowedRoot) {
@@ -281,6 +295,7 @@ function spawnCommand(command, args, options = {}) {
       }
 
       if (settled) return;
+
       settled = true;
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', abort);
@@ -355,6 +370,7 @@ async function publishBuiltHar(project, dependencies = []) {
 
 async function createWorkspaceBuild(root, options = {}) {
   root = await fs.promises.realpath(root);
+
   const workspace = await findWorkspacePackages(root);
 
   if (options.all && (!workspace || workspace.root !== root)) {
@@ -362,6 +378,7 @@ async function createWorkspaceBuild(root, options = {}) {
   }
 
   const projects = [];
+
   for (const directory of workspace?.packages || [root]) {
     if (await exists(path.join(directory, OH_PACKAGE_MANIFEST))) {
       projects.push(await loadModuleProject(directory));
@@ -410,12 +427,14 @@ async function executeWorkspaceBuild(entries) {
 export async function buildWorkspace(root = process.cwd(), options = {}) {
   const entries = await createWorkspaceBuild(root, { all: true, clean: options.clean });
   if (!options.dryRun) await executeWorkspaceBuild(entries);
+
   return { builds: entries.map(entry => entry.plan) };
 }
 
 export async function prepareModule(root = process.cwd(), options = {}) {
   if (!options.cleanOnly) {
     if (!options.dryRun && await hasBuildReceipt(await loadModuleProject(root))) return { reused: true };
+
     const entries = await createWorkspaceBuild(root);
 
     if (!options.dryRun) await executeWorkspaceBuild(entries);
@@ -534,6 +553,7 @@ export async function runCli(argv) {
   if (options.cleanOnly && command !== 'prepare') {
     throw new TypeError('--clean-only is only valid with prepare.');
   }
+
   if (options.dryRun && command === 'inspect') {
     throw new TypeError('--dry-run is not valid with inspect.');
   }

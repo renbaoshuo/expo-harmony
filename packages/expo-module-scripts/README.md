@@ -18,7 +18,7 @@ npm install --save-dev @expo-harmony/expo-module-scripts
 
 ```
 my-expo-module/
-├── expo-module.config.json    # platforms 须包含 "harmony"，harmony.modules 声明模块类名，或 harmony.services 声明服务类名
+├── expo-module.config.json    # platforms 须包含 "harmony"；声明模块、服务、根组件或生命周期订阅器
 ├── package.json
 └── harmony/
     ├── build-profile.json5    # 可选，其中的模块名用于定位构建产物
@@ -27,6 +27,8 @@ my-expo-module/
     │   └── build/default/outputs/default/<模块名>.har
     └── library.har            # 清洗后的发布产物，随 npm 包一起发布
 ```
+
+只贡献 `harmony.appLifecycleSubscribers` / `harmony.abilityLifecycleSubscribers` 的包同样支持构建和打包，无须声明 `modules`。
 
 模块名解析优先读取 `harmony/build-profile.json5` 中 `srcPath` 指向 `./library` 的模块名称；若未提供该文件，则默认回退至 `library`。
 
