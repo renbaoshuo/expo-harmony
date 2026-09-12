@@ -1,4 +1,13 @@
-import { ExpoFileAccessKey, ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoValueType, ExpoValueTypes, fileUriFromPath } from '@expo-harmony/expo-modules-core';
+import {
+  ExpoFileAccessKey,
+  ExpoFunction,
+  ExpoModule,
+  ExpoModuleContext,
+  ExpoModuleDefinition,
+  ExpoValueType,
+  ExpoValueTypes,
+  fileUriFromPath,
+} from '@expo-harmony/expo-modules-core';
 import fs from '@ohos.file.fs';
 import fileHash from '@ohos.file.hash';
 import util from '@ohos.util';
@@ -241,8 +250,10 @@ export class ExpoFontLoaderModule extends ExpoModule {
       ensureDirectory(directory);
       path = materializeRawFont(this.context, uri, directory, this.materializedFonts, expectedDigest, expectedSize);
     } else {
-      path = this.context.services.get(ExpoFileAccessKey) === undefined
-        ? localPathFromFileUri(uri, this.context.uiAbilityContext.abilityInfo.bundleName) : this.context.filePathForRead(uri);
+      path =
+        this.context.services.get(ExpoFileAccessKey) === undefined
+          ? localPathFromFileUri(uri, this.context.uiAbilityContext.abilityInfo.bundleName)
+          : this.context.filePathForRead(uri);
     }
 
     const roots: string[] = [this.context.persistentFilesPath, this.context.cachePath, this.context.temporaryPath];
