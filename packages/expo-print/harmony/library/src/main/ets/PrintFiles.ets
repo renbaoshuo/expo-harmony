@@ -45,7 +45,13 @@ export async function writeBytes(path: string, bytes: Uint8Array): Promise<void>
   }
 }
 
-export async function materializePdf(source: string, path: string, requests: Set<http.HttpRequest>, assertActive: () => void, context: ExpoModuleContext): Promise<void> {
+export async function materializePdf(
+  source: string,
+  path: string,
+  requests: Set<http.HttpRequest>,
+  assertActive: () => void,
+  context: ExpoModuleContext,
+): Promise<void> {
   try {
     assertActive();
     const parsed = new uri.URI(source);
