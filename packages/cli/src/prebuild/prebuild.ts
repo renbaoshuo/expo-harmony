@@ -1,4 +1,7 @@
 import fs from 'node:fs';
+import path from 'node:path';
+
+import { HarmonyPlatformDirectory } from '@expo-harmony/prebuild-config/internal';
 
 import { HarmonyCliError } from '../errors';
 import { isBareHarmonyProject } from '../native/bare';
@@ -25,6 +28,9 @@ async function prebuildParsedUnlockedAsync(
   }
   if (passthrough.includes('--clean')) await assertSafeCleanTarget(projectRoot);
 
+  const freshHarmonyProject = passthrough.includes('--clean')
+    || !fs.existsSync(path.join(projectRoot, HarmonyPlatformDirectory));
+
   const expo = resolveExpoCli(projectRoot);
   const packed = await packAsync(projectRoot);
 
@@ -41,6 +47,7 @@ async function prebuildParsedUnlockedAsync(
       env: {
         ...createHarmonyToolchainEnv(),
         ...packed.env,
+        EXPO_HARMONY_PREBUILD_FRESH: freshHarmonyProject ? '1' : '0',
         ...(options.buildType ? { EXPO_HARMONY_BUILD_TYPE: options.buildType } : {}),
       },
       operation: 'expo-prebuild',

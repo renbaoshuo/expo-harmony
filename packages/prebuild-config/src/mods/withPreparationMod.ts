@@ -19,11 +19,10 @@ function withPreparationMod(config) {
     const root = mod.modRequest.projectRoot;
     const platform = mod.modRequest.platformProjectRoot;
     const manifest = mod.modRequest.ignoreExistingNativeFiles ? null : await readPreviousCngManifestAsync(root);
-    // A leftover CNG manifest whose managed files are all missing means the
-    // harmony directory was removed and is being regenerated from scratch.
-    const manifestMatchesDisk = Boolean(manifest?.managedFiles?.some(
-      entry => fs.existsSync(path.join(platform, entry.path))
-    ));
+    // Expo copies the template before mods run; use the state captured by the CLI.
+    const freshPrebuild = process.env.EXPO_HARMONY_PREBUILD_FRESH;
+    const isFreshGeneration = freshPrebuild === '1'
+      || (freshPrebuild === undefined && manifest === null);
     const plugins = getHarmonyConfigPlugins(mod);
     const stale = findStaleConfigPlugins(manifest, plugins);
 
@@ -49,11 +48,7 @@ function withPreparationMod(config) {
         const signing = await readSigningConfigFile(root, harmony.signingConfigFile);
         mod._internal.harmonySigningConfig = signing.config;
       } catch (cause) {
-        // Signing materials are created with the generated project open in
-        // DevEco Studio, so the first generation (or a regeneration after the
-        // harmony directory was removed) falls back to unsigned instead of
-        // failing.
-        if (manifestMatchesDisk) throw cause;
+        if (!isFreshGeneration) throw cause;
       }
     }
 

@@ -25,6 +25,7 @@ export const command: Command = async (argv, io) => {
 
       const { doctorAsync, formatDoctor } = await import('../doctor/doctor.js');
       const doctor = await doctorAsync(root, {
+        freshPrebuild: clean,
         requireBuildTools: false,
         validateGeneratedProject: !clean,
         validateModules: false,

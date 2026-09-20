@@ -32,6 +32,7 @@ export interface DoctorResult {
 }
 
 interface DoctorOptions {
+  freshPrebuild?: boolean;
   requireBuildTools?: boolean;
   requireDeviceTools?: boolean;
   validateGeneratedProject?: boolean;
@@ -139,19 +140,19 @@ async function doctorUnlockedAsync(root: string, options: DoctorOptions = {}): P
     }).harmony;
 
     if (harmony?.signingConfigFile) {
-      if (!fs.existsSync(path.join(root, HarmonyPlatformDirectory))) {
+      try {
+        const signing = await validateHarmonySigningConfigFile(root, harmony.signingConfigFile);
+        checks.push(check('signing', 'pass', `Harmony signing config ${signing.name} is valid.`));
+      } catch (error) {
+        const fresh = options.freshPrebuild || !fs.existsSync(path.join(root, HarmonyPlatformDirectory));
         checks.push(check(
           'signing',
-          'warn',
-          'No generated Harmony project yet; the signing config is validated after the first prebuild.'
+          fresh ? 'warn' : 'error',
+          fresh
+            ? `The fresh Harmony project will be generated unsigned because signing materials are unavailable: ${error.message}`
+            : error.message,
+          { code: error.code || 'ERR_HARMONY_SIGNING_INVALID' }
         ));
-      } else {
-        try {
-          const signing = await validateHarmonySigningConfigFile(root, harmony.signingConfigFile);
-          checks.push(check('signing', 'pass', `Harmony signing config ${signing.name} is valid.`));
-        } catch (error) {
-          checks.push(check('signing', 'error', error.message, { code: error.code || 'ERR_HARMONY_SIGNING_INVALID' }));
-        }
       }
     } else {
       checks.push(check('signing', 'warn', 'No external signing config is set; unsigned generation remains available.'));

@@ -157,7 +157,7 @@ iOS 和 Android 的命令没有任何变化，`expo run:ios`、`expo run:android
 
 ## 签名
 
-不配置签名只会收到警告，不影响未签名构建。首次生成 `harmony/` 目录时也不会校验签名文件，因为 DevEco Studio 需要先生成工程才能创建证书，此时 prebuild 按未签名处理并给出警告，在工程生成之后，签名文件读不到才会报错并中止。要往真机装 Release 包，需要签名材料：证书、私钥库和 profile 文件，DevEco Studio 可以生成。把它们写成一个 JSON 文件，字段和 DevEco Studio 写进 `build-profile.json5` 的 `signingConfigs` 一致：`certpath`、`storeFile`、`profile`、`storePassword`、`keyAlias`、`keyPassword`、`signAlg`。
+不配置签名只会收到警告，不影响未签名构建。DevEco Studio 需要先生成工程才能创建证书，因此首次生成、删除 `harmony/` 后重新生成或使用 `prebuild --clean` 时，若配置的签名文件或材料缺失、无效，会给出警告并按未签名生成；签名配置可用时仍会正常应用。对已有工程执行普通 prebuild 时，签名文件缺失或无效会报错并中止。要往真机装 Release 包，需要签名材料：证书、私钥库和 profile 文件，DevEco Studio 可以生成。把它们写成一个 JSON 文件，字段和 DevEco Studio 写进 `build-profile.json5` 的 `signingConfigs` 一致：`certpath`、`storeFile`、`profile`、`storePassword`、`keyAlias`、`keyPassword`、`signAlg`。
 
 签名文件不能放在 `harmony/` 里，`--clean` 会把目录删掉。demo 的做法是放在外面，用 [`apps/demo/app.config.js`](../apps/demo/app.config.js) 按环境变量注入：
 
