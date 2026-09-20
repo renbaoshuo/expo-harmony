@@ -5,7 +5,11 @@ import path from 'node:path';
 import { getConfig } from '@expo/config';
 import { normalizeHarmonyConfig } from '@expo-harmony/config-plugins';
 import { verifyModulesAsync } from '@expo-harmony/expo-modules-autolinking';
-import { isRnohAutolinkingDisabled, validateHarmonySigningConfigFile } from '@expo-harmony/prebuild-config/internal';
+import {
+  HarmonyPlatformDirectory,
+  isRnohAutolinkingDisabled,
+  validateHarmonySigningConfigFile,
+} from '@expo-harmony/prebuild-config/internal';
 
 import { spawnAsync } from '../process';
 import { withHarmonyProjectLockAsync } from '../projectLock';
@@ -135,11 +139,19 @@ async function doctorUnlockedAsync(root: string, options: DoctorOptions = {}): P
     }).harmony;
 
     if (harmony?.signingConfigFile) {
-      try {
-        const signing = await validateHarmonySigningConfigFile(root, harmony.signingConfigFile);
-        checks.push(check('signing', 'pass', `Harmony signing config ${signing.name} is valid.`));
-      } catch (error) {
-        checks.push(check('signing', 'error', error.message, { code: error.code || 'ERR_HARMONY_SIGNING_INVALID' }));
+      if (!fs.existsSync(path.join(root, HarmonyPlatformDirectory))) {
+        checks.push(check(
+          'signing',
+          'warn',
+          'No generated Harmony project yet; the signing config is validated after the first prebuild.'
+        ));
+      } else {
+        try {
+          const signing = await validateHarmonySigningConfigFile(root, harmony.signingConfigFile);
+          checks.push(check('signing', 'pass', `Harmony signing config ${signing.name} is valid.`));
+        } catch (error) {
+          checks.push(check('signing', 'error', error.message, { code: error.code || 'ERR_HARMONY_SIGNING_INVALID' }));
+        }
       }
     } else {
       checks.push(check('signing', 'warn', 'No external signing config is set; unsigned generation remains available.'));
