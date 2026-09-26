@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type { InputConfigT } from 'metro-config';
 
-import { DefaultReactNativeHarmonyPackage, HarmonyPlatform } from './constants';
+import { DefaultReactNativeHarmonyPackage, HarmonyPlatform, HarmonyPlatformExtensions } from './constants';
 import { ExpoHarmonyMetroError } from './errors';
 import { createResolver, getEntries, type HarmonyResolverOptions } from './resolver';
 import { createHarmonyPathNormalizer, getBootstrapModules } from './runtime';
@@ -167,6 +167,16 @@ function mergeBlockLists(
   return entries.length > 0 ? entries : undefined;
 }
 
+function readPlatformExtensions(
+  resolver: unknown
+): Record<string, readonly string[] | undefined> {
+  if (!resolver || typeof resolver !== 'object') return {};
+  const value = (resolver as { unstable_platformExtensions?: unknown }).unstable_platformExtensions;
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, readonly string[] | undefined>
+    : {};
+}
+
 export function createWithHarmonyConfig({
   createHarmonyMetroConfig,
   mergeConfig,
@@ -204,6 +214,7 @@ export function createWithHarmonyConfig({
 
     const conditions = options.conditions ?? ['harmony', 'react-native'];
     const existing = merged.resolver?.unstable_conditionsByPlatform?.[HarmonyPlatform] ?? [];
+    const existingPlatformExtensions = readPlatformExtensions(merged.resolver);
     const blockList = mergeBlockLists(config.resolver?.blockList, native.resolver?.blockList);
     const root = options.projectRoot ?? merged.projectRoot ?? process.cwd();
     const normalizePath = createHarmonyPathNormalizer(harmonyPackage, root);
@@ -248,6 +259,16 @@ export function createWithHarmonyConfig({
         unstable_conditionsByPlatform: {
           ...merged.resolver?.unstable_conditionsByPlatform,
           [HarmonyPlatform]: [...new Set([...existing, ...conditions])],
+        },
+        // Register `harmony` through Expo's out-of-tree platform channel. Expo CLI
+        // 55.0.33+ folds these extensions into platform-less strict resolution
+        // (server routes, DOM components) via `constructPlatformExtensions`, the
+        // same mechanism it uses for tvos/macos. Older CLIs ignore the field.
+        unstable_platformExtensions: {
+          ...existingPlatformExtensions,
+          [HarmonyPlatform]: [
+            ...(existingPlatformExtensions[HarmonyPlatform] ?? HarmonyPlatformExtensions),
+          ],
         },
         resolveRequest: Object.assign(createResolver({
           baseResolver,
