@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/cli",
-  "version": "55.0.26-harmony.13",
+  "version": "55.0.31-harmony.0",
   "keywords": [
     "react-native",
     "expo",
@@ -60,7 +60,7 @@
     "json5": "2.2.3"
   },
   "peerDependencies": {
-    "expo": "55.0.26"
+    "expo": "55.0.31"
   },
   "peerDependenciesMeta": {
     "expo": {
@@ -69,7 +69,7 @@
   },
   "devDependencies": {
     "@types/node": "18.19.0",
-    "expo": "55.0.26",
+    "expo": "55.0.31",
     "react": "19.2.3",
     "react-native": "0.84.1",
     "typescript": "6.0.3"

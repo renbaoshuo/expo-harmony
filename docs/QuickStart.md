@@ -5,13 +5,13 @@
 ## 环境要求
 
 - Node.js 20 或更高版本。
-- Expo SDK 55 项目（`expo@55.0.26`）。当前工具链按 SDK 55 适配，`@expo-harmony/cli` 和 `@expo-harmony/prebuild-config` 的 peerDependencies 都锁在这个版本上。
+- Expo SDK 55 项目（`expo@55.0.31`）。当前工具链按 SDK 55 适配，`@expo-harmony/cli` 和 `@expo-harmony/prebuild-config` 的 peerDependencies 都锁在这个版本上。
 - DevEco Studio，带完整的 HarmonyOS SDK（含 HMS 与 OpenHarmony 组件）、OHPM、Hvigor 和 HDC。构建 HAP 时需要，`expo-harmony doctor` 会逐项检查。
 - 一台 HarmonyOS 设备，或者在 DevEco Studio Device Manager 里创建的模拟器。
 
 ## 安装依赖
 
-以下命令在应用根目录执行。本文使用 Expo SDK 55（`expo@55.0.26`、`expo-modules-core@55.0.25`），Harmony 侧配套 RNOH `0.84.1`、React `19.2.3` 和 Hermes `250829098.0.9`：
+以下命令在应用根目录执行。本文使用 Expo SDK 55（`expo@55.0.31`、`expo-modules-core@55.0.26`），Harmony 侧配套 RNOH `0.84.1`、React `19.2.3` 和 Hermes `250829098.0.9`：
 
 ```sh
 npm install @expo-harmony/cli @expo-harmony/metro-config @expo-harmony/expo-modules-core
@@ -28,7 +28,7 @@ npm install --save-exact @react-native-oh/react-native-harmony@0.84.1 @react-nat
 
 ## 配置 app.json
 
-demo 的配置在 [`apps/demo/app.json`](../apps/demo/app.json)，要改三处。
+demo 的配置在 [`apps/demo/app.json`](../apps/demo/app.json)，要改四处。
 
 第一，`platforms` 加 `harmony`：
 
@@ -36,7 +36,15 @@ demo 的配置在 [`apps/demo/app.json`](../apps/demo/app.json)，要改三处�
 "platforms": ["ios", "android", "harmony"]
 ```
 
-第二，`plugins` 注册 `@expo-harmony/prebuild-config`，放在最后。它注册 Harmony 的 Base Mods，其他 Harmony 插件要排在它前面：
+第二，`experiments` 开启 `outOfTreePlatforms`：
+
+```json
+"experiments": {
+  "outOfTreePlatforms": true
+}
+```
+
+第三，`plugins` 注册 `@expo-harmony/prebuild-config`，放在最后。它注册 Harmony 的 Base Mods，其他 Harmony 插件要排在它前面：
 
 ```json
 "plugins": [
@@ -50,7 +58,7 @@ demo 的配置在 [`apps/demo/app.json`](../apps/demo/app.json)，要改三处�
 
 官方插件和 `@expo-harmony/expo-*` 插件成对出现：前者管 iOS 和 Android，后者管 HarmonyOS。demo 里 `expo-splash-screen` 和 `@expo-harmony/expo-splash-screen` 的参数只差图标格式，鸿蒙环境是可以用 SVG 的。
 
-第三，加 `harmony` 配置块：
+第四，加 `harmony` 配置块：
 
 ```json
 "harmony": {

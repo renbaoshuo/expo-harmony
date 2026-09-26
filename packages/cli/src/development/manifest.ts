@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 
-import { HarmonyCliError } from '../errors';
 import { resolveExpoCli } from '../expo';
 import { resolveHarmonyBuildPlanAsync } from '../native/project';
 import { resolveRuntimeRequirementsAsync } from '../runtime/contract';
@@ -71,10 +70,6 @@ async function createManifestResponseAsync(middleware, options, require: NodeReq
 export function installHarmonyManifest(root: string) {
   const expo = createRequire(resolveExpoCli(root).cliPath);
   const require = createRequire(expo.resolve('@expo/cli/package.json'));
-  const version = require('./package.json').version;
-  if (version !== '55.0.32') {
-    throw new HarmonyCliError('ERR_HARMONY_EXPO_CLI_UNSUPPORTED', `The Harmony manifest adapter requires @expo/cli 55.0.32; found ${version}.`, { operation: 'development-manifest' });
-  }
 
   const { BundlerDevServer } = require('./build/src/start/server/BundlerDevServer');
   const { parsePlatformHeader } = require('./build/src/start/server/middleware/resolvePlatform');

@@ -9,9 +9,6 @@ async function main(): Promise<void> {
   const project = createRequire(path.join(root, 'package.json'));
   const expo = createRequire(project.resolve('expo/package.json'));
   const require = createRequire(expo.resolve('@expo/cli/package.json'));
-  if (require('./package.json').version !== '55.0.32') {
-    throw new HarmonyCliError('ERR_HARMONY_EXPORT_UPSTREAM', 'Harmony asset export requires Expo CLI 55.0.32.', { operation: 'export' });
-  }
 
   const options = JSON.parse(serialized);
   require('./build/src/utils/nodeEnv').setNodeEnv('production');

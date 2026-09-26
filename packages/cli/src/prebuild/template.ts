@@ -65,6 +65,12 @@ function resolve(project: string) {
   };
 }
 
+function normalizeNpmPackResult(result: unknown): { filename?: unknown }[] | null {
+  if (Array.isArray(result)) return result;
+  if (result && typeof result === 'object') return Object.values(result);
+  return null;
+}
+
 async function packAsync(project: string) {
   const template = resolve(project);
   const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'expo-harmony-template-'));
@@ -88,7 +94,7 @@ async function packAsync(project: string) {
   let packs;
 
   try {
-    packs = JSON.parse(result.stdout);
+    packs = normalizeNpmPackResult(JSON.parse(result.stdout));
   } catch (cause) {
     await fs.promises.rm(temp, { recursive: true, force: true });
     throw new HarmonyCliError('ERR_HARMONY_TEMPLATE_INVALID', 'npm pack returned invalid JSON.', {

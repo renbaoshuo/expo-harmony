@@ -107,6 +107,9 @@ async function validateMetroConfigAsync(root) {
     || typeof config?.resolver?.resolveRequest !== 'function') {
     throw new Error('The resolved Metro config must register the harmony platform, Harmony conditions, and a resolver.');
   }
+
+  const platformExtensions = config?.resolver?.unstable_platformExtensions?.harmony;
+  return Array.isArray(platformExtensions) && platformExtensions.includes('harmony');
 }
 
 async function doctorUnlockedAsync(root: string, options: DoctorOptions = {}): Promise<DoctorResult> {
@@ -160,11 +163,34 @@ async function doctorUnlockedAsync(root: string, options: DoctorOptions = {}): P
     }
   }
 
+  let harmonyPlatformExtensions = false;
+
   try {
-    await validateMetroConfigAsync(root);
+    harmonyPlatformExtensions = await validateMetroConfigAsync(root);
     checks.push(check('metro', 'pass', 'The resolved Metro config enables Harmony.'));
   } catch (error) {
     checks.push(check('metro', 'error', `Cannot load a Harmony-enabled Metro config: ${error.message}`, { code: error.code || 'ERR_HARMONY_METRO_CONFIG' }));
+  }
+
+  if (config) {
+    const experiments = (config as typeof config & { experiments?: Record<string, unknown> }).experiments;
+    const outOfTreePlatforms = experiments?.outOfTreePlatforms === true;
+
+    if (outOfTreePlatforms && harmonyPlatformExtensions) {
+      checks.push(check('out-of-tree', 'pass', 'harmony is registered through Expo\'s out-of-tree platform channel.'));
+    } else if (!outOfTreePlatforms) {
+      checks.push(check(
+        'out-of-tree',
+        'warn',
+        'expo.experiments.outOfTreePlatforms is not enabled; Expo CLI 55.0.33+ drops harmony from its platform resolution (export options, dev server platform detection) without it.'
+      ));
+    } else {
+      checks.push(check(
+        'out-of-tree',
+        'warn',
+        'The Metro config does not declare unstable_platformExtensions for harmony; update @expo-harmony/metro-config to register the harmony extension chain.'
+      ));
+    }
   }
 
   for (const name of RequiredProjectPackages) {
