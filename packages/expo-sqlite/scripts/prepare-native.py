@@ -35,18 +35,36 @@ def copy(source, target):
     shutil.copy2(source, target)
 
 
-def prepare_submodules(versions):
+def submodules(root):
+    """Yield (name, path, url, commit) for every expo-sqlite submodule pinned in the index."""
+    entries = run(['git', 'config', '-f', root / '.gitmodules', '--get-regexp',
+                   r'^submodule\.expo-sqlite-.+\.path$'], capture=True)
+    if not entries.strip():
+        raise ValueError('No expo-sqlite submodules found in .gitmodules')
+
+    for entry in entries.strip().splitlines():
+        key, relative = entry.split(' ', 1)
+        name = key[len('submodule.expo-sqlite-'):-len('.path')]
+        url = run(['git', 'config', '-f', root / '.gitmodules', '--get',
+                   f'submodule.expo-sqlite-{name}.url'], capture=True).strip()
+        stage = run(['git', 'ls-files', '--stage', relative], root, capture=True).split()
+        if len(stage) < 2 or stage[0] != '160000':
+            raise ValueError(f'Submodule is not pinned in the index: {relative}')
+
+        yield name, relative, url, stage[1]
+
+
+def prepare_submodules():
     root = Path(run(['git', 'rev-parse', '--show-toplevel'], capture=True).strip())
     metadata = Path(run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], capture=True).strip())
+    pins = {}
 
-    for name, pin in versions.items():
+    for name, relative, url, commit in submodules(root):
         source = SOURCES / name
-        key = f'submodule.expo-sqlite-{name}'
-        relative = run(['git', 'config', '-f', root / '.gitmodules', '--get', key + '.path'], capture=True).strip()
         if (root / relative).resolve() != source:
             raise ValueError(f'Unexpected submodule path: {relative}')
+        pins[name] = commit
 
-        url = run(['git', 'config', '-f', root / '.gitmodules', '--get', key + '.url'], capture=True).strip()
         if not (source / '.git').exists():
             if source.exists() and any(source.iterdir()):
                 raise ValueError(f'Refusing to replace nonempty source directory: {source}')
@@ -61,23 +79,25 @@ def prepare_submodules(versions):
                 run(['git', 'clone', '--depth', '1', '--no-checkout', '--filter=blob:none',
                      '--separate-git-dir', module, url, source])
 
-            run(['git', 'fetch', '--depth', '1', 'origin', pin['commit']], source)
+            run(['git', 'fetch', '--depth', '1', 'origin', commit], source)
             # Only this newly created, empty worktree may be populated forcibly.
-            run(['git', 'checkout', '--force', '--detach', pin['commit']], source)
+            run(['git', 'checkout', '--force', '--detach', commit], source)
 
         head = run(['git', 'rev-parse', 'HEAD'], source, capture=True).strip()
-        if head != pin['commit']:
-            raise ValueError(f'{name}: expected {pin["commit"]}, found {head}; check out the locked commit')
+        if head != commit:
+            raise ValueError(f'{name}: expected {commit}, found {head}; check out the locked commit')
         if run(['git', 'status', '--porcelain'], source, capture=True).strip():
             raise ValueError(f'{name}: submodule has local changes; refusing to build or modify them')
 
+    return pins
 
-def snapshot(name, pin, work):
+
+def snapshot(name, commit, work):
     dest = work / name
     dest.mkdir()
 
     archive = work / (name + '.tar')
-    run(['git', 'archive', '--format=tar', '-o', archive, pin['commit']], SOURCES / name)
+    run(['git', 'archive', '--format=tar', '-o', archive, commit], SOURCES / name)
     run(['tar', '-xf', archive, '-C', dest])
     archive.unlink()
 
@@ -100,7 +120,7 @@ def prefix_sqlite(directory):
         file.write_text(pattern.sub(lambda m: 'ex' + m[0], file.read_text()))
 
 
-def amalgamations(sources, versions, output):
+def amalgamations(sources, pins, output):
     copy(PACKAGE / 'scripts/EXPO-LICENSE', output / 'licenses/expo/LICENSE')
     vendor = output / 'vendor'
 
@@ -115,13 +135,13 @@ def amalgamations(sources, versions, output):
 
     vec = sources['sqlite-vec']
     # Pin the generated header date to the commit, not the checkout time.
-    stamp = int(run(['git', 'show', '-s', '--format=%ct', versions['sqlite-vec']['commit']], SOURCES / 'sqlite-vec', capture=True))
+    stamp = int(run(['git', 'show', '-s', '--format=%ct', pins['sqlite-vec']], SOURCES / 'sqlite-vec', capture=True))
     version = (vec / 'VERSION').read_text().strip()
     parts = version.split('-')[0].split('.')
     header = string.Template((vec / 'sqlite-vec.h.tmpl').read_text()).substitute(
         VERSION=version, VERSION_MAJOR=parts[0], VERSION_MINOR=parts[1], VERSION_PATCH=parts[2],
         DATE=datetime.fromtimestamp(stamp, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ+0000'),
-        SOURCE=versions['sqlite-vec']['commit'])
+        SOURCE=pins['sqlite-vec'])
 
     copy(vec / 'sqlite-vec.c', vendor / 'sqlite-vec/sqlite-vec.c')
     (vendor / 'sqlite-vec/sqlite-vec.h').write_text(header)
@@ -239,12 +259,12 @@ def main():
         parser.error('Set OHOS_NDK_HOME or DEVECO_SDK_HOME to the Harmony SDK')
 
     sdk = sdk.resolve()
-    versions = json.loads((SOURCES / 'versions.json').read_text())
-    prepare_submodules(versions)
+    pins = prepare_submodules()
 
-    inputs = [SOURCES / 'versions.json', *sorted((PACKAGE / 'patches').glob('*')),
+    inputs = [*sorted((PACKAGE / 'patches').glob('*')),
               PACKAGE / 'scripts/EXPO-LICENSE', Path(__file__)]
     recipe = {'inputs': {str(f.relative_to(PACKAGE)): digest(f) for f in inputs if f.is_file()},
+              'submodules': pins,
               'compiler': run([sdk / 'llvm/bin/clang', '--version'], capture=True),
               'sdk': digest(sdk / 'oh-uni-package.json'), 'sdkApi': 13, 'rustToolchain': RUST}
     if not args.clean and valid_output(recipe):
@@ -257,13 +277,13 @@ def main():
     with tempfile.TemporaryDirectory(prefix='prepare-', dir=cache) as temp:
         work = Path(temp)
         generated = work / 'generated'
-        sources = {name: snapshot(name, pin, work) for name, pin in versions.items()}
+        sources = {name: snapshot(name, commit, work) for name, commit in pins.items()}
 
-        amalgamations(sources, versions, generated)
+        amalgamations(sources, pins, generated)
         native_libraries(sources, sdk, work, generated)
 
         files = {str(f.relative_to(generated)): digest(f) for f in sorted(generated.rglob('*')) if f.is_file()}
-        (generated / 'manifest.json').write_text(json.dumps({'sources': versions, 'recipe': recipe, 'files': files}, indent=2) + '\n')
+        (generated / 'manifest.json').write_text(json.dumps({'sources': pins, 'recipe': recipe, 'files': files}, indent=2) + '\n')
 
         if OUTPUT.exists():
             shutil.rmtree(OUTPUT)
