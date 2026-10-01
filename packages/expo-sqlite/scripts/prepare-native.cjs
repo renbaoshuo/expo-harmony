@@ -90,6 +90,50 @@ function sdkTool(sdk, relative) {
   return WINDOWS ? `${file}.exe` : file;
 }
 
+// MSYS perl cannot resolve a Windows-style $0: FindBin falls back to the
+// working directory, so OpenSSL's `use lib "$FindBin::Bin/util/perl"` points
+// at the build dir and Configure cannot find its OpenSSL/fallback.pm.
+//
+// MSYS sh also strips backslashes as escapes, and OpenSSL's Configure copies
+// unknown options (--sysroot=) and CC/AR/RANLIB from the environment straight
+// into the generated Makefile. Every path that MSYS consumes must therefore be
+// POSIX form (D:\a\b -> /d/a/b); the MSYS runtime converts it back to a Windows
+// path when it execs the native clang/ar/ranlib binaries.
+function posixPath(file) {
+  if (!WINDOWS) return file;
+  const full = path.resolve(file);
+  return `/${full[0].toLowerCase()}/${full.slice(3).replaceAll('\\', '/')}`;
+}
+
+// MSYS make and sh split unquoted compiler paths on spaces, and OpenSSL's
+// generated Makefile carries CC/AR/RANLIB and --sysroot as plain words, so a
+// SDK under "Program Files" cannot be used directly. Windows junctions need no
+// privileges and resolve transparently, so expose a space-free alias instead of
+// quoting every path through Configure, configdata and Makefile.
+function sdkAlias(sdk, cache) {
+  if (!WINDOWS || !sdk.includes(' ')) return sdk;
+
+  const link = path.join(cache, 'sdk');
+  // A junction inside a spaced repository path would defeat the purpose.
+  if (link.includes(' ')) {
+    throw new Error(`SDK alias still contains a space: ${link}. Move the repository to a path without spaces.`);
+  }
+
+  fs.mkdirSync(cache, { recursive: true });
+  if (!fs.existsSync(link)) {
+    try {
+      fs.symlinkSync(sdk, link, 'junction');
+    } catch (error) {
+      // A concurrent build may have created it first; fall through and verify.
+      if (!fs.existsSync(link)) throw error;
+    }
+  }
+
+  // Never remove the existing link: a mistake here would delete the SDK.
+  if (resolvePath(link) !== resolvePath(sdk)) return sdk;
+  return link;
+}
+
 function submodules(root) {
   const gitmodules = path.join(root, '.gitmodules');
   const entries = run(
@@ -305,7 +349,11 @@ function writeCompilerWrapper(work, rustTarget, compiler, sdk, clangTarget) {
   if (WINDOWS) {
     const wrapper = path.join(work, `${rustTarget}-${compiler}.bat`);
     fs.writeFileSync(wrapper, `@${command.map(batchQuote).join(' ')} %*\r\n`);
-    return wrapper;
+    // The path is published as CC_<target>/CARGO_TARGET_*_LINKER. cargo, rustc
+    // and cc-rs accept forward slashes, and libsql-ffi copies the value verbatim
+    // into toolchain.cmake as `set(CMAKE_C_COMPILER <value>)`, where CMake reads
+    // backslashes as escape sequences and rejects the path.
+    return wrapper.replaceAll('\\', '/');
   }
 
   const wrapper = path.join(work, `${rustTarget}-${compiler}`);
@@ -326,6 +374,12 @@ function nativeLibraries(sources, sdk, work, output) {
   for (const key of ['CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS']) {
     delete base[key];
   }
+  // libsql-ffi drives cmake with CMAKE_SYSTEM_NAME=Linux plus the OHOS clang
+  // wrapper as CMAKE_C_COMPILER. On Windows cmake defaults to the Visual Studio
+  // generator, which ignores a cross toolchain and builds the try-compile
+  // project with MSBuild/cl.exe instead. Use the MSYS make this script already
+  // requires, and keep an explicitly provided generator.
+  if (WINDOWS && !base.CMAKE_GENERATOR) base.CMAKE_GENERATOR = 'Unix Makefiles';
 
   for (const [abi, rustTarget, clangTarget, opensslTarget] of ABIS) {
     const build = path.join(work, `openssl-${abi}`);
@@ -333,21 +387,21 @@ function nativeLibraries(sources, sdk, work, output) {
     const prefix = path.join(build, 'install');
     const env = {
       ...base,
-      CC: sdkTool(sdk, path.join('llvm', 'bin', 'clang')),
-      AR: sdkTool(sdk, path.join('llvm', 'bin', 'llvm-ar')),
-      RANLIB: sdkTool(sdk, path.join('llvm', 'bin', 'llvm-ranlib')),
+      CC: posixPath(sdkTool(sdk, path.join('llvm', 'bin', 'clang'))),
+      AR: posixPath(sdkTool(sdk, path.join('llvm', 'bin', 'llvm-ar'))),
+      RANLIB: posixPath(sdkTool(sdk, path.join('llvm', 'bin', 'llvm-ranlib'))),
     };
 
     run(
       [
-        'perl', path.join(sources['openssl'], 'Configure'), opensslTarget, 'no-shared', 'no-tests', 'no-module',
+        'perl', posixPath(path.join(sources['openssl'], 'Configure')), opensslTarget, 'no-shared', 'no-tests', 'no-module',
         '--libdir=lib', '--prefix=/', '--openssldir=/etc/ssl', `--target=${clangTarget}`,
-        `--sysroot=${path.join(sdk, 'sysroot')}`, '-D__OHOS_API__=13', '-fPIC', '-fvisibility=hidden',
+        `--sysroot=${posixPath(path.join(sdk, 'sysroot'))}`, '-D__OHOS_API__=13', '-fPIC', '-fvisibility=hidden',
       ],
       { cwd: build, env }
     );
     run(['make', `-j${Math.min(os.cpus().length || 2, 8)}`, 'build_libs'], { cwd: build, env });
-    run(['make', 'install_dev', `DESTDIR=${prefix}`], { cwd: build, env });
+    run(['make', 'install_dev', `DESTDIR=${posixPath(prefix)}`], { cwd: build, env });
 
     const dest = path.join(output, 'prebuilt', abi);
     fs.cpSync(path.join(prefix, 'include'), path.join(dest, 'openssl', 'include'), { recursive: true });
@@ -503,7 +557,7 @@ function main() {
     fail('Set OHOS_NDK_HOME or DEVECO_SDK_HOME to the Harmony SDK');
   }
 
-  sdk = resolvePath(sdk);
+  sdk = sdkAlias(resolvePath(sdk), path.join(PACKAGE, 'harmony', '.native-build'));
   const pins = prepareSubmodules();
 
   const inputs = [
@@ -565,9 +619,11 @@ module.exports = {
   digest,
   main,
   nativeLibraries,
+  posixPath,
   prefixSqlite,
   prepareSubmodules,
   run,
+  sdkAlias,
   snapshot,
   substitute,
   validOutput,

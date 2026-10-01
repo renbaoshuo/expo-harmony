@@ -1,4 +1,24 @@
 {
+  "files.exclude": {
+    "**/oh_modules": true
+  },
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/.git/objects/**": true,
+    "**/oh_modules/**": true,
+    "**/.hvigor/**": true,
+    "**/.cxx/**": true,
+    "**/build/**": true,
+    "**/.expo/**": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/oh_modules": true,
+    "**/.hvigor": true,
+    "**/.cxx": true,
+    "**/build": true,
+    "**/.expo": true
+  },
   "eslint.format.enable": true,
   "editor.tabSize": 2,
   "editor.insertSpaces": true,

@@ -26,6 +26,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
+    "harmony:prepare": "node ./scripts/sync-log-box-bundle.mjs",
     "harmony:clean": "expo-harmony-module prepare --clean-only",
     "harmony:build": "node ./scripts/sync-log-box-bundle.mjs && expo-harmony-module prepare",
     "prepack": "node ./scripts/sync-log-box-bundle.mjs && expo-harmony-module prepack"

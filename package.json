@@ -22,7 +22,7 @@
     "apps/*/modules/*"
   ],
   "scripts": {
-    "build": "yarn harmony:build && yarn workspaces foreach --all --include '@expo-harmony/*' --topological-dev --verbose run build",
+    "build": "yarn workspace @expo-harmony/expo-modules-autolinking build && yarn harmony:build && yarn workspaces foreach --all --include '@expo-harmony/*' --topological-dev --verbose run build",
     "harmony:build": "node ./packages/expo-module-scripts/bin/expo-harmony-module.js build-workspace",
     "lint": "eslint \"{packages,apps}/*/**/*.{ts,tsx,js,jsx}\" --fix",
     "lint:check": "eslint \"{packages,apps}/*/**/*.{ts,tsx,js,jsx}\"",
