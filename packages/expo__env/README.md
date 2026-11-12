@@ -1,11 +1,15 @@
 # @expo-harmony/expo__env
 
-为 HarmonyOS 上的 React Native / Expo 项目提供 `@expo/env` 的兼容入口。实际 JavaScript 实现由官方包提供。
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__env)
+
+为 HarmonyOS 上的 Expo 项目提供 `.env` 环境变量加载工具，与官方同版本的 `@expo/env` 配套使用。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
 ```bash
-npm install @expo-harmony/expo__env @expo/env@2.1.3
+npm install @expo-harmony/expo__env @expo/env@2.4.3
 ```
 
 ## Author
@@ -13,4 +17,4 @@ npm install @expo-harmony/expo__env @expo/env@2.1.3
 **expo-harmony** © [Baoshuo](https://github.com/renbaoshuo), Released under the MIT License.<br>
 Authored and maintained by Baoshuo with help from [contributors](https://github.com/renbaoshuo/expo-harmony/contributors).
 
-> [Personal Website](https://baoshuo.ren) · [Blog](https://blog.baoshuo.ren) · GitHub [@renbaoshuo](https://github.com/renbaoshuo) · Twitter [@renbaoshuo](https://twitter.com/baoshuo)
+> [Personal Website](https://baoshuo.ren) · [Blog](https://blog.baoshuo.ren) · GitHub [@renbaoshuo](https://github.com/renbaoshuo) · Twitter [@renbaoshuo](https://twitter.com/renbaoshuo)
