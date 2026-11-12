@@ -5,20 +5,25 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { bundleManager, common, Want } from '@kit.AbilityKit';
+import { bundleManager, Want } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
-import { BusinessError } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
-import { ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoModuleError, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
+import { ExpoFunction, ExpoModule, ExpoModuleAbilityResult, ExpoModuleContext, ExpoModuleDefinition, ExpoModuleError, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
 
 import { createWant, INTENT_PARAMS } from './IntentLauncherParams';
 
+const REQUEST_CODE: number = 12;
 const BUNDLE_NOT_FOUND: number = 17700001;
+const BUNDLE_DISABLED: number = 17700026;
+const LAUNCH_WANT_NOT_FOUND: number = 17700072;
 const LAUNCH_BUNDLE_FLAGS: number =
   bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_HAP_MODULE |
   bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_ABILITY |
   bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_EXTENSION_ABILITY |
   bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_SKILL;
+
+// Older HAPs may declare the legacy home action.
 const HOME_ACTIONS: string[] = ['action.system.home', 'ohos.want.action.home'];
 const HOME_ENTITY: string = 'entity.system.home';
 const PNG_MIME_TYPE: string = 'image/png';
@@ -30,9 +35,8 @@ interface IntentLauncherResult {
 }
 
 export class ExpoIntentLauncherModule extends ExpoModule {
-  private pending: boolean = false;
   private destroyed: boolean = false;
-  private cancel?: () => void;
+  private cancelPending?: () => void;
 
   constructor(context: ExpoModuleContext) {
     super(context);
@@ -63,7 +67,7 @@ export class ExpoIntentLauncherModule extends ExpoModule {
 
   private async startActivity(action: string, params: Record<string, ESObject>): Promise<IntentLauncherResult> {
     this.assertActive();
-    if (this.pending) {
+    if (this.cancelPending !== undefined) {
       throw new ExpoModuleError(
         'E_ACTIVITY_ALREADY_STARTED',
         'IntentLauncher activity is already started. You need to wait for its result before starting another activity.',
@@ -71,21 +75,18 @@ export class ExpoIntentLauncherModule extends ExpoModule {
     }
 
     const want = createWant(action, params, this.context.uiAbilityContext.abilityInfo.bundleName);
-
-    const cancellation = new Promise<common.AbilityResult>((_resolve, reject): void => {
-      this.cancel = (): void =>
+    const cancellation = new Promise<ExpoModuleAbilityResult>((_resolve, reject): void => {
+      this.cancelPending = (): void =>
         reject(new ExpoModuleError('ERR_INTENT_LAUNCHER_DESTROYED', 'The IntentLauncher host was destroyed while an activity was open.'));
     });
-    this.pending = true;
 
     try {
-      const response = await Promise.race([this.context.uiAbilityContext.startAbilityForResult(want), cancellation]);
-
+      const response = await Promise.race([this.context.startAbilityForResult(want, REQUEST_CODE), cancellation]);
       this.assertActive();
 
       const result: IntentLauncherResult = { resultCode: response.resultCode };
-      if (response.want?.uri !== undefined) result.data = response.want.uri;
-      if (response.want?.parameters !== undefined) result.extra = response.want.parameters;
+      if (response.data?.uri !== undefined) result.data = response.data.uri;
+      if (response.data?.parameters !== undefined) result.extra = response.data.parameters;
 
       return result;
     } catch (error) {
@@ -101,8 +102,7 @@ export class ExpoIntentLauncherModule extends ExpoModule {
         error,
       );
     } finally {
-      this.pending = false;
-      this.cancel = undefined;
+      this.cancelPending = undefined;
     }
   }
 
@@ -114,12 +114,7 @@ export class ExpoIntentLauncherModule extends ExpoModule {
     let want: Want;
 
     try {
-      const info =
-        bundle === this.context.uiAbilityContext.abilityInfo.bundleName
-          ? bundleManager.getBundleInfoForSelfSync(LAUNCH_BUNDLE_FLAGS)
-          : bundleManager.getBundleInfoSync(bundle, LAUNCH_BUNDLE_FLAGS);
-
-      want = applicationWant(info);
+      want = applicationWant(bundle, this.context.uiAbilityContext.abilityInfo.bundleName);
     } catch (error) {
       if (error instanceof ExpoModuleError) {
         throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
@@ -128,6 +123,9 @@ export class ExpoIntentLauncherModule extends ExpoModule {
       const cause = error as BusinessError;
       if (cause.code === BUNDLE_NOT_FOUND) {
         throw new ExpoModuleError('ERR_PACKAGE_NOT_FOUND', `Package not found: ${bundle}`, error);
+      }
+      if (cause.code === BUNDLE_DISABLED || cause.code === LAUNCH_WANT_NOT_FOUND) {
+        throw new ExpoModuleError('ERR_PACKAGE_NOT_FOUND', `Package has no enabled launcher UIAbility: ${bundle}`, error);
       }
 
       throw new ExpoModuleError('ERR_INTENT_LAUNCHER_BUNDLE_INFO', `Unable to query application '${bundle}'. ${cause.code}: ${cause.message}`, error);
@@ -160,6 +158,7 @@ export class ExpoIntentLauncherModule extends ExpoModule {
           ? await bundleManager.getBundleInfoForSelf(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION)
           : await bundleManager.getBundleInfo(bundle, bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
     } catch (error) {
+      this.assertActive();
       if (error instanceof ExpoModuleError) {
         throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
       }
@@ -176,26 +175,23 @@ export class ExpoIntentLauncherModule extends ExpoModule {
 
     let pixels: image.PixelMap | undefined;
     let packer: image.ImagePacker | undefined;
+    let icon = '';
 
     try {
-      const descriptor = this.context.uiAbilityContext.resourceManager.getDrawableDescriptor(info.appInfo.iconResource);
-      pixels = descriptor.getPixelMap();
+      const drawable = this.context.uiAbilityContext.resourceManager.getDrawableDescriptor(info.appInfo.iconResource);
+      pixels = drawable.getPixelMap();
 
       packer = image.createImagePacker();
       const bytes = await packer.packToData(pixels, { format: PNG_MIME_TYPE, quality: 100 });
       const base64 = await new util.Base64Helper().encodeToString(new Uint8Array(bytes));
 
-      this.assertActive();
-
-      return `data:${PNG_MIME_TYPE};base64,${base64}`;
+      icon = `data:${PNG_MIME_TYPE};base64,${base64}`;
     } catch (error) {
       if (error instanceof ExpoModuleError) {
         throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
       }
 
       logger.warn(`Unable to encode application '${bundle}' icon: ${String(error)}`);
-
-      return '';
     } finally {
       try {
         await packer?.release();
@@ -209,6 +205,10 @@ export class ExpoIntentLauncherModule extends ExpoModule {
         logger.warn(`Unable to release the icon PixelMap: ${String(error)}`);
       }
     }
+
+    this.assertActive();
+
+    return icon;
   }
 
   private assertActive(): void {
@@ -219,16 +219,27 @@ export class ExpoIntentLauncherModule extends ExpoModule {
     if (this.destroyed) return;
 
     this.destroyed = true;
-    this.cancel?.();
-    this.cancel = undefined;
+    this.cancelPending?.();
   }
 }
 
-function applicationWant(info: bundleManager.BundleInfo): Want {
-  let first: Want | undefined;
-  for (const module of info.hapModulesInfo) {
-    if (module.type !== bundleManager.ModuleType.ENTRY) continue;
+function applicationWant(bundle: string, currentBundle: string): Want {
+  if (bundle === currentBundle) {
+    return bundleManager.getLaunchWant();
+  }
+  if (deviceInfo.sdkApiVersion >= 24) {
+    return bundleManager.getLaunchWantForBundleSync(bundle);
+  }
 
+  const info = bundleManager.getBundleInfoSync(bundle, LAUNCH_BUNDLE_FLAGS);
+  let entry: Want | undefined;
+  let feature: Want | undefined;
+
+  for (const module of info.hapModulesInfo) {
+    const isEntry = module.type === bundleManager.ModuleType.ENTRY;
+    if (!isEntry && module.type !== bundleManager.ModuleType.FEATURE) continue;
+
+    let candidate: Want | undefined;
     for (const ability of module.abilitiesInfo) {
       if (!ability.exported || !ability.enabled) continue;
 
@@ -246,12 +257,20 @@ function applicationWant(info: bundleManager.BundleInfo): Want {
         entities: [HOME_ENTITY],
       };
 
-      if (ability.name === module.mainElementName) return want;
-      if (first === undefined) first = want;
+      if (ability.name === module.mainElementName) {
+        if (isEntry) return want;
+        candidate = want;
+        break;
+      }
+      candidate ??= want;
     }
+
+    if (isEntry) entry ??= candidate;
+    else feature ??= candidate;
   }
 
-  if (first !== undefined) return first;
+  const want = entry ?? feature;
+  if (want !== undefined) return want;
 
   throw new ExpoModuleError('ERR_PACKAGE_NOT_FOUND', `Package has no exported, enabled launcher UIAbility: ${info.name}`);
 }

@@ -11,8 +11,10 @@ import { ExpoModuleError, ExpoRecordShape, ExpoValueTypes } from '@expo-harmony/
 const MIN_INT32: number = -2147483648;
 const MAX_INT32: number = 2147483647;
 const MIN_INT64: number = -(2 ** 63);
-// Long.MAX_VALUE rounds to 2^63 when represented as a JavaScript number.
-const MAX_INT64: number = 2 ** 63 - 1;
+
+// Long.MAX_VALUE rounds outside int64. Use the closest lower integer that a
+// JavaScript number can represent with its 53-bit significand.
+const MAX_INT64: number = 2 ** 63 - 2 ** (63 - 53);
 
 const EXTRA_VALUE = ExpoValueTypes.custom<Object>(
   'Want parameter',
