@@ -1,88 +1,100 @@
 # @expo-harmony/expo-tracking-transparency
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-tracking-transparency) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/tracking-transparency/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-tracking-transparency) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/tracking-transparency/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo TrackingTransparency 的原生实现，与官方同版本的 `expo-tracking-transparency` 配套使用。支持查询和请求跨应用跟踪权限，并通过异步扩展读取系统广告标识 OAID。
+为 HarmonyOS 上的 React Native 应用提供 Expo Tracking Transparency 的原生实现，与官方同版本的 `expo-tracking-transparency` 配套使用。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
 ```bash
-npm install @expo-harmony/expo-tracking-transparency expo-tracking-transparency@55.0.18
+npm install @expo-harmony/expo-tracking-transparency expo-tracking-transparency
 ```
-
-本包适配 Expo SDK 55，与官方包 `expo-tracking-transparency` 搭配使用。业务代码照常从官方包导入，原生模块由 Expo Harmony 自动链接。读取 OAID 的扩展接口是本包新增的能力，从 `@expo-harmony/expo-tracking-transparency` 导入。
-
-跨应用跟踪权限已随本包声明，相关注意事项见「权限」一节。最低支持 HarmonyOS 5.0.1（API 13），宿主应用的 `compatibleSdkVersion` 不能低于这个版本。
-
-## 权限
-
-本包声明了用户授权类权限 `ohos.permission.APP_TRACKING_CONSENT`，用途说明默认使用字符串资源 `expo_tracking_transparency_permission_reason`。权限声明挂在 `EntryAbility` 名下，宿主入口 Ability 使用其他名称时，需要在应用的 `module.json5` 中按实际名称声明同名权限，用途说明也可以换成应用自己的字符串资源。
-
-是否弹出授权对话框由系统设置中的「要求应用请求关联」开关决定，开关关闭时请求可能直接获得授权，不能假设每次调用都会弹窗。官方配置插件的 `userTrackingPermission` 只配置 iOS 的用途说明，对 HarmonyOS 没有影响。
 
 ## API 对照表
 
 ### Hooks
 
-#### `TrackingTransparency.useTrackingPermissions(options)`
+#### `TrackingTransparency.useTrackingPermissions(options?)`
 
-复用官方的权限 Hook，接入 HarmonyOS 的原生权限状态，返回当前权限响应和请求、刷新权限的方法。`options` 的取值和含义与官方一致。
+`options` 可选，类型为 `PermissionHookOptions`。`get` 默认为 `true`，表示挂载时查询权限；`request` 默认为 `false`，设为 `true` 时挂载后请求权限。返回 `[PermissionResponse | null, requestPermission, getPermission]`，后两个方法分别请求和查询权限。
 
 ### Methods
 
 #### `TrackingTransparency.getTrackingPermissionsAsync()`
 
-返回 `Promise<PermissionResponse>`，查询跨应用跟踪权限的当前状态，不触发授权弹窗。官方包在 Android 和 Web 上恒返回已授权，HarmonyOS 上返回系统的真实授权状态。
+无参数，返回 `Promise<PermissionResponse>`，查询跨应用跟踪权限状态，不显示授权对话框。响应的 `expires` 始终为 `'never'`。
 
-响应包含 `status`、`granted`、`canAskAgain` 和 `expires`，`expires` 恒为 `'never'`。状态查询随系统版本有差异。API 20 起系统提供完整的权限状态，三种 `status` 都能直接区分。API 13–19 的系统查询只能得到授权与否，未授权时本包依据记录的拒绝历史区分 `denied` 和 `undetermined`，权限在系统设置中被外部改动或历史记录读取失败时，状态细分和 `canAskAgain` 可能不准确。
+HarmonyOS SDK API 20 及以上可直接查询完整权限状态。API 13–19 未授权时，根据此前请求权限的结果区分 `denied` 与 `undetermined`；如果用户在系统设置中修改了权限，状态可能无法准确区分。
 
 #### `TrackingTransparency.requestTrackingPermissionsAsync()`
 
-返回 `Promise<PermissionResponse>`，向用户请求跨应用跟踪权限。并发调用依次执行，不会同时弹出多个授权窗口。用户拒绝或系统不再允许弹窗后，`canAskAgain` 为 `false`，需要用户到系统设置中自行调整。请求后仍未作出选择时保留 `undetermined`，不会仅因调用过请求方法就记为拒绝。
+无参数，返回 `Promise<PermissionResponse>`，请求跨应用跟踪权限。已授权时返回当前状态；未授权时由系统处理请求。用户拒绝或系统不再允许请求后，`canAskAgain` 为 `false`。并发调用共用一次请求结果。
 
 #### `TrackingTransparency.isAvailable()`
 
-返回 `boolean`，表示设备上是否具备 TrackingTransparency 能力。HarmonyOS 上原生模块始终存在，这个方法恒返回 `true`。它只说明能力可用，不代表已经取得授权。
+无参数，返回 `boolean`。HarmonyOS 始终返回 `true`，表示接口可用，不代表已经获得授权。
 
-> **未实现的内容**
->
-> - `getAdvertisingId()`：HarmonyOS 只提供异步的 OAID 接口，没有对应的同步读取能力，调用抛出包含 `ERR_UNAVAILABLE` 的错误，请改用下方的 `getAdvertisingIdAsync()`。
+#### `TrackingTransparency.getAdvertisingId()`
+
+接口签名返回 `string | null`，无参数。
+
+- HarmonyOS 只提供异步 OAID 读取；调用此方法会以 `ERR_UNAVAILABLE` 抛出，请改用 `getAdvertisingIdAsync()`。
+
+#### `getAdvertisingIdAsync()`
+
+从 `@expo-harmony/expo-tracking-transparency` 导入。无参数，返回 `Promise<string | null>`。获得权限时读取 OAID；未授权、标识符为空或全零时返回 `null`。读取期间权限被撤回时也返回 `null`。读取失败且权限仍有效时，Promise 以 `ERR_TRACKING_TRANSPARENCY_ADVERTISING_ID` 拒绝。
 
 ### Types
 
 #### `PermissionResponse`
 
-权限查询和请求方法共用的返回类型。`status` 是 `PermissionStatus` 的三种状态之一，`granted` 表示是否已授权，`canAskAgain` 为 `false` 时应引导用户去系统设置开启权限，`expires` 恒为 `'never'`。
+权限查询和请求方法的返回类型，包含 `status`、`granted`、`canAskAgain` 和 `expires`。`status` 为 `PermissionStatus`；`granted` 表示是否已授权；`canAskAgain` 表示是否还能再次请求；HarmonyOS 上 `expires` 始终为 `'never'`。
 
 #### `PermissionExpiration`
 
-权限的过期时间。跨应用跟踪权限一经授权长期有效，只取值 `'never'`。
+权限过期时间类型。HarmonyOS 上该权限长期有效，取值为 `'never'`。
 
 #### `PermissionHookOptions`
 
-传给 `useTrackingPermissions` 的选项，控制 Hook 挂载时只查询权限还是直接请求权限，取值和含义与官方一致。
+传给 `useTrackingPermissions` 的选项：`get?: boolean` 控制挂载时是否查询权限，默认 `true`；`request?: boolean` 控制挂载时是否请求权限，默认 `false`。
 
 ### Enums
 
 #### `PermissionStatus`
 
-跟踪权限的三种状态。`granted`、`denied` 和 `undetermined` 在 HarmonyOS 上都会出现，分别对应用户同意、用户拒绝和尚未请求。
+| 成员 | 值 | 含义 |
+| --- | --- | --- |
+| `GRANTED` | `'granted'` | 已授权 |
+| `DENIED` | `'denied'` | 已拒绝 |
+| `UNDETERMINED` | `'undetermined'` | 尚未决定 |
 
-### HarmonyOS 扩展
+### Error codes
 
-#### `getAdvertisingIdAsync()`
+#### `ERR_TRACKING_TRANSPARENCY_BACKGROUND`
 
-从 `@expo-harmony/expo-tracking-transparency` 导入，返回 `Promise<string | null>`，每次调用都从系统广告服务读取当前的 OAID，不缓存、不持久化，也不会自动请求权限。未授权、读到空值或全零的标识符时返回 `null`，系统服务出错时拒绝 Promise。读取完成时还会复查一次权限，用户在读取过程中撤回授权的话同样返回 `null`。
+应用未处于前台或没有界面时，请求尚未授权的跨应用跟踪权限会以此错误码拒绝。
 
-```ts
-import { requestTrackingPermissionsAsync } from 'expo-tracking-transparency';
-import { getAdvertisingIdAsync } from '@expo-harmony/expo-tracking-transparency';
+#### `ERR_TRACKING_TRANSPARENCY_PERMISSION`
 
-const permission = await requestTrackingPermissionsAsync();
-const id = permission.granted ? await getAdvertisingIdAsync() : null;
-```
+宿主应用未声明有效的 `ohos.permission.APP_TRACKING_CONSENT`，或系统无法处理该权限请求时，查询或请求会以此错误码拒绝。
 
-OAID 是 HarmonyOS 上可由用户重置的广告标识，与 iOS 的 IDFA 和 Android 的广告 ID 不互通。模拟器或未提供 OAID 服务的设备可能拿不到有效的标识符。接口细节参见 [华为 OAID 文档](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-oaid)。
+#### `ERR_TRACKING_TRANSPARENCY_ADVERTISING_ID`
+
+读取 OAID 失败且跨应用跟踪权限仍有效时，`getAdvertisingIdAsync()` 以此错误码拒绝。
+
+#### `ERR_UNAVAILABLE`
+
+HarmonyOS 不支持同步的 `getAdvertisingId()`，调用时会以此错误码抛出。
+
+### Permissions
+
+#### `ohos.permission.APP_TRACKING_CONSENT`
+
+宿主应用需声明此权限，才能查询或请求跨应用跟踪权限，以及读取 OAID。未声明或声明无效时，查询和请求会以 `ERR_TRACKING_TRANSPARENCY_PERMISSION` 拒绝；未授权时，`getAdvertisingIdAsync()` 返回 `null`。系统设置中的「要求应用请求关联」开关会影响是否显示授权对话框；关闭时系统可能直接授予权限。
 
 ## Author
 

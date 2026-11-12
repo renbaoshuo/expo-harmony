@@ -16,6 +16,7 @@ export class ExpoTrackingTransparencyModule extends ExpoModule {
 
   constructor(context: ExpoModuleContext) {
     super(context);
+
     this.permissions = new TrackingPermissions(context);
   }
 
@@ -37,9 +38,12 @@ export class ExpoTrackingTransparencyModule extends ExpoModule {
     if (this.context.permissionStatus(TRACKING_PERMISSION) !== ExpoPermissionStatus.GRANTED) return null;
 
     let id: string;
+
     try {
       id = await identifier.getOAID();
     } catch (error) {
+      if (this.context.permissionStatus(TRACKING_PERMISSION) !== ExpoPermissionStatus.GRANTED) return null;
+
       throw new ExpoModuleError('ERR_TRACKING_TRANSPARENCY_ADVERTISING_ID', 'Unable to read the HarmonyOS advertising identifier.', error as Object);
     }
 

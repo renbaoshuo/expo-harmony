@@ -9,13 +9,6 @@
   "module": {
     "name": "expo_tracking_transparency",
     "type": "har",
-    "deviceTypes": ["default", "tablet", "2in1"],
-    "requestPermissions": [
-      {
-        "name": "ohos.permission.APP_TRACKING_CONSENT",
-        "reason": "$string:expo_tracking_transparency_permission_reason",
-        "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" }
-      }
-    ]
+    "deviceTypes": ["default", "tablet", "2in1"]
   }
 }

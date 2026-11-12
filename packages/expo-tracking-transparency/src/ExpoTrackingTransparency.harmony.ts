@@ -5,7 +5,8 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { type PermissionResponse, requireNativeModule } from 'expo-modules-core';
+import type { PermissionResponse } from 'expo';
+import { requireNativeModule } from 'expo-modules-core';
 
 type TrackingModule = {
   getAdvertisingId(): string | null;
