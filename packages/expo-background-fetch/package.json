@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-background-fetch",
-  "version": "55.0.20-harmony.4",
+  "version": "57.0.21-harmony.0",
   "description": "HarmonyOS port of expo-background-fetch",
   "keywords": [
     "react-native",
@@ -19,6 +19,23 @@
   "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "main": "index.js",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./app.plugin": "./app.plugin.js",
+    "./app.plugin.js": "./app.plugin.js",
+    "./expo-module.config.json": "./expo-module.config.json",
+    "./package.json": "./package.json",
+    "./plugin": {
+      "types": "./plugin/index.d.ts",
+      "default": "./plugin/index.js"
+    },
+    "./plugin/index.js": "./plugin/index.js",
+    "./plugin/withBackgroundFetch": "./plugin/withBackgroundFetch.js",
+    "./plugin/withBackgroundFetch.js": "./plugin/withBackgroundFetch.js"
+  },
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
     "harmony:build": "expo-harmony-module prepare",
@@ -27,26 +44,25 @@
   "dependencies": {
     "@expo-harmony/config-plugins": "workspace:*",
     "@expo-harmony/expo-task-manager": "workspace:*",
-    "@expo/config-plugins": "55.0.11"
+    "@expo/config-plugins": "57.0.11"
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo-background-fetch": "55.0.20",
-    "expo-task-manager": "~55.0.20"
+    "expo-background-fetch": "57.0.21",
+    "expo-task-manager": "57.0.21"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "@react-native-oh/react-native-harmony": "0.84.1",
-    "expo": "55.0.31",
-    "expo-background-fetch": "55.0.20",
-    "expo-modules-core": "55.0.26",
-    "expo-task-manager": "~55.0.20",
+    "expo": "57.0.31",
+    "expo-background-fetch": "57.0.21",
+    "expo-modules-core": "57.0.24",
+    "expo-task-manager": "57.0.21",
     "react": "19.2.3",
-    "react-native": "0.84.1"
+    "react-native": "0.86.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
   },
   "publishConfig": {
     "access": "public"

@@ -74,7 +74,10 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
   readonly consumerId: string = OWNER_PARAMETER_VALUE;
   readonly consumerVersion: number = 1;
 
-  async onTasksChanged(context: ExpoModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
+  async onTasksChanged(context: ExpoModuleContext, tasks: ExpoTaskRecord[], restoring: boolean = false): Promise<void> {
+    // Restoring the runtime must not replace the running work that started it.
+    if (context.isHeadless && restoring) return;
+
     await this.update(context.uiAbilityContext, tasks);
   }
 
@@ -89,7 +92,12 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
   updateLifecycle(context: common.UIAbilityContext, state: BackgroundFetchState): void {
     const owner = context.abilityInfo.bundleName;
 
-    BackgroundFetchRuntime.setState(context, owner, state);
+    try {
+      BackgroundFetchRuntime.setState(context, owner, state);
+    } catch (error) {
+      console.warn(`Unable to save Expo Background Fetch lifecycle: ${String(error)}`);
+      return;
+    }
 
     ExpoTaskManagerRegistry.withRegisteredTasks(context, owner, TASK_TYPE, async (tasks: ExpoTaskRecord[]): Promise<void> => {
       await this.update(context, tasks);
@@ -107,8 +115,9 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
       });
     } finally {
       for (const work of expired) await BackgroundFetchRuntime.expire(context, work);
-      if (tasks.length === 0) await BackgroundFetchRuntime.expireAll(context);
     }
+
+    if (tasks.length === 0) await BackgroundFetchRuntime.expireAll(context);
   }
 
   private async reconcile(context: common.UIAbilityContext, tasks: ExpoTaskRecord[], expired: workScheduler.WorkInfo[]): Promise<void> {
@@ -133,15 +142,33 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
     const state = await BackgroundFetchRuntime.getState(context, context.abilityInfo.bundleName);
 
     const reserved = works.slice();
-    const names = new Set<string>();
+    const names = new Set<string>(tasks.map((task: ExpoTaskRecord): string => task.taskName));
+    const matchingByName = new Map<string, workScheduler.WorkInfo[]>();
+    const obsolete: workScheduler.WorkInfo[] = [];
 
-    for (const task of tasks) {
+    for (const work of owned) {
+      const name = taskNameFromWork(work);
+      if (name === undefined || !names.has(name)) {
+        obsolete.push(work);
+        continue;
+      }
+
+      const matching = matchingByName.get(name) ?? [];
+      matching.push(work);
+      matchingByName.set(name, matching);
+    }
+
+    cancelWorks(obsolete, expired);
+
+    // Clear duplicates before restoring tasks that need a new scheduler slot.
+    const ordered = tasks.slice().sort((left: ExpoTaskRecord, right: ExpoTaskRecord): number =>
+      Number(matchingByName.has(right.taskName)) - Number(matchingByName.has(left.taskName)),
+    );
+
+    for (const task of ordered) {
       const name = task.taskName;
       const options = parseOptions(task.options);
-      const matching = owned.filter((work: workScheduler.WorkInfo): boolean => taskNameFromWork(work) === name);
-      const current = matching.length > 0 ? matching[0] : undefined;
-
-      names.add(name);
+      const matching = matchingByName.get(name) ?? [];
 
       const paused =
         (state === BackgroundFetchState.Terminated && options.stopOnTerminate !== false) ||
@@ -153,13 +180,16 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
         continue;
       }
 
-      if (current !== undefined && workMatchesOptions(current, task, options, context.abilityInfo.bundleName)) {
-        cancelWorks(matching.slice(1), expired);
+      const current = matching.find(
+        (work: workScheduler.WorkInfo): boolean => workMatchesOptions(work, task, options, context.abilityInfo.bundleName),
+      );
+      if (current !== undefined) {
+        cancelWorks(matching.filter((work: workScheduler.WorkInfo): boolean => work.workId !== current.workId), expired);
 
         continue;
       }
 
-      const id = current?.workId ?? allocateWorkId(reserved, name, context.abilityInfo.bundleName);
+      const id = matching[0]?.workId ?? allocateWorkId(reserved, name, context.abilityInfo.bundleName);
       const next = createWorkInfo(context, id, task, options);
 
       // Replacing a task must not require an extra WorkScheduler slot when the app is at its quota.
@@ -184,14 +214,6 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
 
       reserved.push(next);
     }
-
-    const obsolete = owned.filter((work: workScheduler.WorkInfo): boolean => {
-      const name = taskNameFromWork(work);
-
-      return name === undefined || !names.has(name);
-    });
-
-    cancelWorks(obsolete, expired);
 
     if (state === BackgroundFetchState.Foreground || state === BackgroundFetchState.Terminated) {
       const paused = (await readAllWorks()).filter(
@@ -229,6 +251,9 @@ export class ExpoBackgroundFetchModule extends ExpoModule {
         ExpoFunction.typed2(ExpoValueTypes.string(), BACKGROUND_FETCH_OPTIONS_TYPE, async (name: string, options: Options): Promise<void> => {
           requireConfigured();
           requireAvailable(this.context.uiAbilityContext);
+          if (options.minimumInterval !== undefined && options.minimumInterval > WORK_SCHEDULER_MAXIMUM_INTERVAL_MS / 1000) {
+            throw new ExpoBackgroundFetchError('ERR_BACKGROUND_FETCH_INTERVAL', 'minimumInterval is too large for HarmonyOS WorkScheduler.');
+          }
 
           await ExpoTaskManagerRegistry.registerTask(this.context, requireTaskName(name), TASK_TYPE, options);
         }),
@@ -338,12 +363,6 @@ function parseOptions(value: ESObject): Options {
 }
 
 function createWorkInfo(context: common.UIAbilityContext, id: number, task: ExpoTaskRecord, options: Options): workScheduler.WorkInfo {
-  const interval = Math.ceil((options.minimumInterval ?? DEFAULT_MINIMUM_INTERVAL_SECONDS) * 1000);
-
-  if (!Number.isSafeInteger(interval) || interval > WORK_SCHEDULER_MAXIMUM_INTERVAL_MS) {
-    throw new ExpoBackgroundFetchError('ERR_BACKGROUND_FETCH_INTERVAL', 'minimumInterval is too large for HarmonyOS WorkScheduler.');
-  }
-
   const params: Record<string, number | string | boolean> = {};
 
   params[OWNER_PARAMETER] = OWNER_PARAMETER_VALUE;
@@ -361,20 +380,24 @@ function createWorkInfo(context: common.UIAbilityContext, id: number, task: Expo
     abilityName: WORK_SCHEDULER_EXTENSION_NAME,
     isPersisted: options.startOnBoot === true,
     isRepeat: true,
-    repeatCycleTime: Math.max(interval, WORK_SCHEDULER_MINIMUM_INTERVAL_MS),
+    repeatCycleTime: schedulerInterval(options.minimumInterval ?? DEFAULT_MINIMUM_INTERVAL_SECONDS),
     parameters: params,
   };
 }
 
+function schedulerInterval(seconds: number): number {
+  // An existing registration can have been saved while its work was paused.
+  return Math.min(WORK_SCHEDULER_MAXIMUM_INTERVAL_MS, Math.max(Math.ceil(seconds * 1000), WORK_SCHEDULER_MINIMUM_INTERVAL_MS));
+}
+
 function workMatchesOptions(work: workScheduler.WorkInfo, task: ExpoTaskRecord, options: Options, owner: string): boolean {
   const seconds = options.minimumInterval ?? DEFAULT_MINIMUM_INTERVAL_SECONDS;
-  const interval = Math.max(Math.ceil(seconds * 1000), WORK_SCHEDULER_MINIMUM_INTERVAL_MS);
   const params = work.parameters;
 
   return (
     work.isRepeat === true &&
     work.networkType === undefined &&
-    work.repeatCycleTime === interval &&
+    work.repeatCycleTime === schedulerInterval(seconds) &&
     (work.isPersisted === true) === (options.startOnBoot === true) &&
     params?.[TASK_NAME_PARAMETER] === task.taskName &&
     params?.[REGISTRATION_GENERATION_PARAMETER] === task.registrationGeneration &&
@@ -447,12 +470,11 @@ function cancelWorks(works: workScheduler.WorkInfo[], expired: workScheduler.Wor
   for (const work of works) {
     try {
       cancelWork(work);
+      expired.push(work);
     } catch (error) {
       failures += 1;
       console.warn(`Unable to cancel Expo Background Fetch work '${work.workId}': ${String(error)}`);
     }
-
-    expired.push(work);
   }
 
   if (failures > 0) {

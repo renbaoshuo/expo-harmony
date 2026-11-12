@@ -1,0 +1,16 @@
+/*!
+ * @expo-harmony-copyright
+ *
+ * Copyright 2026-present, Baoshuo <i@baoshuo.ren> ( https://baoshuo.ren ).
+ * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
+ */
+
+'use strict';
+
+const { name } = require('../package.json');
+
+const backgroundFetch = () => name;
+
+module.exports = backgroundFetch;
+Object.defineProperty(module.exports, '__esModule', { value: true });
+module.exports.default = backgroundFetch;
