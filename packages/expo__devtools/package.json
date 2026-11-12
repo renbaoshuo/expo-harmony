@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo__devtools",
-  "version": "55.0.3-harmony.3",
+  "version": "57.0.1-harmony.0",
   "description": "HarmonyOS port of @expo/devtools",
   "keywords": [
     "react-native",
@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/devtools": "55.0.3"
+    "@expo/devtools": "57.0.1"
   },
   "engines": {
     "node": ">=20"
