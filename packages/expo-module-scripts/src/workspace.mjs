@@ -5,6 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -21,7 +22,7 @@ async function readOptional(file) {
   } catch (cause) {
     if (cause.code === 'ENOENT') return undefined;
 
-    throw new Error(cause instanceof Error ? cause.message : String(cause), { cause });
+    throw cause;
   }
 }
 
@@ -78,7 +79,6 @@ export function planWorkspaceBuild(projects, targets) {
     const declarations = [
       ...sections.flatMap(section => Object.entries(project.ohPackage[section] || {})),
       ...sections.flatMap(section => Object.entries(project.ohProjectPackage[section] || {})
-        // The project normally includes its own ./library module.
         .filter(([dependency]) => dependency !== name)),
       ...Object.entries(project.ohProjectPackage.overrides || {}).filter(([dependency]) => dependency !== name),
     ];
@@ -115,18 +115,47 @@ export function workspaceOverrides(project, dependencies) {
   ]));
 }
 
+async function snapshotBuildInput(file) {
+  const stat = await fs.lstat(file).catch((error) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (!stat) return { file };
+  if (!stat.isFile()) throw new Error(`OHPM build input must be a regular file: ${file}`);
+
+  return { file, source: await fs.readFile(file), mode: stat.mode & 0o777 };
+}
+
+async function replaceBuildInput(file, source, mode) {
+  if (source === undefined) {
+    await fs.rm(file, { force: true });
+    return;
+  }
+
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporary, source, { flag: 'wx' });
+    await fs.chmod(temporary, mode);
+    await fs.rename(temporary, file);
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
+}
+
 export async function withWorkspaceOverrides(project, overrides, build) {
-  // Fail instead of letting simultaneous builds overwrite each other's manifests.
   const lock = path.join(project.projectRoot, '.expo-harmony-build.lock');
   try {
     await fs.mkdir(lock);
   } catch (cause) {
     if (cause.code === 'EEXIST') throw new Error(`Harmony build already locked: ${lock}. If a previous process was killed, remove this directory after confirming it has stopped.`);
 
-    throw new Error(cause instanceof Error ? cause.message : String(cause), { cause });
+    throw cause;
   }
 
-  const snapshots = new Map();
+  let snapshots = [];
+  let result;
+  let failure;
+  const cleanupErrors = [];
   const controller = new globalThis.AbortController();
   const { signal } = controller;
   const interrupt = () => controller.abort();
@@ -136,21 +165,21 @@ export async function withWorkspaceOverrides(project, overrides, build) {
 
   try {
     if (Object.keys(overrides).length > 0) {
-      const file = path.join(project.projectRoot, 'oh-package.json5');
       const files = [
-        file,
+        path.join(project.projectRoot, 'oh-package.json5'),
         path.join(project.projectRoot, 'oh-package-lock.json5'),
         path.join(project.moduleRoot, 'oh-package-lock.json5'),
       ];
 
-      for (const target of files) {
-        snapshots.set(target, await readOptional(target));
-      }
+      const inputs = await Promise.all(files.map(snapshotBuildInput));
+      const [input] = inputs;
+      if (!input.source) throw new Error(`OHPM project manifest is missing: ${input.file}`);
 
-      const manifest = JSON5.parse(snapshots.get(file).toString());
+      const manifest = JSON5.parse(input.source.toString());
       manifest.overrides = { ...manifest.overrides, ...overrides };
 
-      await fs.writeFile(file, `${JSON5.stringify(manifest, null, 2)}\n`);
+      snapshots = inputs;
+      await replaceBuildInput(input.file, `${JSON5.stringify(manifest, null, 2)}\n`, input.mode);
 
       // Local HARs may change without their version or path changing. Force OHPM
       // to re-resolve them instead of retaining an older lockfile resolution.
@@ -159,21 +188,23 @@ export async function withWorkspaceOverrides(project, overrides, build) {
 
     if (signal.aborted) throw new globalThis.DOMException('This operation was aborted', 'AbortError');
 
-    const result = await build(signal);
+    result = await build(signal);
     if (signal.aborted) throw new globalThis.DOMException('This operation was aborted', 'AbortError');
-
-    return result;
+  } catch (error) {
+    failure = error instanceof Error ? error : new Error(String(error), { cause: error });
   } finally {
-    try {
-      for (const [file, source] of snapshots) {
-        if (source === undefined) await fs.rm(file, { force: true });
-        else await fs.writeFile(file, source);
-      }
-    } finally {
-      process.removeListener('SIGINT', interrupt);
-      process.removeListener('SIGTERM', interrupt);
-
-      await fs.rmdir(lock);
+    for (const { file, source, mode } of snapshots) {
+      await replaceBuildInput(file, source, mode).catch(error => cleanupErrors.push(error));
     }
+    await fs.rmdir(lock).catch(error => cleanupErrors.push(error));
+    process.removeListener('SIGINT', interrupt);
+    process.removeListener('SIGTERM', interrupt);
   }
+  if (cleanupErrors.length > 0) {
+    const errors = failure ? [failure, ...cleanupErrors] : cleanupErrors;
+    throw new AggregateError(errors, `Could not restore OHPM build inputs in ${project.projectRoot}: ${errors.map(error => error.message).join('. ')}`);
+  }
+  if (failure) throw failure;
+
+  return result;
 }

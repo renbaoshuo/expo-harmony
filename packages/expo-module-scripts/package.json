@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-module-scripts",
-  "version": "55.0.2-harmony.3",
+  "version": "55.0.2-harmony.4",
   "description": "HarmonyOS port of expo-module-scripts",
   "keywords": [
     "react-native",
@@ -19,19 +19,24 @@
   },
   "type": "module",
   "main": "./src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./patch": "./src/patch.mjs",
+    "./*": "./*"
+  },
   "bin": {
     "expo-harmony-module": "bin/expo-harmony-module.js"
   },
   "dependencies": {
     "@expo-harmony/expo-modules-autolinking": "workspace:*",
     "cross-spawn": "^7.0.6",
+    "diff": "8.0.3",
     "fast-glob": "^3.3.2",
     "json5": "2.2.3",
-    "semver": "7.7.3",
-    "tar": "7.5.21"
+    "semver": "7.7.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >=25.0.0"
   },
   "publishConfig": {
     "access": "public"
