@@ -1,6 +1,11 @@
 {
-  "platforms": ["harmony"],
+  "platforms": [
+    "harmony"
+  ],
   "harmony": {
-    "modules": ["ExpoMediaLibraryModule"]
+    "modules": [
+      "ExpoMediaLibraryModule",
+      "ExpoMediaLibraryNextModule"
+    ]
   }
 }

@@ -7,6 +7,10 @@
     {
       "name": "expo_media_library_write_permission_reason",
       "value": "Allow this app to save and manage your photos and videos."
+    },
+    {
+      "name": "expo_media_library_location_permission_reason",
+      "value": "Allow this app to read the locations stored in your photos."
     }
   ]
 }

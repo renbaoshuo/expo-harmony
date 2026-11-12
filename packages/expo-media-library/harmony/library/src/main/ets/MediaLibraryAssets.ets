@@ -23,29 +23,6 @@ export const ASSET_FETCH_COLUMNS: string[] = [
   photoAccessHelper.PhotoKeys.FAVORITE,
 ];
 
-const EXIF_KEYS: image.PropertyKey[] = [
-  image.PropertyKey.ORIENTATION,
-  image.PropertyKey.IMAGE_LENGTH,
-  image.PropertyKey.IMAGE_WIDTH,
-  image.PropertyKey.DATE_TIME_ORIGINAL,
-  image.PropertyKey.DATE_TIME,
-  image.PropertyKey.EXPOSURE_TIME,
-  image.PropertyKey.F_NUMBER,
-  image.PropertyKey.ISO_SPEED_RATINGS,
-  image.PropertyKey.FOCAL_LENGTH,
-  image.PropertyKey.FLASH,
-  image.PropertyKey.MAKE,
-  image.PropertyKey.MODEL,
-  image.PropertyKey.SOFTWARE,
-  image.PropertyKey.USER_COMMENT,
-  image.PropertyKey.GPS_LATITUDE,
-  image.PropertyKey.GPS_LATITUDE_REF,
-  image.PropertyKey.GPS_LONGITUDE,
-  image.PropertyKey.GPS_LONGITUDE_REF,
-  image.PropertyKey.GPS_ALTITUDE,
-  image.PropertyKey.GPS_ALTITUDE_REF,
-];
-
 export class LocationRecord {
   latitude: number;
   longitude: number;
@@ -125,7 +102,7 @@ export class MediaLibraryChangeEvent {
   hasIncrementalChanges: boolean = false;
 }
 
-export async function mapAsset(asset: photoAccessHelper.PhotoAsset, details: boolean): Promise<AssetRecord> {
+export async function mapAsset(asset: photoAccessHelper.PhotoAsset, details: boolean, readLocation: boolean = false): Promise<AssetRecord> {
   let width = memberNumber(asset, photoAccessHelper.PhotoKeys.WIDTH);
   let height = memberNumber(asset, photoAccessHelper.PhotoKeys.HEIGHT);
   const orientation = memberNumber(asset, photoAccessHelper.PhotoKeys.ORIENTATION);
@@ -152,13 +129,10 @@ export async function mapAsset(asset: photoAccessHelper.PhotoAsset, details: boo
     record.location = null;
     record.isFavorite = memberBoolean(asset, photoAccessHelper.PhotoKeys.FAVORITE);
 
-    if (asset.photoType === photoAccessHelper.PhotoType.IMAGE) {
-      const info = await readImageMetadata(asset.uri);
-
-      if (info !== undefined) {
-        record.exif = info.exif;
-        record.location = info.location ?? null;
-      }
+    const info = await readAssetImageMetadata(asset, readLocation);
+    if (info !== undefined) {
+      record.exif = info.exif;
+      record.location = info.location ?? null;
     }
   }
 
@@ -171,28 +145,34 @@ function assetMediaType(asset: photoAccessHelper.PhotoAsset): string {
   return 'unknown';
 }
 
-interface ImageMetadata {
+export interface ImageMetadata {
   exif: Record<string, ESObject>;
   location?: LocationRecord;
 }
 
-async function readImageMetadata(uri: string): Promise<ImageMetadata | undefined> {
+export async function readAssetImageMetadata(asset: photoAccessHelper.PhotoAsset, readLocation: boolean): Promise<ImageMetadata | undefined> {
+  if (asset.photoType !== photoAccessHelper.PhotoType.IMAGE) return undefined;
+
   let file: fileIo.File | undefined;
   let source: image.ImageSource | undefined;
 
   try {
-    file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
+    file = await fileIo.open(asset.uri, fileIo.OpenMode.READ_ONLY);
     source = image.createImageSource(file.fd);
-    const props = await source.getImageProperties(EXIF_KEYS);
+    const keys: image.PropertyKey[] = Object.values(image.PropertyKey).filter((key: image.PropertyKey): boolean =>
+      readLocation || !key.startsWith('GPS'));
+    const props = await source.getImageProperties(keys);
 
     const exif: Record<string, ESObject> = {};
-    EXIF_KEYS.forEach((key: image.PropertyKey): void => {
+    keys.forEach((key: image.PropertyKey): void => {
       const value = props[key];
       if (value !== undefined && value !== null) exif[key] = decodedExifValue(key, value);
     });
 
-    const lat = coordinate(props[image.PropertyKey.GPS_LATITUDE], props[image.PropertyKey.GPS_LATITUDE_REF]);
-    const lon = coordinate(props[image.PropertyKey.GPS_LONGITUDE], props[image.PropertyKey.GPS_LONGITUDE_REF]);
+    if (!readLocation) return { exif };
+
+    const lat = coordinate(props[image.PropertyKey.GPS_LATITUDE], props[image.PropertyKey.GPS_LATITUDE_REF], true);
+    const lon = coordinate(props[image.PropertyKey.GPS_LONGITUDE], props[image.PropertyKey.GPS_LONGITUDE_REF], false);
 
     return {
       exif,
@@ -251,7 +231,7 @@ function memberBoolean(asset: photoAccessHelper.PhotoAsset, key: photoAccessHelp
 
 export function effectiveCreationTime(asset: photoAccessHelper.PhotoAsset): number {
   const taken = memberNumber(asset, photoAccessHelper.PhotoKeys.DATE_TAKEN_MS);
-  return taken > 0 ? taken : memberNumber(asset, photoAccessHelper.PhotoKeys.DATE_ADDED_MS);
+  return taken !== 0 ? taken : memberNumber(asset, photoAccessHelper.PhotoKeys.DATE_ADDED_MS);
 }
 
 function rationalNumber(value: string): number | undefined {
@@ -266,17 +246,20 @@ function rationalNumber(value: string): number | undefined {
   return numerator / denominator;
 }
 
-function coordinate(value?: string | null, ref?: string | null): number | undefined {
-  if (value === undefined || value === null || ref == null) return undefined;
+function coordinate(value: string | null | undefined, ref: string | null | undefined, latitude: boolean): number | undefined {
+  if (value == null || ref == null) return undefined;
 
-  const direction = ref.trim().toUpperCase();
-  if (!['N', 'S', 'E', 'W'].includes(direction)) return undefined;
+  const code = ref.trim().toUpperCase();
+  const direction = /^\d{2}$/.test(code) ? String.fromCharCode(Number(code)) : code;
+  const positive = latitude ? 'N' : 'E';
+  const negative = latitude ? 'S' : 'W';
+  const limit = latitude ? 90 : 180;
+  if (direction !== positive && direction !== negative) return undefined;
 
   const parts = value.split(',').map((part: string): number | undefined => rationalNumber(part));
   if (parts.length !== 3 || parts.some((part: number | undefined): boolean => part === undefined)) return undefined;
 
   const degrees = (parts[0] ?? 0) + (parts[1] ?? 0) / 60 + (parts[2] ?? 0) / 3600;
-  const limit = direction === 'N' || direction === 'S' ? 90 : 180;
 
   if (
     (parts[0] as number) < 0 ||
@@ -288,5 +271,5 @@ function coordinate(value?: string | null, ref?: string | null): number | undefi
   )
     return undefined;
 
-  return direction === 'S' || direction === 'W' ? -degrees : degrees;
+  return direction === negative ? -degrees : degrees;
 }
