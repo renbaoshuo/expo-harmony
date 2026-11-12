@@ -6,192 +6,177 @@
  */
 
 import * as Brightness from 'expo-brightness';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 
-import { ActionButton, ActionRow, DataRow, Field, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { json } from '../format';
+import { ActionButton, ActionRow, DataRow, Field, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { Cycle, optionalNumber } from './visual-controls';
 
-// Allow the rounding of a brightness value to the system's 0–255 scale.
-const TOLERANCE = 1 / 255;
+const { AUTOMATIC, MANUAL } = Brightness.BrightnessMode;
+const modes = { 自动: AUTOMATIC, 手动: MANUAL } as const;
 
 export function BrightnessDemo() {
-  const [permission, request, get] = Brightness.usePermissions();
+  const [askOnMount, setAskOnMount] = useState<'手动' | '查询' | '请求'>('查询');
   const [input, setInput] = useState('0.5');
-  const [level, setLevel] = useState<number | null>(null);
-  const [saved, setSaved] = useState<number | null>(null);
-  const [events, setEvents] = useState(0);
   const [listening, setListening] = useState(false);
-  const access = useAsyncResult();
+  const [event, setEvent] = useState<Brightness.BrightnessEvent>();
+  const [mode, setMode] = useState<keyof typeof modes>('手动');
+  const [saved, setSaved] = useState<number>();
+  const initial = useRef<number | undefined>(undefined);
+  const pending = useRef<Promise<void> | undefined>(undefined);
+  const mounted = useRef(true);
   const action = useAsyncResult();
-  const checks = useAsyncResult();
-  const busy = access.state.phase === 'running' || action.state.phase === 'running' || checks.state.phase === 'running';
+  const system = useAsyncResult();
+  const busy = action.state.phase === 'running' || system.state.phase === 'running';
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      const restore = async () => {
+        if (initial.current === undefined) return;
+        if (Platform.OS === 'android') await Brightness.restoreSystemBrightnessAsync();
+        else await Brightness.setBrightnessAsync(initial.current);
+      };
+      void Promise.resolve(pending.current).catch(() => undefined).then(restore).catch(console.warn);
+    };
+  }, []);
 
   useEffect(() => {
     if (!listening) return;
 
-    const subscription = Brightness.addBrightnessListener((event) => {
-      setEvents(count => count + 1);
-      setLevel(event.brightness);
-    });
-
+    const subscription = Brightness.addBrightnessListener(setEvent);
     return () => subscription.remove();
   }, [listening]);
 
-  const read = () => action.run(async () => {
-    const [available, value] = await Promise.all([
-      Brightness.isAvailableAsync(),
-      Brightness.getBrightnessAsync(),
-    ]);
-    setLevel(value);
-    setSaved(previous => previous ?? value);
-
-    return JSON.stringify({ available, brightness: value }, null, 2);
-  });
-
-  const write = (value: number) => action.run(async () => {
-    await Brightness.setBrightnessAsync(value);
-
-    const actual = await Brightness.getBrightnessAsync();
-    setLevel(actual);
-
-    return JSON.stringify({ requested: value, brightness: actual }, null, 2);
-  });
-
-  const restore = async (value: number) => {
-    await Brightness.setBrightnessAsync(value);
-
-    const actual = await Brightness.getBrightnessAsync();
-    setLevel(actual);
-    if (!Number.isFinite(actual) || Math.abs(actual - value) > TOLERANCE) {
-      throw new Error(`恢复亮度失败：预期 ${value}，实际 ${actual}。`);
-    }
-
-    return actual;
+  const value = () => {
+    const brightness = optionalNumber(input, '亮度');
+    if (brightness === undefined) throw new Error('请输入亮度。');
+    return brightness;
   };
 
-  const verify = () => checks.run(async () => {
-    const initial = await Brightness.getBrightnessAsync();
-    const rows: string[] = [];
-    let restored: number;
-
-    try {
-      for (const value of [0, 0.25, 0.5, 0.75, 1, -1, 2]) {
-        const expected = Math.max(0, Math.min(1, value));
-        await Brightness.setBrightnessAsync(value);
-
-        const actual = await Brightness.getBrightnessAsync();
-        if (!Number.isFinite(actual) || Math.abs(actual - expected) > TOLERANCE) {
-          throw new Error(`亮度 ${value}：预期 ${expected}，实际 ${actual}。`);
-        }
-
-        rows.push(`${value} → ${actual}：通过`);
-      }
-
-      for (const method of [Brightness.setBrightnessAsync, Brightness.setSystemBrightnessAsync]) {
-        let rejected = false;
-        try {
-          await method(NaN);
-        } catch (error) {
-          if (!(error instanceof TypeError)) {
-            throw new Error(`NaN 应被 TypeError 拒绝，实际为 ${String(error)}。`);
-          }
-          rejected = true;
-        }
-
-        if (!rejected) throw new Error('NaN 未被拒绝。');
-      }
-      rows.push('两个亮度 setter 均拒绝 NaN：通过');
-
-      await Brightness.setBrightnessAsync(0.5);
-      const recovered = await Brightness.getBrightnessAsync();
-      if (!Number.isFinite(recovered) || Math.abs(recovered - 0.5) > TOLERANCE) {
-        throw new Error(`非法输入后无法继续读写亮度：${recovered}。`);
-      }
-      rows.push('非法输入后继续读写：通过');
-    } finally {
-      restored = await restore(initial);
+  const write = (readValue: () => number, setter = Brightness.setBrightnessAsync) => action.run(async () => {
+    const brightness = readValue();
+    if (initial.current === undefined) {
+      initial.current = await Brightness.getBrightnessAsync();
+      if (!mounted.current) return '';
+      setSaved(initial.current);
     }
+    pending.current = setter(brightness);
+    await pending.current;
 
-    return `${rows.join('\n')}\n恢复后的亮度数值：${restored}`;
-  });
-
-  const system = () => checks.run(async () => {
-    const initial = await Brightness.getBrightnessAsync();
-    let output: string;
-    let restored: number;
-
-    try {
-      await Brightness.setSystemBrightnessAsync(0.5);
-      await Brightness.restoreSystemBrightnessAsync();
-      await Brightness.setSystemBrightnessModeAsync(Brightness.BrightnessMode.MANUAL);
-
-      const [value, using, mode] = await Promise.all([
-        Brightness.getSystemBrightnessAsync(),
-        Brightness.isUsingSystemBrightnessAsync(),
-        Brightness.getSystemBrightnessModeAsync(),
-      ]);
-      if (!Number.isFinite(value) || Math.abs(value - 0.5) > TOLERANCE
-        || using || mode !== Brightness.BrightnessMode.UNKNOWN) {
-        throw new Error(`非 Android 兼容行为不符：${JSON.stringify({ value, using, mode })}`);
-      }
-
-      output = JSON.stringify({ brightness: value, usingSystemBrightness: using, mode }, null, 2);
-    } finally {
-      restored = await restore(initial);
-    }
-
-    return `${output}\n恢复后的亮度数值：${restored}`;
+    return json(brightness);
   });
 
   return (
     <>
-      <Panel eyebrow="权限" title="查询与请求亮度权限">
-        <DataRow label="授权状态" value={permission?.status ?? '加载中'} />
-        <DataRow label="已授权" value={String(permission?.granted ?? false)} />
+      <Panel title="应用亮度">
+        <Field label="亮度（0 到 1）" keyboardType="decimal-pad" value={input} onChangeText={setInput} />
         <ActionRow>
-          <ActionButton disabled={busy} label="查询权限" onPress={() => void access.run(async () => JSON.stringify(await get(), null, 2))} testID="brightness-permissions" />
-          <ActionButton disabled={busy} label="请求权限" onPress={() => void access.run(async () => JSON.stringify(await request(), null, 2))} testID="brightness-request" tone="secondary" />
-        </ActionRow>
-        <Note>HarmonyOS 当前窗口亮度无需授权，不会弹出权限对话框。</Note>
-        <ResultPanel state={access.state} />
-      </Panel>
-
-      <Panel eyebrow="窗口亮度" title="读取、设置与恢复数值">
-        <DataRow label="当前亮度" value={level === null ? '尚未读取' : level.toFixed(4)} />
-        <DataRow label="首次读取值" value={saved === null ? '尚未保存' : saved.toFixed(4)} />
-        <Field label="亮度值（0–1）" onChangeText={setInput} testID="brightness-input" value={input} />
-        <ActionRow>
-          <ActionButton disabled={busy} label="读取亮度" onPress={() => void read()} testID="brightness-read" />
-          <ActionButton disabled={busy} label="设置亮度" onPress={() => void write(Number(input))} testID="brightness-write" tone="secondary" />
+          <ActionButton disabled={busy} label="查询可用性" onPress={() => void action.run(async () => json(await Brightness.isAvailableAsync()))} tone="secondary" />
+          <ActionButton disabled={busy} label="读取亮度" onPress={() => void action.run(async () => json(await Brightness.getBrightnessAsync()))} testID="brightness-read" tone="secondary" />
+          <ActionButton disabled={busy} label="设置亮度" onPress={() => void write(value)} testID="brightness-write" />
           <ActionButton
-            disabled={busy || saved === null}
-            label="恢复保存值"
+            disabled={busy || saved === undefined}
+            label="恢复原亮度"
             onPress={() => {
-              if (saved !== null) void write(saved);
+              if (saved !== undefined) void write(() => saved);
             }}
-            testID="brightness-restore"
             tone="secondary"
           />
         </ActionRow>
-        <Note>先读取可保存当前数值。窗口亮度只在前台获焦时生效；恢复数值不会恢复“跟随系统”。模拟器读写成功不代表物理屏幕亮度发生变化。</Note>
+        {String(Platform.OS) === 'harmony'
+          ? (
+              <ActionRow>
+                <ActionButton
+                  disabled={busy}
+                  label="getSystemBrightnessAsync"
+                  onPress={() => void action.run(async () => json(await Brightness.getSystemBrightnessAsync()))}
+                  tone="secondary"
+                />
+                <ActionButton
+                  disabled={busy}
+                  label="setSystemBrightnessAsync"
+                  onPress={() => void write(value, Brightness.setSystemBrightnessAsync)}
+                  tone="secondary"
+                />
+              </ActionRow>
+            )
+          : null}
+        {saved === undefined ? null : <DataRow label="原亮度" value={saved} />}
         <ResultPanel state={action.state} />
       </Panel>
-
-      <Panel eyebrow="接口验证" title="数值边界与平台兼容行为">
-        <ActionRow>
-          <ActionButton disabled={busy} label="验证读写与边界" onPress={() => void verify()} testID="brightness-verify" />
-          <ActionButton disabled={busy || Platform.OS === 'android'} label="验证非 Android 行为" onPress={() => void system()} testID="brightness-system" tone="secondary" />
-        </ActionRow>
-        <Note>测试会短暂调整亮度，并在结束或失败后恢复原数值。HarmonyOS 系统亮度接口沿用官方非 Android 分支，不修改系统亮度模式。</Note>
-        <ResultPanel state={checks.state} />
+      {Platform.OS === 'android'
+        ? (
+            <Panel title="系统亮度">
+              <Cycle label="调节方式" value={mode} choices={['手动', '自动']} onChange={setMode} />
+              <ActionRow>
+                <ActionButton disabled={busy} label="读取系统亮度" onPress={() => void system.run(async () => json(await Brightness.getSystemBrightnessAsync()))} tone="secondary" />
+                <ActionButton
+                  disabled={busy}
+                  label="设置系统亮度"
+                  onPress={() => void system.run(async () => {
+                    const brightness = value();
+                    await Brightness.setSystemBrightnessAsync(brightness);
+                    return json(brightness);
+                  })}
+                />
+                <ActionButton
+                  disabled={busy}
+                  label="恢复使用系统亮度"
+                  onPress={() => void system.run(async () => {
+                    await Brightness.restoreSystemBrightnessAsync();
+                    return '已恢复使用系统亮度';
+                  })}
+                  tone="secondary"
+                />
+                <ActionButton disabled={busy} label="查询是否使用系统亮度" onPress={() => void system.run(async () => json(await Brightness.isUsingSystemBrightnessAsync()))} tone="secondary" />
+                <ActionButton disabled={busy} label="读取调节方式" onPress={() => void system.run(async () => Brightness.BrightnessMode[await Brightness.getSystemBrightnessModeAsync()] ?? '')} tone="secondary" />
+                <ActionButton
+                  disabled={busy}
+                  label="设置调节方式"
+                  onPress={() => void system.run(async () => {
+                    await Brightness.setSystemBrightnessModeAsync(modes[mode]);
+                    return mode;
+                  })}
+                />
+              </ActionRow>
+              <ResultPanel state={system.state} />
+            </Panel>
+          )
+        : null}
+      <Panel title="亮度权限">
+        <Cycle label="打开权限示例时" value={askOnMount} choices={['手动', '查询', '请求']} onChange={setAskOnMount} />
+        <PermissionDemo key={askOnMount} getOnMount={askOnMount === '查询'} requestOnMount={askOnMount === '请求'} />
       </Panel>
+      {Platform.OS === 'ios'
+        ? (
+            <Panel title="亮度变化">
+              <ActionButton label={listening ? '移除监听' : '监听亮度变化'} onPress={() => setListening(value => !value)} tone="secondary" />
+              {event ? <DataRow label="最近亮度" value={event.brightness} /> : null}
+            </Panel>
+          )
+        : null}
+    </>
+  );
+}
 
-      <Panel eyebrow="事件" title="订阅与移除亮度监听">
-        <DataRow label="正在监听" value={listening ? '是' : '否'} />
-        <DataRow label="事件次数" value={String(events)} />
-        <ActionButton disabled={busy} label={listening ? '移除监听' : '开始监听'} onPress={() => setListening(value => !value)} testID="brightness-listen" tone="secondary" />
-        <Note>该事件在上游仅由 iOS 发送；HarmonyOS 可以订阅和移除，但不会发送事件。离开页面会自动移除监听。</Note>
-      </Panel>
+function PermissionDemo({ getOnMount, requestOnMount }: { getOnMount: boolean; requestOnMount: boolean }) {
+  const [permission, request, get] = Brightness.usePermissions({ get: getOnMount, request: requestOnMount });
+  const result = useAsyncResult();
+  const busy = result.state.phase === 'running';
+
+  return (
+    <>
+      <DataRow label="usePermissions" value={permission?.status ?? '未读取'} />
+      <ActionRow>
+        <ActionButton disabled={busy} label="查询权限" onPress={() => void result.run(async () => json(await Brightness.getPermissionsAsync()))} tone="secondary" />
+        <ActionButton disabled={busy} label="请求权限" onPress={() => void result.run(async () => json(await Brightness.requestPermissionsAsync()))} />
+        <ActionButton disabled={busy} label="Hook 查询" onPress={() => void result.run(async () => json(await get()))} tone="secondary" />
+        <ActionButton disabled={busy} label="Hook 请求" onPress={() => void result.run(async () => json(await request()))} tone="secondary" />
+      </ActionRow>
+      <ResultPanel state={result.state} />
     </>
   );
 }

@@ -6,96 +6,121 @@
  */
 
 import * as AgeRange from 'expo-age-range';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 
 import { json } from '../format';
-import { ActionButton, ActionRow, DataRow, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { Field, Panel } from '../ui';
+import { SystemApiActions } from './system-api-actions';
 
-export function AgeRangeDemo() {
-  const [range, setRange] = useState<AgeRange.AgeRangeResponse>();
-  const [code, setCode] = useState<string>();
-  const action = useAsyncResult();
-  const checks = useAsyncResult();
-  const busy = action.state.phase === 'running' || checks.state.phase === 'running';
-  const harmony = String(Platform.OS) === 'harmony';
+const SAMPLE_SIGNALS: AgeRange.FakeAgeSignals = {
+  ageSignalsStatus: 'SHARED',
+  lowerBound: 13,
+  upperBound: 15,
+  installId: 'demo-install',
+  ageRangeSource: 'TIER_B',
+  significantChangeStatus: 'PENDING',
+  significantChangeApprovalDate: null,
+};
 
-  const read = async (options: AgeRange.AgeRangeRequest) => {
-    setRange(undefined);
-    setCode(undefined);
+function AndroidAgeSignalsDemo() {
+  const [signals, setSignals] = useState(json(SAMPLE_SIGNALS));
+  const [errorCode, setErrorCode] = useState('-1');
+  const applied = useRef(false);
 
-    try {
-      const value = await AgeRange.requestAgeRangeAsync(options);
-
-      setRange(value);
-
-      return value;
-    } catch (error) {
-      const code = error instanceof Error && 'code' in error ? String(error.code) : 'UNKNOWN';
-
-      setCode(code);
-
-      throw new Error(`[${code}] ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-
-  const inspect = (options: AgeRange.AgeRangeRequest) => action.run(async () => json(await read(options)));
-
-  const verify = () => checks.run(async () => {
-    const results: AgeRange.AgeRangeResponse[] = [];
-
-    for (const options of [{ threshold1: 18 }, { threshold1: 13, threshold2: 16, threshold3: 18 }]) {
-      const value = await read(options);
-
-      for (const bound of [value.lowerBound, value.upperBound]) {
-        if (bound !== null && (!Number.isSafeInteger(bound) || bound < 0)) {
-          throw new Error('年龄边界必须是非负整数或 null。');
-        }
-      }
-
-      if (value.lowerBound !== null && value.upperBound !== null && value.lowerBound > value.upperBound) {
-        throw new Error('年龄下限不能大于上限。');
-      }
-
-      if (harmony) {
-        if ((value.lowerBound === null) !== (value.upperBound === null)) {
-          throw new Error('HarmonyOS 未提供年龄时，两个边界都应为 null。');
-        }
-
-        if (Object.keys(value).some(key => key !== 'lowerBound' && key !== 'upperBound')) {
-          throw new Error('HarmonyOS 不应返回 iOS 或 Android 专用元数据。');
-        }
-      }
-
-      results.push(value);
-    }
-
-    return json({ passed: true, results });
-  });
+  useEffect(() => () => {
+    if (applied.current) AgeRange.setFakeAgeSignals(null);
+  }, []);
 
   return (
     <>
-      <Panel eyebrow="系统年龄段" title="请求年龄范围">
-        <DataRow label="年龄下限" value={range ? String(range.lowerBound) : '尚未读取'} />
-        <DataRow label="年龄上限" value={range ? String(range.upperBound) : '尚未读取'} />
-        <DataRow label="错误码" value={code ?? '无'} />
-        <ActionRow>
-          <ActionButton disabled={busy} label="读取年龄段（18）" onPress={() => void inspect({ threshold1: 18 })} testID="age-range-read" />
-          <ActionButton disabled={busy} label="读取年龄段（13 / 16 / 18）" onPress={() => void inspect({ threshold1: 13, threshold2: 16, threshold3: 18 })} testID="age-range-thresholds" tone="secondary" />
-        </ActionRow>
-        <ResultPanel state={action.state} />
+      <Panel title="年龄信号授权">
+        <SystemApiActions actions={[['请求共享年龄信号', AgeRange.requestAgeSignalsAccessAsync]]} />
+      </Panel>
+      {__DEV__
+        ? (
+            <Panel title="模拟年龄信号">
+              <Field label="模拟返回值（JSON）" multiline onChangeText={setSignals} value={signals} />
+              <Field keyboardType="numbers-and-punctuation" label="模拟错误码" onChangeText={setErrorCode} value={errorCode} />
+              <SystemApiActions
+                actions={[
+                  ['使用模拟信号', () => {
+                    AgeRange.setFakeAgeSignals(JSON.parse(signals) as AgeRange.FakeAgeSignals);
+                    applied.current = true;
+                  }],
+                  ['使用模拟错误', () => {
+                    const code = Number(errorCode);
+                    if (!errorCode.trim() || !Number.isInteger(code)) throw new Error('请输入整数错误码。');
+                    AgeRange.setFakeAgeSignals({ errorCode: code });
+                    applied.current = true;
+                  }],
+                  ['恢复系统信号', () => {
+                    AgeRange.setFakeAgeSignals(null);
+                    applied.current = false;
+                  }],
+                ]}
+              />
+            </Panel>
+          )
+        : null}
+    </>
+  );
+}
+
+export function AgeRangeDemo() {
+  const [first, setFirst] = useState('18');
+  const [second, setSecond] = useState('');
+  const [third, setThird] = useState('');
+  const [description, setDescription] = useState('新版增加了消息功能。');
+  const [canShowUpdate, setCanShowUpdate] = useState(false);
+  const ios = Platform.OS === 'ios';
+
+  return (
+    <>
+      {Platform.OS === 'android' ? <AndroidAgeSignalsDemo /> : null}
+      <Panel title="年龄范围">
+        {ios
+          ? (
+              <>
+                <Field keyboardType="number-pad" label="第一个年龄阈值" onChangeText={setFirst} value={first} />
+                <Field keyboardType="number-pad" label="第二个年龄阈值（选填）" onChangeText={setSecond} value={second} />
+                <Field keyboardType="number-pad" label="第三个年龄阈值（选填）" onChangeText={setThird} value={third} />
+              </>
+            )
+          : null}
+        <SystemApiActions
+          actions={[
+            ['读取年龄范围', () => AgeRange.requestAgeRangeAsync({
+              threshold1: ios ? Number(first) : 18,
+              ...(ios && second.trim() ? { threshold2: Number(second) } : {}),
+              ...(ios && third.trim() ? { threshold3: Number(third) } : {}),
+            }), 'age-range-read', ios && !first.trim()],
+          ]}
+        />
       </Panel>
 
-      <Panel eyebrow="接口校验" title="验证返回值与重复请求">
-        <Note>使用两组阈值依次请求，检查年龄边界、空值和平台字段。系统年龄段可能在两次请求之间变化，因此不要求两次结果相同。</Note>
-        <ActionButton disabled={busy} label="校验接口返回值" onPress={() => void verify()} testID="age-range-verify" />
-        <ResultPanel state={checks.state} />
-      </Panel>
-
-      <Panel eyebrow="平台行为" title="理解未知年龄与服务限制">
-        <Note>HarmonyOS 读取系统未成年人模式的年龄段，忽略 iOS 专用阈值，不弹出年龄输入框，也不改变系统模式。模式关闭时返回两个 null，这不代表用户成年。</Note>
-        <Note>HarmonyOS 年龄上限包含在区间内，与 Android 一致；iOS 使用排除式上限。模拟器或不支持的账号可能返回服务不可用或系统错误，页面保留错误码，可再次请求。</Note>
-      </Panel>
+      {ios
+        ? (
+            <Panel title="年龄验证与更新确认">
+              <SystemApiActions
+                actions={[
+                  ['查询年龄验证是否适用', AgeRange.isEligibleForAgeFeaturesAsync],
+                  ['查询所需的监管功能', async () => {
+                    const features = await AgeRange.getRequiredRegulatoryFeaturesAsync();
+                    setCanShowUpdate(features?.includes('significantAppChangeRequiresAdultNotification') ?? false);
+                    return features;
+                  }],
+                ]}
+              />
+              <Field label="更新说明" onChangeText={setDescription} value={description} />
+              <SystemApiActions
+                actions={[
+                  ['显示更新确认', () => AgeRange.showSignificantUpdateAcknowledgmentAsync(description), undefined, !canShowUpdate || !description.trim()],
+                ]}
+              />
+            </Panel>
+          )
+        : null}
     </>
   );
 }

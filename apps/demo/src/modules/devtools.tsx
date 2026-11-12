@@ -5,33 +5,57 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { reloadAppAsync } from 'expo';
+import { fetch } from 'expo/fetch';
+import { File, Paths } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useEffect, useRef, useState } from 'react';
 import { NativeModules } from 'react-native';
-import { ActionButton, ActionRow, Field, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
-import { checkCancellation, checkFetch, checkFiles } from './devtools/network';
+
+import { json } from '../format';
+import { ActionButton, ActionRow, Field, Panel, ResultPanel, useAsyncResult } from '../ui';
+
+const endpoints = ['text', 'empty', 'binary', 'limit', 'large', 'stream', 'slow', 'gzip', 'echo'];
 
 export function DevToolsDemo() {
-  const action = useAsyncResult();
-  const reload = useAsyncResult();
+  const result = useAsyncResult();
   const [address, setAddress] = useState(() => {
     const bundle = NativeModules.SourceCode?.scriptURL as string | undefined;
     return bundle?.startsWith('http') ? new URL(bundle).origin : 'http://127.0.0.1:8088';
   });
+  const [path, setPath] = useState('text');
+  const [method, setMethod] = useState('GET');
+  const [headers, setHeaders] = useState('{}');
+  const [body, setBody] = useState('Expo Harmony 网络');
   const controller = useRef<AbortController | null>(null);
-  const busy = action.state.phase === 'running';
+  const busy = result.state.phase === 'running';
 
   useEffect(() => () => controller.current?.abort(), []);
 
-  function request(check: (base: URL, controller: AbortController) => Promise<string>) {
-    return action.run(async () => {
-      const base = new URL('/__devtools__/', address.trim());
+  const url = () => new URL(path, new URL('/__devtools__/', address)).href;
+
+  function request() {
+    void result.run(async () => {
       const pending = new AbortController();
       controller.current = pending;
       const timer = setTimeout(() => pending.abort(), 20000);
 
       try {
-        return await check(base, pending);
+        const response = await fetch(url(), {
+          method,
+          headers: JSON.parse(headers),
+          body: ['GET', 'HEAD'].includes(method.toUpperCase()) ? undefined : body,
+          signal: pending.signal,
+        });
+        const bytes = new Uint8Array(await response.arrayBuffer());
+
+        return json({
+          status: response.status,
+          headers: Object.fromEntries(response.headers.entries()),
+          size: bytes.byteLength,
+          body: response.headers.get('content-type')?.includes('text')
+            ? new TextDecoder().decode(bytes.subarray(0, 256))
+            : [...bytes.subarray(0, 32)],
+        });
       } finally {
         clearTimeout(timer);
         if (controller.current === pending) controller.current = null;
@@ -39,35 +63,64 @@ export function DevToolsDemo() {
     });
   }
 
+  function transfer(operation: (file: File) => Promise<string>) {
+    void result.run(async () => {
+      const file = new File(Paths.cache, `devtools-${Date.now()}.bin`);
+      try {
+        return await operation(file);
+      } finally {
+        if (file.exists) file.delete();
+      }
+    });
+  }
+
   return (
-    <>
-      <Panel eyebrow="NETWORK INSPECTION" title="Expo 原生网络检查">
-        <Note>
-          先连接 React Native DevTools 的 Network 面板。这里使用 demo Metro 的本地响应，不访问外网。
-          页面校验真实传输结果；Network 中还需核对文本、二进制、1 MiB 边界、流式响应及文件上传的预览策略。
-        </Note>
-        <Field label="Demo Metro 地址" value={address} onChangeText={setAddress} />
-        <ActionRow>
-          <ActionButton label="校验 Fetch 响应" testID="devtools-fetch" disabled={busy} onPress={() => void request(checkFetch)} />
-          <ActionButton label="校验文件传输" testID="devtools-files" disabled={busy} onPress={() => void action.run(() => checkFiles(new URL('/__devtools__/', address.trim())))} />
-          <ActionButton label="校验请求取消" testID="devtools-cancel" disabled={busy} onPress={() => void request(checkCancellation)} />
-          <ActionButton label="中止 Fetch" tone="danger" disabled={!busy || controller.current === null} onPress={() => controller.current?.abort()} />
-        </ActionRow>
-        <ResultPanel state={action.state} />
-      </Panel>
-      <Panel eyebrow="EXPO RUNTIME" title="运行时重新加载">
-        <Note>开发模式：{String(__DEV__)}。重载会重新创建应用，页面状态随之重置；偏好设置和错误查看分别在开发菜单和 LogBox 卡片中验证。</Note>
+    <Panel title="React Native DevTools Network">
+      <Field label="Metro 地址" value={address} onChangeText={setAddress} />
+      <Field label="响应路径" value={path} onChangeText={setPath} />
+      <ActionRow>
+        {endpoints.map(endpoint => (
+          <ActionButton
+            key={endpoint}
+            label={endpoint}
+            tone={endpoint === path ? 'primary' : 'secondary'}
+            onPress={() => {
+              setPath(endpoint);
+              setMethod(endpoint === 'echo' ? 'POST' : 'GET');
+            }}
+          />
+        ))}
+      </ActionRow>
+      <Field label="method" value={method} onChangeText={setMethod} />
+      <Field label="headers（JSON 对象）" value={headers} onChangeText={setHeaders} />
+      <Field label="body" value={body} onChangeText={setBody} multiline />
+      <ActionRow>
+        <ActionButton label="fetch()" testID="devtools-fetch" disabled={busy} onPress={request} />
+        <ActionButton label="取消请求" testID="devtools-cancel" tone="secondary" disabled={!busy || controller.current === null} onPress={() => controller.current?.abort()} />
         <ActionButton
-          label="重新加载应用"
-          testID="devtools-reload"
-          disabled={busy || reload.state.phase === 'running'}
-          onPress={() => void reload.run(async () => {
-            await reloadAppAsync('DevTools demo');
-            return '已请求重新加载';
+          label="downloadFileAsync()"
+          testID="devtools-download"
+          disabled={busy}
+          onPress={() => transfer(async (file) => {
+            const downloaded = await File.downloadFileAsync(url(), file, { headers: JSON.parse(headers) });
+            return json({ size: downloaded.size, type: downloaded.type });
           })}
         />
-        <ResultPanel state={reload.state} />
-      </Panel>
-    </>
+        <ActionButton
+          label="uploadAsync()"
+          testID="devtools-upload"
+          disabled={busy}
+          onPress={() => transfer(async (file) => {
+            file.write(body);
+            return json(await FileSystem.uploadAsync(url(), file.uri, {
+              httpMethod: method === 'PUT' || method === 'PATCH' ? method : 'POST',
+              headers: JSON.parse(headers),
+              uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+            }));
+          })}
+        />
+      </ActionRow>
+      <ResultPanel state={result.state} />
+    </Panel>
   );
 }

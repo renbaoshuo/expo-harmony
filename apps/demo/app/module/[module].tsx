@@ -5,11 +5,11 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { router, Stack, useLocalSearchParams } from 'expo-router';
 
 import { findModule } from '../../src/catalog';
 import { ModuleDemo } from '../../src/module-demo';
-import { LabScreen, Note } from '../../src/ui';
+import { ActionButton, LabScreen } from '../../src/ui';
 
 export default function ModuleScreen() {
   const params = useLocalSearchParams<{ module?: string | string[] }>();
@@ -17,22 +17,20 @@ export default function ModuleScreen() {
 
   if (!module) {
     return (
-      <LabScreen description="当前分支暂不包含该包。" kicker="未知包" title="未找到模块">
-        <Note>请返回首页，选择一个已安装的包。</Note>
-      </LabScreen>
+      <>
+        <Stack.Screen options={{ title: '未找到模块' }} />
+        <LabScreen>
+          <ActionButton label="返回模块列表" onPress={() => router.replace('/')} />
+        </LabScreen>
+      </>
     );
   }
 
   return (
     <>
       <Stack.Screen options={{ title: module.title }} />
-      <LabScreen
-        description={module.summary}
-        kicker={module.packageName}
-        testID={`module-${module.id}`}
-        title={module.title}
-      >
-        <ModuleDemo id={module.id} />
+      <LabScreen testID={`module-${module.id}`}>
+        <ModuleDemo key={module.id} id={module.id} />
       </LabScreen>
     </>
   );

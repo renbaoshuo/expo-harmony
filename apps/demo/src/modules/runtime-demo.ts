@@ -11,12 +11,11 @@ type Events = { onUpdatesStateChange: (value: { event: string }) => void };
 
 export declare class RuntimeDemoModule extends NativeModule<Events> {
   readImage(uri: string, editing: boolean, callback: boolean): Promise<string>;
-  checkImages(): Promise<string>;
-  readManifest(input: string): string;
-  readJSON(input: string, key: string, type: 'raw' | 'string' | 'number' | 'boolean' | 'array' | 'object', nullable: boolean): string;
-  checkJSON(): string;
+  readManifest(input: string, method: string, pluginName: string): string;
+  readJSON(input: string, key: string, type: 'hasValue' | 'raw' | 'string' | 'number' | 'boolean' | 'array' | 'object', nullable: boolean): string;
+  parseHeader(method: string, input: string, multipleLines: boolean): string;
   serializeHeader(format: 'dictionary' | 'list' | 'item', input: string): string;
-  readUpdates(): string;
+  readUpdates(property: string): string;
 }
 
 export const runtimeDemo = requireOptionalNativeModule<RuntimeDemoModule>('RuntimeDemo');

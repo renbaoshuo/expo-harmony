@@ -16,16 +16,18 @@ public final class ExpoModuleShowcaseModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("ExpoModuleShowcase")
-    Constants(["platform": "ios", "nativeLanguage": "Swift"])
+    Constant("platform") { "ios" }
+    Constant("nativeLanguage") { "Swift" }
     Events("onShowcaseEvent")
     Function("echo") { (value: String) in value }
     AsyncFunction("echoAsync") { (value: String) in value }
     AsyncFunction("failAsync") { () throws -> Void in
-      throw Exception(name: "ShowcaseException", description: "这是用于测试的原生错误。", code: "ERR_SHOWCASE")
+      throw Exception(name: "ShowcaseException", description: "原生模块返回了示例错误", code: "ERR_SHOWCASE")
     }
     Function("emitEvent") { (value: String) in
       self.sequence += 1
-      self.sendEvent("onShowcaseEvent", ["value": value, "sequence": self.sequence, "platform": "ios"])
+      let payload: [String: Any] = ["value": value, "sequence": self.sequence, "platform": "ios"]
+      self.emit(event: "onShowcaseEvent", payload: payload)
     }
     Class(ShowcaseSharedCounter.self) {
       Constructor { (value: Double) in ShowcaseSharedCounter(value) }
@@ -34,7 +36,7 @@ public final class ExpoModuleShowcaseModule: Module {
       Function("increment") { (counter: ShowcaseSharedCounter, delta: Double) in counter.increment(delta) }
       AsyncFunction("incrementAsync") { (counter: ShowcaseSharedCounter, delta: Double) in counter.increment(delta) }
       Function("emitValueChanged") { (counter: ShowcaseSharedCounter) in
-        counter.emit(event: "onValueChanged", arguments: ["value": counter.value])
+        counter.emit(event: "onValueChanged", payload: ["value": counter.value])
       }
     }
     Class(ShowcaseTextRef.self) {
@@ -50,7 +52,8 @@ public final class ExpoModuleShowcaseModule: Module {
     }
     AsyncFunction("openNativePage") { (initialValue: Double, promise: Promise) in
       guard self.page == nil, let presenter = self.appContext?.utilities?.currentViewController(),
-        presenter.viewIfLoaded?.window != nil, !presenter.isBeingDismissed else {
+        presenter.viewIfLoaded?.window != nil, presenter.presentedViewController == nil,
+        !presenter.isBeingPresented, !presenter.isBeingDismissed else {
         throw Exception(name: "ShowcasePageException", description: "没有可用的页面容器，或原生页面已经打开。", code: "ERR_SHOWCASE_PAGE")
       }
       let page = ShowcasePage(initialValue: initialValue) { [weak self] action, value in

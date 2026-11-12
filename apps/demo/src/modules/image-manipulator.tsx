@@ -6,224 +6,276 @@
  */
 
 import { Asset } from 'expo-asset';
+import { Image, type ImageRef as SourceRef } from 'expo-image';
 import { File } from 'expo-file-system';
-import { Image } from 'expo-image';
 import { FlipType, ImageManipulator, manipulateAsync, SaveFormat, useImageManipulator } from 'expo-image-manipulator';
-import type { ImageRef } from 'expo-image-manipulator';
+import type { Action, ImageManipulatorContext, ImageRef, ImageResult, SaveOptions } from 'expo-image-manipulator';
 import { useEffect, useRef, useState } from 'react';
-import { Image as NativeImage, StyleSheet } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
 
 import sample from '../../assets/image/sample.png';
 import { json } from '../format';
 import { palette } from '../theme';
-import { ActionButton, ActionRow, DataRow, Field, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { ActionButton, ActionRow, DataRow, Field, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { Cycle, optionalNumber, Toggle } from './visual-controls';
 
-const formats = [SaveFormat.JPEG, SaveFormat.PNG, SaveFormat.WEBP];
+const sampleUri = Asset.fromModule(sample).uri;
+const formats = [SaveFormat.PNG, SaveFormat.JPEG, SaveFormat.WEBP];
+const transforms = Platform.OS === 'web' ? ['缩放', '旋转', '翻转', '裁剪', '扩展画布'] : ['缩放', '旋转', '翻转', '裁剪'];
 
-async function verify() {
-  const asset = await Asset.fromModule(sample).downloadAsync();
-  if (!asset.localUri) throw new Error('样例没有可读的本地 URI。');
-
-  const context = ImageManipulator.manipulate(asset.localUri);
-  const images = new Set<ImageRef>();
-  const files: File[] = [];
-  const results: string[] = [];
-
-  async function render(width: number, height: number) {
-    const image = await context.renderAsync();
-    images.add(image);
-    if (image.width !== width || image.height !== height) {
-      throw new Error(`图片尺寸错误：预期 ${width} × ${height}，实际 ${image.width} × ${image.height}`);
-    }
-
-    return image;
-  }
-
-  async function save(image: ImageRef, format = SaveFormat.PNG) {
-    const result = await image.saveAsync({ format, compress: 0.8, base64: true });
-    const file = new File(result.uri);
-    files.push(file);
-    if (!file.exists || !result.base64 || result.base64 !== await file.base64()) {
-      throw new Error(`${format} 文件与 Base64 不一致。`);
-    }
-
-    return result;
-  }
-
-  try {
-    const original = await render(160, 96);
-    const baseline = await save(original);
-    results.push('✓ 本地图片加载、原始尺寸与 PNG 保存');
-
-    context.resize({ width: 80 });
-    const resized = await render(80, 48);
-    context.rotate(90).flip(FlipType.Horizontal).flip(FlipType.Vertical);
-    await render(48, 80);
-    context.crop({ originX: 4, originY: 8, width: 24, height: 40 });
-    const cropped = await render(24, 40);
-    if (resized.width !== 80 || original.width !== 160) throw new Error('后续操作修改了先前的快照。');
-    results.push('✓ 缩放、旋转、双轴翻转、裁剪与快照隔离');
-
-    for (const format of formats) {
-      const result = await save(cropped, format);
-      const decoded = await Image.loadAsync(result.uri);
-      try {
-        if (decoded.width !== 24 || decoded.height !== 40 || result.width !== 24 || result.height !== 40) {
-          throw new Error(`${format} 文件解码尺寸错误。`);
-        }
-      } finally {
-        decoded.release();
-      }
-    }
-    results.push('✓ JPEG / PNG / WebP 编码、重新解码与 Base64 一致性');
-
-    context.reset().resize({ height: 48 });
-    await render(80, 48);
-    context.reset().resize({ width: 40, height: 30 });
-    await render(40, 30);
-    context.reset().rotate(-90).rotate(90).flip(FlipType.Horizontal).flip(FlipType.Horizontal)
-      .flip(FlipType.Vertical).flip(FlipType.Vertical);
-    if ((await save(await render(160, 96))).base64 !== baseline.base64) throw new Error('反向操作没有恢复原图。');
-    results.push('✓ 单边与双边缩放、负角度、翻转往返及 reset');
-
-    for (const operation of [
-      () => context.crop({ originX: -1, originY: 0, width: 20, height: 20 }),
-      () => context.resize({ width: 0 }),
-    ]) {
-      let rejected = false;
-      try {
-        operation();
-        images.add(await context.renderAsync());
-      } catch {
-        rejected = true;
-      }
-      if (!rejected) throw new Error('无效参数没有拒绝。');
-
-      context.reset();
-      await render(160, 96);
-    }
-    results.push('✓ 越界裁剪、无效尺寸与 reset 后恢复');
-
-    const source = await Image.loadAsync(sample);
-    const shared = ImageManipulator.manipulate(source);
-    source.release();
-    try {
-      const image = await shared.resize({ width: 32 }).renderAsync();
-      images.add(image);
-      if (image.width !== 32 || image.height !== 19) throw new Error('共享引用尺寸或截断行为错误。');
-    } finally {
-      shared.release();
-    }
-    results.push('✓ expo-image 共享引用与来源提前释放');
-
-    const data = `data:image/png;base64,${baseline.base64}`;
-    const legacy = await manipulateAsync(data, [{ resize: { width: 80 } }, { rotate: 90 }], { format: SaveFormat.PNG });
-    files.push(new File(legacy.uri));
-    if (legacy.width !== 48 || legacy.height !== 80) throw new Error('旧版 API 或 data URI 结果错误。');
-    results.push('✓ data URI 与官方 manipulateAsync');
-
-    const saving = original.saveAsync({ format: SaveFormat.PNG });
-    original.release();
-    images.delete(original);
-    const saved = new File((await saving).uri);
-    files.push(saved);
-    if (!saved.exists) throw new Error('释放引用后正在保存的图片丢失。');
-    results.push('✓ 保存过程中释放 ImageRef');
-
-    const snapshot = await save(cropped);
-    context.reset();
-    const restored = await save(await render(160, 96));
-    if (restored.base64 !== baseline.base64 || (await save(cropped)).base64 !== snapshot.base64) {
-      throw new Error('reset 没有恢复原图，或修改了已返回快照的内容。');
-    }
-    results.push('✓ reset 恢复原图，已返回快照的内容保持独立');
-
-    return results.join('\n');
-  } finally {
-    context.release();
-    for (const image of images) image.release();
-    for (const file of files) if (file.exists) file.delete();
-  }
-}
+type ActiveContext = { id: number; context: ImageManipulatorContext; source: string | SourceRef };
 
 export function ImageManipulatorDemo() {
-  const uri = NativeImage.resolveAssetSource(sample).uri;
-  const context = useImageManipulator(uri);
-  const action = useAsyncResult();
-  const checks = useAsyncResult();
-  const files = useRef<File[]>([]);
+  const [input, setInput] = useState(sampleUri);
+  const [hookUri, setHookUri] = useState(sampleUri);
+  const [mode, setMode] = useState<'Hook' | 'Context' | 'manipulateAsync'>('Hook');
+  const [active, setActive] = useState<ActiveContext>();
+  const activeRef = useRef<ActiveContext | undefined>(undefined);
   const mounted = useRef(true);
-  const [preview, setPreview] = useState(uri);
-  const [size, setSize] = useState('160 × 96');
-  const [width, setWidth] = useState('80');
-  const [angle, setAngle] = useState('90');
-  const [format, setFormat] = useState(SaveFormat.PNG);
-  const busy = action.state.phase === 'running' || checks.state.phase === 'running';
+  const action = useAsyncResult();
+  const busy = action.state.phase === 'running';
 
   useEffect(() => {
     mounted.current = true;
-    const outputs = files.current;
     return () => {
       mounted.current = false;
-      for (const file of outputs) if (file.exists) file.delete();
-      outputs.length = 0;
+      releaseContext(activeRef.current);
     };
   }, []);
 
-  async function apply(operation: () => void) {
-    operation();
-    const image = await context.renderAsync();
-
-    try {
-      const result = await image.saveAsync({ format, compress: 0.8, base64: true });
-      const file = new File(result.uri);
-      if (!mounted.current) {
-        file.delete();
-        return '页面已关闭，保存结果已清理。';
-      }
-
-      files.current.push(file);
-      setPreview(result.uri);
-      setSize(`${result.width} × ${result.height}`);
-      return json({ ...result, base64: `${result.base64?.length ?? 0} 个字符` });
-    } finally {
-      image.release();
-    }
+  function openContext(source: string | SourceRef) {
+    const next = { id: (activeRef.current?.id ?? 0) + 1, context: ImageManipulator.manipulate(source), source };
+    releaseContext(activeRef.current);
+    activeRef.current = next;
+    setActive(next);
+    return '已创建处理上下文';
   }
 
   return (
     <>
-      <Panel eyebrow="Native API" title="图片处理检查">
-        <Note>使用内置 160 × 96 色块图片，检查变换、三种编码格式、共享引用、错误恢复及资源释放。检查生成的临时文件会自动清理。</Note>
-        <ActionButton disabled={busy} label="运行图片处理检查" testID="image-manipulator-check" onPress={() => void checks.run(verify)} />
-        <ResultPanel state={checks.state} />
+      <Panel title="图片来源">
+        <Field editable={!busy} label="图片 URI" value={input} onChangeText={setInput} />
+        <ActionRow>
+          <ActionButton disabled={busy} label="使用本地样图" onPress={() => setInput(sampleUri)} tone="secondary" />
+          <Cycle disabled={busy} label="调用方式" value={mode} choices={['Hook', 'Context', 'manipulateAsync']} onChange={setMode} />
+        </ActionRow>
+        {mode === 'Hook' ? <ActionButton disabled={!input.trim()} label="载入图片（useImageManipulator）" onPress={() => setHookUri(input.trim())} /> : null}
+        {mode === 'Context'
+          ? (
+              <ActionRow>
+                <ActionButton disabled={busy || !input.trim()} label="从 URI 创建 Context" onPress={() => void action.run(() => openContext(input.trim()))} />
+                <ActionButton
+                  disabled={busy || !input.trim()}
+                  label="从 ImageRef 创建 Context"
+                  onPress={() => void action.run(async () => {
+                    const source = await Image.loadAsync(input.trim(), { maxWidth: 640, maxHeight: 640 });
+                    if (!mounted.current) {
+                      source.release();
+                      return '';
+                    }
+                    try {
+                      return openContext(source);
+                    } catch (error) {
+                      source.release();
+                      throw error;
+                    }
+                  })}
+                  tone="secondary"
+                />
+              </ActionRow>
+            )
+          : null}
+        <ResultPanel state={action.state} />
       </Panel>
+      {mode === 'Hook' ? <HookEditor key={hookUri} uri={hookUri} /> : null}
+      {mode === 'Context' && active ? <Editor key={active.id} source={active.source} context={active.context} /> : null}
+      {mode === 'manipulateAsync' ? <Editor key="legacy" source={input.trim()} /> : null}
+    </>
+  );
+}
 
-      <Panel eyebrow="useImageManipulator" title="变换与保存">
-        <Image source={preview} style={styles.preview} contentFit="contain" testID="image-manipulator-preview" />
-        <DataRow label="当前尺寸" value={size} />
-        <Note>每次操作基于当前图片继续处理，并保存为选定格式。重置恢复原图，也可以从无效操作中恢复。</Note>
+function releaseContext(active?: ActiveContext) {
+  active?.context.release();
+  if (active && typeof active.source !== 'string') active.source.release();
+}
+
+function HookEditor({ uri }: { uri: string }) {
+  const context = useImageManipulator(uri);
+  return <Editor source={uri} context={context} />;
+}
+
+function Editor({ source, context }: { source: string | SourceRef; context?: ImageManipulatorContext }) {
+  const [kind, setKind] = useState('缩放');
+  const [width, setWidth] = useState('80');
+  const [height, setHeight] = useState('');
+  const [angle, setAngle] = useState('90');
+  const [flip, setFlip] = useState(FlipType.Horizontal);
+  const [x, setX] = useState('0');
+  const [y, setY] = useState('0');
+  const [background, setBackground] = useState('#FFFFFF');
+  const [format, setFormat] = useState(SaveFormat.PNG);
+  const [compress, setCompress] = useState('0.8');
+  const [base64, setBase64] = useState(false);
+  const [image, setImage] = useState<ImageRef>();
+  const [saved, setSaved] = useState<ImageResult>();
+  const mounted = useRef(true);
+  const action = useAsyncResult();
+  const busy = action.state.phase === 'running';
+  const rect = kind === '裁剪' || kind === '扩展画布';
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  useEffect(() => () => {
+    if (image) releaseRenderedImage(image);
+  }, [image]);
+  useEffect(() => {
+    if (!saved) return;
+    return () => deleteOutput(saved.uri);
+  }, [saved]);
+
+  function transform(): Action {
+    if (kind === '旋转') return { rotate: optionalNumber(angle, '角度') ?? 0 };
+    if (kind === '翻转') return { flip };
+    const size = { width: optionalNumber(width, '宽度'), height: optionalNumber(height, '高度') };
+    if (kind === '缩放') return { resize: size };
+
+    if (size.width === undefined || size.height === undefined) throw new Error('请输入宽度和高度。');
+    const rectangle = {
+      width: size.width, height: size.height,
+      originX: optionalNumber(x, '横坐标') ?? 0,
+      originY: optionalNumber(y, '纵坐标') ?? 0,
+    };
+    if (kind === '裁剪') return { crop: rectangle };
+    return { extent: { ...rectangle, backgroundColor: background.trim() || undefined } };
+  }
+
+  function queue() {
+    if (!context) return;
+
+    const operation = transform();
+    if ('resize' in operation) context.resize(operation.resize);
+    else if ('rotate' in operation) context.rotate(operation.rotate);
+    else if ('flip' in operation) context.flip(operation.flip);
+    else if ('crop' in operation) context.crop(operation.crop);
+    else context.extent(operation.extent);
+    return json(operation);
+  }
+
+  function saveOptions(): SaveOptions {
+    return { format, compress: optionalNumber(compress, '压缩质量'), base64 };
+  }
+
+  function acceptResult(result: ImageResult) {
+    if (mounted.current) setSaved(result);
+    else deleteOutput(result.uri);
+    return json({ ...result, base64: result.base64 ? `${result.base64.length} 个字符` : undefined });
+  }
+
+  return (
+    <>
+      <Panel title="变换">
+        <Image source={image ?? (typeof source === 'string' ? { uri: source } : source)} style={styles.preview} contentFit="contain" />
+        {image ? <DataRow label="渲染尺寸" value={`${image.width} × ${image.height}`} /> : null}
+        <Cycle disabled={busy} label="操作" value={kind} choices={transforms} onChange={setKind} />
+        {kind === '缩放' || rect
+          ? (
+              <>
+                <Field label="宽度" keyboardType="number-pad" value={width} onChangeText={setWidth} placeholder="按比例计算" />
+                <Field label="高度" keyboardType="number-pad" value={height} onChangeText={setHeight} placeholder="按比例计算" />
+              </>
+            )
+          : null}
+        {kind === '旋转' ? <Field label="角度" value={angle} onChangeText={setAngle} /> : null}
+        {kind === '翻转' ? <Cycle label="翻转方向" value={flip} choices={[FlipType.Horizontal, FlipType.Vertical]} onChange={setFlip} /> : null}
+        {rect
+          ? (
+              <>
+                <Field label="起点 X" value={x} onChangeText={setX} />
+                <Field label="起点 Y" value={y} onChangeText={setY} />
+              </>
+            )
+          : null}
+        {kind === '扩展画布' ? <Field label="背景色" value={background} onChangeText={setBackground} /> : null}
+        {context
+          ? (
+              <ActionRow>
+                <ActionButton disabled={busy} label="添加变换" onPress={() => void action.run(() => queue() ?? '')} />
+                <ActionButton
+                  disabled={busy}
+                  label="渲染（renderAsync）"
+                  onPress={() => void action.run(async () => {
+                    const output = await context.renderAsync();
+                    const dimensions = { width: output.width, height: output.height };
+                    if (mounted.current) setImage(output);
+                    else releaseRenderedImage(output);
+                    return json(dimensions);
+                  })}
+                />
+                <ActionButton
+                  disabled={busy}
+                  label="重置变换"
+                  onPress={() => void action.run(() => {
+                    context.reset();
+                    setImage(undefined);
+                    return '已恢复原图';
+                  })}
+                  tone="secondary"
+                />
+              </ActionRow>
+            )
+          : null}
+      </Panel>
+      <Panel title="保存图片">
         <ActionRow>
-          {formats.map(value => (
-            <ActionButton key={value} disabled={busy} label={value.toUpperCase()} testID={`image-manipulator-format-${value}`} tone={format === value ? 'primary' : 'secondary'} onPress={() => setFormat(value)} />
-          ))}
+          <Cycle label="格式" value={format} choices={formats} onChange={setFormat} />
+          <Toggle label="返回 Base64" value={base64} onChange={setBase64} />
         </ActionRow>
-        <Field label="目标宽度（像素）" keyboardType="numeric" value={width} onChangeText={setWidth} />
-        <Field label="旋转角度（正数顺时针）" keyboardType="numbers-and-punctuation" value={angle} onChangeText={setAngle} />
-        <ActionRow>
-          <ActionButton disabled={busy} label="缩放" testID="image-manipulator-resize" onPress={() => void action.run(() => apply(() => context.resize({ width: Number(width) })))} />
-          <ActionButton disabled={busy} label="旋转" testID="image-manipulator-rotate" onPress={() => void action.run(() => apply(() => context.rotate(Number(angle))))} />
-          <ActionButton disabled={busy} label="水平翻转" testID="image-manipulator-flip-horizontal" tone="secondary" onPress={() => void action.run(() => apply(() => context.flip(FlipType.Horizontal)))} />
-          <ActionButton disabled={busy} label="垂直翻转" testID="image-manipulator-flip-vertical" tone="secondary" onPress={() => void action.run(() => apply(() => context.flip(FlipType.Vertical)))} />
-          <ActionButton disabled={busy} label="裁剪左上 24 × 24" testID="image-manipulator-crop" tone="secondary" onPress={() => void action.run(() => apply(() => context.crop({ originX: 0, originY: 0, width: 24, height: 24 })))} />
-          <ActionButton disabled={busy} label="重置原图" testID="image-manipulator-reset" tone="secondary" onPress={() => void action.run(() => apply(() => context.reset()))} />
-        </ActionRow>
+        <Field label="压缩质量（0 到 1）" keyboardType="decimal-pad" value={compress} onChangeText={setCompress} />
+        {context
+          ? (
+              <ActionButton
+                disabled={!image || busy}
+                label="保存渲染结果（saveAsync）"
+                onPress={() => {
+                  if (image) void action.run(async () => acceptResult(await image.saveAsync(saveOptions())));
+                }}
+              />
+            )
+          : (
+              <ActionButton
+                disabled={busy || typeof source !== 'string' || !source}
+                label="应用变换并保存（manipulateAsync）"
+                onPress={() => {
+                  if (typeof source === 'string') void action.run(async () => acceptResult(await manipulateAsync(source, [transform()], saveOptions())));
+                }}
+              />
+            )}
+        {saved ? <Image source={{ uri: saved.uri }} style={styles.preview} contentFit="contain" /> : null}
         <ResultPanel state={action.state} />
       </Panel>
     </>
   );
 }
 
+function releaseRenderedImage(image: ImageRef) {
+  if (Platform.OS === 'web' && 'uri' in image && typeof image.uri === 'string') URL.revokeObjectURL(image.uri);
+  image.release();
+}
+
+function deleteOutput(uri: string) {
+  if (Platform.OS === 'web') {
+    URL.revokeObjectURL(uri);
+    return;
+  }
+  const file = new File(uri);
+  if (file.exists) file.delete();
+}
+
 const styles = StyleSheet.create({
-  preview: { height: 190, borderRadius: 12, backgroundColor: palette.surfaceRaised },
+  preview: { backgroundColor: palette.surfaceRaised, borderRadius: 12, height: 180, width: '100%' },
 });

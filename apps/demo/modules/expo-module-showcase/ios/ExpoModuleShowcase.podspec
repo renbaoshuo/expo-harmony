@@ -17,7 +17,7 @@ Pod::Spec.new do |s|
   s.author = 'Baoshuo'
   s.homepage = 'https://github.com/renbaoshuo/expo-harmony'
   s.source = { :git => 'https://github.com/renbaoshuo/expo-harmony.git' }
-  s.platform = :ios, '15.1'
+  s.platform = :ios, '16.4'
   s.swift_version = '5.9'
   s.static_framework = true
   s.dependency 'ExpoModulesCore'

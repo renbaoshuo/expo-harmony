@@ -6,127 +6,89 @@
  */
 
 import { Directory, File, Paths } from 'expo-file-system';
-import { ActionButton, ActionRow, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
-import { json } from '../format';
+import * as Legacy from 'expo-file-system/legacy';
+import { useState } from 'react';
+import { Platform } from 'react-native';
+
+import { ActionButton, ActionRow, Field, Panel } from '../ui';
+import { FileSystemDirectoryDemo } from './file-system/directory';
+import { FileSystemFileDemo } from './file-system/file';
+import { FileSystemLegacyDemo } from './file-system/legacy';
+import { FileSystemTransfersDemo } from './file-system/transfers';
+import { FileActions, Toggle } from './file-system/shared';
+
+const sections = ['文件', '目录和路径', '文件选择', '上传与下载', 'Legacy'] as const;
+type Section = typeof sections[number];
 
 export function FileSystemDemo() {
-  const operation = useAsyncResult();
+  const [section, setSection] = useState<Section>('文件');
+  return (
+    <>
+      <Panel>
+        <ActionRow>
+          {sections.map(value => (
+            <ActionButton key={value} label={value} onPress={() => setSection(value)} tone={section === value ? 'primary' : 'secondary'} />
+          ))}
+        </ActionRow>
+      </Panel>
+      {section === '文件' ? <FileSystemFileDemo /> : null}
+      {section === '目录和路径' ? <FileSystemDirectoryDemo /> : null}
+      {section === '文件选择' ? <Pickers /> : null}
+      {section === '上传与下载' ? <FileSystemTransfersDemo /> : null}
+      {section === 'Legacy' ? <FileSystemLegacyDemo /> : null}
+    </>
+  );
+}
 
-  const runSandbox = () => operation.run(async () => {
-    const directory = new Directory(Paths.cache, 'expo-harmony-demo-manual');
-    try {
-      directory.create({ idempotent: true, intermediates: true });
-      const source = new File(directory, 'source.txt');
-      source.create({ overwrite: true });
-      source.write('Harmony file system\n', { append: false });
-      source.write(new TextEncoder().encode('shared object API'), { append: true });
-
-      const copied = new File(directory, 'copy.txt');
-      source.copy(copied);
-      const moved = new File(directory, 'moved.txt');
-      copied.move(moved);
-      copied.rename('renamed.txt');
-
-      const handle = source.open();
-      let prefix: Uint8Array;
-      try {
-        handle.offset = 0;
-        prefix = handle.readBytes(7);
-      } finally {
-        handle.close();
-      }
-
-      return json({
-        contentUri: source.contentUri,
-        entries: directory.list().map(entry => entry.uri),
-        md5: source.info({ md5: true }).md5,
-        prefix: new TextDecoder().decode(prefix),
-        size: source.size,
-        text: await source.text(),
-      });
-    } finally {
-      if (directory.exists) directory.delete();
-    }
-  });
-
-  const pickFile = () => operation.run(async () => {
-    const selection = await File.pickFileAsync(undefined, '*/*');
-    const file = Array.isArray(selection) ? selection[0] : selection;
-    if (!file) throw new Error('选择器未返回文件。');
-    const handle = file.open();
-    let sample: Uint8Array;
-    try {
-      sample = handle.readBytes(Math.min(file.size, 64));
-    } finally {
-      handle.close();
-    }
-    return json({
-      contentUri: file.contentUri,
-      exists: file.exists,
-      mimeType: file.type,
-      sampleBytes: Array.from(sample),
-      size: file.size,
-      uri: file.uri,
-    });
-  });
-
-  const pickDirectory = () => operation.run(async () => {
-    const directory = await Directory.pickDirectoryAsync();
-    return json({
-      entries: directory.list().slice(0, 12).map(entry => entry.uri),
-      exists: directory.exists,
-      size: directory.size,
-      uri: directory.uri,
-    });
-  });
-
-  const runReadContracts = () => operation.run(async () => {
-    const { assertFileSystemReadContracts, assertFileSystemRawDirectoryContracts } = await import('./file-system/assertions');
-    return json({
-      reads: await assertFileSystemReadContracts(),
-      resources: await assertFileSystemRawDirectoryContracts(),
-    });
-  });
-
-  const requestLegacyDirectory = (explicitNull: boolean) => operation.run(async () => {
-    const { StorageAccessFramework } = await import('expo-file-system/legacy');
-    const result = explicitNull
-      ? await StorageAccessFramework.requestDirectoryPermissionsAsync(null)
-      : await StorageAccessFramework.requestDirectoryPermissionsAsync();
-    return json(result);
-  });
+function Pickers() {
+  const [initialUri, setInitialUri] = useState('');
+  const [mimeTypes, setMimeTypes] = useState('*/*');
+  const [multiple, setMultiple] = useState(false);
+  const [nullInitial, setNullInitial] = useState(false);
+  const platform = String(Platform.OS);
+  const legacyDirectoryPicker = platform === 'harmony' || platform === 'android';
+  const modernPicker = platform === 'harmony' || platform === 'android' || platform === 'ios';
+  const types = mimeTypes.split(',').map(value => value.trim()).filter(Boolean);
+  const options = { initialUri: initialUri || undefined, mimeTypes: types.length > 1 ? types : types[0] };
+  const fileInfo = (file: File) => ({ uri: file.uri, type: file.type, size: file.size, exists: file.exists });
 
   return (
     <>
-      <Panel eyebrow="沙箱" title="演练现代文件对象">
-        <Note>测试只会在应用缓存目录下写入，并在输出结果后删除该目录。</Note>
-        <ActionButton
-          disabled={operation.state.phase === 'running'}
-          label="执行 创建 · 复制 · 移动 · 句柄"
-          onPress={() => void runSandbox()}
-        />
-        <ActionButton
-          disabled={operation.state.phase === 'running'}
-          label="验证 连续读取 · Seek · EOF · 资源目录"
-          onPress={() => void runReadContracts()}
-          tone="secondary"
+      <Panel title="选择起始位置">
+        <Field label="起始目录 URI" onChangeText={setInitialUri} value={initialUri} />
+        <ActionButton label="使用文档目录" onPress={() => setInitialUri(Paths.document.uri)} tone="secondary" />
+      </Panel>
+      <Panel title="选择文件">
+        <Field label="MIME 类型，多个值用逗号分隔" onChangeText={setMimeTypes} value={mimeTypes} />
+        <Toggle label="multipleFiles" value={multiple} onChange={setMultiple} />
+        <FileActions
+          disabled={!modernPicker}
+          actions={[
+            ['pickFileAsync()', async () => {
+              const selection = multiple
+                ? await File.pickFileAsync({ ...options, multipleFiles: true })
+                : await File.pickFileAsync({ ...options, multipleFiles: false });
+              if (selection.canceled) return selection;
+              const { result } = selection;
+              return { canceled: false, result: Array.isArray(result) ? result.map(fileInfo) : fileInfo(result) };
+            }],
+            ['pickFileAsync(initialUri, mimeType)', async () => {
+              const result = await File.pickFileAsync(initialUri || undefined, types[0]);
+              return Array.isArray(result) ? result.map(fileInfo) : fileInfo(result);
+            }],
+          ]}
         />
       </Panel>
-
-      <Panel eyebrow="系统选择器" title="检查持久化授权">
-        <ActionRow>
-          <ActionButton disabled={operation.state.phase === 'running'} label="选择文件" onPress={() => void pickFile()} />
-          <ActionButton disabled={operation.state.phase === 'running'} label="选择目录" onPress={() => void pickDirectory()} tone="secondary" />
-        </ActionRow>
-        <ActionRow>
-          <ActionButton disabled={operation.state.phase === 'running'} label="Legacy 目录授权（无参）" onPress={() => void requestLegacyDirectory(false)} tone="secondary" />
-          <ActionButton disabled={operation.state.phase === 'running'} label="Legacy 目录授权（null）" onPress={() => void requestLegacyDirectory(true)} tone="secondary" />
-        </ActionRow>
-        <Note>
-          选中的内容仅作抽样读取，演示不会编辑或删除用户选择的文件和目录。
-        </Note>
+      <Panel title="选择目录">
+        <Toggle label="Legacy 起始地址使用 null" value={nullInitial} onChange={setNullInitial} />
+        <FileActions actions={[
+          ['pickDirectoryAsync()', async () => (await Directory.pickDirectoryAsync(initialUri || undefined)).info(), !modernPicker],
+          ['requestDirectoryPermissionsAsync()', () => Legacy.StorageAccessFramework.requestDirectoryPermissionsAsync(
+            nullInitial ? null : initialUri || undefined
+          ), !legacyDirectoryPicker],
+        ]}
+        />
       </Panel>
-      <ResultPanel state={operation.state} />
     </>
   );
 }

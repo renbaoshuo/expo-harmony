@@ -36,9 +36,6 @@ final class ShowcasePage: UIViewController {
     let content = UIStackView()
     content.axis = .vertical
     content.spacing = 18
-    content.addArrangedSubview(ShowcaseStyles.label("Expo Modules", size: 12, color: ShowcaseStyles.blue, weight: .bold))
-    content.addArrangedSubview(ShowcaseStyles.label("原生页面交互", size: 30, weight: .bold))
-    content.addArrangedSubview(ShowcaseStyles.label("在原生页面中修改计数，完成后将结果带回测试页面。", size: 15, color: ShowcaseStyles.muted))
     let card = UIStackView()
     card.axis = .vertical
     card.spacing = 16
@@ -46,16 +43,15 @@ final class ShowcasePage: UIViewController {
     card.layer.cornerRadius = 16
     card.isLayoutMarginsRelativeArrangement = true
     card.layoutMargins = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-    card.addArrangedSubview(ShowcaseStyles.label("页面计数器", size: 18, weight: .bold))
+    card.addArrangedSubview(ShowcaseStyles.label("计数", size: 18, weight: .bold))
     count.text = ShowcaseStyles.format(value)
     card.addArrangedSubview(count)
-    card.addArrangedSubview(ShowcaseStyles.button("增加计数 +1") { [weak self] in
+    card.addArrangedSubview(ShowcaseStyles.button("增加 1") { [weak self] in
       guard let self else { return }
       self.value += 1
       self.count.text = ShowcaseStyles.format(self.value)
     })
     content.addArrangedSubview(card)
-    content.addArrangedSubview(ShowcaseStyles.label("取消将放弃本次修改。", size: 13, color: ShowcaseStyles.muted))
     view.addSubview(scroll)
     scroll.addSubview(content)
     scroll.translatesAutoresizingMaskIntoConstraints = false

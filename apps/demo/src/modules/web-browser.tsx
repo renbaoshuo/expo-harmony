@@ -8,166 +8,192 @@
 import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useRef, useState } from 'react';
-import { Platform } from 'react-native';
+import { Platform, Switch } from 'react-native';
 
 import { json } from '../format';
-import { ActionButton, ActionRow, DataRow, Field, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { ActionButton, ActionRow, DataRow, Field, Panel, ResultPanel, useAsyncResult } from '../ui';
+
+const ANDROID_TOGGLES = [
+  ['enableBarCollapsing', '滚动时收起工具栏', false],
+  ['showTitle', '显示网页标题', false],
+  ['enableDefaultShareMenuItem', '显示分享菜单项', false],
+  ['showInRecents', '在最近任务中显示', false],
+  ['createTask', '新建任务', true],
+  ['useProxyActivity', '通过代理 Activity 打开', true],
+] as const;
 
 export function WebBrowserDemo() {
   const [url, setUrl] = useState('https://example.com');
   const [redirect, setRedirect] = useState(() => Linking.createURL('module/web-browser'));
-  const active = useRef(false);
+  const [options, setOptions] = useState<WebBrowser.WebBrowserOpenOptions>({});
+  const [features, setFeatures] = useState('');
+  const [ephemeral, setEphemeral] = useState(false);
+  const [universalLinks, setUniversalLinks] = useState(false);
+  const [skipRedirectCheck, setSkipRedirectCheck] = useState(false);
+  const authOpen = useRef(false);
   const browser = useAsyncResult();
   const session = useAsyncResult();
-  const checks = useAsyncResult();
-  const harmony = String(Platform.OS) === 'harmony';
-  const cancellable = Platform.OS !== 'android';
-  const busy = [browser, session, checks].some(action => action.state.phase === 'running');
+  const auxiliary = useAsyncResult();
+  const android = Platform.OS === 'android';
+  const ios = Platform.OS === 'ios';
+  const web = Platform.OS === 'web';
+  const auxiliaryBusy = auxiliary.state.phase === 'running';
+  const busy = browser.state.phase === 'running' || session.state.phase === 'running';
 
   useEffect(() => () => {
-    if (active.current && cancellable) WebBrowser.dismissAuthSession();
-  }, [cancellable]);
+    if (authOpen.current && !android) WebBrowser.dismissAuthSession();
+  }, [android]);
 
-  const inspect = () => checks.run(async () => {
-    const [browsers, warm, init, cool] = await Promise.all([
-      WebBrowser.getCustomTabsSupportingBrowsersAsync(),
-      WebBrowser.warmUpAsync(),
-      WebBrowser.mayInitWithUrlAsync(url),
-      WebBrowser.coolDownAsync(),
-    ]);
-    const complete = WebBrowser.maybeCompleteAuthSession();
+  const browserOptions = (): WebBrowser.WebBrowserOpenOptions => {
+    if (!web || !features.trim()) return options;
 
-    if (harmony && (browsers.browserPackages.length !== 0 || browsers.servicePackages.length !== 0
-      || browsers.defaultBrowserPackage !== undefined || browsers.preferredBrowserPackage !== undefined
-      || [warm, init, cool].some(value => Object.keys(value).length !== 0) || complete.type !== 'failed')) {
-      throw new Error('非 Android / Web 平台的兼容返回值不符合预期。');
-    }
+    const windowFeatures = features.trim();
+    return {
+      ...options,
+      windowFeatures: windowFeatures.startsWith('{') ? JSON.parse(windowFeatures) : windowFeatures,
+    };
+  };
 
-    return json({ browsers, warm, init, cool, complete });
-  });
-
-  const open = () => browser.run(async () => {
-    const result = await WebBrowser.openBrowserAsync(url);
-
-    if (harmony && result.type !== WebBrowser.WebBrowserResultType.OPENED) throw new Error(`预期 opened，实际为 ${result.type}。`);
-
-    return json(result);
-  });
-
-  const authenticate = () => session.run(async () => {
-    active.current = true;
+  const open = (dismissAfterDelay = false) => browser.run(async () => {
+    const timer = dismissAfterDelay
+      ? setTimeout(() => {
+          void auxiliary.run(async () => json(await WebBrowser.dismissBrowser()));
+        }, 5000)
+      : undefined;
 
     try {
-      const result = await WebBrowser.openAuthSessionAsync(url, redirect || null);
-
-      if (result.type === 'success' && !result.url.startsWith(redirect)) throw new Error('回跳 URL 与配置的前缀不符。');
-
-      return json(result);
+      return json(await WebBrowser.openBrowserAsync(url, browserOptions()));
     } finally {
-      active.current = false;
+      clearTimeout(timer);
     }
   });
 
-  const verify = () => checks.run(async () => {
-    const cases: [string, () => Promise<unknown>][] = [
-      ['ERR_WEB_BROWSER_INVALID_URL', () => WebBrowser.openBrowserAsync('not a URL')],
-      ['ERR_WEB_BROWSER_INVALID_URL', () => WebBrowser.openBrowserAsync('file:///tmp/browser.html')],
-      ['ERR_WEB_BROWSER_INVALID_URL', () => WebBrowser.openBrowserAsync('https://')],
-      ['ERR_WEB_BROWSER_INVALID_URL', () => WebBrowser.openAuthSessionAsync('https://example.com', 'invalid redirect')],
-      ['ERR_WEB_BROWSER_DISMISS_UNAVAILABLE', () => WebBrowser.dismissBrowser()],
-    ];
-    const rows: string[] = [];
-
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      for (const [code, operation] of cases) {
-        let failure: unknown;
-
-        try {
-          await operation();
-        } catch (error) {
-          failure = error;
-        }
-
-        if (!(failure instanceof Error) || !('code' in failure) || failure.code !== code) {
-          throw new Error(`预期 ${code}，实际 ${String(failure)}。`);
-        }
-
-        rows.push(`第 ${attempt} 轮：${code}`);
-      }
-    }
-
-    WebBrowser.dismissAuthSession();
-
-    return `${rows.join('\n')}\n无会话 dismissAuthSession：通过\n参数与错误恢复检查通过。`;
-  });
-
-  const concurrent = () => checks.run(async () => {
-    const address = new URL(url);
-
-    if (/\s/.test(url) || !['http:', 'https:'].includes(address.protocol) || !address.hostname) {
-      throw new Error('并发校验需要有效的 HTTP/HTTPS URL。');
-    }
-
-    active.current = true;
-    const pending = WebBrowser.openAuthSessionAsync(url, redirect || null);
-    const completion = Promise.allSettled([pending]);
+  const authenticate = (dismissAfterDelay = false) => session.run(async () => {
+    authOpen.current = true;
+    const timer = dismissAfterDelay ? setTimeout(WebBrowser.dismissAuthSession, 5000) : undefined;
 
     try {
-      const [auth, browser] = await Promise.allSettled([
-        WebBrowser.openAuthSessionAsync(url, redirect || null),
-        WebBrowser.openBrowserAsync(url),
-      ]);
-
-      if (auth.status !== 'rejected' || auth.reason?.code !== 'ERR_WEB_BROWSER_ALREADY_OPEN') {
-        throw new Error('并发认证应返回 ERR_WEB_BROWSER_ALREADY_OPEN。');
-      }
-      if (browser.status !== 'fulfilled' || browser.value.type !== WebBrowser.WebBrowserResultType.LOCKED) {
-        throw new Error('认证期间打开浏览器应返回 locked。');
-      }
-
-      WebBrowser.dismissAuthSession();
-      const [result] = await completion;
-
-      if (result.status !== 'fulfilled' || result.value.type !== WebBrowser.WebBrowserResultType.DISMISS) {
-        throw new Error('主动结束认证应返回 dismiss。');
-      }
-
-      return '并发认证：ERR_WEB_BROWSER_ALREADY_OPEN\n并发浏览器：locked\n主动结束认证：dismiss';
+      return json(await WebBrowser.openAuthSessionAsync(
+        url,
+        redirect.trim() || null,
+        ios ? { preferEphemeralSession: ephemeral, preferUniversalLinks: universalLinks } : browserOptions()
+      ));
     } finally {
-      WebBrowser.dismissAuthSession();
-      active.current = false;
+      clearTimeout(timer);
+      authOpen.current = false;
     }
   });
 
   return (
     <>
-      <Panel eyebrow="系统浏览器" title="打开网页">
-        <Field label="网页或认证 URL" onChangeText={setUrl} testID="web-browser-url" value={url} />
-        <ActionButton disabled={busy || !url} label="打开浏览器" onPress={() => void open()} testID="web-browser-open" />
-        <Note>HarmonyOS 启动外部浏览器后返回 opened。查看网页后返回 demo；该结果不表示网页已加载完成。</Note>
+      <Panel title="打开网页">
+        <Field label="网页 URL" onChangeText={setUrl} testID="web-browser-url" value={url} />
+        {android
+          ? (
+              <>
+                <Field label="浏览器包名" onChangeText={value => setOptions(current => ({ ...current, browserPackage: value || undefined }))} value={options.browserPackage ?? ''} />
+                <Field label="辅助工具栏颜色" onChangeText={value => setOptions(current => ({ ...current, secondaryToolbarColor: value || undefined }))} value={options.secondaryToolbarColor ?? ''} />
+                {ANDROID_TOGGLES.map(([key, label, fallback]) => (
+                  <DataRow
+                    key={key}
+                    label={label}
+                    value={
+                      <Switch
+                        accessibilityLabel={label}
+                        onValueChange={value => setOptions(current => ({ ...current, [key]: value }))}
+                        value={options[key] ?? fallback}
+                      />
+                    }
+                  />
+                ))}
+              </>
+            )
+          : null}
+        {android || ios
+          ? (
+              <>
+                <Field label="工具栏颜色" onChangeText={value => setOptions(current => ({ ...current, toolbarColor: value || undefined }))} value={options.toolbarColor ?? ''} />
+              </>
+            )
+          : null}
+        {ios
+          ? (
+              <>
+                <DataRow label="滚动时收起工具栏" value={<Switch accessibilityLabel="滚动时收起工具栏" onValueChange={value => setOptions(current => ({ ...current, enableBarCollapsing: value }))} value={options.enableBarCollapsing ?? false} />} />
+                <Field label="控件颜色" onChangeText={value => setOptions(current => ({ ...current, controlsColor: value || undefined }))} value={options.controlsColor ?? ''} />
+                <DataRow label="阅读模式" value={<Switch accessibilityLabel="阅读模式" onValueChange={value => setOptions(current => ({ ...current, readerMode: value }))} value={options.readerMode ?? false} />} />
+                <DataRow label="关闭按钮样式" value={options.dismissButtonStyle ?? '默认'} />
+                <ActionRow>
+                  {(['done', 'close', 'cancel'] as const).map(style => (
+                    <ActionButton key={style} label={style} onPress={() => setOptions(current => ({ ...current, dismissButtonStyle: style }))} tone={options.dismissButtonStyle === style ? 'primary' : 'secondary'} />
+                  ))}
+                </ActionRow>
+                <DataRow label="浏览器呈现方式" value={options.presentationStyle ?? '默认'} />
+                <ActionRow>
+                  {Object.values(WebBrowser.WebBrowserPresentationStyle).map(style => (
+                    <ActionButton key={style} label={style} onPress={() => setOptions(current => ({ ...current, presentationStyle: style }))} tone={options.presentationStyle === style ? 'primary' : 'secondary'} />
+                  ))}
+                </ActionRow>
+              </>
+            )
+          : null}
+        {web
+          ? (
+              <>
+                <Field label="弹窗名称" onChangeText={value => setOptions(current => ({ ...current, windowName: value || undefined }))} value={options.windowName ?? ''} />
+                <Field label="弹窗配置" onChangeText={setFeatures} placeholder="width=640,height=480" value={features} />
+              </>
+            )
+          : null}
+        <ActionRow>
+          <ActionButton disabled={busy || !url.trim()} label="打开浏览器" onPress={() => void open()} testID="web-browser-open" />
+          {ios ? <ActionButton disabled={busy || !url.trim()} label="打开浏览器，5 秒后关闭" onPress={() => void open(true)} tone="secondary" /> : null}
+        </ActionRow>
         <ResultPanel state={browser.state} />
+        {ios ? <ResultPanel state={auxiliary.state} /> : null}
       </Panel>
 
-      <Panel eyebrow="认证会话" title="回跳与返回结果">
-        <Field label="回跳 URL（留空只验证结束等待）" onChangeText={setRedirect} testID="web-browser-redirect" value={redirect} />
-        <DataRow label="回跳前缀" value={redirect || '未配置'} />
+      <Panel title="浏览器认证">
+        <Field label="回跳 URL" onChangeText={setRedirect} testID="web-browser-redirect" value={redirect} />
+        {ios
+          ? (
+              <>
+                <DataRow label="临时会话" value={<Switch accessibilityLabel="临时会话" onValueChange={setEphemeral} value={ephemeral} />} />
+                <DataRow label="通用链接回跳" value={<Switch accessibilityLabel="通用链接回跳" onValueChange={setUniversalLinks} value={universalLinks} />} />
+              </>
+            )
+          : null}
         <ActionRow>
-          <ActionButton disabled={busy || !url} label="开始认证会话" onPress={() => void authenticate()} testID="web-browser-auth" />
-          <ActionButton disabled={session.state.phase !== 'running' || !cancellable} label="结束认证等待" onPress={() => WebBrowser.dismissAuthSession()} testID="web-browser-dismiss" tone="secondary" />
+          <ActionButton disabled={busy || !url.trim()} label="开始认证会话" onPress={() => void authenticate()} testID="web-browser-auth" />
+          {ios ? <ActionButton disabled={busy || !url.trim()} label="开始认证，5 秒后结束" onPress={() => void authenticate(true)} tone="secondary" /> : null}
+          {!android && !ios ? <ActionButton disabled={session.state.phase !== 'running'} label="结束认证会话" onPress={() => WebBrowser.dismissAuthSession()} testID="web-browser-dismiss" tone="secondary" /> : null}
         </ActionRow>
-        <Note>从浏览器打开以该前缀开头的回跳链接，应返回 success 和完整 URL。直接切回 demo 应返回 dismiss。默认网页用于验证会话，不执行真实登录。</Note>
         <ResultPanel state={session.state} />
       </Panel>
 
-      <Panel eyebrow="接口校验" title="兼容返回、错误恢复与并发">
-        <ActionRow>
-          <ActionButton disabled={busy} label="检查平台兼容接口" onPress={() => void inspect()} testID="web-browser-inspect" />
-          <ActionButton disabled={busy || !harmony} label="验证参数与错误恢复" onPress={() => void verify()} testID="web-browser-verify" tone="secondary" />
-          <ActionButton disabled={busy || !harmony || !url} label="验证并发与主动结束" onPress={() => void concurrent()} testID="web-browser-concurrent" tone="secondary" />
-        </ActionRow>
-        <Note>错误与并发校验为 HarmonyOS 专用。并发校验会启动浏览器，随后结束本模块的等待；外部浏览器仍需手动返回。</Note>
-        <ResultPanel state={checks.state} />
-      </Panel>
+      {android
+        ? (
+            <Panel title="Custom Tabs">
+              <ActionRow>
+                <ActionButton disabled={auxiliaryBusy} label="列出支持 Custom Tabs 的浏览器" onPress={() => void auxiliary.run(async () => json(await WebBrowser.getCustomTabsSupportingBrowsersAsync()))} />
+                <ActionButton disabled={auxiliaryBusy} label="预热浏览器" onPress={() => void auxiliary.run(async () => json(await WebBrowser.warmUpAsync(options.browserPackage)))} tone="secondary" />
+                <ActionButton disabled={auxiliaryBusy || !url.trim()} label="预加载网页" onPress={() => void auxiliary.run(async () => json(await WebBrowser.mayInitWithUrlAsync(url, options.browserPackage)))} tone="secondary" />
+                <ActionButton disabled={auxiliaryBusy} label="释放预热连接" onPress={() => void auxiliary.run(async () => json(await WebBrowser.coolDownAsync(options.browserPackage)))} tone="secondary" />
+              </ActionRow>
+              <ResultPanel state={auxiliary.state} />
+            </Panel>
+          )
+        : null}
+
+      {web
+        ? (
+            <Panel title="网页回跳">
+              <DataRow label="跳过回跳 URL 校验" value={<Switch accessibilityLabel="跳过回跳 URL 校验" onValueChange={setSkipRedirectCheck} value={skipRedirectCheck} />} />
+              <ActionButton label="完成认证会话" onPress={() => void auxiliary.run(() => json(WebBrowser.maybeCompleteAuthSession({ skipRedirectCheck })))} />
+              <ResultPanel state={auxiliary.state} />
+            </Panel>
+          )
+        : null}
     </>
   );
 }

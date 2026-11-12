@@ -5,169 +5,160 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { UnavailabilityError } from 'expo-modules-core';
 import * as ScreenCapture from 'expo-screen-capture';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 
 import { json } from '../format';
-import { ActionButton, ActionRow, DataRow, Note, Panel, ResultPanel, Tag, useAsyncResult } from '../ui';
+import { ActionButton, ActionRow, DataRow, Field, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { Cycle, optionalNumber } from './visual-controls';
 
-const KEYS = ['demo-screen-capture-a', 'demo-screen-capture-b'] as const;
-
-function Protection() {
-  ScreenCapture.usePreventScreenCapture('demo-screen-capture-hook');
-  return <Tag tone="success">保护 Hook 已挂载</Tag>;
+function Protection({ captureKey }: { captureKey: string }) {
+  ScreenCapture.usePreventScreenCapture(captureKey);
+  return null;
 }
 
 function ScreenshotListener({ onScreenshot }: { onScreenshot: () => void }) {
   ScreenCapture.useScreenshotListener(onScreenshot);
-  return <Tag tone="success">监听 Hook 已挂载</Tag>;
+  return null;
 }
 
 export function ScreenCaptureDemo() {
-  const [permission, request, get] = ScreenCapture.usePermissions();
+  const [permissionMode, setPermissionMode] = useState<'手动' | '查询' | '请求'>('查询');
+  const [key, setKey] = useState('A');
   const [active, setActive] = useState<string[]>([]);
-  const [protecting, setProtecting] = useState(false);
+  const [hookKey, setHookKey] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
   const [hook, setHook] = useState(false);
   const [events, setEvents] = useState(0);
   const [hookEvents, setHookEvents] = useState(0);
+  const [blur, setBlur] = useState('0.5');
   const subscription = useRef<ScreenCapture.Subscription | null>(null);
-  const access = useAsyncResult();
+  const keys = useRef(new Set<string>());
+  const appSwitcher = useRef<Promise<void> | null>(null);
   const action = useAsyncResult();
-  const observer = useAsyncResult();
-  const checks = useAsyncResult();
-  const busy = [access, action, observer, checks].some(result => result.state.phase === 'running');
+  const switcher = useAsyncResult();
+  const busy = action.state.phase === 'running' || switcher.state.phase === 'running';
   const screenshot = useCallback(() => setHookEvents(count => count + 1), []);
 
   useEffect(() => () => {
     subscription.current?.remove();
-    for (const key of KEYS) {
+    for (const key of keys.current) {
       void ScreenCapture.allowScreenCaptureAsync(key).catch(console.warn);
+    }
+    if (appSwitcher.current) {
+      void appSwitcher.current
+        .catch(() => undefined)
+        .then(ScreenCapture.disableAppSwitcherProtectionAsync)
+        .catch(console.warn);
     }
   }, []);
 
-  const inspect = () => access.run(async () => {
-    const [available, permissions] = await Promise.all([ScreenCapture.isAvailableAsync(), get()]);
-    if (!available) throw new Error('ScreenCapture 原生接口不可用。');
+  const protect = (prevent: boolean) => void action.run(async () => {
+    const label = key.trim();
+    if (!label) throw new Error('请输入保护标识。');
+    const captureKey = `demo-screen-capture:${label}`;
 
-    return json({ available, permissions });
-  });
-
-  const toggle = (key: string) => action.run(async () => {
-    if (active.includes(key)) {
-      await ScreenCapture.allowScreenCaptureAsync(key);
-      setActive(keys => keys.filter(value => value !== key));
-
-      return `${key} 已释放；其他标签仍有效时，窗口应继续禁止截图。`;
+    if (prevent) {
+      keys.current.add(captureKey);
+      await ScreenCapture.preventScreenCaptureAsync(captureKey);
+      setActive(values => values.includes(label) ? values : [...values, label]);
+    } else {
+      await ScreenCapture.allowScreenCaptureAsync(captureKey);
+      keys.current.delete(captureKey);
+      setActive(values => values.filter(value => value !== label));
     }
 
-    await ScreenCapture.preventScreenCaptureAsync(key);
-    setActive(keys => [...keys, key]);
-
-    return `${key} 已启用；请尝试系统截图，并检查后台应用预览。`;
-  });
-
-  const reset = () => action.run(async () => {
-    for (const key of KEYS) await ScreenCapture.allowScreenCaptureAsync(key);
-    setActive([]);
-
-    return '手动标签已全部释放。保护 Hook 仍挂载时会继续阻止截图。';
-  });
-
-  const observe = () => observer.run(() => {
-    if (subscription.current) {
-      ScreenCapture.removeScreenshotListener(subscription.current);
-      subscription.current = null;
-      setListening(false);
-
-      return '已移除手动监听；再次截图时手动计数应保持不变。';
-    }
-
-    subscription.current = ScreenCapture.addScreenshotListener(() => setEvents(count => count + 1));
-    setListening(true);
-
-    return '已开始监听；请使用系统截图，或在模拟器上触发截图。';
-  });
-
-  const verify = () => checks.run(async () => {
-    const rows: string[] = [];
-    const methods = [ScreenCapture.enableAppSwitcherProtectionAsync, ScreenCapture.disableAppSwitcherProtectionAsync];
-
-    for (const method of methods) {
-      try {
-        await method();
-      } catch (error) {
-        if (!(error instanceof UnavailabilityError)) {
-          throw new Error(`预期 UnavailabilityError，实际为 ${String(error)}。`);
-        }
-
-        rows.push(error.message);
-        continue;
-      }
-
-      throw new Error('iOS 专属接口未按预期拒绝调用。');
-    }
-
-    return `两个 iOS 专属接口均按预期拒绝调用：\n${rows.join('\n')}`;
+    return prevent ? `已启用 ${label}` : `已解除 ${label}`;
   });
 
   return (
     <>
-      <Panel eyebrow="能力与权限" title="查询可用性和截图权限">
-        <DataRow label="授权状态" value={permission?.status ?? '加载中'} />
+      <Panel title="截图保护">
+        <Field editable={!busy} label="保护标识（key）" value={key} onChangeText={setKey} />
+        <DataRow label="已启用的标识" value={active.join('、') || '无'} />
         <ActionRow>
-          <ActionButton disabled={busy} label="查询能力与权限" onPress={() => void inspect()} testID="screen-capture-inspect" />
-          <ActionButton disabled={busy} label="请求权限" onPress={() => void access.run(async () => json(await request()))} testID="screen-capture-permissions" tone="secondary" />
+          <ActionButton disabled={busy} label="禁止截图" onPress={() => protect(true)} testID="screen-capture-prevent" />
+          <ActionButton disabled={busy} label="允许截图" onPress={() => protect(false)} testID="screen-capture-allow" tone="secondary" />
+          <ActionButton disabled={busy || (!hookKey && !key.trim())} label={hookKey ? '移除保护 Hook' : '启用保护 Hook'} onPress={() => setHookKey(value => value ? null : `demo-screen-capture-hook:${key.trim()}`)} tone="secondary" />
+          <ActionButton disabled={busy} label="查询可用性" onPress={() => void action.run(async () => json(await ScreenCapture.isAvailableAsync()))} tone="secondary" />
         </ActionRow>
-        <Note>HarmonyOS 无需运行时授权，不会弹出相册或存储权限对话框。</Note>
-        <ResultPanel state={access.state} />
-      </Panel>
-
-      <Panel eyebrow="窗口保护" title="两个独立标签">
-        <DataRow label="本页手动标签" value={active.map(key => key === KEYS[0] ? 'A' : 'B').join('、') || '无'} />
-        <ActionRow>
-          {KEYS.map((key, index) => (
-            <ActionButton
-              disabled={busy}
-              key={key}
-              label={`${active.includes(key) ? '释放' : '启用'}标签 ${index === 0 ? 'A' : 'B'}`}
-              onPress={() => void toggle(key)}
-              testID={`screen-capture-tag-${index}`}
-              tone={active.includes(key) ? 'secondary' : 'primary'}
-            />
-          ))}
-          <ActionButton disabled={busy} label="释放全部手动标签" onPress={() => void reset()} testID="screen-capture-reset" tone="secondary" />
-        </ActionRow>
-        <Note>先启用 A、B，再单独释放 A，保护应继续生效；释放 B 后才恢复截图。离开页面会释放本页的标签。</Note>
+        {hookKey ? <Protection captureKey={hookKey} /> : null}
         <ResultPanel state={action.state} />
       </Panel>
-
-      <Panel eyebrow="React Hook" title="随组件挂载保护窗口">
-        <ActionButton disabled={busy} label={protecting ? '卸载保护 Hook' : '挂载保护 Hook'} onPress={() => setProtecting(value => !value)} testID="screen-capture-protection-hook" tone="secondary" />
-        {protecting ? <Protection /> : <Tag>保护 Hook 已卸载</Tag>}
-        <Note>usePreventScreenCapture 使用独立标签，与上面的手动标签共同生效。卸载组件后会自动释放。</Note>
-      </Panel>
-
-      <Panel eyebrow="截图事件" title="手动订阅与 Hook 订阅">
-        <DataRow label="手动监听" value={listening ? '监听中' : '已停止'} />
-        <DataRow label="手动事件次数" value={String(events)} />
-        <DataRow label="Hook 事件次数" value={String(hookEvents)} />
+      <Panel title="截图事件">
+        <DataRow label="手动监听收到的次数" value={events} />
+        <DataRow label="Hook 收到的次数" value={hookEvents} />
         <ActionRow>
-          <ActionButton disabled={busy} label={listening ? '移除监听' : '开始监听'} onPress={() => void observe()} testID="screen-capture-listen" />
-          <ActionButton disabled={busy} label={hook ? '卸载监听 Hook' : '挂载监听 Hook'} onPress={() => setHook(value => !value)} testID="screen-capture-listener-hook" tone="secondary" />
+          <ActionButton
+            label={listening ? '移除监听' : '监听截图'}
+            onPress={() => {
+              if (subscription.current) {
+                ScreenCapture.removeScreenshotListener(subscription.current);
+                subscription.current = null;
+                setListening(false);
+              } else {
+                subscription.current = ScreenCapture.addScreenshotListener(() => setEvents(count => count + 1));
+                setListening(true);
+              }
+            }}
+          />
+          <ActionButton label={hook ? '移除监听 Hook' : '启用监听 Hook'} onPress={() => setHook(value => !value)} tone="secondary" />
         </ActionRow>
-        {hook ? <ScreenshotListener onScreenshot={screenshot} /> : <Tag>监听 Hook 已卸载</Tag>}
-        <Note>先释放所有保护，再截图验证计数。移除手动监听后，Hook 应继续收到通知；后台不应收到通知，返回前台后恢复。</Note>
-        <ResultPanel state={observer.state} />
+        {hook ? <ScreenshotListener onScreenshot={screenshot} /> : null}
       </Panel>
+      <Panel title="截图权限">
+        <Cycle label="打开权限示例时" value={permissionMode} choices={['手动', '查询', '请求']} onChange={setPermissionMode} />
+        <PermissionDemo key={permissionMode} getOnMount={permissionMode === '查询'} requestOnMount={permissionMode === '请求'} />
+      </Panel>
+      {Platform.OS === 'ios'
+        ? (
+            <Panel title="应用切换器保护">
+              <Field label="模糊强度（0 到 1）" value={blur} onChangeText={setBlur} keyboardType="decimal-pad" />
+              <ActionRow>
+                <ActionButton
+                  disabled={busy}
+                  label="启用切换器保护"
+                  onPress={() => void switcher.run(async () => {
+                    appSwitcher.current = ScreenCapture.enableAppSwitcherProtectionAsync(optionalNumber(blur, '模糊强度'));
+                    await appSwitcher.current;
+                    return '已启用切换器保护';
+                  })}
+                />
+                <ActionButton
+                  disabled={busy}
+                  label="关闭切换器保护"
+                  onPress={() => void switcher.run(async () => {
+                    await ScreenCapture.disableAppSwitcherProtectionAsync();
+                    appSwitcher.current = null;
+                    return '已关闭切换器保护';
+                  })}
+                  tone="secondary"
+                />
+              </ActionRow>
+              <ResultPanel state={switcher.state} />
+            </Panel>
+          )
+        : null}
+    </>
+  );
+}
 
-      <Panel eyebrow="平台差异" title="iOS 专属模糊接口">
-        <ActionButton disabled={busy || Platform.OS === 'ios'} label="验证不支持的接口" onPress={() => void verify()} testID="screen-capture-unavailable" tone="secondary" />
-        <Note>HarmonyOS 使用系统隐私遮罩；两个应用切换器模糊接口应抛出 UnavailabilityError。</Note>
-        <ResultPanel state={checks.state} />
-      </Panel>
+function PermissionDemo({ getOnMount, requestOnMount }: { getOnMount: boolean; requestOnMount: boolean }) {
+  const [permission, request, get] = ScreenCapture.usePermissions({ get: getOnMount, request: requestOnMount });
+  const result = useAsyncResult();
+  const busy = result.state.phase === 'running';
+
+  return (
+    <>
+      <DataRow label="usePermissions" value={permission?.status ?? '未读取'} />
+      <ActionRow>
+        <ActionButton disabled={busy} label="查询权限" onPress={() => void result.run(async () => json(await ScreenCapture.getPermissionsAsync()))} tone="secondary" />
+        <ActionButton disabled={busy} label="请求权限" onPress={() => void result.run(async () => json(await ScreenCapture.requestPermissionsAsync()))} />
+        <ActionButton disabled={busy} label="Hook 查询" onPress={() => void result.run(async () => json(await get()))} tone="secondary" />
+        <ActionButton disabled={busy} label="Hook 请求" onPress={() => void result.run(async () => json(await request()))} tone="secondary" />
+      </ActionRow>
+      <ResultPanel state={result.state} />
     </>
   );
 }

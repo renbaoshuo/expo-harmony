@@ -1,30 +1,27 @@
 # 快速开始
 
-这篇文档以 [`apps/demo`](../apps/demo) 为参照，主要讲解两方面的内容：怎么把一个现有的 Expo 项目跑上 HarmonyOS，以及怎么让 iOS、Android 和 HarmonyOS 各用各的 React Native 版本。demo 是本仓库的示例应用，下面每段配置都能在它的目录里找到对应文件。
+本文以 [`apps/demo`](../apps/demo) 为例，介绍如何为现有 Expo 项目接入 HarmonyOS，以及 Metro 如何按平台选择 React Native 实现。
 
 ## 环境要求
 
-- Node.js 20 或更高版本。
-- Expo SDK 55 项目（`expo@55.0.31`）。当前工具链按 SDK 55 适配，`@expo-harmony/cli` 和 `@expo-harmony/prebuild-config` 的 peerDependencies 都锁在这个版本上。
+- Node.js 20.19.4+（20.x）、22.13+（22.x）、24.3+（24.x）或 25+。
+- Expo SDK 57 项目（`expo@57.0.31`）。本示例的 CLI 和 prebuild 工具与该版本配套。
 - DevEco Studio，带完整的 HarmonyOS SDK（含 HMS 与 OpenHarmony 组件）、OHPM、Hvigor 和 HDC。构建 HAP 时需要，`expo-harmony doctor` 会逐项检查。
 - 一台 HarmonyOS 设备，或者在 DevEco Studio Device Manager 里创建的模拟器。
 
 ## 安装依赖
 
-以下命令在应用根目录执行。本文使用 Expo SDK 55（`expo@55.0.31`、`expo-modules-core@55.0.26`），Harmony 侧配套 RNOH `0.84.1`、React `19.2.3` 和 Hermes `250829098.0.9`：
+以下命令在应用根目录执行。示例共用 React 19.2.3 和 React Native 0.86.3，HarmonyOS 端由 RNOH 0.86.1 提供实现。完整版本见 [Demo 依赖清单](../apps/demo/package.json)。
 
 ```sh
-npm install @expo-harmony/cli @expo-harmony/metro-config @expo-harmony/expo-modules-core
-npm install --save-exact @react-native-oh/react-native-harmony@0.84.1 @react-native-oh/react-native-harmony-cli@0.84.1 react-harmony@npm:react@19.2.3 hermes-compiler@250829098.0.9
+npm install --save-exact expo@57.0.31 expo-modules-core@57.0.24 expo-asset@57.0.20 expo-constants@57.0.22
+npm install @expo-harmony/cli @expo-harmony/prebuild-config @expo-harmony/metro-config @expo-harmony/expo @expo-harmony/expo-modules-core @expo-harmony/expo-asset @expo-harmony/expo-constants
+npm install --save-exact @react-native-oh/react-native-harmony@0.86.1 @react-native-oh/react-native-harmony-cli@0.86.1 hermes-compiler@250829098.0.17
 ```
 
-几点说明：
-
-- `@react-native-oh/react-native-harmony` 是 RNOH 的 JS 侧运行时，`@react-native-oh/react-native-harmony-cli` 是它的配套 CLI，两者版本必须配套，当前是 0.84.1。
-- `react-harmony` 是一个 npm alias，实际安装 `react@19.2.3`，装在 `react-harmony` 这个名字下。为什么需要第二份 react，见 [后文](#两套-react-native-如何共存)。
-- `@expo-harmony/expo-modules-core` 提供 Expo Modules 的 HarmonyOS 运行时，需要与 SDK 55 的 `expo-modules-core` 一起安装。
-- `hermes-compiler` 要作为应用的直接依赖精确安装为 `250829098.0.9`，与 RNOH `0.84.1` 的原生 HAR 内嵌 Hermes 配套。CLI 从 RNOH 包所在位置解析它，用于记录运行时版本和编译 Release 字节码。RNOH 的 npm 包未内置这份编译器，省略安装可能解析到 iOS/Android 的 `react-native` 引入的其他版本，导致无法正常运行。
-- 项目里每个要在 HarmonyOS 上用到的 Expo 模块，再装一个同名的 `@expo-harmony/expo-*` 包，例如 `expo-constants` 配 `@expo-harmony/expo-constants`。已移植的列表见 [仓库 README](../README.md#supported-libraries)。装完可以用 `npx expo-harmony modules list` 检查，它会列出每个模块是否支持 Harmony。
+- RNOH JS 包、RNOH CLI 和原生 HAR 版本配套。Expo 初始化会加载 Asset 和 Constants，因此两者的 Harmony 实现也随应用自动链接。
+- `hermes-compiler` 作为应用的直接依赖，与 RNOH HAR 内嵌的 Hermes 配套，供运行时契约和 Release 字节码编译使用。
+- 业务代码使用的 Expo 模块需要对应的 Harmony 适配包。已移植模块见 [仓库 README](../README.md#supported-libraries)，安装后可用 `npx expo-harmony modules list` 查看自动链接结果。
 
 ## 配置 app.json
 
@@ -49,6 +46,7 @@ demo 的配置在 [`apps/demo/app.json`](../apps/demo/app.json)，要改四处�
 ```json
 "plugins": [
   "expo-router",
+  "@expo-harmony/expo-constants",
   "expo-font",
   "@expo-harmony/expo-font",
   "@expo-harmony/expo-splash-screen",
@@ -77,8 +75,12 @@ demo 的配置在 [`apps/demo/app.json`](../apps/demo/app.json)，要改四处�
 ```
 
 - `bundleName` 是应用包名，必填。
-- `targetSdkVersion` 和 `compatibleSdkVersion` 默认分别为 24（HarmonyOS 6.1.1）和 20（HarmonyOS 6.0.0）。通过 [expo-build-properties](../packages/expo-build-properties/README.md) 配置 SDK、ABI、SO 打包和 release 选项。应用的最低兼容版本须不低于所有原生依赖的要求：`expo-constants` 为 14、`@expo-harmony/expo` 为 20、`expo-file-system` 为 21，因此 demo 显式设置为 21。
-- 权限声明会写进生成的 `module.json5`。
+- `targetSdkVersion` 和 `compatibleSdkVersion` 默认分别为 24（HarmonyOS 6.1.1）和 20（HarmonyOS 6.0.0）。通过 [expo-build-properties](../packages/expo-build-properties/README.md) 配置 SDK、ABI、SO 打包和 release 选项。应用的最低兼容版本须满足所有原生依赖的要求，Demo 的通知和网格渐变模块要求至少 API 23。
+- `expo.harmony.permissions` 会写入生成的 `module.json5`。HarmonyOS 还会在构建时合并所用 HAR 的权限声明。上例的 `CAMERA` 用于应用内嵌相机，系统拍照选择器不需要它。[华为 HAR 打包说明](https://developer.huawei.com/consumer/cn/doc/HarmonyOS-Guides/har-package/) · [CameraPicker API](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-camerapicker/)
+
+选取照片、视频、联系人或文件时，使用系统选择器可以将访问范围限定为用户选中的内容。确需全库访问等受限能力时，由应用开发者按业务场景向华为提交申请，并按各模块的说明在 `expo.harmony.permissions` 声明权限。验证受限接口的正向流程时，签名 Profile 需要包含对应 ACL，并允许在目标调试设备上安装。已提交申请的应用可按华为流程使用试用调试 Profile。发布时使用包含获批 ACL 的发布 Profile。对于 `user_grant` 权限，应用安装后还要在运行时取得用户授权。[华为受限开放权限](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/restricted-permissions) · [调试与发布 Profile 配置](https://developer.huawei.com/consumer/cn/doc/harmonyos-faqs/faqs-appgallery-25/)
+
+部分权限在本地调试和上架时适用不同规则。例如 `FILE_ACCESS_PERSIST` 从 API 12 起可直接声明用于本地调试，上架仍需申请。[华为文件持久化访问权限说明](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/restricted-permissions#ohospermissionfile_access_persist)
 
 ## 配置 metro.config.js
 
@@ -91,20 +93,17 @@ const { getDefaultConfig } = require('expo/metro-config');
 const { withHarmonyConfig } = require('@expo-harmony/metro-config');
 
 const projectRoot = __dirname;
-const isHarmony = process.env.EXPO_HARMONY === '1';
+const isHarmony = process.env.EXPO_METRO_TARGET === 'harmony';
 const config = getDefaultConfig(projectRoot);
 
 module.exports = withHarmonyConfig(config, {
   enabled: isHarmony,
   projectRoot,
-  // RNOH 0.84 和 Expo SDK 55 的 React 渲染层版本不同
-  aliases: { react: 'react-harmony' },
 });
 ```
 
 - 所有 `expo-harmony` 命令都会在 CLI 入口自动设置 `EXPO_HARMONY=1` 和 `EXPO_METRO_TARGET=harmony` 并传递给子进程；无需在命令前添加 `cross-env`。应用配置和插件也可以使用这些变量判断 Harmony 环境。
 - `enabled` 为 false 时 `withHarmonyConfig` 原样返回配置，也不加载 RNOH 的依赖。
-- `aliases` 把 `react` 指到 `react-harmony`，是两套版本共存的关键一环。
 - demo 里还有一段给 expo-router 补 `nodeModulesPaths` 的代码，那是 Yarn workspace 布局下的处理，单包项目用不到。
 
 `package.json` 里照抄 demo 加这几个脚本：
@@ -175,7 +174,7 @@ iOS 和 Android 的命令没有任何变化，`expo run:ios`、`expo run:android
 
 ## 签名
 
-不配置签名只会收到警告，不影响未签名构建。DevEco Studio 需要先生成工程才能创建证书，因此首次生成、删除 `harmony/` 后重新生成或使用 `prebuild --clean` 时，若配置的签名文件或材料缺失、无效，会给出警告并按未签名生成；签名配置可用时仍会正常应用。对已有工程执行普通 prebuild 时，签名文件缺失或无效会报错并中止。要往真机装 Release 包，需要签名材料：证书、私钥库和 profile 文件，DevEco Studio 可以生成。把它们写成一个 JSON 文件，字段和 DevEco Studio 写进 `build-profile.json5` 的 `signingConfigs` 一致：`certpath`、`storeFile`、`profile`、`storePassword`、`keyAlias`、`keyPassword`、`signAlg`。
+尚未创建签名材料时，可以先省略签名配置来生成未签名工程，再使用 DevEco Studio 创建证书、私钥库和 Profile。应用显式选定签名配置后，若文件或材料缺失、无效，prebuild 会报错并中止，包括首次生成和 `--clean`。将签名配置写成 JSON 文件，字段与 DevEco Studio 写入 `build-profile.json5` 的 `signingConfigs` 一致，包括 `certpath`、`storeFile`、`profile`、`storePassword`、`keyAlias`、`keyPassword` 和 `signAlg`。
 
 签名文件不能放在 `harmony/` 里，`--clean` 会把目录删掉。demo 的做法是放在外面，用 [`apps/demo/app.config.js`](../apps/demo/app.config.js) 按环境变量注入：
 
@@ -196,54 +195,21 @@ module.exports = ({ config }) => {
 
 函数收到的 `config` 就是 `app.json` 解析出来的配置，在上面追加 `harmony.signingConfigFile`。这样签名路径和密钥口令都不进 git。
 
-## 两套 React Native 如何共存
+## Metro 如何按平台选择实现
 
-RNOH 和官方 React Native 是两条发布线，版本对不齐是常态：Expo SDK 锁自己的 `react-native`，RNOH 锁自己的，RNOH 多数时候落后于官方最新版。expo-harmony 不要求两边一致，做法是把两套都装进同一个 `node_modules`，打包时按平台分流。demo 当前的组合：
-
-| | iOS / Android | HarmonyOS |
+| 依赖 | iOS / Android | HarmonyOS |
 | --- | --- | --- |
-| React Native | `react-native@0.83.6`（Expo SDK 55 指定） | `@react-native-oh/react-native-harmony@0.84.1`（RNOH，基于 RN 0.84.1） |
-| React | `react@19.2.0` | `react-harmony`（即 `react@19.2.3`） |
-| 原生构建 | CocoaPods / Gradle | OHPM + Hvigor，依赖 `@rnoh/react-native-openharmony@0.84.1` |
+| React Native | `react-native@0.86.3` | `@react-native-oh/react-native-harmony@0.86.1` |
+| React | `react@19.2.3` | `react@19.2.3` |
+| 原生构建 | CocoaPods / Gradle | OHPM / Hvigor，依赖 `@rnoh/react-native-openharmony@0.86.1` |
 
-### Metro 按平台分流
+HarmonyOS 打包时，`withHarmonyConfig` 应用 Harmony 重定向并接入 RNOH resolver。RNOH 将 `react-native` 映射到平台实现，再委托原有 Expo resolver 解析具体文件，因此 Expo Router 和 TypeScript paths 继续生效。其他平台使用 Expo 的默认解析规则。各平台均从 `react` 导入同一版本。
 
-`EXPO_METRO_TARGET` 不是 `harmony` 时，`withHarmonyConfig` 原样返回配置，iOS/Android/Web 的打包走 Expo 原有 resolver，下面的规则一条都不生效。
+### 原生依赖
 
-是 `harmony` 时，Harmony 请求先经过重定向规则，再进 RNOH resolver；RNOH 解析具体文件时又委托回 Expo 原有 resolver，所以 Expo Router、TypeScript paths 这些能力都保留。重定向规则有三种来源：
+Demo 使用 React Native Screens `4.26.2` 和 Safe Area Context `5.6.2` 的 JS 接口。Harmony 侧原生包由 Expo Harmony Router 带入，分别是 Screens `4.10.0-beta.4` 和 Safe Area Context `5.6.4`。Worklets JS 使用 `0.11.4`，Core 带入 Harmony Worklets `1.1.0-beta.1`。
 
-- `import 'react-native'` 由 RNOH resolver 换成 `@react-native-oh/react-native-harmony`。这是 RNOH 自带的规则，`withHarmonyConfig` 只是把它的 resolver 接进来。
-- `import 'react'` 命中 metro.config.js 里的 `aliases`，换成 `react-harmony`。
-- 适配包在自己的 package.json 里声明 `harmony.alias`。`@react-native-ohos/react-native-reanimated` 的声明长这样：
-
-  ```json
-  {
-    "harmony": {
-      "alias": "react-native-reanimated",
-      "redirectInternalImports": true
-    }
-  }
-  ```
-
-业务代码不用改，仍然写 `import { View } from 'react-native'` 和 `import { useState } from 'react'`。
-
-### 为什么要第二份 react
-
-一个 bundle 里只能有一个 react 实例，出现两个会报 hooks 错误。RNOH 0.84 的渲染层配 react 19.2.3，Expo SDK 55 锁 react 19.2.0，两边不能共用，也不能只留一份。于是用 npm alias 装出 `react-harmony`：harmony 打包时，所有 `react` 导入都指向它；iOS/Android 打包时这条别名不生效，继续用 19.2.0。RNOH 升级时，`react-harmony` 指向的版本跟着调。
-
-### 第三方库
-
-有 RNOH 社区适配的库，官方包和适配包成对安装。demo 的组合：
-
-| 官方包 | 版本 | RNOH 适配包 | 版本 |
-| --- | --- | --- | --- |
-| `react-native-reanimated` | 4.2.1 | `@react-native-ohos/react-native-reanimated` | 4.0.2-beta.1 |
-| `react-native-gesture-handler` | 2.30.0 | `@react-native-ohos/react-native-gesture-handler` | 2.30.1 |
-| `react-native-worklets` | 0.7.4 | `@react-native-ohos/react-native-worklets` | 1.0.0 |
-
-适配包声明了 `harmony.alias`，业务代码 import 官方包名即可，不用写条件导入。适配包的版本跟着 RNOH 走，不跟官方包对齐，功能上会有差距，升级前看对应仓库的说明。
-
-没有适配包的库分两种。纯 JS 的库直接用，两个平台共用。带原生代码的库在 HarmonyOS 上没有实现，要么找替代，要么用 `@expo-harmony/metro-config` 的 `redirects`、`emptyModules`、`resolveRequest` 在 harmony 打包时替换或屏蔽，写法见[它的 README](../packages/metro-config/README.md)。
+适配包可通过 `harmony.alias` 和内部重定向提供同名入口。纯 JS 库可沿用原有依赖。其他解析选项见 [Metro 配置说明](../packages/metro-config/README.md)。
 
 ### 业务代码里的平台判断
 

@@ -6,36 +6,59 @@
  */
 
 import * as SplashScreen from 'expo-splash-screen';
-import { palette } from '../theme';
-import { ActionButton, DataRow, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { useState } from 'react';
+import { Platform } from 'react-native';
+
+import { json } from '../format';
+import { readSplashOptions, saveSplashOptions } from '../splash-options';
+import { ActionButton, ActionRow, Field, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { optionalNumber, Toggle } from './visual-controls';
 
 export function SplashScreenDemo() {
   const action = useAsyncResult();
+  const [saved] = useState(readSplashOptions);
+  const [duration, setDuration] = useState(String(saved?.duration ?? 400));
+  const [fade, setFade] = useState(saved?.fade ?? true);
+  const busy = action.state.phase === 'running';
+
+  if (Platform.OS === 'web') return null;
 
   return (
-    <>
-      <Panel eyebrow="启动交接" title="原生启动屏状态机">
-        <Note>
-          根布局在模块作用域调用 preventAutoHideAsync，加载内置字体后，恰好在 React 内容就绪时隐藏启动屏。
-        </Note>
+    <Panel title="启动屏">
+      <Field label="淡出时长（毫秒）" keyboardType="number-pad" value={duration} onChangeText={setDuration} />
+      <Toggle label="淡出" value={fade} onChange={setFade} />
+      <ActionRow>
         <ActionButton
-          disabled={action.state.phase === 'running'}
-          label="验证幂等交接"
-          onPress={() => void action.run(async () => {
-            SplashScreen.setOptions({ duration: 0, fade: false });
-            const prevented = await SplashScreen.preventAutoHideAsync();
-            SplashScreen.hide();
-            await SplashScreen.hideAsync();
-            return `就绪后 prevent → ${String(prevented)}；重复 hide 已完成`;
+          disabled={busy}
+          label="应用到下次启动"
+          onPress={() => void action.run(() => {
+            const options = { duration: optionalNumber(duration, '时长'), fade };
+            SplashScreen.setOptions(options);
+            saveSplashOptions(options);
+            return json(options);
           })}
         />
-        <ResultPanel state={action.state} />
-      </Panel>
-      <Panel eyebrow="CNG 资源" title="冷启动视觉契约">
-        <DataRow label="背景色" value={palette.canvas} />
-        <DataRow label="缩放模式" value="contain" />
-        <DataRow label="图片" value="assets/app-icon.svg" />
-      </Panel>
-    </>
+        <ActionButton disabled={busy} label="阻止自动隐藏" onPress={() => void action.run(async () => String(await SplashScreen.preventAutoHideAsync()))} tone="secondary" />
+        <ActionButton
+          disabled={busy}
+          label="隐藏（hide）"
+          onPress={() => void action.run(() => {
+            SplashScreen.hide();
+            return 'hide()';
+          })}
+          tone="secondary"
+        />
+        <ActionButton
+          disabled={busy}
+          label="隐藏（hideAsync）"
+          onPress={() => void action.run(async () => {
+            await SplashScreen.hideAsync();
+            return 'hideAsync()';
+          })}
+          tone="secondary"
+        />
+      </ActionRow>
+      <ResultPanel state={action.state} />
+    </Panel>
   );
 }

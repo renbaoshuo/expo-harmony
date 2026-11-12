@@ -44,29 +44,21 @@ class ShowcasePage(activity: Activity, initialValue: Double) : Dialog(activity, 
       orientation = LinearLayout.VERTICAL
       setPadding(0, inset, 0, inset)
     }
-    fun addText(label: String, size: Float, color: Int, bold: Boolean = false) {
-      content.addView(ShowcaseStyles.text(context, label, size, color, bold),
-        LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = inset })
-    }
-    addText("Expo Modules", 12f, ShowcaseStyles.blue, true)
-    addText("原生页面交互", 30f, ShowcaseStyles.text, true)
-    addText("在原生页面中修改计数，完成后将结果带回测试页面。", 15f, ShowcaseStyles.muted)
     val card = LinearLayout(context).apply {
       orientation = LinearLayout.VERTICAL
       setPadding(inset, inset, inset, inset)
       background = ShowcaseStyles.background(context, ShowcaseStyles.surface, 16)
     }
     val count = ShowcaseStyles.text(context, formatValue(value), 36f, ShowcaseStyles.blue, true)
-    card.addView(ShowcaseStyles.text(context, "页面计数器", 18f, bold = true))
+    card.addView(ShowcaseStyles.text(context, "计数", 18f, bold = true))
     card.addView(count, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
       topMargin = inset; bottomMargin = inset
     })
-    card.addView(ShowcaseStyles.button(context, "增加计数 +1") {
+    card.addView(ShowcaseStyles.button(context, "增加 1") {
       value += 1
       count.text = formatValue(value)
     }, LinearLayout.LayoutParams(MATCH_PARENT, ShowcaseStyles.dp(context, 44)))
     content.addView(card, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = inset })
-    addText("取消或系统返回将放弃本次修改。", 13f, ShowcaseStyles.muted)
     root.addView(ScrollView(context).apply { addView(content) }, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
     setContentView(root)
     setCanceledOnTouchOutside(false)

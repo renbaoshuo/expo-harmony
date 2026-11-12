@@ -6,201 +6,364 @@
  */
 
 import * as Calendar from 'expo-calendar';
+import * as Legacy from 'expo-calendar/legacy';
 import { useState } from 'react';
 import { Platform } from 'react-native';
 
-import { ActionButton, ActionRow, DataRow, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { json } from '../format';
+import { ActionButton, ActionRow, DataRow, Field, Panel, ResultPanel, useAsyncResult } from '../ui';
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
+type PermissionHookMode = 'manual' | 'query' | 'request';
+const permissionHookModes: [PermissionHookMode, string][] = [
+  ['manual', '手动调用'],
+  ['query', '挂载时查询'],
+  ['request', '挂载时申请'],
+];
 
-async function verify() {
-  const permission = await Calendar.getCalendarPermissionsAsync();
-  if (!permission.granted) throw new Error('请先授予日历读写权限。');
-
-  const start = new Date();
-  start.setUTCHours(12, 0, 0, 0);
-  start.setUTCDate(start.getUTCDate() + 1);
-  const end = new Date(start.getTime() + HOUR);
-  const finish = new Date(start.getTime() + 7 * DAY);
-  const checks: string[] = [];
-  const calendar = await Calendar.createCalendarAsync({
-    title: `Expo Calendar 验证 ${Date.now()}`,
-    name: 'Expo Calendar Demo',
-    color: '#007AFF',
-    entityType: Calendar.EntityTypes.EVENT,
-    ownerAccount: 'Expo Calendar Demo',
-    accessLevel: Calendar.CalendarAccessLevel.OWNER,
-    source: { isLocalAccount: true, name: 'Expo Calendar Demo', type: 'local' },
-  });
-
-  try {
-    await Calendar.updateCalendarAsync(calendar, { color: '#32ADE6' });
-    const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
-    const saved = calendars.find(value => value.id === calendar);
-    if (saved?.color.toUpperCase() !== '#32ADE6') {
-      throw new Error(`日历创建或颜色更新未正确保存：${JSON.stringify(saved)}。`);
-    }
-    checks.push('日历创建、读取、颜色更新');
-
-    const id = await Calendar.createEventAsync(calendar, {
-      title: 'Expo Calendar 日程',
-      location: '会议室',
-      notes: '初始说明',
-      startDate: start,
-      endDate: end,
-      timeZone: 'UTC',
-      alarms: [{ relativeOffset: -15 }],
-    });
-    const event = await Calendar.getEventAsync(id);
-    if (event.calendarId !== calendar || event.title !== 'Expo Calendar 日程'
-      || new Date(event.startDate).getTime() !== start.getTime()
-      || new Date(event.endDate).getTime() !== end.getTime()
-      || event.alarms?.[0]?.relativeOffset !== -15) {
-      throw new Error('日程字段或提醒往返结果不一致。');
-    }
-    checks.push('日程创建、日期与提醒往返');
-
-    await Promise.all([
-      Calendar.updateEventAsync(id, { title: '已更新标题' }),
-      Calendar.updateEventAsync(id, { notes: '并发更新说明' }),
-    ]);
-    const updated = await Calendar.getEventAsync(id);
-    if (updated.title !== '已更新标题' || updated.notes !== '并发更新说明'
-      || updated.location !== '会议室' || updated.alarms?.[0]?.relativeOffset !== -15) {
-      throw new Error('局部或并发更新丢失了日程字段。');
-    }
-    const attendees = await Calendar.getAttendeesForEventAsync(id);
-    if (!Array.isArray(attendees) || attendees.length !== 0) throw new Error('新建日程应返回空的参与者列表。');
-    checks.push('并发局部更新、未修改字段保留、参与者读取');
-
-    const midnight = new Date(start);
-    midnight.setUTCHours(0, 0, 0, 0);
-    await Calendar.updateEventAsync(id, {
-      allDay: true,
-      startDate: midnight,
-      endDate: new Date(midnight.getTime() + DAY),
-    });
-    const allDay = await Calendar.getEventAsync(id);
-    if (!allDay.allDay || allDay.alarms?.[0]?.relativeOffset !== -15) {
-      throw new Error('切换全天日程后提醒偏移发生变化。');
-    }
-    await Calendar.updateEventAsync(id, { allDay: false, startDate: start, endDate: end, alarms: [] });
-    const cleared = await Calendar.getEventAsync(id);
-    if (cleared.allDay || cleared.alarms?.length !== 0) throw new Error('全天标记或提醒未清除。');
-    checks.push('全天提醒转换、提醒清空');
-
-    const series = await Calendar.createEventAsync(calendar, {
-      title: '重复日程',
-      startDate: start,
-      endDate: end,
-      timeZone: 'UTC',
-      recurrenceRule: { frequency: Calendar.Frequency.DAILY, occurrence: 3 },
-    });
-    const before = (await Calendar.getEventsAsync([calendar], midnight, finish)).filter(value => value.id === series);
-    if (before.length !== 3 || new Set(before.map(value => String(value.startDate))).size !== 3) {
-      throw new Error(`应展开 3 次独立的重复实例，实际得到 ${before.length} 次。`);
-    }
-    await Calendar.updateEventAsync(series, { notes: '保留重复规则' });
-    const after = (await Calendar.getEventsAsync([calendar], midnight, finish)).filter(value => value.id === series);
-    if (after.length !== 3
-      || after.some((value, index) => String(value.startDate) !== String(before[index]?.startDate))) {
-      throw new Error('局部更新改变了重复规则或实例日期。');
-    }
-    checks.push('重复实例展开、局部更新保留规则');
-
-    if ((Platform.OS as string) === 'harmony') {
-      const cases = [
-        { name: '反向时间区间', code: 'ERR_CALENDAR_INVALID_DATE_RANGE', run: () => Calendar.getEventsAsync([calendar], end, start) },
-        { name: '非法原生 ID', code: 'ERR_CALENDAR_INVALID_ID', run: () => Calendar.getEventAsync('invalid') },
-        { name: '重复实例修改', code: 'ERR_CALENDAR_UNSUPPORTED', run: () => Calendar.updateEventAsync(series, { title: '单次修改' }, { instanceStartDate: start }) },
-        { name: '绝对日期提醒', code: 'ERR_CALENDAR_UNSUPPORTED', run: () => Calendar.updateEventAsync(id, { alarms: [{ absoluteDate: start.toISOString() }] }) },
-      ];
-      for (const test of cases) {
-        let code: unknown;
-        try {
-          await test.run();
-        } catch (error) {
-          code = (error as { code?: unknown }).code;
-        }
-        if (code !== test.code) throw new Error(`${test.name}：预期 ${test.code}，实际 ${String(code)}。`);
-      }
-      checks.push('非法参数与不支持能力的错误码');
-    }
-
-    await Calendar.deleteEventAsync(id);
-    await Calendar.deleteEventAsync(series);
-    const remaining = await Calendar.getEventsAsync([calendar], midnight, finish);
-    if (remaining.length !== 0) throw new Error('删除日程后仍能查询到记录。');
-    checks.push('普通日程与重复系列删除');
-  } finally {
-    await Calendar.deleteCalendarAsync(calendar);
-  }
-
-  const remaining = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
-  if (remaining.some(value => value.id === calendar)) throw new Error('临时日历未清理。');
-  checks.push('临时日历清理');
-
-  return JSON.stringify({ passed: true, checks }, null, 2);
+function calendarData(value: Calendar.ExpoCalendar) {
+  return {
+    id: value.id,
+    title: value.title,
+    name: value.name,
+    color: value.color,
+    entityType: value.entityType,
+    type: value.type,
+    source: value.source,
+    ownerAccount: value.ownerAccount,
+    isPrimary: value.isPrimary,
+    allowsModifications: value.allowsModifications,
+    allowedAvailabilities: value.allowedAvailabilities,
+  };
 }
 
-export function CalendarDemo() {
-  const [permission, request, get] = Calendar.useCalendarPermissions();
-  const [available, setAvailable] = useState<boolean>();
-  const [calendars, setCalendars] = useState<Calendar.Calendar[]>();
-  const [primary, setPrimary] = useState<Calendar.Calendar>();
-  const access = useAsyncResult();
-  const query = useAsyncResult();
-  const checks = useAsyncResult();
-  const dialog = useAsyncResult();
-  const busy = [access, query, checks, dialog].some(value => value.state.phase === 'running');
+function eventData(value: Calendar.ExpoCalendarEvent) {
+  return {
+    id: value.id,
+    calendarId: value.calendarId,
+    title: value.title,
+    startDate: value.startDate,
+    endDate: value.endDate,
+    allDay: value.allDay,
+    location: value.location,
+    timeZone: value.timeZone,
+    notes: value.notes,
+    alarms: value.alarms,
+    recurrenceRule: value.recurrenceRule,
+    availability: value.availability,
+    status: value.status,
+    organizerEmail: value.organizerEmail,
+  };
+}
 
-  const inspect = () => query.run(async () => {
-    const supported = await Calendar.isAvailableAsync();
-    setAvailable(supported);
-    if (!supported) throw new Error('当前系统不提供日历能力。');
-
-    const [list, calendar] = await Promise.all([
-      Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT),
-      Calendar.getDefaultCalendarAsync(),
-    ]);
-    setCalendars(list);
-    setPrimary(calendar);
-
-    return JSON.stringify(list.map(value => ({ id: value.id, title: value.title, color: value.color })), null, 2);
+function CalendarPermissionHook({ busy, legacy, mode, run, writeOnly }: {
+  busy: boolean;
+  legacy: boolean;
+  mode: PermissionHookMode;
+  run: (operation: () => Promise<unknown>) => () => void;
+  writeOnly: boolean;
+}) {
+  const [permission, request, get] = Calendar.useCalendarPermissions({
+    get: !legacy && mode === 'query',
+    request: !legacy && mode === 'request',
+    writeOnly,
+  });
+  const [legacyPermission, requestLegacy, getLegacy] = Legacy.useCalendarPermissions({
+    get: legacy && mode === 'query',
+    request: legacy && mode === 'request',
   });
 
   return (
     <>
-      <Panel eyebrow="权限" title="检查与申请日历权限">
-        <DataRow label="useCalendarPermissions 状态" value={permission?.status ?? '加载中'} />
-        <DataRow label="已授权" value={permission ? String(permission.granted) : '加载中'} />
-        <DataRow label="可再次询问" value={permission ? String(permission.canAskAgain) : '加载中'} />
+      <DataRow label="useCalendarPermissions" value={(legacy ? legacyPermission : permission)?.status ?? '尚未查询'} />
+      <ActionRow>
+        <ActionButton disabled={busy} label="通过 Hook 查询" tone="secondary" onPress={run(legacy ? getLegacy : get)} />
+        <ActionButton disabled={busy} label="通过 Hook 申请" tone="secondary" onPress={run(legacy ? requestLegacy : request)} />
+      </ActionRow>
+    </>
+  );
+}
+
+function CalendarPermissions({ legacy }: { legacy: boolean }) {
+  const [mode, setMode] = useState<PermissionHookMode>('manual');
+  const [writeOnly, setWriteOnly] = useState(false);
+  const result = useAsyncResult();
+  const busy = result.state.phase === 'running';
+  const run = (operation: () => Promise<unknown>) => () => void result.run(async () => json(await operation()));
+
+  return (
+    <Panel title="日历权限">
+      {!legacy && Platform.OS === 'ios'
+        ? (
+            <ActionButton
+              disabled={busy}
+              label={writeOnly ? '仅写入权限' : '读写权限'}
+              tone="secondary"
+              onPress={() => {
+                setWriteOnly(value => !value);
+                setMode('manual');
+              }}
+            />
+          )
+        : null}
+      <ActionRow>
+        <ActionButton disabled={busy} label="检查可用性" tone="secondary" onPress={run(Legacy.isAvailableAsync)} />
+        <ActionButton disabled={busy} label="查询权限" tone="secondary" onPress={run(legacy ? Legacy.getCalendarPermissionsAsync : () => Calendar.getCalendarPermissions(writeOnly))} />
+        <ActionButton disabled={busy} label="申请权限" onPress={run(legacy ? Legacy.requestCalendarPermissionsAsync : () => Calendar.requestCalendarPermissions(writeOnly))} />
+        {legacy ? <ActionButton disabled={busy} label="申请权限（旧接口）" tone="secondary" onPress={run(Legacy.requestPermissionsAsync)} /> : null}
+      </ActionRow>
+      <ActionRow>
+        {permissionHookModes.map(([value, label]) => (
+          <ActionButton
+            key={value}
+            disabled={busy}
+            label={label}
+            tone={mode === value ? 'primary' : 'secondary'}
+            onPress={() => setMode(value)}
+          />
+        ))}
+      </ActionRow>
+      <CalendarPermissionHook key={`${mode}:${writeOnly}`} busy={busy} legacy={legacy} mode={mode} run={run} writeOnly={writeOnly} />
+      <ResultPanel state={result.state} />
+    </Panel>
+  );
+}
+
+const recurrenceExamples: [string, Calendar.RecurrenceRule | undefined][] = [
+  ['省略重复规则', undefined],
+  ['每天', { frequency: Calendar.Frequency.DAILY, interval: 1, occurrence: 3 }],
+  ['每周', { frequency: Calendar.Frequency.WEEKLY, interval: 1, daysOfTheWeek: [{ dayOfTheWeek: Calendar.DayOfTheWeek.Monday }], occurrence: 3 }],
+  ['每月指定日期', { frequency: Calendar.Frequency.MONTHLY, daysOfTheMonth: [10, 20], occurrence: 3 }],
+  ['每月指定星期', { frequency: Calendar.Frequency.MONTHLY, daysOfTheWeek: [{ dayOfTheWeek: Calendar.DayOfTheWeek.Monday, weekNumber: 2 }], occurrence: 3 }],
+  ['每年指定日期', { frequency: Calendar.Frequency.YEARLY, monthsOfTheYear: [1, 3], daysOfTheMonth: [10, 20], occurrence: 3 }],
+  ['每年第几天', { frequency: Calendar.Frequency.YEARLY, daysOfTheYear: [30], occurrence: 3 }],
+  ['每年第几周', { frequency: Calendar.Frequency.YEARLY, weeksOfTheYear: [2], daysOfTheWeek: [{ dayOfTheWeek: Calendar.DayOfTheWeek.Monday }], occurrence: 3 }],
+];
+
+export function CalendarDemo() {
+  const [legacy, setLegacy] = useState(false);
+  const [calendarId, setCalendarId] = useState('');
+  const [eventId, setEventId] = useState('');
+  const [createdCalendar, setCreatedCalendar] = useState('');
+  const [createdEvent, setCreatedEvent] = useState<{ id: string; calendarId: string }>();
+  const [entityType, setEntityType] = useState<Calendar.EntityTypes>();
+  const [calendarDetails, setCalendarDetails] = useState(() => json({
+    title: 'Expo 日历',
+    name: 'Expo Calendar',
+    color: '#007AFF',
+    entityType: Calendar.EntityTypes.EVENT,
+    ownerAccount: 'Expo Calendar',
+    source: { name: 'Expo Calendar', type: 'local', isLocalAccount: true },
+  }));
+  const [color, setColor] = useState('#32ADE6');
+  const [calendarIds, setCalendarIds] = useState('');
+  const [queryObjects, setQueryObjects] = useState(false);
+  const [start, setStart] = useState(() => new Date(Date.now() - DAY).toISOString());
+  const [end, setEnd] = useState(() => new Date(Date.now() + 7 * DAY).toISOString());
+  const [details, setDetails] = useState(() => json({
+    title: 'Expo 日程',
+    startDate: new Date(Date.now() + DAY).toISOString(),
+    endDate: new Date(Date.now() + DAY + HOUR).toISOString(),
+    location: '会议室',
+    timeZone: 'UTC',
+    allDay: false,
+    notes: '准备讨论议题',
+    alarms: [{ relativeOffset: -15, method: Calendar.AlarmMethod.ALERT }],
+  }));
+  const [recurrence, setRecurrence] = useState('');
+  const [systemDetails, setSystemDetails] = useState(() => json({
+    title: 'Expo 日程',
+    location: '会议室',
+    allDay: false,
+    startDate: new Date(Date.now() + HOUR).toISOString(),
+    endDate: new Date(Date.now() + 2 * HOUR).toISOString(),
+    notes: '准备讨论议题',
+    alarms: [{ relativeOffset: -15, method: Calendar.AlarmMethod.ALERT }],
+  }));
+  const calendars = useAsyncResult();
+  const events = useAsyncResult();
+  const dialog = useAsyncResult();
+  const busy = [calendars, events, dialog].some(value => value.state.phase === 'running');
+  const canEditCalendar = !!createdCalendar && calendarId === createdCalendar;
+  const canEditEvent = !!createdEvent && eventId === createdEvent.id;
+  const platform = String(Platform.OS);
+  const calendar = () => Calendar.ExpoCalendar.get(calendarId);
+  const event = () => Calendar.ExpoCalendarEvent.get(eventId);
+  const ids = () => calendarIds.split(',').map(id => id.trim()).filter(Boolean);
+  const eventDetails = () => {
+    const data = JSON.parse(details) as Partial<Legacy.Event>;
+    if (recurrence.trim()) data.recurrenceRule = JSON.parse(recurrence);
+    return data;
+  };
+
+  const createCalendar = () => calendars.run(async () => {
+    const data = JSON.parse(calendarDetails) as Partial<Legacy.Calendar>;
+    if (legacy) {
+      const id = await Legacy.createCalendarAsync(data);
+      setCreatedCalendar(id);
+      setCalendarId(id);
+      setCalendarIds(id);
+      return id;
+    }
+    const value = await Calendar.createCalendar(data);
+    setCreatedCalendar(value.id);
+    setCalendarId(value.id);
+    setCalendarIds(value.id);
+    return json(calendarData(value));
+  });
+
+  const deleteCalendar = () => calendars.run(async () => {
+    if (legacy) await Legacy.deleteCalendarAsync(calendarId);
+    else await (await calendar()).delete();
+    setCreatedCalendar('');
+    setCalendarId('');
+    if (calendarIds === calendarId) setCalendarIds('');
+    if (createdEvent?.calendarId === calendarId) {
+      setCreatedEvent(undefined);
+      if (eventId === createdEvent.id) setEventId('');
+    }
+    return `已删除日历 ${calendarId}`;
+  });
+
+  const createEvent = () => events.run(async () => {
+    const data = eventDetails();
+    if (legacy) {
+      const id = await Legacy.createEventAsync(calendarId, data);
+      setCreatedEvent({ id, calendarId });
+      setEventId(id);
+      return id;
+    }
+    const value = await (await calendar()).createEvent(data);
+    setCreatedEvent({ id: value.id, calendarId });
+    setEventId(value.id);
+    return json(eventData(value));
+  });
+  const queryEvents = () => events.run(async () => {
+    const range = [new Date(start), new Date(end)] as const;
+    const queryIds = ids();
+    if (legacy) return json(await Legacy.getEventsAsync(queryIds, ...range));
+
+    const input = queryObjects ? await Promise.all(queryIds.map(id => Calendar.ExpoCalendar.get(id))) : queryIds;
+    return json((await Calendar.listEvents(input, ...range)).map(eventData));
+  });
+
+  return (
+    <>
+      <ActionRow>
+        <ActionButton disabled={busy} label="对象 API" tone={legacy ? 'secondary' : 'primary'} onPress={() => setLegacy(false)} />
+        <ActionButton disabled={busy} label="旧版 API" tone={legacy ? 'primary' : 'secondary'} onPress={() => setLegacy(true)} />
+      </ActionRow>
+      <CalendarPermissions key={String(legacy)} legacy={legacy} />
+
+      <Panel title="日历">
         <ActionRow>
-          <ActionButton disabled={busy} label="检查权限" onPress={() => void access.run(async () => JSON.stringify(await get(), null, 2))} testID="calendar-permissions-get" tone="secondary" />
-          <ActionButton disabled={busy} label="请求权限" onPress={() => void access.run(async () => JSON.stringify(await request(), null, 2))} testID="calendar-permissions-request" />
+          <ActionButton label={entityType ? '日程类型' : '默认类型'} tone="secondary" onPress={() => setEntityType(value => value ? undefined : Calendar.EntityTypes.EVENT)} />
+          <ActionButton disabled={busy} label="列出日历" onPress={() => void calendars.run(async () => json(legacy ? await Legacy.getCalendarsAsync(entityType) : (await Calendar.getCalendars(entityType)).map(calendarData)))} />
+          {platform === 'harmony' || platform === 'ios'
+            ? (
+                <ActionButton disabled={busy} label="读取默认日历" tone="secondary" onPress={() => void calendars.run(async () => json(await Legacy.getDefaultCalendarAsync()))} />
+              )
+            : null}
         </ActionRow>
-        <ResultPanel state={access.state} />
+        <Field label="新日历属性（JSON）" multiline value={calendarDetails} onChangeText={setCalendarDetails} />
+        <ActionButton disabled={busy || !!createdCalendar} label="创建演示日历" onPress={() => void createCalendar()} />
+        <Field label="日历 ID" value={calendarId} onChangeText={setCalendarId} />
+        <Field label="更新颜色" value={color} onChangeText={setColor} />
+        <ActionRow>
+          {!legacy ? <ActionButton disabled={busy || !calendarId} label="按 ID 读取日历" tone="secondary" onPress={() => void calendars.run(async () => json(calendarData(await calendar())))} /> : null}
+          <ActionButton
+            disabled={busy || !canEditCalendar || !color.trim()}
+            label="更新演示日历颜色"
+            tone="secondary"
+            onPress={() => void calendars.run(async () => {
+              if (legacy) return await Legacy.updateCalendarAsync(calendarId, { color });
+              const value = await calendar();
+              await value.update({ color });
+              return json(calendarData(value));
+            })}
+          />
+          <ActionButton disabled={busy || !canEditCalendar} label="删除演示日历" tone="danger" onPress={() => void deleteCalendar()} />
+        </ActionRow>
+        <ResultPanel state={calendars.state} />
       </Panel>
 
-      <Panel eyebrow="日历" title="读取可访问的日历">
-        <DataRow label="系统日历能力" value={available === undefined ? '尚未查询' : String(available)} />
-        <DataRow label="日历数量" value={calendars === undefined ? '尚未查询' : String(calendars.length)} />
-        <DataRow label="默认日历" value={primary ? `${primary.title} (${primary.id})` : '尚未查询'} />
-        <ActionButton disabled={busy} label="查询日历" onPress={() => void inspect()} testID="calendar-read" />
-        <Note>普通日历权限仅允许访问系统默认日历和当前应用的数据，列表不代表设备中的全部日程。</Note>
-        <ResultPanel state={query.state} />
+      <Panel title="日程">
+        <Field label="查询日历 ID（逗号分隔）" value={calendarIds} onChangeText={setCalendarIds} />
+        <Field label="查询起始时间（ISO 8601）" value={start} onChangeText={setStart} />
+        <Field label="查询结束时间（ISO 8601）" value={end} onChangeText={setEnd} />
+        <ActionRow>
+          {!legacy ? <ActionButton disabled={busy} label={queryObjects ? '使用日历对象' : '使用日历 ID'} tone="secondary" onPress={() => setQueryObjects(value => !value)} /> : null}
+          <ActionButton disabled={busy || (legacy && !ids().length)} label="查询时间范围内的日程" tone="secondary" onPress={() => void queryEvents()} />
+          {!legacy
+            ? (
+                <ActionButton disabled={busy || !calendarId} label="查询所选日历的日程" tone="secondary" onPress={() => void events.run(async () => json((await (await calendar()).listEvents(new Date(start), new Date(end))).map(eventData)))} />
+              )
+            : null}
+        </ActionRow>
+        <Field label="日程属性（JSON）" multiline value={details} onChangeText={setDetails} />
+        <ActionRow>
+          {recurrenceExamples.map(([label, value]) => (
+            <ActionButton key={label} label={label} tone="secondary" onPress={() => setRecurrence(value ? json(value) : '')} />
+          ))}
+          <ActionButton
+            label="每天重复至指定日期"
+            tone="secondary"
+            onPress={() => setRecurrence(json({
+              frequency: Calendar.Frequency.DAILY,
+              endDate: new Date(Date.now() + 30 * DAY).toISOString(),
+            }))}
+          />
+        </ActionRow>
+        <Field label="重复规则（JSON）" multiline value={recurrence} onChangeText={setRecurrence} placeholder='{"frequency":"daily","interval":1,"occurrence":3}' />
+        <ActionButton disabled={busy || !canEditCalendar || !!createdEvent} label="创建演示日程" onPress={() => void createEvent()} />
+        <Field label="日程 ID" value={eventId} onChangeText={setEventId} />
+        <ActionRow>
+          <ActionButton disabled={busy || !eventId} label="按 ID 读取日程" tone="secondary" onPress={() => void events.run(async () => json(legacy ? await Legacy.getEventAsync(eventId) : eventData(await event())))} />
+          {!legacy ? <ActionButton disabled={busy || !eventId} label="读取当前重复实例" tone="secondary" onPress={() => void events.run(async () => json(eventData((await event()).getOccurrenceSync())))} /> : null}
+          <ActionButton
+            disabled={busy || !eventId}
+            label="读取参与者"
+            tone="secondary"
+            onPress={() => void events.run(async () => {
+              if (legacy) return json(await Legacy.getAttendeesForEventAsync(eventId));
+              const attendees = await (await event()).getAttendees();
+              const records = attendees.map(({ name, email, role, status, type }) => ({
+                name, email, role, status, type,
+              }));
+              return json(records);
+            })}
+          />
+          <ActionButton
+            disabled={busy || !canEditEvent}
+            label="更新演示日程"
+            tone="secondary"
+            onPress={() => void events.run(async () => {
+              if (legacy) return await Legacy.updateEventAsync(eventId, eventDetails());
+              const value = await event();
+              await value.update(eventDetails() as Partial<Calendar.ModifiableEventProperties>);
+              return json(eventData(value));
+            })}
+          />
+          <ActionButton
+            disabled={busy || !canEditEvent}
+            label="删除演示日程"
+            tone="danger"
+            onPress={() => void events.run(async () => {
+              if (legacy) await Legacy.deleteEventAsync(eventId);
+              else await (await event()).delete();
+              setCreatedEvent(undefined);
+              setEventId('');
+              return `已删除日程 ${eventId}`;
+            })}
+          />
+        </ActionRow>
+        <ResultPanel state={events.state} />
       </Panel>
 
-      <Panel eyebrow="读写校验" title="验证日历与日程的完整流程">
-        <Note>创建临时日历，验证颜色、日程读写、并发局部更新、全天提醒、重复实例和错误码。完成或失败后自动删除本次创建的日历及日程。</Note>
-        <ActionButton disabled={busy || !permission?.granted} label="运行读写校验" onPress={() => void checks.run(verify)} testID="calendar-verify" />
-        <ResultPanel state={checks.state} />
-      </Panel>
-
-      <Panel eyebrow="系统页面" title="新建日程">
-        <ActionButton disabled={busy} label="打开系统新建页" onPress={() => void dialog.run(async () => JSON.stringify(await Calendar.createEventInCalendarAsync({ title: 'Expo Calendar 系统页面验证' }), null, 2))} testID="calendar-dialog" />
-        <Note>可取消或保存，结果显示在下方。此操作无需读写权限；保存的日程由系统管理，不会自动清理。</Note>
+      <Panel title="系统新建日程">
+        <Field label="预填日程属性（JSON）" multiline value={systemDetails} onChangeText={setSystemDetails} />
+        <ActionButton disabled={busy} label="打开新建表单" onPress={() => void dialog.run(async () => json(await Legacy.createEventInCalendarAsync(systemDetails.trim() ? JSON.parse(systemDetails) : undefined)))} />
         <ResultPanel state={dialog.state} />
       </Panel>
     </>

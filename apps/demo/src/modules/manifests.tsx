@@ -7,7 +7,7 @@
 
 import { useState } from 'react';
 import { json } from '../format';
-import { ActionButton, ActionRow, Field, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { ActionButton, ActionRow, Field, Panel, ResultPanel, useAsyncResult } from '../ui';
 import { runtimeDemo } from './runtime-demo';
 
 const embedded = {
@@ -15,7 +15,23 @@ const embedded = {
   commitTime: 1750000000000,
   bundleUrl: 'file:///demo/hermes_bundle.hbc',
   name: 'Embedded demo',
-  harmony: { backgroundColor: '#F2F2F7' },
+  version: '1.0.0',
+  slug: 'demo',
+  projectId: 'demo',
+  sdkVersion: '57.0.0',
+  appKey: 'main',
+  revisionId: 'demo.1',
+  hostUri: 'localhost:8088',
+  debuggerHost: 'localhost:8088',
+  mainModuleName: 'index',
+  developer: { tool: 'expo-cli' },
+  packagerOpts: { dev: true },
+  developmentClient: { silentLaunch: false },
+  isVerified: true,
+  assets: [],
+  updates: { enabled: true },
+  harmony: { backgroundColor: '#F2F2F7', userInterfaceStyle: 'light' },
+  plugins: [['expo-splash-screen', { backgroundColor: '#F2F2F7' }]],
 };
 const remote = {
   id: '57a94ee9-ff97-4be5-9313-77cbf9349fba',
@@ -26,27 +42,111 @@ const remote = {
   extra: { scopeKey: 'demo', expoClient: { name: 'Remote demo' } },
 };
 
+const groups = {
+  '清单与资源': [
+    'fromManifestJson',
+    'getRawJson',
+    'toString',
+    'getID',
+    'getLegacyID',
+    'getStableLegacyID',
+    'getMetadata',
+    'getAssets',
+    'isVerified',
+    'getScopeKey',
+    'getEASProjectID',
+    'getBundleURL',
+    'getCommitTimeLong',
+    'getRuntimeVersion',
+    'getCreatedAt',
+    'getLaunchAsset',
+  ],
+  'Expo Go 配置': [
+    'getExpoGoSDKVersion',
+    'getExpoGoConfigRootObject',
+    'isDevelopmentMode',
+    'isDevelopmentSilentLaunch',
+    'isUsingDeveloperTool',
+    'getDebuggerHost',
+    'getMainModuleName',
+    'getExpoGoUsername',
+  ],
+  '应用配置': [
+    'getExpoClientConfigRootObject',
+    'getSlug',
+    'getAppKey',
+    'getRevisionId',
+    'getHostUri',
+    'getName',
+    'getVersion',
+    'getUpdatesInfo',
+    'getPrimaryColor',
+    'getOrientation',
+    'getIconUrl',
+    'getFacebookAppId',
+    'getFacebookApplicationName',
+    'getFacebookAutoInitEnabled',
+    'getPlatformConfig',
+    'getUserInterfaceStyle',
+    'getBackgroundColor',
+    'getPluginProperties',
+  ],
+};
+
 export function ManifestsDemo() {
-  const action = useAsyncResult();
+  const result = useAsyncResult();
   const [input, setInput] = useState(json(embedded));
+  const [group, setGroup] = useState<keyof typeof groups>('清单与资源');
+  const [plugin, setPlugin] = useState('expo-splash-screen');
+
+  if (!runtimeDemo) return <Panel title="此示例需要 HarmonyOS 原生模块" />;
 
   return (
-    <Panel eyebrow="原生 Manifest" title="读取内置与远程清单">
-      <Note>通过 demo 本地模块调用原生 Manifest 模型。示例只解析内容，不下载资源；无效字段会显示原生错误。</Note>
-      {!runtimeDemo ? <Note>此页面的原生读取功能仅在 HarmonyOS demo 中提供。</Note> : null}
+    <Panel title="Manifest">
       <ActionRow>
-        <ActionButton label="内置清单示例" onPress={() => setInput(json(embedded))} tone="secondary" />
-        <ActionButton label="远程清单示例" onPress={() => setInput(json(remote))} tone="secondary" />
-        <ActionButton label="无效字段示例" onPress={() => setInput(json({ ...embedded, commitTime: 'invalid' }))} tone="secondary" />
+        <ActionButton
+          label="内置清单"
+          onPress={() => {
+            setInput(json(embedded));
+            result.clear();
+          }}
+          tone="secondary"
+        />
+        <ActionButton
+          label="远程清单"
+          onPress={() => {
+            setInput(json(remote));
+            result.clear();
+          }}
+          tone="secondary"
+        />
       </ActionRow>
-      <Field label="Manifest JSON" multiline onChangeText={setInput} value={input} />
-      <ActionButton
-        disabled={!runtimeDemo || action.state.phase === 'running'}
-        label="读取 Manifest"
-        onPress={() => void action.run(() => json(JSON.parse(runtimeDemo!.readManifest(input))))}
-        testID="manifests-read"
-      />
-      <ResultPanel state={action.state} />
+      <Field label="清单（JSON 对象）" multiline onChangeText={setInput} value={input} />
+      <ActionRow>
+        {(Object.keys(groups) as (keyof typeof groups)[]).map(value => (
+          <ActionButton
+            key={value}
+            label={value}
+            onPress={() => {
+              setGroup(value);
+              result.clear();
+            }}
+            tone={group === value ? 'primary' : 'secondary'}
+          />
+        ))}
+      </ActionRow>
+      {group === '应用配置' ? <Field label="插件名称" value={plugin} onChangeText={setPlugin} /> : null}
+      <ActionRow>
+        {groups[group].map(method => (
+          <ActionButton
+            key={method}
+            label={`${method}()`}
+            onPress={() => void result.run(() =>
+              json(JSON.parse(runtimeDemo!.readManifest(input, method, plugin))))}
+          />
+        ))}
+      </ActionRow>
+      <ResultPanel state={result.state} />
     </Panel>
   );
 }

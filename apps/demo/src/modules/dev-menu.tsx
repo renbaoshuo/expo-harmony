@@ -6,128 +6,102 @@
  */
 
 import { closeMenu, hideMenu, openMenu, registerDevMenuItems } from 'expo-dev-menu';
-import { requireNativeModule } from 'expo-modules-core';
+import { requireOptionalNativeModule } from 'expo-modules-core';
 import { useEffect, useRef, useState } from 'react';
+
 import { json } from '../format';
-import { ActionButton, ActionRow, DataRow, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { ActionButton, ActionRow, DataRow, Field, Panel, ResultPanel, useAsyncResult } from '../ui';
 
 interface Preferences {
   getPreferencesAsync(): Promise<Record<string, boolean>>;
   setPreferencesAsync(values: Record<string, unknown>): Promise<void>;
 }
 
+const callbacks = ['回调计数', 'closeMenu()', 'hideMenu()'] as const;
+
 export function DevMenuDemo() {
-  const action = useAsyncResult();
-  const prefs = useAsyncResult();
-  const [callbacks, setCallbacks] = useState(0);
+  const result = useAsyncResult();
+  const [name, setName] = useState('Demo 菜单项');
+  const [collapse, setCollapse] = useState(false);
+  const [callback, setCallback] = useState<typeof callbacks[number]>('回调计数');
+  const [count, setCount] = useState(0);
   const registered = useRef(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const busy = !__DEV__ || action.state.phase === 'running' || prefs.state.phase === 'running';
+  const busy = result.state.phase === 'running';
 
   useEffect(() => () => {
-    if (timer.current !== null) clearTimeout(timer.current);
-    if (registered.current) void registerDevMenuItems([]).catch(error => console.warn('Unable to clear demo menu items:', error));
+    if (registered.current) void registerDevMenuItems([]).catch(() => {});
   }, []);
 
-  function dismiss(close: () => void) {
-    if (timer.current !== null) clearTimeout(timer.current);
-    openMenu();
-    timer.current = setTimeout(() => {
-      timer.current = null;
-      close();
-    }, 1500);
-  }
-
-  async function checkPreferences() {
-    const preferences = requireNativeModule<Preferences>('DevMenuPreferences');
-    const original = await preferences.getPreferencesAsync();
-    for (const key of ['motionGestureEnabled', 'touchGestureEnabled', 'keyCommandsEnabled', 'showsAtLaunch', 'isOnboardingFinished', 'showFloatingActionButton']) {
-      if (typeof original[key] !== 'boolean') throw new Error(`Preference ${key} is missing or invalid.`);
-    }
-
-    const changes = Object.fromEntries(Object.entries(original).filter(([key]) => key !== 'isOnboardingFinished').map(([key, value]) => [key, !value]));
-
-    try {
-      await preferences.setPreferencesAsync({
-        ...changes,
-        isOnboardingFinished: !original.isOnboardingFinished,
-        unknown: true,
-      });
-      const updated = await preferences.getPreferencesAsync();
-      for (const [key, value] of Object.entries(changes)) {
-        if (updated[key] !== value) throw new Error(`Preference ${key} did not persist.`);
-      }
-      if (updated.isOnboardingFinished !== original.isOnboardingFinished || 'unknown' in updated) throw new Error('Read-only or unknown preference was modified.');
-
-      await preferences.setPreferencesAsync({ keyCommandsEnabled: 'invalid' });
-      const ignored = await preferences.getPreferencesAsync();
-      if (ignored.keyCommandsEnabled !== updated.keyCommandsEnabled) throw new Error('Non-boolean preference was accepted.');
-
-      return `偏好往返、只读键及未知键校验通过；退出前恢复原设置。\n${json(updated)}`;
-    } finally {
-      await preferences.setPreferencesAsync(original);
-    }
-  }
+  if (!__DEV__) return <Panel title="开发菜单仅在开发版本中可用" />;
 
   return (
     <>
-      <Panel eyebrow="DEV MENU" title="菜单与自定义回调">
-        <DataRow label="收到回调" value={String(callbacks)} />
-        <Note>注册后打开菜单，分别点击保留菜单 / 收起菜单两个项目。重复注册应替换旧项目，清除后不应再出现；离开页面会注销。菜单设置页可继续验证源码、复制、字号和换行。</Note>
+      <Panel title="菜单项">
+        <Field label="name" value={name} onChangeText={setName} />
+        <ActionButton label={`shouldCollapse = ${collapse}`} tone={collapse ? 'primary' : 'secondary'} onPress={() => setCollapse(value => !value)} />
+        <ActionRow>
+          {callbacks.map(value => <ActionButton key={value} label={value} tone={callback === value ? 'primary' : 'secondary'} onPress={() => setCallback(value)} />)}
+        </ActionRow>
         <ActionRow>
           <ActionButton
-            label="注册回调"
+            label="registerDevMenuItems()"
             testID="menu-register"
             disabled={busy}
-            onPress={() => void action.run(async () => {
+            onPress={() => void result.run(async () => {
+              await registerDevMenuItems([{
+                name,
+                shouldCollapse: collapse,
+                callback: () => {
+                  setCount(value => value + 1);
+                  if (callback === 'closeMenu()') closeMenu();
+                  if (callback === 'hideMenu()') hideMenu();
+                },
+              }]);
               registered.current = true;
-              await registerDevMenuItems([
-                { name: 'Demo: keep menu open', shouldCollapse: false, callback: () => setCallbacks(count => count + 1) },
-                { name: 'Demo: collapse menu', shouldCollapse: true, callback: () => setCallbacks(count => count + 1) },
-              ]);
-              return '已注册两个回调';
+              return name;
             })}
           />
           <ActionButton
-            label="清除回调"
+            label="移除自定义菜单项"
             testID="menu-clear"
             disabled={busy}
-            tone="secondary"
-            onPress={() => void action.run(async () => {
+            onPress={() => void result.run(async () => {
               await registerDevMenuItems([]);
               registered.current = false;
-              return '已清除回调';
+              return '已移除自定义菜单项';
             })}
           />
-          <ActionButton label="打开菜单" testID="devtools-open-menu" disabled={busy} onPress={openMenu} />
-          <ActionButton label="打开后自动关闭" testID="menu-close" disabled={busy} tone="secondary" onPress={() => dismiss(closeMenu)} />
-          <ActionButton label="打开后自动隐藏" testID="menu-hide" disabled={busy} tone="secondary" onPress={() => dismiss(hideMenu)} />
+          <ActionButton label="openMenu()" testID="devtools-open-menu" onPress={openMenu} />
         </ActionRow>
-        <ResultPanel state={action.state} />
+        <DataRow label="回调次数" value={count} />
+        <ResultPanel state={result.state} />
       </Panel>
-      <Panel eyebrow="PREFERENCES" title="偏好、悬浮按钮与接口联动">
-        <Note>
-          FAB 可点击、拖动、吸附；闲置会灰化，打开菜单后会移出屏幕。工具开关同时覆盖 dev-menu-interface 的宿主代理联动。
-          摇动开关不能控制 RNOH 内部检测，当前在原生设置中禁用。
-        </Note>
-        <ActionRow>
-          <ActionButton label="读取偏好" testID="menu-preferences" disabled={busy} onPress={() => void prefs.run(async () => json(await requireNativeModule<Preferences>('DevMenuPreferences').getPreferencesAsync()))} />
-          <ActionButton label="校验偏好往返" testID="menu-roundtrip" disabled={busy} onPress={() => void prefs.run(checkPreferences)} />
-          <ActionButton
-            label="切换 FAB"
-            testID="menu-fab"
-            disabled={busy}
-            tone="secondary"
-            onPress={() => void prefs.run(async () => {
-              const preferences = requireNativeModule<Preferences>('DevMenuPreferences');
-              const values = await preferences.getPreferencesAsync();
-              await preferences.setPreferencesAsync({ showFloatingActionButton: !values.showFloatingActionButton });
-              return json(await preferences.getPreferencesAsync());
-            })}
-          />
-        </ActionRow>
-        <ResultPanel state={prefs.state} />
-      </Panel>
+      <MenuPreferences />
     </>
+  );
+}
+
+function MenuPreferences() {
+  const preferences = requireOptionalNativeModule<Preferences>('DevMenuPreferences');
+  const result = useAsyncResult();
+  const [values, setValues] = useState('{"showFloatingActionButton": true}');
+  const disabled = !preferences || result.state.phase === 'running';
+
+  return (
+    <Panel title="菜单偏好">
+      <Field label="要更新的设置（JSON 对象）" value={values} onChangeText={setValues} multiline />
+      <ActionRow>
+        <ActionButton label="getPreferencesAsync()" disabled={disabled} onPress={() => void result.run(async () => json(await preferences?.getPreferencesAsync()))} />
+        <ActionButton
+          label="setPreferencesAsync()"
+          disabled={disabled}
+          onPress={() => void result.run(async () => {
+            await preferences?.setPreferencesAsync(JSON.parse(values));
+            return '已保存设置';
+          })}
+        />
+      </ActionRow>
+      <ResultPanel state={result.state} />
+    </Panel>
   );
 }

@@ -7,4 +7,5 @@
 
 import './src/modules/background-fetch/tasks';
 import './src/modules/background-task/tasks';
+import './src/modules/location/tasks';
 import 'expo-router/entry';

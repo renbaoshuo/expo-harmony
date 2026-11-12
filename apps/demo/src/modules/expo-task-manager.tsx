@@ -6,42 +6,53 @@
  */
 
 import * as TaskManager from 'expo-task-manager';
-import { BACKGROUND_FETCH_CHECK_TASK, BACKGROUND_FETCH_TASK } from './background-fetch/tasks';
-import { BACKGROUND_TASK, BACKGROUND_TASK_CHECK } from './background-task/tasks';
-import { ActionButton, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { useState } from 'react';
+
+import { BACKGROUND_FETCH_TASK } from './background-fetch/tasks';
+import { BACKGROUND_TASK } from './background-task/tasks';
 import { json } from '../format';
+import { ActionButton, ActionRow, Field, Panel, ResultPanel, useAsyncResult } from '../ui';
 
 export function TaskManagerDemo() {
-  const availability = useAsyncResult();
-  const registrations = useAsyncResult();
-
-  const inspectDefinitions = () => availability.run(async () => {
-    const available = await TaskManager.isAvailableAsync();
-    const definitions = [
-      BACKGROUND_FETCH_TASK,
-      BACKGROUND_FETCH_CHECK_TASK,
-      BACKGROUND_TASK,
-      BACKGROUND_TASK_CHECK,
-    ].map(taskName => ({ defined: TaskManager.isTaskDefined(taskName), taskName }));
-    if (!definitions.every(item => item.defined)) throw new Error(`缺少全局任务定义：${json(definitions)}`);
-    return json({ available, definitions });
-  });
-
-  const inspectRegistrations = () => registrations.run(async () => {
-    const tasks = await TaskManager.getRegisteredTasksAsync();
-    return json({ count: tasks.length, tasks });
-  });
+  const [taskName, setTaskName] = useState(BACKGROUND_TASK);
+  const action = useAsyncResult();
+  const busy = action.state.phase === 'running';
 
   return (
-    <>
-      <Panel eyebrow="全局定义" title="验证任务在 React 挂载前已定义">
-        <ActionButton label="检查任务定义" onPress={() => void inspectDefinitions()} />
-        <ResultPanel state={availability.state} />
-      </Panel>
-      <Panel eyebrow="持久化状态" title="列出原生任务注册">
-        <ActionButton label="列出已注册任务" onPress={() => void inspectRegistrations()} />
-        <ResultPanel state={registrations.state} />
-      </Panel>
-    </>
+    <Panel title="任务管理">
+      <Field label="任务名" value={taskName} onChangeText={setTaskName} />
+      <ActionRow>
+        <ActionButton label="使用后台任务名" onPress={() => setTaskName(BACKGROUND_TASK)} tone="secondary" />
+        <ActionButton label="使用后台拉取任务名" onPress={() => setTaskName(BACKGROUND_FETCH_TASK)} tone="secondary" />
+      </ActionRow>
+      <ActionRow>
+        <ActionButton disabled={busy} label="查询任务定义" onPress={() => void action.run(() => String(TaskManager.isTaskDefined(taskName)))} />
+        <ActionButton disabled={busy} label="查询注册状态" onPress={() => void action.run(async () => String(await TaskManager.isTaskRegisteredAsync(taskName)))} />
+        <ActionButton disabled={busy} label="读取任务参数" onPress={() => void action.run(async () => json(await TaskManager.getTaskOptionsAsync(taskName)))} />
+        <ActionButton
+          disabled={busy}
+          label="取消注册此任务"
+          onPress={() => void action.run(async () => {
+            await TaskManager.unregisterTaskAsync(taskName);
+            return '已取消注册';
+          })}
+          tone="secondary"
+        />
+      </ActionRow>
+      <ActionRow>
+        <ActionButton disabled={busy} label="查询任务管理是否可用" onPress={() => void action.run(async () => String(await TaskManager.isAvailableAsync()))} tone="secondary" />
+        <ActionButton disabled={busy} label="列出已注册任务" onPress={() => void action.run(async () => json(await TaskManager.getRegisteredTasksAsync()))} tone="secondary" />
+        <ActionButton
+          disabled={busy}
+          label="取消注册全部任务"
+          onPress={() => void action.run(async () => {
+            await TaskManager.unregisterAllTasksAsync();
+            return '已取消注册全部任务';
+          })}
+          tone="danger"
+        />
+      </ActionRow>
+      <ResultPanel state={action.state} />
+    </Panel>
   );
 }

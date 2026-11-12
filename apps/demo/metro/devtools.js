@@ -7,6 +7,8 @@
 
 'use strict';
 
+const { gzipSync } = require('node:zlib');
+
 module.exports = function devtools(request, response, next) {
   const path = new URL(request.url, 'http://localhost').pathname;
   if (!path.startsWith('/__devtools__/')) return next();
@@ -15,6 +17,14 @@ module.exports = function devtools(request, response, next) {
   const text = Buffer.from('Expo Harmony 网络');
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('Content-Type', 'text/plain; charset=utf-8');
+
+  if (route === 'gzip') {
+    const compressed = gzipSync(text);
+    response.setHeader('Content-Encoding', 'gzip');
+    response.setHeader('Content-Length', compressed.length);
+    response.end(request.method === 'HEAD' ? undefined : compressed);
+    return;
+  }
 
   if (route === 'echo') {
     let length = 0;

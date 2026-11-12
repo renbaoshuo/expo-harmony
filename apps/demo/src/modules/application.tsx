@@ -6,31 +6,64 @@
  */
 
 import * as Application from 'expo-application';
-import { ActionButton, DataRow, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { Platform } from 'react-native';
+
+import { DataRow, Panel } from '../ui';
+import { SystemApiActions } from './system-api-actions';
+
+const harmony = String(Platform.OS) === 'harmony';
 
 export function ApplicationDemo() {
-  const action = useAsyncResult();
-
   return (
     <>
-      <Panel eyebrow="已安装应用" title="原生应用包标识">
-        <DataRow label="applicationId" value={Application.applicationId || 'null'} />
-        <DataRow label="applicationName" value={Application.applicationName || 'null'} />
-        <DataRow label="nativeApplicationVersion" value={Application.nativeApplicationVersion || 'null'} />
-        <DataRow label="nativeBuildVersion" value={Application.nativeBuildVersion || 'null'} />
+      <Panel title="应用信息">
+        <DataRow label="applicationId" value={String(Application.applicationId)} />
+        <DataRow label="applicationName" value={String(Application.applicationName)} />
+        <DataRow label="nativeApplicationVersion" value={String(Application.nativeApplicationVersion)} />
+        <DataRow label="nativeBuildVersion" value={String(Application.nativeBuildVersion)} />
       </Panel>
-      <Panel eyebrow="安装记录" title="系统报告的时间戳">
-        <ActionButton
-          disabled={action.state.phase === 'running'}
-          label="读取安装时间"
-          onPress={() => void action.run(async () => {
-            const installedAt = await Application.getInstallationTimeAsync();
-            if (Number.isNaN(installedAt.getTime())) throw new Error('原生安装时间无效。');
-            return installedAt.toISOString();
-          })}
-        />
-        <ResultPanel state={action.state} />
-      </Panel>
+
+      {Platform.OS !== 'web'
+        ? (
+            <Panel title="安装记录">
+              <SystemApiActions
+                actions={[
+                  ['读取首次安装时间', Application.getInstallationTimeAsync],
+                  ...(harmony || Platform.OS === 'android'
+                    ? [['读取最后更新时间', Application.getLastUpdateTimeAsync] as const]
+                    : []),
+                ]}
+              />
+            </Panel>
+          )
+        : null}
+
+      {Platform.OS === 'android'
+        ? (
+            <Panel title="Android 应用信息">
+              <SystemApiActions
+                actions={[
+                  ['读取 Android ID', Application.getAndroidId],
+                  ['读取安装来源', Application.getInstallReferrerAsync],
+                ]}
+              />
+            </Panel>
+          )
+        : null}
+
+      {Platform.OS === 'ios'
+        ? (
+            <Panel title="iOS 应用信息">
+              <SystemApiActions
+                actions={[
+                  ['读取供应商标识符', Application.getIosIdForVendorAsync],
+                  ['读取应用分发类型', Application.getIosApplicationReleaseTypeAsync],
+                  ['读取推送服务环境', Application.getIosPushNotificationServiceEnvironmentAsync],
+                ]}
+              />
+            </Panel>
+          )
+        : null}
     </>
   );
 }

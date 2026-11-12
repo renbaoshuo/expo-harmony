@@ -144,10 +144,13 @@ async function verifyTarball(file, pkg, project, temporary) {
     const unpacked = await fs.mkdtemp(path.join(temporary, 'har-'));
     await tar.x({ file: har, cwd: unpacked, strict: true });
     const nativeFiles = [path.join(unpacked, 'package/oh-package.json5')];
+
     // RNOH runtime packages ship only the HAR; Expo modules also ship the source manifest.
-    if (project.config.modules.length > 0) {
+    if (project.isExpoModule) {
+      await fs.access(path.join(packedRoot, 'expo-module.config.json'));
       nativeFiles.push(path.join(packedRoot, path.relative(project.packageRoot, project.ohPackageManifest)));
     }
+
     for (const nativeFile of nativeFiles) {
       const native = JSON5.parse(await fs.readFile(nativeFile, 'utf8'));
       if (native.name !== manifest.name || native.version !== manifest.version) throw new Error(`Native version mismatch: ${nativeFile}`);

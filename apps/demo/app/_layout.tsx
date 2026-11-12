@@ -6,16 +6,16 @@
  */
 
 import AntDesign from '@expo/vector-icons/AntDesign';
-import { DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { useFonts } from 'expo-font';
-import { Stack } from 'expo-router';
+import { NavigationBar } from 'expo-navigation-bar';
+import { DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import * as SystemUI from 'expo-system-ui';
 import { useEffect } from 'react';
-import { Platform } from 'react-native';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { Platform, View } from 'react-native';
 import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { readSplashOptions } from '../src/splash-options';
 import { palette } from '../src/theme';
 
 void SplashScreen.preventAutoHideAsync().catch(() => false);
@@ -31,15 +31,26 @@ export default function RootLayout() {
   }, [fontError]);
 
   useEffect(() => {
-    if (fontsLoaded) void SplashScreen.hideAsync().catch(() => undefined);
+    if (!fontsLoaded) return;
+
+    const options = readSplashOptions();
+    if (options) {
+      try {
+        SplashScreen.setOptions(options);
+      } catch (error) {
+        console.warn('应用启动屏设置失败', error);
+      }
+    }
+    void SplashScreen.hideAsync().catch(() => undefined);
   }, [fontsLoaded]);
 
   if (!fontsLoaded) return null;
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <View style={{ flex: 1 }}>
       <SafeAreaProvider initialMetrics={initialWindowMetrics}>
         <ThemeProvider value={DefaultTheme}>
+          <NavigationBar style="dark" hidden={false} />
           <Stack
             screenOptions={{
               contentStyle: { backgroundColor: palette.canvas },
@@ -54,10 +65,10 @@ export default function RootLayout() {
           >
             <Stack.Screen name="index" options={{ headerShown: false }} />
             <Stack.Screen name="module/[module]" options={{ title: '模块' }} />
-            <Stack.Screen name="router-fixture/[value]" options={{ title: '路由测试' }} />
+            <Stack.Screen name="router-fixture/[value]" options={{ title: '动态路由' }} />
           </Stack>
         </ThemeProvider>
       </SafeAreaProvider>
-    </GestureHandlerRootView>
+    </View>
   );
 }

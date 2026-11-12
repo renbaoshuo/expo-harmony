@@ -5,29 +5,41 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { router, Stack, useLocalSearchParams, usePathname, useSegments } from 'expo-router';
-import { Text } from 'react-native';
+import { router, useLocalSearchParams, usePathname, useSegments } from 'expo-router';
+import { useState } from 'react';
 
-import { ActionButton, DataRow, LabScreen, Panel } from '../../src/ui';
+import { json } from '../../src/format';
+import { ActionButton, ActionRow, DataRow, Field, LabScreen, Panel } from '../../src/ui';
 
 export default function RouterFixture() {
   const params = useLocalSearchParams<{ value?: string; source?: string }>();
   const pathname = usePathname();
   const segments = useSegments();
+  const [source, setSource] = useState(params.source ?? '');
+  const [count, setCount] = useState('1');
+  const canGoBack = router.canGoBack();
+  const canDismiss = router.canDismiss();
 
   return (
-    <>
-      <Stack.Screen options={{ title: '路由测试' }} />
-      <LabScreen description="仅由 Expo Router 演示页使用的包内专属目标页。" kicker="@expo-harmony/expo-router" title="动态路由">
-        <Panel eyebrow="路由状态" title="解码后的路径与查询参数">
-          <DataRow label="pathname" value={pathname} />
-          <DataRow label="segments" value={segments.join(' / ')} />
-          <DataRow label="value" value={params.value ?? '缺失'} />
-          <DataRow label="source" value={params.source ?? '缺失'} />
-          <Text selectable>{JSON.stringify(params, null, 2)}</Text>
-          <ActionButton label="返回" onPress={() => router.back()} />
-        </Panel>
-      </LabScreen>
-    </>
+    <LabScreen>
+      <Panel title="路由参数">
+        <DataRow label="usePathname()" value={pathname} />
+        <DataRow label="useSegments()" value={json(segments)} />
+        <DataRow label="useLocalSearchParams()" value={json(params)} />
+        <Field label="source" value={source} onChangeText={setSource} />
+        <ActionButton label="setParams()" onPress={() => router.setParams({ source })} />
+      </Panel>
+      <Panel title="返回上一层">
+        <DataRow label="canGoBack()" value={String(canGoBack)} />
+        <DataRow label="canDismiss()" value={String(canDismiss)} />
+        <Field label="要关闭的页面数" value={count} onChangeText={setCount} keyboardType="number-pad" />
+        <ActionRow>
+          <ActionButton label="back()" onPress={() => router.back()} disabled={!canGoBack} testID="router-fixture-back" />
+          <ActionButton label="dismiss()" onPress={() => router.dismiss(Number(count))} disabled={!canDismiss || !/^[1-9]\d*$/.test(count)} />
+          <ActionButton label="dismissAll()" onPress={() => router.dismissAll()} disabled={!canDismiss} />
+          <ActionButton label="回到路由示例" onPress={() => router.dismissTo('/module/expo-router')} tone="secondary" />
+        </ActionRow>
+      </Panel>
+    </LabScreen>
   );
 }

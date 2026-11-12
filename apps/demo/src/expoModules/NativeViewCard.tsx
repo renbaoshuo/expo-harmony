@@ -8,47 +8,36 @@
 import { useRef, useState } from 'react';
 
 import { ShowcaseView, type ShowcaseViewEvent, type ShowcaseViewRef } from '../../modules/expo-module-showcase';
-import { ActionButton, ActionRow, DataRow, Field, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { json } from '../format';
+import { ActionButton, ActionRow, DataRow, Field, Panel, ResultPanel, useAsyncResult } from '../ui';
 
 export function NativeViewCard() {
   const ref = useRef<ShowcaseViewRef>(null);
   const [mounted, setMounted] = useState(true);
   const [label, setLabel] = useState('原生计数器');
+  const [input, setInput] = useState('1');
   const [value, setValue] = useState(1);
+  const [delta, setDelta] = useState('1');
   const [event, setEvent] = useState<ShowcaseViewEvent>();
   const command = useAsyncResult();
 
   return (
-    <Panel eyebrow="Native view" title="原生组件交互">
-      <Field label="组件标题（实时更新 prop）" onChangeText={setLabel} value={label} />
-      {mounted
-        ? (
-            <ShowcaseView
-              label={label}
-              onValueChanged={({ nativeEvent }) => {
-                setEvent(nativeEvent);
-                setValue(nativeEvent.value);
-              }}
-              ref={ref}
-              style={{ height: 164, width: '100%' }}
-              value={value}
-            />
-          )
-        : <Note>组件已卸载。重新挂载后会使用当前标题和计数。</Note>}
+    <Panel title="ShowcaseView">
+      <Field label="label" onChangeText={setLabel} value={label} testID="showcase-view-label" />
+      <Field label="value" onChangeText={setInput} value={input} keyboardType="number-pad" />
+      <Field label="delta" onChangeText={setDelta} value={delta} keyboardType="number-pad" />
       <ActionRow>
-        <ActionButton disabled={!mounted} label="通过 prop +1" onPress={() => setValue(current => current + 1)} />
+        <ActionButton disabled={!mounted || !/^-?\d+$/.test(input)} label="设置 value" onPress={() => setValue(Number(input))} testID="showcase-view-prop" />
         <ActionButton
-          disabled={!mounted || command.state.phase === 'running'}
-          label="通过 ref +1"
-          onPress={() => void command.run(async () => {
-            if (!ref.current) throw new Error('原生组件尚未挂载。');
-            return `原生方法返回：${await ref.current.increment(1)}`;
-          })}
-          tone="secondary"
+          disabled={!mounted || !/^-?\d+$/.test(delta) || command.state.phase === 'running'}
+          label="ref.increment()"
+          testID="showcase-view-ref"
+          onPress={() => void command.run(async () => json(await ref.current?.increment(Number(delta))))}
         />
         <ActionButton
           disabled={command.state.phase === 'running'}
-          label={mounted ? '卸载组件' : '重新挂载'}
+          label={mounted ? '卸载视图' : '挂载视图'}
+          testID="showcase-view-mount"
           onPress={() => {
             setMounted(current => !current);
             setEvent(undefined);
@@ -57,8 +46,22 @@ export function NativeViewCard() {
           tone="secondary"
         />
       </ActionRow>
-      <DataRow label="最近的原生事件" value={event ? `${event.source} · ${event.label} · ${event.value}` : '等待点击组件或调用 ref'} />
-      <Note>点击组件内的蓝色按钮由原生 UI 处理。prop 更新不发送事件；原生点击和 ref 调用会回传计数。</Note>
+      {mounted
+        ? (
+            <ShowcaseView
+              label={label}
+              onValueChanged={({ nativeEvent }) => {
+                setEvent(nativeEvent);
+                setValue(nativeEvent.value);
+                setInput(String(nativeEvent.value));
+              }}
+              ref={ref}
+              style={{ height: 164, width: '100%' }}
+              value={value}
+            />
+          )
+        : null}
+      <DataRow label="onValueChanged" value={event ? json(event) : '暂无'} />
       <ResultPanel state={command.state} />
     </Panel>
   );

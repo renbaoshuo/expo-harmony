@@ -23,16 +23,13 @@ import { BrightnessDemo } from './modules/brightness';
 import { CalendarDemo } from './modules/calendar';
 import { CameraDemo } from './modules/camera';
 import { CellularDemo } from './modules/cellular';
-import { CliDemo } from './modules/cli';
 import { ClipboardDemo } from './modules/clipboard';
-import { ConfigPluginsDemo } from './modules/config-plugins';
 import { ConstantsDemo } from './modules/constants';
 import { ContactsDemo } from './modules/contacts';
 import { CryptoDemo } from './modules/crypto';
 import { DeviceDemo } from './modules/device';
 import { DocumentPickerDemo } from './modules/document-picker';
 import { ExpoModulesDemo } from './expoModules/ExpoModulesDemo';
-import { ModulesAutolinkingDemo } from './modules/expo-modules-autolinking';
 import { ModulesCoreDemo } from './modules/expo-modules-core';
 import { RouterDemo } from './modules/expo-router';
 import { TaskManagerDemo } from './modules/expo-task-manager';
@@ -55,11 +52,9 @@ import { LocationDemo } from './modules/location';
 import { MailComposerDemo } from './modules/mail-composer';
 import { MediaLibraryDemo } from './modules/media-library';
 import { MeshGradientDemo } from './modules/mesh-gradient';
-import { MetroConfigDemo } from './modules/metro-config';
 import { NavigationBarDemo } from './modules/navigation-bar';
 import { NetworkDemo } from './modules/network';
 import { NotificationsDemo } from './modules/notifications';
-import { PrebuildConfigDemo } from './modules/prebuild-config';
 import { PrintDemo } from './modules/print';
 import { ScreenCaptureDemo } from './modules/screen-capture';
 import { ScreenOrientationDemo } from './modules/screen-orientation';
@@ -70,12 +65,12 @@ import { SMSDemo } from './modules/sms';
 import { SpeechDemo } from './modules/speech';
 import { SplashScreenDemo } from './modules/splash-screen';
 import { SQLiteDemo } from './modules/sqlite';
+import { StatusBarDemo } from './modules/status-bar';
 import { StoreReviewDemo } from './modules/store-review';
 import { VideoDemo } from './modules/video';
 import { VideoThumbnailsDemo } from './modules/video-thumbnails';
 import { SystemUIDemo } from './modules/system-ui';
 import { SymbolsDemo } from './modules/symbols';
-import { TemplateDemo } from './modules/template';
 import { TrackingTransparencyDemo } from './modules/tracking-transparency';
 import { WebBrowserDemo } from './modules/web-browser';
 
@@ -118,16 +113,13 @@ const MODULE_DEMOS = {
   'calendar': CalendarDemo,
   'camera': CameraDemo,
   'cellular': CellularDemo,
-  'cli': CliDemo,
   'clipboard': ClipboardDemo,
-  'config-plugins': ConfigPluginsDemo,
   'constants': ConstantsDemo,
   'contacts': ContactsDemo,
   'crypto': CryptoDemo,
   'device': DeviceDemo,
   'document-picker': DocumentPickerDemo,
   'expo-module-showcase': ExpoModulesDemo,
-  'expo-modules-autolinking': ModulesAutolinkingDemo,
   'expo-modules-core': ModulesCoreDemo,
   'expo-router': RouterDemo,
   'expo-task-manager': TaskManagerDemo,
@@ -150,11 +142,9 @@ const MODULE_DEMOS = {
   'mail-composer': MailComposerDemo,
   'media-library': MediaLibraryDemo,
   'mesh-gradient': MeshGradientDemo,
-  'metro-config': MetroConfigDemo,
   'navigation-bar': NavigationBarDemo,
   'network': NetworkDemo,
   'notifications': NotificationsDemo,
-  'prebuild-config': PrebuildConfigDemo,
   'print': PrintDemo,
   'screen-capture': ScreenCaptureDemo,
   'screen-orientation': ScreenOrientationDemo,
@@ -165,12 +155,12 @@ const MODULE_DEMOS = {
   'speech': SpeechDemo,
   'splash-screen': SplashScreenDemo,
   'sqlite': SQLiteDemo,
+  'status-bar': StatusBarDemo,
   'store-review': StoreReviewDemo,
   'system-ui': SystemUIDemo,
   'video': VideoDemo,
   'video-thumbnails': VideoThumbnailsDemo,
   'symbols': SymbolsDemo,
-  'template': TemplateDemo,
   'tracking-transparency': TrackingTransparencyDemo,
   'web-browser': WebBrowserDemo,
 } satisfies Record<ModuleId, ComponentType>;

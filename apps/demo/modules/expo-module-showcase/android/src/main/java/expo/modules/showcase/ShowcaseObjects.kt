@@ -11,7 +11,11 @@ import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.sharedobjects.SharedObject
 import expo.modules.kotlin.sharedobjects.SharedRef
 
-class ShowcaseSharedCounter(appContext: AppContext, @Volatile var value: Double) : SharedObject(appContext) {
+class ShowcaseSharedCounter(appContext: AppContext, initialValue: Double) : SharedObject(appContext) {
+  @get:Synchronized
+  @set:Synchronized
+  var value = initialValue
+
   @Synchronized fun increment(delta: Double): Double {
     value += delta
     return value

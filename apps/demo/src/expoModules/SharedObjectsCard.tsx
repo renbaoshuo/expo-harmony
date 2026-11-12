@@ -7,122 +7,129 @@
 
 import { useEffect, useState } from 'react';
 
-import { showcaseConsumer, type ShowcaseNativeModule, type ShowcaseSharedCounter } from '../../modules/expo-module-showcase';
-import { ActionButton, ActionRow, DataRow, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
+import type { ShowcaseConsumerModule, ShowcaseNativeModule, ShowcaseSharedCounter, ShowcaseTextRef } from '../../modules/expo-module-showcase';
+import { json } from '../format';
+import { ActionButton, ActionRow, DataRow, Field, Panel, ResultPanel, useAsyncResult } from '../ui';
 
-export function SharedObjectsCard({ module }: { module: ShowcaseNativeModule }) {
+type Props = { module: ShowcaseNativeModule; consumer: ShowcaseConsumerModule };
+
+export function SharedObjectsCard(props: Props) {
+  return (
+    <>
+      <SharedCounterCard {...props} />
+      <SharedTextCard {...props} />
+    </>
+  );
+}
+
+function SharedCounterCard({ module, consumer }: Props) {
   const [counter, setCounter] = useState<ShowcaseSharedCounter>();
-  const [value, setValue] = useState(0);
+  const [value, setValue] = useState('1');
+  const [delta, setDelta] = useState('1');
+  const [listening, setListening] = useState(false);
   const [eventValue, setEventValue] = useState<number>();
   const operation = useAsyncResult();
   const busy = operation.state.phase === 'running';
 
   useEffect(() => {
-    if (!counter) return;
+    if (!counter || !listening) return;
     const subscription = counter.addListener('onValueChanged', event => setEventValue(event.value));
-    return () => {
-      subscription.remove();
-      counter.release();
-    };
-  }, [counter]);
+    return () => subscription.remove();
+  }, [counter, listening]);
+  useEffect(() => () => counter?.release(), [counter]);
+
+  function invoke(action: (current: ShowcaseSharedCounter) => unknown | Promise<unknown>) {
+    if (counter) void operation.run(async () => json(await action(counter)));
+  }
 
   return (
-    <Panel eyebrow="SharedObject / SharedRef" title="共享原生对象">
-      <DataRow label="对象状态" value={counter ? `已创建 · value = ${value}` : '未创建 / 已释放'} />
-      <DataRow label="对象事件" value={eventValue === undefined ? '暂无' : String(eventValue)} />
+    <Panel title="ShowcaseSharedCounter">
+      <Field label="value" value={value} onChangeText={setValue} keyboardType="number-pad" />
+      <Field label="delta" value={delta} onChangeText={setDelta} keyboardType="number-pad" />
       <ActionRow>
         <ActionButton
-          disabled={!!counter || busy}
+          disabled={!!counter || busy || !/^-?\d+$/.test(value)}
           label="创建计数器"
+          testID="showcase-shared-counter-create"
           onPress={() => void operation.run(() => {
-            setCounter(new module.ShowcaseSharedCounter(1));
-            setValue(1);
-            setEventValue(undefined);
-            return '已创建原生 SharedObject，初始值为 1。';
+            setCounter(new module.ShowcaseSharedCounter(Number(value)));
+            return '已创建计数器';
           })}
+        />
+        <ActionButton disabled={!counter || busy} label="读取 value" onPress={() => invoke(current => current.value)} />
+        <ActionButton
+          disabled={!counter || busy || !/^-?\d+$/.test(value)}
+          label="设置 value"
+          onPress={() => invoke((current) => {
+            current.value = Number(value);
+            return current.value;
+          })}
+        />
+        <ActionButton disabled={!counter || busy || !/^-?\d+$/.test(delta)} label="increment()" onPress={() => invoke(current => current.increment(Number(delta)))} />
+        <ActionButton disabled={!counter || busy || !/^-?\d+$/.test(delta)} label="incrementAsync()" onPress={() => invoke(current => current.incrementAsync(Number(delta)))} />
+        <ActionButton disabled={!counter || busy} label="returnSameSharedCounter()" onPress={() => invoke(current => ({ sameObject: module.returnSameSharedCounter(current) === current }))} />
+        <ActionButton disabled={!counter || busy} label="readSharedCounter()" onPress={() => invoke(current => consumer.readSharedCounter(current))} />
+        <ActionButton disabled={!counter || busy} label="forwardSharedCounter()" onPress={() => invoke(current => ({ sameObject: consumer.forwardSharedCounter(current) === current }))} />
+        <ActionButton disabled={!counter || busy} label={listening ? '移除监听' : '监听计数变化'} onPress={() => setListening(value => !value)} />
+        <ActionButton
+          disabled={!counter || busy}
+          label="emitValueChanged()"
+          onPress={() => {
+            counter?.emitValueChanged();
+          }}
         />
         <ActionButton
           disabled={!counter || busy}
-          label="同步 +1"
-          onPress={() => void operation.run(() => {
-            const next = counter!.increment(1);
-            setValue(next);
-            return `同步返回：${next}`;
-          })}
-          tone="secondary"
-        />
-        <ActionButton
-          disabled={!counter || busy}
-          label="异步 +1"
-          onPress={() => void operation.run(async () => {
-            const next = await counter!.incrementAsync(1);
-            setValue(next);
-            return `异步返回：${next}`;
-          })}
-          tone="secondary"
-        />
-        <ActionButton
-          disabled={!counter || busy}
-          label="通过属性归零"
-          onPress={() => void operation.run(() => {
-            counter!.value = 0;
-            setValue(counter!.value);
-            if (counter!.value !== 0) throw new Error('原生属性写入后未返回预期值。');
-            return '已写入 value = 0，并从原生对象读回。';
-          })}
-          tone="secondary"
-        />
-        <ActionButton
-          disabled={!counter || busy}
-          label="发送对象事件"
-          onPress={() => void operation.run(() => {
-            counter!.emitValueChanged();
-            return '已发送 onValueChanged，请查看对象事件。';
-          })}
-          tone="secondary"
-        />
-        <ActionButton
-          disabled={!counter || busy}
-          label="验证对象身份"
-          onPress={() => void operation.run(() => {
-            if (module.returnSameSharedCounter(counter!) !== counter
-              || showcaseConsumer!.forwardSharedCounter(counter!) !== counter) {
-              throw new Error('跨模块传递后对象身份发生变化。');
-            }
-            const received = showcaseConsumer!.readSharedCounter(counter!);
-            if (received !== counter!.value) throw new Error('跨模块读取的计数不一致。');
-            return `同模块 / 跨模块均保留对象身份，读取值：${received}`;
-          })}
-          tone="secondary"
-        />
-        <ActionButton
-          disabled={!counter || busy}
-          label="释放对象"
+          label="release()"
+          testID="showcase-shared-counter-release"
           onPress={() => {
             setCounter(undefined);
+            setListening(false);
             setEventValue(undefined);
             operation.clear();
           }}
           tone="secondary"
         />
+      </ActionRow>
+      <DataRow label="onValueChanged" value={eventValue ?? '暂无'} />
+      <ResultPanel state={operation.state} />
+    </Panel>
+  );
+}
+
+function SharedTextCard({ module, consumer }: Props) {
+  const [text, setText] = useState('你好，SharedRef');
+  const [ref, setRef] = useState<ShowcaseTextRef>();
+  const operation = useAsyncResult();
+
+  useEffect(() => () => ref?.release(), [ref]);
+
+  return (
+    <Panel title="ShowcaseTextRef">
+      <Field label="value" value={text} onChangeText={setText} />
+      <ActionRow>
         <ActionButton
-          disabled={busy}
-          label="传递文本 SharedRef"
+          disabled={!!ref}
+          label="createSharedTextRef()"
           onPress={() => void operation.run(() => {
-            const ref = module.createSharedTextRef('Hello, SharedRef!');
-            try {
-              if (showcaseConsumer!.forwardSharedTextRef(ref) !== ref) throw new Error('SharedRef 身份发生变化。');
-              const text = showcaseConsumer!.readSharedTextRef(ref);
-              if (text !== ref.value) throw new Error('跨模块读取的文本与原始值不一致。');
-              return `${ref.nativeRefType}\n${text}`;
-            } finally {
-              ref.release();
-            }
+            setRef(module.createSharedTextRef(text));
+            return '已创建文本引用';
           })}
+        />
+        <ActionButton disabled={!ref} label="读取 value" onPress={() => void operation.run(() => json(ref?.value))} />
+        <ActionButton disabled={!ref} label="读取 nativeRefType" onPress={() => void operation.run(() => json(ref?.nativeRefType))} />
+        <ActionButton disabled={!ref} label="readSharedTextRef()" onPress={() => void operation.run(() => json(consumer.readSharedTextRef(ref!)))} />
+        <ActionButton disabled={!ref} label="forwardSharedTextRef()" onPress={() => void operation.run(() => json({ sameObject: consumer.forwardSharedTextRef(ref!) === ref }))} />
+        <ActionButton
+          disabled={!ref}
+          label="release()"
           tone="secondary"
+          onPress={() => {
+            setRef(undefined);
+            operation.clear();
+          }}
         />
       </ActionRow>
-      <Note>释放后可重新创建；离开页面会清理对象订阅并释放对象。文本引用在每次测试结束时释放。</Note>
       <ResultPanel state={operation.state} />
     </Panel>
   );

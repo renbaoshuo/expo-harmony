@@ -5,102 +5,68 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { LinearGradient } from 'expo-linear-gradient';
+import { LinearGradient, type LinearGradientPoint } from 'expo-linear-gradient';
 import { useState } from 'react';
-import { StyleSheet, Text } from 'react-native';
-import { palette } from '../theme';
-import { ActionButton, ActionRow, DataRow, Panel } from '../ui';
+import { Platform, StyleSheet, Text } from 'react-native';
+
+import { ActionRow, DataRow, Panel } from '../ui';
+import { Cycle, Toggle } from './visual-controls';
+
+const palettes = {
+  三色: ['#FFB000', '#72D8FF', '#7B61FF'],
+  冷色: ['#172554', '#2563EB', '#67E8F9'],
+  暖色: ['#FB7185', '#F97316', '#FDE68A'],
+} as const;
+const stops = {
+  均匀: null,
+  偏移: [0.2, 0.7, 1],
+  硬过渡: [0, 0.55, 0.55],
+} as const;
+const points = {
+  默认: null,
+  左上: [0, 0],
+  右上: [1, 0],
+  左下: [0, 1],
+  右下: [1, 1],
+  视图外: { x: 1.5, y: 0.5 },
+} satisfies Record<string, LinearGradientPoint | null>;
 
 export function LinearGradientDemo() {
-  const [direction, setDirection] = useState<'horizontal' | 'vertical'>('horizontal');
-  const start = { x: 0, y: 0 } as const;
-  const end = direction === 'horizontal' ? { x: 1, y: 0 } as const : { x: 0, y: 1 } as const;
+  const [colors, setColors] = useState<keyof typeof palettes>('三色');
+  const [locations, setLocations] = useState<keyof typeof stops>('均匀');
+  const [start, setStart] = useState<keyof typeof points>('左上');
+  const [end, setEnd] = useState<keyof typeof points>('右下');
+  const [dither, setDither] = useState(true);
+  const [rounded, setRounded] = useState(true);
 
   return (
-    <>
-      <Panel eyebrow="多色渐变" title="精确的对角端点">
-        <LinearGradient
-          colors={['#FFB000', '#72D8FF', '#7B61FF']}
-          end={{ x: 1, y: 1 }}
-          locations={[0, 0.45, 1]}
-          start={{ x: 0, y: 0 }}
-          style={styles.gradientHero}
-          testID="linear-gradient-multi-stop"
-        >
-          <Text style={styles.gradientEyebrow}>原生画布</Text>
-          <Text style={styles.gradientTitle}>三种颜色，一个原生视图。</Text>
-          <Text style={styles.gradientCopy}>
-            子内容浮于渐变之上，原生图层始终跟随视图边界。
-          </Text>
-        </LinearGradient>
-      </Panel>
-
-      <Panel eyebrow="动态属性" title="切换渐变方向">
-        <LinearGradient
-          colors={['#FF7064', '#FFB000', '#51D88A']}
-          end={end}
-          locations={[0, 0.52, 1]}
-          start={start}
-          style={styles.gradientDirection}
-          testID="linear-gradient-direction"
-        >
-          <Text style={styles.gradientDirectionText}>{direction === 'horizontal' ? '水平' : '垂直'}</Text>
-        </LinearGradient>
-        <DataRow label="起点 → 终点" value={direction === 'horizontal' ? '(0, 0) → (1, 0)' : '(0, 0) → (0, 1)'} />
-        <ActionRow>
-          <ActionButton label="水平" onPress={() => setDirection('horizontal')} tone="secondary" />
-          <ActionButton label="垂直" onPress={() => setDirection('vertical')} tone="secondary" />
-        </ActionRow>
-      </Panel>
-
-      <Panel eyebrow="断点与裁剪" title="硬过渡与单独圆角">
-        <LinearGradient
-          colors={['#111920', '#111920', '#72D8FF', '#7B61FF']}
-          end={{ x: 1, y: 0 }}
-          locations={[0, 0.5, 0.5, 1]}
-          start={{ x: 0, y: 0 }}
-          style={styles.gradientHardStop}
-          testID="linear-gradient-hard-stop"
-        >
-          <Text style={styles.gradientHardStopText}>50% 硬过渡</Text>
-        </LinearGradient>
-      </Panel>
-
-      <Panel eyebrow="边界情况" title="偏移断点与视图外坐标">
-        <LinearGradient
-          colors={['#FF7064', '#FFB000', '#72D8FF']}
-          end={{ x: 1, y: 0 }}
-          locations={[0.2, 0.65, 1]}
-          start={{ x: 0, y: 0 }}
-          style={styles.gradientPartial}
-          testID="linear-gradient-partial-locations"
-        >
-          <Text style={styles.gradientEdgeText}>三个颜色对应 20% / 65% / 100%</Text>
-        </LinearGradient>
-        <LinearGradient
-          colors={['#FF7064', '#51D88A']}
-          end={{ x: 1.5, y: 0.5 }}
-          start={{ x: -0.5, y: 0.5 }}
-          style={styles.gradientDegenerate}
-          testID="linear-gradient-degenerate"
-        >
-          <Text style={styles.gradientEdgeText}>渐变轴可延伸到视图边界之外</Text>
-        </LinearGradient>
-      </Panel>
-    </>
+    <Panel title="LinearGradient">
+      <LinearGradient
+        colors={palettes[colors]}
+        locations={stops[locations]}
+        start={points[start]}
+        end={points[end]}
+        dither={dither}
+        style={[styles.preview, rounded ? styles.rounded : null]}
+        testID="linear-gradient-preview"
+      >
+        <Text style={styles.caption}>线性渐变</Text>
+      </LinearGradient>
+      <DataRow label="颜色位置" value={stops[locations]?.join(' / ') ?? '均匀分布'} />
+      <ActionRow>
+        <Cycle label="配色" value={colors} choices={['三色', '冷色', '暖色']} onChange={setColors} />
+        <Cycle label="颜色位置" value={locations} choices={['均匀', '偏移', '硬过渡']} onChange={setLocations} />
+        <Cycle label="起点" value={start} choices={['默认', '左上', '右上', '左下', '右下', '视图外']} onChange={setStart} />
+        <Cycle label="终点" value={end} choices={['默认', '左上', '右上', '左下', '右下', '视图外']} onChange={setEnd} />
+        <Toggle label="圆角" value={rounded} onChange={setRounded} />
+        {Platform.OS === 'android' ? <Toggle label="抖动" value={dither} onChange={setDither} /> : null}
+      </ActionRow>
+    </Panel>
   );
 }
 
 const styles = StyleSheet.create({
-  gradientHero: { borderRadius: 18, gap: 10, minHeight: 210, overflow: 'hidden', padding: 22, justifyContent: 'flex-end' },
-  gradientEyebrow: { color: '#111920', fontFamily: 'monospace', fontSize: 10, fontWeight: '800', letterSpacing: 1.8 },
-  gradientTitle: { color: '#111920', fontSize: 28, fontWeight: '800', letterSpacing: -0.8, lineHeight: 31, maxWidth: 280 },
-  gradientCopy: { color: '#243039', fontSize: 12, fontWeight: '600', lineHeight: 18, maxWidth: 300 },
-  gradientDirection: { alignItems: 'center', borderRadius: 12, height: 124, justifyContent: 'center', overflow: 'hidden' },
-  gradientDirectionText: { color: '#111920', fontFamily: 'monospace', fontSize: 13, fontWeight: '800', letterSpacing: 2 },
-  gradientHardStop: { borderBottomRightRadius: 24, borderTopLeftRadius: 24, height: 92, justifyContent: 'center', overflow: 'hidden', paddingHorizontal: 18 },
-  gradientHardStopText: { color: palette.text, fontFamily: 'monospace', fontSize: 11, fontWeight: '800', letterSpacing: 1.4, textAlign: 'center' },
-  gradientPartial: { borderRadius: 12, height: 88, justifyContent: 'center', overflow: 'hidden', paddingHorizontal: 18 },
-  gradientDegenerate: { borderRadius: 12, height: 72, justifyContent: 'center', overflow: 'hidden', paddingHorizontal: 18 },
-  gradientEdgeText: { color: '#111920', fontFamily: 'monospace', fontSize: 10, fontWeight: '800', letterSpacing: 1.2, textAlign: 'center' },
+  preview: { height: 160, justifyContent: 'flex-end', padding: 18 },
+  rounded: { borderBottomRightRadius: 24, borderTopLeftRadius: 24, overflow: 'hidden' },
+  caption: { color: '#111920', fontSize: 24, fontWeight: '800' },
 });

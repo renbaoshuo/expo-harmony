@@ -10,10 +10,6 @@ import * as TaskManager from 'expo-task-manager';
 import { readExecution, recordExecution, type BackgroundExecution } from '../background-execution';
 
 export const BACKGROUND_FETCH_TASK = 'expo-harmony-demo-background-fetch';
-export const BACKGROUND_FETCH_CHECK_TASK = 'expo-harmony-check-background-fetch';
-export const BACKGROUND_FETCH_SECONDARY_CHECK_TASK = 'expo-harmony-check-background-fetch-secondary';
-export const BACKGROUND_FETCH_MISSING_CHECK_TASK = 'expo-harmony-check-background-fetch-missing';
-export const BACKGROUND_FETCH_CHECK_PASS = 'EXPO_HARMONY_BACKGROUND_FETCH_CHECK:PASS';
 export const BACKGROUND_FETCH_INTERVAL = 2 * 60 * 60;
 
 export const BACKGROUND_FETCH_OPTIONS: BackgroundFetch.BackgroundFetchOptions = {
@@ -34,14 +30,6 @@ TaskManager.defineTask(BACKGROUND_FETCH_TASK, async ({ error, executionInfo }) =
   return error
     ? BackgroundFetch.BackgroundFetchResult.Failed
     : BackgroundFetch.BackgroundFetchResult.NoData;
-});
-
-TaskManager.defineTask(BACKGROUND_FETCH_CHECK_TASK, async () => {
-  return BackgroundFetch.BackgroundFetchResult.NoData;
-});
-
-TaskManager.defineTask(BACKGROUND_FETCH_SECONDARY_CHECK_TASK, async () => {
-  return BackgroundFetch.BackgroundFetchResult.NoData;
 });
 
 export function getBackgroundFetchExecution(): BackgroundFetchExecution | null {

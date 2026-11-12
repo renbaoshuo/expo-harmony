@@ -11,11 +11,11 @@
   "main": "Index.ets",
   "license": "MIT",
   "dependencies": {
-    "@expo-harmony/expo-image-loader": "55.0.1-harmony.6",
-    "@expo-harmony/expo-json-utils": "55.0.2-harmony.4",
-    "@expo-harmony/expo-manifests": "55.0.21-harmony.2",
-    "@expo-harmony/expo-modules-core": "55.0.26-harmony.3",
-    "@expo-harmony/expo-structured-headers": "55.0.2-harmony.4",
-    "@expo-harmony/expo-updates-interface": "55.1.6-harmony.4"
+    "@expo-harmony/expo-image-loader": "57.0.1-harmony.0",
+    "@expo-harmony/expo-json-utils": "57.0.2-harmony.0",
+    "@expo-harmony/expo-manifests": "57.0.2-harmony.0",
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
+    "@expo-harmony/expo-structured-headers": "57.0.1-harmony.0",
+    "@expo-harmony/expo-updates-interface": "57.0.2-harmony.0"
   }
 }

@@ -27,12 +27,13 @@ class ExpoModuleShowcaseModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("ExpoModuleShowcase")
-    Constants("platform" to "android", "nativeLanguage" to "Kotlin")
+    Constant("platform") { "android" }
+    Constant("nativeLanguage") { "Kotlin" }
     Events("onShowcaseEvent")
     Function("echo") { value: String -> value }
     AsyncFunction("echoAsync") { value: String -> value }
     AsyncFunction("failAsync") { promise: Promise ->
-      promise.reject("ERR_SHOWCASE", "这是用于测试的原生错误。", null)
+      promise.reject("ERR_SHOWCASE", "原生模块返回了示例错误", null)
     }
     Function("emitEvent") { value: String ->
       sendEvent("onShowcaseEvent", mapOf("value" to value, "sequence" to sequence.incrementAndGet(), "platform" to "android"))

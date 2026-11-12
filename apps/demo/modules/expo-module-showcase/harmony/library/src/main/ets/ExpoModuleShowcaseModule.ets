@@ -7,7 +7,7 @@
 
 import {
   ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoModuleError,
-  ExpoSharedObjectClassDefinition, ExpoValueTypes,
+  ExpoPromise, ExpoSharedObjectClassDefinition, ExpoValueTypes,
 } from '@expo-harmony/expo-modules-core';
 import { ShowcaseCounter, ShowcaseTextRef } from './ShowcaseObjects';
 import { ShowcasePagePresenter, ShowcasePageResult } from './ShowcasePage';
@@ -68,9 +68,11 @@ export class ExpoModuleShowcaseModule extends ExpoModule {
       .sharedObjectClass(textRef)
       .view(showcaseViewDefinition())
       .syncFunction('echo', ExpoFunction.typed1(ExpoValueTypes.string(), (value: string): string => value))
-      .asyncFunction('echoAsync', ExpoFunction.typed1(ExpoValueTypes.string(), async (value: string): Promise<string> => value))
+      .asyncFunctionWithPromise('echoAsync', ExpoFunction.ownedTyped1(ExpoValueTypes.string(), (promise: ExpoPromise, value: string): void => {
+        promise.resolve(value);
+      }))
       .asyncFunction('failAsync', async (): Promise<void> => {
-        throw new ExpoModuleError('ERR_SHOWCASE', '这是用于测试的原生错误。');
+        throw new ExpoModuleError('ERR_SHOWCASE', '原生模块返回了示例错误');
       })
       .syncFunction('emitEvent', ExpoFunction.typed1(ExpoValueTypes.string(), (value: string): void => {
         this.sequence += 1;

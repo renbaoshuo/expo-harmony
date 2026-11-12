@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Expo Harmony 模块实验室",
+    "name": "Expo Harmony 模块演示",
     "slug": "expo-harmony-demo",
     "version": "1.0.0",
     "orientation": "default",
@@ -33,15 +33,15 @@
       [
         "@expo-harmony/expo-calendar",
         {
-          "readCalendarPermission": "用于验证日历查询、日程读取和重复实例功能",
-          "writeCalendarPermission": "用于创建、更新和清理演示页面的测试日历及日程"
+          "readCalendarPermission": "用于在示例中查看日历、日程和重复日程",
+          "writeCalendarPermission": "用于在示例中创建、修改和删除日历及日程"
         }
       ],
       [
         "@expo-harmony/expo-contacts",
         {
-          "readContactsPermission": "用于验证联系人查询、分页和导出功能",
-          "writeContactsPermission": "用于创建、更新和清理演示页面的测试联系人"
+          "readContactsPermission": "用于在示例中查找和导出联系人",
+          "writeContactsPermission": "用于在示例中添加、修改和删除联系人"
         }
       ],
       [
@@ -63,25 +63,37 @@
       "expo-system-ui",
       "@expo-harmony/expo-system-ui",
       [
+        "expo-status-bar",
+        {
+          "style": "dark",
+          "hidden": false
+        }
+      ],
+      [
+        "@expo-harmony/expo-status-bar",
+        {
+          "style": "dark",
+          "hidden": false
+        }
+      ],
+      [
         "expo-navigation-bar",
         {
-          "barStyle": "dark",
-          "visibility": "visible"
+          "style": "dark",
+          "hidden": false
         }
       ],
       [
         "@expo-harmony/expo-navigation-bar",
         {
-          "backgroundColor": "#F2F2F7",
-          "barStyle": "dark",
-          "position": "relative",
-          "visibility": "visible"
+          "style": "dark",
+          "hidden": false
         }
       ],
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "允许此应用访问位置信息，用于验证前台定位与地理编码。"
+          "locationWhenInUsePermission": "允许应用在使用期间获取位置，并在示例中查看地址"
         }
       ],
       "expo-sharing",
@@ -104,8 +116,22 @@
           "enableBackgroundRecording": true
         }
       ],
+      [
+        "expo-video",
+        {
+          "supportsBackgroundPlayback": true,
+          "supportsPictureInPicture": true
+        }
+      ],
+      [
+        "@expo-harmony/expo-video",
+        {
+          "supportsBackgroundPlayback": true
+        }
+      ],
       "./plugins/withAudioFixture",
       "./plugins/withIntentLauncherFixture",
+      "./plugins/withOaidPermissionReason",
       "@expo-harmony/expo__log-box",
       "@expo-harmony/prebuild-config",
       [
@@ -120,7 +146,7 @@
     ],
     "harmony": {
       "bundleName": "cn.baoshuo.expoharmony.demo",
-      "label": "Expo Harmony 模块实验室",
+      "label": "Expo Harmony 模块演示",
       "icon": "./assets/app-icon.svg",
       "versionCode": 1,
       "querySchemes": ["mailto"],
@@ -149,7 +175,12 @@
           "name": "ohos.permission.GET_NETWORK_INFO"
         },
         {
-          "name": "ohos.permission.PUBLISH_AGENT_REMINDER"
+          "name": "ohos.permission.APP_TRACKING_CONSENT",
+          "reason": "$string:expo_harmony_demo_oaid_permission_reason",
+          "usedScene": {
+            "abilities": ["EntryAbility"],
+            "when": "inuse"
+          }
         }
       ],
       "backgroundColor": "#F2F2F7",

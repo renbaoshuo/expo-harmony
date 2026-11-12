@@ -6,11 +6,11 @@
  */
 
 import Constants from 'expo-constants';
-import { StyleSheet, Text } from 'react-native';
-import { palette } from '../theme';
-import { ActionButton, DataRow, Panel, ResultPanel, useAsyncResult } from '../ui';
 
-type HarmonyPlatformConstants = {
+import { DataRow, Panel } from '../ui';
+import { SystemApiActions } from './system-api-actions';
+
+type HarmonyConstants = {
   apiVersion?: number;
   bundleName?: string;
   deviceType?: string;
@@ -20,44 +20,65 @@ type HarmonyPlatformConstants = {
 };
 
 export function ConstantsDemo() {
-  const userAgent = useAsyncResult();
-  const harmony = (Constants.platform as { harmony?: HarmonyPlatformConstants } | undefined)?.harmony;
-  const harmonyConfig = (Constants.expoConfig as typeof Constants.expoConfig & {
-    harmony?: { bundleName?: string; targetApiVersion?: number };
-  } | null)?.harmony;
+  const harmony = (Constants.platform as { harmony?: HarmonyConstants } | undefined)?.harmony;
 
   return (
     <>
-      <Panel eyebrow="运行时" title="Expo 常量">
+      <Panel title="运行环境">
         <DataRow label="executionEnvironment" value={Constants.executionEnvironment} />
+        <DataRow label="appOwnership" value={String(Constants.appOwnership)} />
         <DataRow label="sessionId" value={Constants.sessionId} />
-        <DataRow label="deviceName" value={Constants.deviceName || '不可用'} />
-        <DataRow label="systemVersion" value={String(Constants.systemVersion ?? '不可用')} />
-        <DataRow label="statusBarHeight" value={`${Constants.statusBarHeight}px`} />
+        <DataRow label="deviceName" value={String(Constants.deviceName)} />
+        <DataRow label="deviceYearClass" value={String(Constants.deviceYearClass)} />
+        <DataRow label="systemVersion" value={String(Constants.systemVersion)} />
+        <DataRow label="statusBarHeight" value={String(Constants.statusBarHeight)} />
         <DataRow label="debugMode" value={String(Constants.debugMode)} />
+        <DataRow label="isHeadless" value={String(Constants.isHeadless)} />
+        <DataRow label="isDetached" value={String(Constants.isDetached)} />
+        <DataRow label="expoRuntimeVersion" value={String(Constants.expoRuntimeVersion)} />
+        <DataRow label="expoVersion" value={String(Constants.expoVersion)} />
       </Panel>
 
-      <Panel eyebrow="HARMONY 清单" title="原生与内嵌信息">
-        <DataRow label="bundleName" value={harmony?.bundleName || harmonyConfig?.bundleName || '缺失'} />
-        <DataRow label="version" value={harmony ? `${harmony.versionName ?? '?'} (${harmony.versionCode ?? '?'})` : '缺失'} />
-        <DataRow label="设备 / API" value={harmony ? `${harmony.deviceType ?? '?'} · API ${harmony.apiVersion ?? '?'}` : '缺失'} />
-        <DataRow label="系统全名" value={harmony?.osFullName || '不可用'} />
-        <DataRow label="系统字体数量" value={String(Constants.systemFonts.length)} />
-        <Text selectable style={styles.compactCode}>{Constants.systemFonts.slice(0, 12).join('\n') || '未上报系统字体。'}</Text>
+      <Panel title="应用链接">
+        <DataRow label="experienceUrl" value={String(Constants.experienceUrl)} />
+        <DataRow label="linkingUri" value={String(Constants.linkingUri)} />
+        <DataRow label="intentUri" value={String(Constants.intentUri)} />
       </Panel>
 
-      <Panel eyebrow="平台服务" title="WebView 用户代理">
-        <ActionButton
-          disabled={userAgent.state.phase === 'running'}
-          label="读取 User Agent"
-          onPress={() => void userAgent.run(async () => (await Constants.getWebViewUserAgentAsync()) || '平台返回了 null。')}
+      <Panel title="应用配置">
+        <SystemApiActions
+          actions={[
+            ['Expo 配置', () => Constants.expoConfig],
+            ['Expo Go 配置', () => Constants.expoGoConfig],
+            ['EAS 配置', () => Constants.easConfig],
+            ['平台清单', () => Constants.platform ?? null],
+            ['内嵌清单', () => Constants.manifest],
+            ['更新清单', () => Constants.manifest2],
+          ]}
         />
-        <ResultPanel state={userAgent.state} />
+      </Panel>
+
+      {harmony
+        ? (
+            <Panel title="HarmonyOS 应用信息">
+              <DataRow label="bundleName" value={String(harmony.bundleName)} />
+              <DataRow label="versionName" value={String(harmony.versionName)} />
+              <DataRow label="versionCode" value={String(harmony.versionCode)} />
+              <DataRow label="deviceType" value={String(harmony.deviceType)} />
+              <DataRow label="apiVersion" value={String(harmony.apiVersion)} />
+              <DataRow label="osFullName" value={String(harmony.osFullName)} />
+            </Panel>
+          )
+        : null}
+
+      <Panel title="系统字体与 WebView">
+        <SystemApiActions
+          actions={[
+            ['列出系统字体', () => Constants.systemFonts],
+            ['读取 User Agent', () => Constants.getWebViewUserAgentAsync()],
+          ]}
+        />
       </Panel>
     </>
   );
 }
-
-const styles = StyleSheet.create({
-  compactCode: { backgroundColor: palette.canvas, borderRadius: 4, color: palette.muted, fontFamily: 'monospace', fontSize: 10, lineHeight: 16, padding: 12 },
-});

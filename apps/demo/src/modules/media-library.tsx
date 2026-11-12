@@ -7,276 +7,634 @@
 
 import { Asset } from 'expo-asset';
 import { File, Paths } from 'expo-file-system';
-import * as MediaLibrary from 'expo-media-library';
+import type * as Modern from 'expo-media-library';
+import * as Legacy from 'expo-media-library/legacy';
 import { useEffect, useRef, useState } from 'react';
-import { Image, Platform, StyleSheet } from 'react-native';
+import { Image, Platform, StyleSheet, Switch } from 'react-native';
 
 import picture from '../../assets/app-icon.png';
 import { json } from '../format';
-import { ActionButton, ActionRow, DataRow, Field, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { ActionButton, ActionRow, DataRow, Field, Panel, ResultPanel, useAsyncResult } from '../ui';
 
-export function MediaLibraryDemo() {
-  const [permission, request, get] = MediaLibrary.usePermissions();
-  const [size, setSize] = useState('2');
-  const [page, setPage] = useState<MediaLibrary.PagedInfo<MediaLibrary.Asset> | null>(null);
-  const [selected, setSelected] = useState<MediaLibrary.Asset | null>(null);
-  const [albums, setAlbums] = useState<MediaLibrary.Album[]>([]);
-  const [album, setAlbum] = useState('');
-  const [title, setTitle] = useState('Expo Harmony');
-  const [created, setCreated] = useState<MediaLibrary.Asset[]>([]);
-  const [listening, setListening] = useState(false);
-  const [events, setEvents] = useState(0);
-  const [event, setEvent] = useState<MediaLibrary.MediaLibraryAssetsChangeEvent | null>(null);
-  const subscription = useRef<ReturnType<typeof MediaLibrary.addListener> | null>(null);
-  const access = useAsyncResult();
-  const query = useAsyncResult();
-  const details = useAsyncResult();
-  const writes = useAsyncResult();
-  const collection = useAsyncResult();
-  const observer = useAsyncResult();
-  const checks = useAsyncResult();
-  const busy = [access, query, details, writes, collection, observer, checks].some(result => result.state.phase === 'running');
-  const latest = created.at(-1);
+type ModernApi = typeof Modern;
+type MediaApi = typeof Legacy | ModernApi;
+type AssetIdProps = { assetId: string; setAssetId: (id: string) => void };
+type AlbumIdProps = { albumId: string; setAlbumId: (id: string) => void };
 
-  useEffect(() => () => subscription.current?.remove(), []);
+function listIds(value: string) {
+  return value.split(/[,\n]+/).map(id => id.trim()).filter(Boolean);
+}
 
-  const inspect = () => access.run(async () => {
-    const [available, read, write] = await Promise.all([
-      MediaLibrary.isAvailableAsync(), get(), MediaLibrary.getPermissionsAsync(true),
-    ]);
-    if (!available) throw new Error('MediaLibrary 原生接口不可用。');
+function nonnegativeInteger(value: string, name: string) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) throw new Error(`${name}须为非负整数`);
+  return number;
+}
 
-    return json({ available, read, write });
-  });
-
-  const load = (next = false) => query.run(async () => {
-    const first = Number(size);
-    if (!size.trim() || !Number.isSafeInteger(first) || first < 1) throw new Error('每页数量需为正整数。');
-    if (next && (!page?.hasNextPage || !page.endCursor)) throw new Error('当前没有下一页。');
-
-    const result = await MediaLibrary.getAssetsAsync({
-      first, after: next ? page?.endCursor : undefined,
-      mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
-      sortBy: [[MediaLibrary.SortBy.creationTime, false]],
-    });
-    if (result.assets.length > first || result.totalCount < result.assets.length) throw new Error('分页数量无效。');
-    if (new Set(result.assets.map(asset => asset.id)).size !== result.assets.length) throw new Error('页内出现重复资产。');
-    if (next && result.assets.some(asset => page?.assets.some(previous => previous.id === asset.id))) {
-      throw new Error('相邻分页出现重复资产。');
-    }
-
-    setPage(result);
-    setSelected(result.assets[0] ?? null);
-
-    return json({
-      count: result.assets.length, totalCount: result.totalCount,
-      endCursor: result.endCursor, hasNextPage: result.hasNextPage,
-    });
-  });
-
-  const info = (asset: MediaLibrary.Asset) => details.run(async () => {
-    const result = await MediaLibrary.getAssetInfoAsync(asset);
-    if (!result || result.id !== asset.id || !result.uri || !Number.isFinite(result.creationTime)) {
-      throw new Error('资产详情的 ID、URI 或时间无效。');
-    }
-
-    setSelected(asset);
-
-    return json(result);
-  });
-
-  const save = (only = false) => writes.run(async () => {
-    const asset = Asset.fromModule(picture);
-    await asset.downloadAsync();
-    if (!asset.localUri) throw new Error('内置图片未下载到本地。');
-
-    const file = new File(Paths.cache, `media-library-${Date.now()}.png`);
-    try {
-      new File(asset.localUri).copy(file);
-
-      if (only) {
-        await MediaLibrary.saveToLibraryAsync(file.uri);
-
-        return 'saveToLibraryAsync 已完成。此接口不返回 ID，可在系统图库查看并删除保存的图片。';
-      }
-
-      const result = await MediaLibrary.createAssetAsync(file.uri);
-      if (result?.id) setCreated(values => [...values, result]);
-      if (!result?.id || !result.uri || result.mediaType !== 'photo' || result.width <= 0 || result.height <= 0) {
-        throw new Error('保存结果的资产标识、媒体类型或尺寸无效。');
-      }
-
-      setSelected(result);
-
-      return json(result);
-    } finally {
-      if (file.exists) file.delete();
-    }
-  });
-
-  const cleanup = () => writes.run(async () => {
-    if (created.length === 0) return '没有需要清理的本页资源。';
-
-    const removed = await MediaLibrary.deleteAssetsAsync(created);
-    if (!removed) throw new Error('删除未完成，已保留待清理列表。');
-
-    setCreated([]);
-    if (selected && created.some(asset => asset.id === selected.id)) setSelected(null);
-    setPage(null);
-
-    return `已删除本页创建的 ${created.length} 项资源。`;
-  });
-
-  const list = () => collection.run(async () => {
-    const result = await MediaLibrary.getAlbumsAsync({ includeSmartAlbums: true });
-    setAlbums(result);
-
-    return json(result);
-  });
-
-  const membership = (remove: boolean) => collection.run(async () => {
-    if (!latest || !album) throw new Error('请先创建图片并选择用户相册。');
-
-    const result = remove
-      ? await MediaLibrary.removeAssetsFromAlbumAsync([latest], album)
-      : await MediaLibrary.addAssetsToAlbumAsync([latest], album, false);
-    if (!result) throw new Error('相册成员操作未完成。');
-
-    return remove ? '已移除本页图片的相册成员关系。' : '已将本页图片加入所选相册。';
-  });
-
-  const observe = () => observer.run(() => {
-    if (subscription.current) {
-      subscription.current.remove();
-      subscription.current = null;
-      setListening(false);
-
-      return '监听已停止。';
-    }
-
-    subscription.current = MediaLibrary.addListener((value) => {
-      setEvents(count => count + 1);
-      setEvent(value);
-    });
-    setListening(true);
-
-    return '监听已开启。请保存或清理本页图片，检查事件计数是否变化。';
-  });
-
-  const verify = () => checks.run(async () => {
-    const rows: string[] = [];
-    const sizes = String(Platform.OS) === 'harmony' ? [-1, NaN] : [-1];
-    for (const first of sizes) {
-      let rejected = false;
-      try {
-        await MediaLibrary.getAssetsAsync({ first });
-      } catch (error) {
-        if (!(error instanceof Error)) throw new Error(`未返回错误对象：${String(error)}`);
-        const code = 'code' in error ? error.code : undefined;
-        if (first !== -1 && code !== 'ERR_MEDIA_LIBRARY_INVALID_ARGUMENT') {
-          throw new Error(`未返回预期的参数错误：${String(error)}`);
-        }
-        rejected = true;
-      }
-      if (!rejected) throw new Error(`非法 first ${first} 未被拒绝。`);
-      rows.push(`first ${first}：正确拒绝`);
-    }
-
-    const empty = await MediaLibrary.getAssetsAsync({ first: 0 });
-    if (empty.assets.length !== 0) throw new Error('first: 0 不应返回资产。');
-    rows.push('first: 0：正确返回空页');
-
-    if (String(Platform.OS) === 'harmony') {
-      const audio = await MediaLibrary.getAssetsAsync({ mediaType: MediaLibrary.MediaType.audio });
-      if (audio.assets.length !== 0 || audio.totalCount !== 0) throw new Error('音频查询应返回空结果。');
-      rows.push('音频查询：正确返回空结果');
-
-      let rejected = false;
-      try {
-        await MediaLibrary.createAlbumAsync('Expo Harmony');
-      } catch (error) {
-        if (!(error instanceof Error) || !('code' in error) || error.code !== 'ERR_MEDIA_LIBRARY_UNSUPPORTED_ALBUM_OPERATION') {
-          throw new Error(`相册创建错误码不符：${String(error)}`);
-        }
-        rejected = true;
-      }
-      if (!rejected) throw new Error('不支持的相册创建未被拒绝。');
-      rows.push('相册创建：正确报告平台限制');
-    }
-
-    return rows.join('\n');
-  });
+function MediaPermissionHook({ api, options, action }: {
+  api: MediaApi;
+  options: Parameters<MediaApi['usePermissions']>[0];
+  action: ReturnType<typeof useAsyncResult>;
+}) {
+  const [permission, request, get] = api.usePermissions(options);
+  const busy = action.state.phase === 'running';
 
   return (
     <>
-      <Panel eyebrow="权限" title="图库读写权限">
-        <DataRow label="当前状态" value={permission?.status ?? '未读取'} />
-        <ActionRow>
-          <ActionButton disabled={busy} label="读取能力与权限" onPress={() => void inspect()} testID="media-library-permissions" />
-          <ActionButton disabled={busy} label="申请读写权限" onPress={() => void access.run(async () => json(await request()))} testID="media-library-request" tone="secondary" />
-          <ActionButton disabled={busy} label="申请只写权限" onPress={() => void access.run(async () => json(await MediaLibrary.requestPermissionsAsync(true)))} testID="media-library-write" tone="secondary" />
-        </ActionRow>
-        <Note>HarmonyOS 全库访问需要受限开放权限。只写权限可验证仅保存接口，查询与创建后读取详情需要读写权限。</Note>
-        <ResultPanel state={access.state} />
-      </Panel>
+      <DataRow label="权限状态" value={permission?.status ?? '加载中'} />
+      <ActionRow>
+        <ActionButton label="读取图库权限" disabled={busy} onPress={() => void action.run(async () => json(await get()))} testID="media-library-permissions" tone="secondary" />
+        <ActionButton label="申请图库权限" disabled={busy} onPress={() => void action.run(async () => json(await request()))} testID="media-library-request" />
+      </ActionRow>
+    </>
+  );
+}
 
-      <Panel eyebrow="图库" title="图片、视频与分页">
-        <Field keyboardType="number-pad" label="每页数量" onChangeText={setSize} testID="media-library-size" value={size} />
-        <ActionRow>
-          <ActionButton disabled={busy} label="查询首页" onPress={() => void load()} testID="media-library-first" />
-          <ActionButton disabled={busy || !page?.hasNextPage} label="查询下一页" onPress={() => void load(true)} testID="media-library-next" tone="secondary" />
-        </ActionRow>
-        <ResultPanel state={query.state} />
-        {page?.assets.map(asset => (
-          <ActionButton disabled={busy} key={asset.id} label={`${asset.filename} · ${asset.mediaType}`} onPress={() => void info(asset)} tone="secondary" />
+function MediaPermissionsCard({ api }: { api: MediaApi }) {
+  const [writeOnly, setWriteOnly] = useState(false);
+  const [types, setTypes] = useState<Legacy.GranularPermission[]>(['photo', 'video']);
+  const action = useAsyncResult();
+  const busy = action.state.phase === 'running';
+  const hasPermissionPicker = Platform.OS === 'ios' || Platform.OS === 'android';
+  const options = { writeOnly, granularPermissions: Platform.OS === 'android' ? types : undefined };
+
+  return (
+    <Panel title="图库权限">
+      <DataRow label="仅写入" value={<Switch disabled={busy} value={writeOnly} onValueChange={setWriteOnly} accessibilityLabel="仅写入" />} />
+      {Platform.OS === 'android'
+        ? (
+            <ActionRow>
+              {(['photo', 'video', 'audio'] as const).map(type => (
+                <ActionButton key={type} disabled={busy} label={type} tone={types.includes(type) ? 'primary' : 'secondary'} onPress={() => setTypes(current => current.includes(type) ? current.filter(value => value !== type) : [...current, type])} />
+              ))}
+            </ActionRow>
+          )
+        : null}
+      <MediaPermissionHook key={json(options)} api={api} options={options} action={action} />
+      <ActionRow>
+        {!('Asset' in api) ? <ActionButton label="检查图库可用性" disabled={busy} onPress={() => void action.run(async () => json(await api.isAvailableAsync()))} tone="secondary" /> : null}
+        {hasPermissionPicker
+          ? <ActionButton
+              label="打开授权选择器"
+              disabled={busy}
+              onPress={() => void action.run(async () => {
+                const picker = 'Asset' in api ? api.presentPermissionsPicker : api.presentPermissionsPickerAsync;
+                const mediaTypes = types.filter(type => type !== 'audio');
+                await picker(mediaTypes.length ? mediaTypes : undefined);
+                return '授权选择器已关闭';
+              })}
+              tone="secondary"
+            />
+          : null}
+      </ActionRow>
+      <ResultPanel state={action.state} />
+    </Panel>
+  );
+}
+
+function MediaEventsCard({ api }: { api: MediaApi }) {
+  const [event, setEvent] = useState<unknown>();
+  const [listening, setListening] = useState(false);
+  const subscription = useRef<ReturnType<typeof Legacy.addListener> | null>(null);
+  const action = useAsyncResult();
+  const busy = action.state.phase === 'running';
+
+  useEffect(() => () => subscription.current?.remove(), []);
+
+  const stop = (mode: 'current' | 'all' | 'legacy') => action.run(() => {
+    if (mode === 'all') api.removeAllListeners();
+    else if (mode === 'legacy' && !('Asset' in api) && subscription.current) api.removeSubscription(subscription.current);
+    else subscription.current?.remove();
+    subscription.current = null;
+    setListening(false);
+    return '已停止监听图库变更';
+  });
+
+  return (
+    <Panel title="图库变更">
+      <ActionRow>
+        <ActionButton
+          label="监听图库变更"
+          disabled={busy || listening}
+          onPress={() => void action.run(() => {
+            subscription.current = api.addListener(setEvent);
+            setEvent(undefined);
+            setListening(true);
+            return '已开始监听图库变更';
+          })}
+          testID="media-library-observe"
+        />
+        <ActionButton label="移除当前监听" disabled={busy || !listening} onPress={() => void stop('current')} tone="secondary" />
+        <ActionButton label="移除全部监听" disabled={busy || !listening} onPress={() => void stop('all')} tone="secondary" />
+        {!('Asset' in api) ? <ActionButton label="用 removeSubscription 移除监听" disabled={busy || !listening} onPress={() => void stop('legacy')} tone="secondary" /> : null}
+      </ActionRow>
+      {event ? <DataRow label="最近一次变更" value={json(event)} /> : null}
+      <ResultPanel state={action.state} />
+    </Panel>
+  );
+}
+
+function MediaImportCard({ api, albumId, setAlbumId, setAssetId }: { api: MediaApi } & AssetIdProps & AlbumIdProps) {
+  const [uri, setUri] = useState('');
+  const action = useAsyncResult();
+  const busy = action.state.phase === 'running';
+
+  const withFile = async <T,>(operation: (uri: string) => Promise<T>): Promise<T> => {
+    if (uri.trim()) return operation(uri.trim());
+    const asset = await Asset.fromModule(picture).downloadAsync();
+    if (!asset.localUri) throw new Error('无法下载内置图片');
+    const file = new File(Paths.cache, `media-library-${Date.now()}.png`);
+    try {
+      await new File(asset.localUri).copy(file);
+      return await operation(file.uri);
+    } finally {
+      if (file.exists) file.delete();
+    }
+  };
+
+  return (
+    <Panel title="导入媒体">
+      <Field label="本地文件 URI" value={uri} onChangeText={setUri} placeholder="内置图片" />
+      <Field label="目标相册 ID" value={albumId} onChangeText={setAlbumId} />
+      <ActionRow>
+        <ActionButton
+          disabled={busy}
+          label="导入资源"
+          onPress={() => void action.run(async () => {
+            const result = await withFile<{ id: string }>(file => 'Asset' in api
+              ? api.Asset.create(file, albumId ? new api.Album(albumId) : undefined)
+              : api.createAssetAsync(file, albumId || undefined));
+            setAssetId(result.id);
+            return json({ id: result.id });
+          })}
+          testID={!('Asset' in api) ? 'media-library-create' : 'media-library-next-create'}
+        />
+        {!('Asset' in api)
+          ? <ActionButton
+              disabled={busy}
+              label="保存文件到图库"
+              onPress={() => void action.run(async () => {
+                await withFile(file => api.saveToLibraryAsync(file));
+                return '文件已保存到图库';
+              })}
+              testID="media-library-save"
+              tone="secondary"
+            />
+          : null}
+      </ActionRow>
+      <ResultPanel state={action.state} />
+    </Panel>
+  );
+}
+
+function LegacyQueryCard({ setAssetId, albumId, setAlbumId }: Pick<AssetIdProps, 'setAssetId'> & AlbumIdProps) {
+  const [first, setFirst] = useState('5');
+  const [after, setAfter] = useState('');
+  const [mediaType, setMediaType] = useState<Legacy.MediaTypeValue[]>(['photo', 'video']);
+  const [subtypes, setSubtypes] = useState('');
+  const [sortBy, setSortBy] = useState('[["creationTime", false]]');
+  const [createdAfter, setCreatedAfter] = useState('');
+  const [createdBefore, setCreatedBefore] = useState('');
+  const [fullInfo, setFullInfo] = useState(false);
+  const [page, setPage] = useState<Legacy.PagedInfo<Legacy.Asset>>();
+  const action = useAsyncResult();
+  const busy = action.state.phase === 'running';
+
+  const query = () => action.run(async () => {
+    const result = await Legacy.getAssetsAsync({
+      first: first.trim() ? nonnegativeInteger(first, '每页数量') : undefined,
+      after: after || undefined,
+      album: albumId || undefined,
+      mediaType: mediaType.length ? mediaType : undefined,
+      mediaSubtypes: Platform.OS === 'ios' && subtypes.trim()
+        ? JSON.parse(subtypes) as Legacy.AssetsOptions['mediaSubtypes']
+        : undefined,
+      sortBy: sortBy.trim() ? JSON.parse(sortBy) as Legacy.AssetsOptions['sortBy'] : undefined,
+      createdAfter: createdAfter.trim() ? nonnegativeInteger(createdAfter, '创建时间起点') : undefined,
+      createdBefore: createdBefore.trim() ? nonnegativeInteger(createdBefore, '创建时间终点') : undefined,
+      resolveWithFullInfo: fullInfo,
+    });
+    setPage(result);
+    return json({ totalCount: result.totalCount, endCursor: result.endCursor, hasNextPage: result.hasNextPage });
+  });
+
+  return (
+    <Panel title="资源分页">
+      <Field label="每页数量" value={first} onChangeText={setFirst} keyboardType="number-pad" />
+      <Field label="分页游标" value={after} onChangeText={setAfter} />
+      <Field label="相册 ID" value={albumId} onChangeText={setAlbumId} />
+      <ActionRow>
+        {(['photo', 'video', 'audio', 'unknown'] as const).map(type => (
+          <ActionButton
+            key={type}
+            label={type}
+            tone={mediaType.includes(type) ? 'primary' : 'secondary'}
+            onPress={() => setMediaType(current => current.includes(type)
+              ? current.filter(value => value !== type)
+              : [...current, type])}
+          />
         ))}
-      </Panel>
+      </ActionRow>
+      {Platform.OS === 'ios' ? <Field label="媒体子类型（JSON）" value={subtypes} onChangeText={setSubtypes} placeholder='["livePhoto"]' /> : null}
+      <Field label="排序（JSON）" value={sortBy} onChangeText={setSortBy} />
+      <Field label="创建时间起点（Unix 毫秒）" value={createdAfter} onChangeText={setCreatedAfter} keyboardType="number-pad" />
+      <Field label="创建时间终点（Unix 毫秒）" value={createdBefore} onChangeText={setCreatedBefore} keyboardType="number-pad" />
+      <DataRow label="读取完整图片信息" value={<Switch value={fullInfo} onValueChange={setFullInfo} accessibilityLabel="读取完整图片信息" />} />
+      <ActionRow>
+        <ActionButton disabled={busy} label="查询资源" onPress={() => void query()} testID="media-library-first" />
+        <ActionButton disabled={busy || !page?.hasNextPage || !page.endCursor} label="填入下一页游标" onPress={() => setAfter(page?.endCursor ?? '')} testID="media-library-next" tone="secondary" />
+      </ActionRow>
+      {page?.assets.map(asset => (
+        <ActionButton key={asset.id} label={asset.filename} onPress={() => setAssetId(asset.id)} tone="secondary" />
+      ))}
+      <ResultPanel state={action.state} />
+    </Panel>
+  );
+}
 
-      <Panel eyebrow="写入" title="保存与清理内置图片">
-        <DataRow label="本页待清理资源" value={created.length} />
-        <ActionRow>
-          <ActionButton disabled={busy} label="创建图片资源" onPress={() => void save()} testID="media-library-create" />
-          <ActionButton disabled={busy} label="仅保存到图库" onPress={() => void save(true)} testID="media-library-save" tone="secondary" />
-          <ActionButton disabled={busy || created.length === 0} label="清理本页资源" onPress={() => void cleanup()} testID="media-library-cleanup" tone="danger" />
-        </ActionRow>
-        <Note>清理只删除本页创建且取得 ID 的资源。仅保存接口不返回 ID，其结果需在系统图库中手动删除；离开页面前可先清理。</Note>
-        <ResultPanel state={writes.state} />
-      </Panel>
+function LegacyAssetCard({ assetId, setAssetId }: AssetIdProps) {
+  const [download, setDownload] = useState(true);
+  const [favorite, setFavorite] = useState(true);
+  const [asset, setAsset] = useState<Legacy.AssetInfo>();
+  const action = useAsyncResult();
+  const busy = action.state.phase === 'running';
 
-      <Panel eyebrow="详情" title="元数据与图片预览">
-        <ActionButton disabled={busy || !selected} label="读取选中资源详情" onPress={() => selected && void info(selected)} testID="media-library-info" />
-        {selected ? <DataRow label="资源 ID" value={selected.id} /> : null}
-        {selected?.mediaType === 'photo' ? <Image accessibilityLabel="媒体库图片预览" resizeMode="contain" source={{ uri: selected.uri }} style={styles.preview} /> : null}
-        <ResultPanel state={details.state} />
-      </Panel>
+  return (
+    <Panel title="资源详情与删除">
+      <Field label="资源 ID" value={assetId} onChangeText={setAssetId} />
+      {Platform.OS === 'ios' ? <DataRow label="允许下载云端资源" value={<Switch value={download} onValueChange={setDownload} accessibilityLabel="允许下载云端资源" />} /> : null}
+      {Platform.OS === 'ios' ? <DataRow label="收藏" value={<Switch value={favorite} onValueChange={setFavorite} accessibilityLabel="收藏" />} /> : null}
+      <ActionRow>
+        <ActionButton
+          disabled={busy || !assetId}
+          label="读取资源详情"
+          onPress={() => void action.run(async () => {
+            const info = await Legacy.getAssetInfoAsync(assetId, Platform.OS === 'ios' ? { shouldDownloadFromNetwork: download } : undefined);
+            setAsset(info ?? undefined);
+            return json(info);
+          })}
+          testID="media-library-info"
+        />
+        {Platform.OS === 'android' ? <ActionButton disabled={busy || !assetId} label="读取资源内容 URI" onPress={() => void action.run(() => Legacy.getAssetContentUriAsync(assetId))} tone="secondary" /> : null}
+        {Platform.OS === 'ios' ? <ActionButton disabled={busy || !assetId} label="设置收藏状态" onPress={() => void action.run(async () => json(await Legacy.setAssetFavoriteAsync(assetId, favorite)))} tone="secondary" /> : null}
+        <ActionButton
+          disabled={busy || !assetId}
+          label="删除资源"
+          onPress={() => void action.run(async () => {
+            const result = await Legacy.deleteAssetsAsync(assetId);
+            if (result) setAssetId('');
+            return json(result);
+          })}
+          testID="media-library-cleanup"
+          tone="danger"
+        />
+      </ActionRow>
+      {asset && asset.id === assetId && asset.mediaType === 'photo' ? <Image accessibilityLabel="图片预览" resizeMode="contain" source={{ uri: asset.uri }} style={styles.preview} /> : null}
+      <ResultPanel state={action.state} />
+    </Panel>
+  );
+}
 
-      <Panel eyebrow="相册" title="查询与成员管理">
-        <ActionButton disabled={busy} label="读取所有相册" onPress={() => void list()} testID="media-library-albums" />
-        {albums.filter(item => item.type !== 'smartAlbum').map(item => (
-          <ActionButton disabled={busy} key={item.id} label={`${album === item.id ? '已选 · ' : ''}${item.title}（${item.assetCount}）`} onPress={() => setAlbum(item.id)} tone="secondary" />
+function LegacyAlbumCard({ assetId, albumId, setAlbumId }: { assetId: string } & AlbumIdProps) {
+  const [title, setTitle] = useState('相机');
+  const [albums, setAlbums] = useState<Legacy.Album[]>([]);
+  const [smart, setSmart] = useState(false);
+  const [copy, setCopy] = useState(true);
+  const action = useAsyncResult();
+  const busy = action.state.phase === 'running';
+
+  return (
+    <Panel title="相册">
+      <Field label="相册名称" value={title} onChangeText={setTitle} testID="media-library-title" />
+      <DataRow label="包含系统相册" value={<Switch value={smart} onValueChange={setSmart} accessibilityLabel="包含系统相册" />} />
+      <ActionRow>
+        <ActionButton
+          disabled={busy}
+          label="列出相册"
+          onPress={() => void action.run(async () => {
+            const result = await Legacy.getAlbumsAsync({ includeSmartAlbums: smart });
+            setAlbums(result);
+            return json(result);
+          })}
+          testID="media-library-albums"
+        />
+        <ActionButton
+          disabled={busy || !title}
+          label="按名称查询相册"
+          onPress={() => void action.run(async () => {
+            const result = await Legacy.getAlbumAsync(title);
+            if (result) setAlbumId(result.id);
+            return json(result);
+          })}
+          testID="media-library-find-album"
+          tone="secondary"
+        />
+      </ActionRow>
+      {albums.map(album => <ActionButton key={album.id} label={album.title} tone={album.id === albumId ? 'primary' : 'secondary'} onPress={() => setAlbumId(album.id)} />)}
+      <Field label="相册 ID" value={albumId} onChangeText={setAlbumId} />
+      <DataRow label="资源 ID" value={assetId || '未选中'} />
+      {Platform.OS === 'android' ? <DataRow label="复制资源" value={<Switch value={copy} onValueChange={setCopy} accessibilityLabel="复制资源" />} /> : null}
+      <ActionRow>
+        <ActionButton disabled={busy || !albumId || !assetId} label="加入相册" onPress={() => void action.run(async () => json(await Legacy.addAssetsToAlbumAsync(assetId, albumId, Platform.OS === 'android' ? copy : undefined)))} testID="media-library-add" tone="secondary" />
+        <ActionButton disabled={busy || !albumId || !assetId} label="移出相册" onPress={() => void action.run(async () => json(await Legacy.removeAssetsFromAlbumAsync(assetId, albumId)))} testID="media-library-remove" tone="secondary" />
+      </ActionRow>
+      <ResultPanel state={action.state} />
+    </Panel>
+  );
+}
+
+const FILTERS = ['eq', 'within', 'gt', 'gte', 'lt', 'lte'] as const;
+type Filter = (typeof FILTERS)[number];
+
+function QueryCard({ api, setAssetId, albumId, setAlbumId }: { api: ModernApi } & Pick<AssetIdProps, 'setAssetId'> & AlbumIdProps) {
+  const [field, setField] = useState<Modern.AssetField>(api.AssetField.MEDIA_TYPE);
+  const [filter, setFilter] = useState<Filter | null>('eq');
+  const [value, setValue] = useState('"image"');
+  const [sort, setSort] = useState('');
+  const [ascending, setAscending] = useState(true);
+  const [limit, setLimit] = useState('5');
+  const [offset, setOffset] = useState('');
+  const [assets, setAssets] = useState<{ id: string }[]>([]);
+  const action = useAsyncResult();
+  const busy = action.state.phase === 'running';
+  const mediaField = api.AssetField.MEDIA_TYPE;
+  const favoriteField = api.AssetField.IS_FAVORITE;
+  const numericFilter = filter !== null && filter !== 'eq' && filter !== 'within';
+  const fields = Object.values(api.AssetField).filter(
+    key => !numericFilter || (key !== mediaField && key !== favoriteField)
+  );
+
+  const selectFilter = (operator: Filter | null) => {
+    setFilter(operator);
+    if (!operator) return;
+    const numeric = operator !== 'eq' && operator !== 'within';
+    const nextField = numeric && (field === mediaField || field === favoriteField) ? api.AssetField.WIDTH : field;
+    selectField(nextField, operator);
+  };
+
+  function selectField(nextField: Modern.AssetField, operator: Filter) {
+    setField(nextField);
+    const example = nextField === mediaField ? api.MediaType.IMAGE : nextField === favoriteField ? true : 100;
+    setValue(JSON.stringify(operator === 'within' ? [example] : example));
+  }
+
+  const read = (metadata: boolean) => action.run(async () => {
+    const query = new api.Query();
+    if (filter === 'eq') query.eq(field, JSON.parse(value));
+    else if (filter === 'within') query.within(field, JSON.parse(value));
+    else if (filter) query[filter](field, Number(value));
+    if (albumId) query.album(new api.Album(albumId));
+    if (sort) {
+      if (!Object.values(api.AssetField).some(field => field === sort)) throw new Error('请输入有效的排序字段');
+      query.orderBy({ key: sort as Modern.AssetField, ascending });
+    }
+    if (limit.trim()) query.limit(nonnegativeInteger(limit, '结果条数'));
+    if (offset.trim()) query.offset(nonnegativeInteger(offset, '跳过条数'));
+    if (metadata) {
+      const result = await query.exeForMetadata();
+      setAssets(result);
+      return json(result);
+    }
+
+    const result = await query.exe();
+    const ids = result.map(({ id }) => ({ id }));
+    setAssets(ids);
+    return json(ids);
+  });
+
+  return (
+    <Panel title="资源查询">
+      <ActionRow>
+        <ActionButton label="不过滤" tone={filter === null ? 'primary' : 'secondary'} onPress={() => selectFilter(null)} />
+        {FILTERS.map(operator => <ActionButton key={operator} label={operator} tone={filter === operator ? 'primary' : 'secondary'} onPress={() => selectFilter(operator)} />)}
+      </ActionRow>
+      {filter
+        ? (
+            <>
+              <ActionRow>
+                {fields.map(key => <ActionButton key={key} label={key} tone={field === key ? 'primary' : 'secondary'} onPress={() => selectField(key, filter)} />)}
+              </ActionRow>
+              <Field label="筛选值（JSON）" value={value} onChangeText={setValue} />
+            </>
+          )
+        : null}
+      <Field label="相册 ID" value={albumId} onChangeText={setAlbumId} />
+      <Field label="排序字段" value={sort} onChangeText={setSort} placeholder="creationTime" />
+      <DataRow label="升序" value={<Switch value={ascending} onValueChange={setAscending} accessibilityLabel="升序" />} />
+      <Field label="结果条数" value={limit} onChangeText={setLimit} keyboardType="number-pad" />
+      <Field label="跳过条数" value={offset} onChangeText={setOffset} keyboardType="number-pad" />
+      <ActionRow>
+        <ActionButton label="查询资源对象" disabled={busy} onPress={() => void read(false)} testID="media-library-next-query" />
+        <ActionButton label="查询元数据" disabled={busy} onPress={() => void read(true)} tone="secondary" />
+      </ActionRow>
+      {assets.map(({ id }, index) => <ActionButton key={id} label={`选中资源 ${index + 1}`} onPress={() => setAssetId(id)} tone="secondary" />)}
+      <ResultPanel state={action.state} />
+    </Panel>
+  );
+}
+
+const GETTERS = [
+  ['读取详细信息', 'getInfo'],
+  ['读取文件名', 'getFilename'],
+  ['读取 URI', 'getUri'],
+  ['读取媒体类型', 'getMediaType'],
+  ['读取宽度', 'getWidth'],
+  ['读取高度', 'getHeight'],
+  ['读取尺寸', 'getShape'],
+  ['读取时长', 'getDuration'],
+  ['读取创建时间', 'getCreationTime'],
+  ['读取修改时间', 'getModificationTime'],
+  ['读取 EXIF', 'getExif'],
+  ['读取地理位置', 'getLocation'],
+  ['读取收藏状态', 'getFavorite'],
+] as const;
+const IOS_GETTERS = [
+  ['读取媒体子类型', 'getMediaSubtypes'],
+  ['读取实况照片视频 URI', 'getLivePhotoVideoUri'],
+  ['查询云端存储状态', 'getIsInCloud'],
+  ['读取图片方向', 'getOrientation'],
+] as const;
+
+function AssetCard({ api, assetId, setAssetId }: { api: ModernApi } & AssetIdProps) {
+  const [favorite, setFavorite] = useState(true);
+  const [deleteIds, setDeleteIds] = useState('');
+  const action = useAsyncResult();
+  const busy = action.state.phase === 'running';
+  const asset = () => new api.Asset(assetId);
+  const getters = Platform.OS === 'ios' ? [...GETTERS, ...IOS_GETTERS] : GETTERS;
+
+  return (
+    <Panel title="资源详情">
+      <Field label="资源 ID" value={assetId} onChangeText={setAssetId} />
+      <ActionRow>
+        {getters.map(([label, method]) => (
+          <ActionButton key={method} label={label} disabled={busy || !assetId} onPress={() => void action.run(async () => json(await asset()[method]()))} tone="secondary" />
         ))}
-        <Field label="相册名称" onChangeText={setTitle} testID="media-library-title" value={title} />
+        <ActionButton label="查询所在相册" disabled={busy || !assetId} onPress={() => void action.run(async () => json((await asset().getAlbums()).map(({ id }) => ({ id }))))} tone="secondary" />
+      </ActionRow>
+      <DataRow label="收藏" value={<Switch value={favorite} onValueChange={setFavorite} accessibilityLabel="收藏" />} />
+      <ActionRow>
+        <ActionButton
+          label="设置收藏状态"
+          disabled={busy || !assetId}
+          onPress={() => void action.run(async () => {
+            await asset().setFavorite(favorite);
+            return favorite ? '已收藏' : '已取消收藏';
+          })}
+        />
+        <ActionButton
+          label="删除当前资源"
+          disabled={busy || !assetId}
+          onPress={() => void action.run(async () => {
+            await asset().delete();
+            setAssetId('');
+            return '已删除资源';
+          })}
+          tone="danger"
+        />
+      </ActionRow>
+      <Field label="批量删除的资源 ID（逗号分隔）" value={deleteIds} onChangeText={setDeleteIds} />
+      <ActionButton
+        label="删除指定资源"
+        disabled={busy || !listIds(deleteIds).length}
+        onPress={() => void action.run(async () => {
+          const ids = listIds(deleteIds);
+          await api.Asset.delete(ids.map(id => new api.Asset(id)));
+          if (ids.includes(assetId)) setAssetId('');
+          setDeleteIds('');
+          return '已删除指定资源';
+        })}
+        tone="danger"
+      />
+      <ResultPanel state={action.state} />
+    </Panel>
+  );
+}
+
+function AlbumCard({ api, assetId, setAssetId, albumId, setAlbumId }: {
+  api: ModernApi;
+} & AssetIdProps & AlbumIdProps) {
+  const [title, setTitle] = useState('相机');
+  const [memberIds, setMemberIds] = useState('');
+  const action = useAsyncResult();
+  const busy = action.state.phase === 'running';
+  const album = () => new api.Album(albumId);
+  const members = () => listIds(memberIds || assetId).map(id => new api.Asset(id));
+
+  return (
+    <Panel title="相册详情">
+      <Field label="相册名称" value={title} onChangeText={setTitle} />
+      <ActionRow>
+        <ActionButton label="列出相册" disabled={busy} onPress={() => void action.run(async () => json((await api.Album.getAll()).map(({ id }) => ({ id }))))} />
+        <ActionButton
+          label="按名称查询相册"
+          disabled={busy || !title}
+          onPress={() => void action.run(async () => {
+            const found = await api.Album.get(title);
+            if (found) setAlbumId(found.id);
+            return json(found ? { id: found.id } : null);
+          })}
+          tone="secondary"
+        />
+      </ActionRow>
+      <Field label="相册 ID" value={albumId} onChangeText={setAlbumId} />
+      <ActionRow>
+        <ActionButton label="读取相册名称" disabled={busy || !albumId} onPress={() => void action.run(async () => await album().getTitle())} tone="secondary" />
+        <ActionButton
+          label="读取相册资源"
+          disabled={busy || !albumId}
+          onPress={() => void action.run(async () => {
+            const result = await album().getAssets();
+            if (result[0]) setAssetId(result[0].id);
+            return json(result.map(({ id }) => ({ id })));
+          })}
+          tone="secondary"
+        />
+      </ActionRow>
+      <Field label="资源 ID（逗号分隔）" value={memberIds} onChangeText={setMemberIds} placeholder={assetId} />
+      <ActionRow>
+        <ActionButton
+          label="加入相册"
+          disabled={busy || !albumId || !listIds(memberIds || assetId).length}
+          onPress={() => void action.run(async () => {
+            const assets = members();
+            await album().add(assets.length === 1 ? assets[0]! : assets);
+            return '资源已加入相册';
+          })}
+        />
+        <ActionButton
+          label="移出相册"
+          disabled={busy || !albumId || !listIds(memberIds || assetId).length}
+          onPress={() => void action.run(async () => {
+            await album().removeAssets(members());
+            return '资源已移出相册';
+          })}
+          tone="secondary"
+        />
+      </ActionRow>
+      <ResultPanel state={action.state} />
+    </Panel>
+  );
+}
+
+export function MediaLibraryDemo() {
+  const [modern, setModern] = useState<ModernApi>();
+  const [legacy, setLegacy] = useState(true);
+  const [assetId, setAssetId] = useState('');
+  const [albumId, setAlbumId] = useState('');
+  const action = useAsyncResult();
+  const busy = action.state.phase === 'running';
+  const api = legacy ? Legacy : modern ?? Legacy;
+  const assetProps = { assetId, setAssetId };
+  const albumProps = { albumId, setAlbumId };
+
+  return (
+    <>
+      <Panel title="媒体库接口">
         <ActionRow>
-          <ActionButton disabled={busy} label="按名称查询" onPress={() => void collection.run(async () => json(await MediaLibrary.getAlbumAsync(title)))} testID="media-library-find-album" tone="secondary" />
-          <ActionButton disabled={busy || !latest || !album} label="加入最新图片" onPress={() => void membership(false)} testID="media-library-add" tone="secondary" />
-          <ActionButton disabled={busy || !latest || !album} label="移除最新图片" onPress={() => void membership(true)} testID="media-library-remove" tone="secondary" />
+          <ActionButton
+            label="默认接口"
+            disabled={busy || Platform.OS === 'web'}
+            tone={!legacy ? 'primary' : 'secondary'}
+            onPress={() => {
+              if (modern) setLegacy(false);
+              else void action.run(async () => {
+                setModern(await import('expo-media-library'));
+                setLegacy(false);
+                return '默认接口已加载';
+              });
+            }}
+          />
+          <ActionButton label="旧版接口" disabled={busy} tone={legacy ? 'primary' : 'secondary'} onPress={() => setLegacy(true)} />
         </ActionRow>
-        <Note>HarmonyOS 仅支持修改已有用户相册的成员，不提供创建或删除相册的公开接口。</Note>
-        <ResultPanel state={collection.state} />
+        {action.state.phase === 'error' ? <ResultPanel state={action.state} /> : null}
       </Panel>
+      <MediaLibraryCards key={legacy ? 'legacy' : 'modern'} api={api} {...assetProps} {...albumProps} />
+    </>
+  );
+}
 
-      <Panel eyebrow="事件" title="图库变更监听">
-        <DataRow label="事件次数" value={events} />
-        <ActionButton disabled={busy} label={listening ? '停止监听' : '开始监听'} onPress={() => void observe()} testID="media-library-observe" />
-        {event ? <DataRow label="最近事件" value={json(event)} /> : null}
-        <ResultPanel state={observer.state} />
-      </Panel>
-
-      <Panel eyebrow="接口验证" title="分页边界与平台限制">
-        <ActionButton disabled={busy} label="验证接口边界" onPress={() => void verify()} testID="media-library-verify" />
-        <Note>先授予读写权限，再验证非法页大小、空页和 HarmonyOS 的音频与相册限制。</Note>
-        <ResultPanel state={checks.state} />
-      </Panel>
+function MediaLibraryCards({ api, ...props }: { api: MediaApi } & AssetIdProps & AlbumIdProps) {
+  return (
+    <>
+      <MediaPermissionsCard api={api} />
+      <MediaImportCard api={api} {...props} />
+      {!('Asset' in api)
+        ? (
+            <>
+              <LegacyQueryCard {...props} />
+              <LegacyAssetCard {...props} />
+              <LegacyAlbumCard {...props} />
+            </>
+          )
+        : (
+            <>
+              <QueryCard api={api} {...props} />
+              <AssetCard api={api} {...props} />
+              <AlbumCard api={api} {...props} />
+            </>
+          )}
+      <MediaEventsCard api={api} />
     </>
   );
 }

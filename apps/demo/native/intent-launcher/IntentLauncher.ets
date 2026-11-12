@@ -52,10 +52,7 @@ struct IntentLauncherPage {
   build() {
     Scroll() {
       Column({ space: 16 }) {
-        Text('INTENT LAUNCHER').fontSize(12).fontColor('#667085')
-        Text('原生结果回传').fontSize(28).fontWeight(FontWeight.Bold)
-        Text('返回结果将原样回传收到的 URI 和参数，结果码为 42；取消只返回结果码 0。')
-          .fontSize(14).fontColor('#667085')
+        Text('收到的启动参数').fontSize(28).fontWeight(FontWeight.Bold)
         Text(JSON.stringify(this.want, null, 2)).fontSize(12).width('100%')
         Button('返回结果').width('100%').backgroundColor('#007AFF').enabled(!this.pending)
           .onClick(() => this.finish(false))

@@ -5,35 +5,68 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { isRunningInExpoGo, reloadAppAsync } from 'expo';
+import { EventEmitter, getExpoGoProjectConfig, isRunningInExpoGo, reloadAppAsync, useEvent, useEventListener } from 'expo';
 import { router } from 'expo-router';
-import { showcaseModule } from '../../modules/expo-module-showcase';
+import { useState } from 'react';
+
 import { json } from '../format';
-import { ActionButton, DataRow, Note, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { ActionButton, DataRow, Field, Panel, ResultPanel, useAsyncResult } from '../ui';
+
+type Events = { message: (value: string) => void };
 
 export function ExpoDemo() {
   const action = useAsyncResult();
+  const reload = useAsyncResult();
+  const [reason, setReason] = useState('Expo demo');
+  const [initialValue, setInitialValue] = useState('等待消息');
+  const [message, setMessage] = useState('你好');
+  const [emitter] = useState(() => new EventEmitter<Events>());
 
   return (
     <>
-      <Panel eyebrow="EXPO 宿主" title="运行环境与生命周期">
-        <DataRow label="运行于 Expo Go" value={String(isRunningInExpoGo())} />
-        <Note>将应用切到后台再返回，可读取 demo 模块收到的生命周期次数。重新加载会重建 React 实例和页面。</Note>
-        <ActionButton disabled={!showcaseModule} label="读取模块生命周期" onPress={() => void action.run(() => json(showcaseModule!.getLifecycleSnapshot()))} />
+      <Panel title="Expo Go">
+        <DataRow label="isRunningInExpoGo()" value={String(isRunningInExpoGo())} />
+        <ActionButton label="getExpoGoProjectConfig()" onPress={() => void action.run(() => json(getExpoGoProjectConfig()))} />
         <ResultPanel state={action.state} />
       </Panel>
-      <Panel eyebrow="官方 EXPO API" title="宿主重载与网络请求">
+      <Panel title="事件 Hooks">
+        <Field label="initialValue" value={initialValue} onChangeText={setInitialValue} />
+        <Field label="message" value={message} onChangeText={setMessage} />
+        <ActionButton label="发送 message 事件" onPress={() => emitter.emit('message', message)} />
+        <EventValues key={initialValue} emitter={emitter} initialValue={initialValue} />
+      </Panel>
+      <Panel title="重新加载应用">
+        <Field label="reason" value={reason} onChangeText={setReason} />
         <ActionButton
-          label="通过 Expo 重载"
-          onPress={() => void action.run(async () => {
-            await reloadAppAsync('Expo demo reload');
-
-            return '已请求重载';
+          label="reloadAppAsync()"
+          disabled={reload.state.phase === 'running'}
+          onPress={() => void reload.run(async () => {
+            await reloadAppAsync(reason || undefined);
+            return '正在重新加载';
           })}
           testID="expo-reload"
         />
-        <ActionButton label="打开 Fetch 测试" onPress={() => router.push('/module/fetch')} tone="secondary" />
+        <ResultPanel state={reload.state} />
       </Panel>
+      <Panel title="expo/fetch">
+        <ActionButton label="打开网络请求示例" onPress={() => router.push('/module/fetch')} tone="secondary" />
+      </Panel>
+    </>
+  );
+}
+
+function EventValues({ emitter, initialValue }: {
+  emitter: InstanceType<typeof EventEmitter<Events>>;
+  initialValue: string;
+}) {
+  const message = useEvent(emitter, 'message', initialValue);
+  const [count, setCount] = useState(0);
+  useEventListener(emitter, 'message', () => setCount(value => value + 1));
+
+  return (
+    <>
+      <DataRow label="useEvent()" value={message} />
+      <DataRow label="useEventListener() 收到的次数" value={count} />
     </>
   );
 }

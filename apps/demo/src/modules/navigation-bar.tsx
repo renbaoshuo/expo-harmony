@@ -6,83 +6,70 @@
  */
 
 import * as NavigationBar from 'expo-navigation-bar';
-import { useEffect } from 'react';
-import { palette } from '../theme';
-import { ActionButton, ActionRow, DataRow, Note, Panel, ResultPanel, Tag, useAsyncResult } from '../ui';
+import { useEffect, useRef, useState } from 'react';
+
 import { json } from '../format';
+import { ActionButton, ActionRow, DataRow, Panel, ResultPanel, useAsyncResult } from '../ui';
+import { Cycle, Toggle } from './visual-controls';
+
+const styles: NavigationBar.NavigationBarStyle[] = ['auto', 'inverted', 'light', 'dark'];
 
 export function NavigationBarDemo() {
   const action = useAsyncResult();
   const observedVisibility = NavigationBar.useVisibility();
+  const [style, setStyle] = useState<NavigationBar.NavigationBarStyle>('auto');
+  const [hidden, setHidden] = useState(false);
+  const [useComponent, setUseComponent] = useState(true);
+  const [listening, setListening] = useState(false);
+  const [event, setEvent] = useState<NavigationBar.NavigationBarVisibilityEvent>();
+  const changed = useRef(false);
+
+  useEffect(() => {
+    if (!listening) return;
+
+    const subscription = NavigationBar.addVisibilityListener(setEvent);
+    return () => subscription.remove();
+  }, [listening]);
 
   useEffect(() => () => {
-    void Promise.all([
-      NavigationBar.setBackgroundColorAsync(palette.canvas),
-      NavigationBar.setButtonStyleAsync('light'),
-      NavigationBar.setPositionAsync('relative'),
-      NavigationBar.setVisibilityAsync('visible'),
-    ]).catch(() => undefined);
+    if (changed.current) {
+      NavigationBar.NavigationBar.setStyle('dark');
+      NavigationBar.NavigationBar.setHidden(false);
+    }
   }, []);
 
-  const inspect = () => action.run(async () => json({
-    backgroundColor: await NavigationBar.getBackgroundColorAsync(),
-    buttonStyle: await NavigationBar.getButtonStyleAsync(),
-    position: await NavigationBar.unstable_getPositionAsync(),
-    visibility: await NavigationBar.getVisibilityAsync(),
-  }));
+  const call = (api: string, operation: () => void | Promise<void>) => void action.run(async () => {
+    changed.current = true;
+    await operation();
+    return api;
+  });
 
   return (
     <>
-      <Panel eyebrow="实时状态" title="读取 Harmony 导航栏">
-        <DataRow
-          label="可见性事件 Hook"
-          value={<Tag tone={observedVisibility === 'hidden' ? 'danger' : 'success'}>{observedVisibility ?? '加载中'}</Tag>}
-        />
-        <ActionButton
-          disabled={action.state.phase === 'running'}
-          label="读取原生状态"
-          onPress={() => void inspect()}
-          testID="navigation-bar-read"
-        />
+      {useComponent ? <NavigationBar.NavigationBar style={style} hidden={hidden} /> : null}
+      <Panel title="NavigationBar">
+        <ActionRow>
+          <Cycle label="按键颜色" value={style} choices={styles} onChange={setStyle} />
+          <Toggle label="隐藏导航栏" value={hidden} onChange={setHidden} />
+          <Toggle label="应用组件属性" value={useComponent} onChange={setUseComponent} />
+        </ActionRow>
+        {useComponent
+          ? null
+          : (
+              <ActionRow>
+                <ActionButton label="应用颜色（setStyle）" onPress={() => call('NavigationBar.setStyle', () => NavigationBar.NavigationBar.setStyle(style))} />
+                <ActionButton label="应用显隐（setHidden）" onPress={() => call('NavigationBar.setHidden', () => NavigationBar.NavigationBar.setHidden(hidden))} />
+                <ActionButton label="setStyle" onPress={() => call('setStyle', () => NavigationBar.setStyle(style))} tone="secondary" />
+                <ActionButton label="setVisibilityAsync" onPress={() => call('setVisibilityAsync', () => NavigationBar.setVisibilityAsync(hidden ? 'hidden' : 'visible'))} tone="secondary" />
+              </ActionRow>
+            )}
+        <ActionButton label="读取可见性" onPress={() => void action.run(async () => await NavigationBar.getVisibilityAsync())} testID="navigation-bar-read" tone="secondary" />
         <ResultPanel state={action.state} />
       </Panel>
-
-      <Panel eyebrow="颜色与按键" title="修改原生系统栏属性">
-        <ActionRow>
-          <ActionButton
-            label="设置主题色"
-            onPress={() => void NavigationBar.setBackgroundColorAsync(palette.signal)}
-            testID="navigation-bar-signal-color"
-          />
-          <ActionButton
-            label="恢复默认背景"
-            onPress={() => void NavigationBar.setBackgroundColorAsync(palette.canvas)}
-            tone="secondary"
-          />
-        </ActionRow>
-        <ActionRow>
-          <ActionButton label="浅色按键" onPress={() => void NavigationBar.setButtonStyleAsync('light')} />
-          <ActionButton label="深色按键" onPress={() => void NavigationBar.setButtonStyleAsync('dark')} tone="secondary" />
-        </ActionRow>
-      </Panel>
-
-      <Panel eyebrow="布局与可见性" title="演练系统栏生命周期">
-        <ActionRow>
-          <ActionButton label="显示导航栏" onPress={() => void NavigationBar.setVisibilityAsync('visible')} />
-          <ActionButton
-            label="隐藏导航栏"
-            onPress={() => void NavigationBar.setVisibilityAsync('hidden')}
-            testID="navigation-bar-hide"
-            tone="secondary"
-          />
-        </ActionRow>
-        <ActionRow>
-          <ActionButton label="相对定位" onPress={() => void NavigationBar.setPositionAsync('relative')} />
-          <ActionButton label="绝对定位" onPress={() => void NavigationBar.setPositionAsync('absolute')} tone="secondary" />
-        </ActionRow>
-        <Note>
-          绝对定位模式下 React 内容会延伸到系统栏下方。离开本页面时会自动恢复实验室默认设置。
-        </Note>
+      <Panel title="可见性变化">
+        <DataRow label="useVisibility" value={observedVisibility ?? '等待状态'} />
+        {event ? <DataRow label="最近事件" value={json(event)} /> : null}
+        <ActionButton label={listening ? '移除监听' : '监听可见性变化'} onPress={() => setListening(value => !value)} testID="navigation-bar-listen" tone="secondary" />
       </Panel>
     </>
   );
