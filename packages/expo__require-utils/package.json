@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo__require-utils",
-  "version": "55.0.8-harmony.2",
+  "version": "57.0.6-harmony.0",
   "description": "HarmonyOS port of @expo/require-utils",
   "keywords": [
     "react-native",
@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/require-utils": "55.0.8"
+    "@expo/require-utils": "57.0.6"
   },
   "engines": {
     "node": ">=20"
