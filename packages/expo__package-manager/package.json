@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo__package-manager",
-  "version": "1.10.6-harmony.2",
+  "version": "1.13.1-harmony.0",
   "description": "HarmonyOS port of @expo/package-manager",
   "keywords": [
     "react-native",
@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/package-manager": "1.10.6"
+    "@expo/package-manager": "1.13.1"
   },
   "engines": {
     "node": ">=20"
