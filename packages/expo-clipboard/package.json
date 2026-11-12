@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-clipboard",
-  "version": "55.0.17-harmony.4",
+  "version": "57.0.2-harmony.0",
   "description": "HarmonyOS port of expo-clipboard",
   "keywords": [
     "react-native",
@@ -25,27 +25,45 @@
     "prepack": "expo-harmony-module prepack"
   },
   "dependencies": {
-    "@expo-harmony/config-plugins": "workspace:*",
-    "@expo/config-plugins": "55.0.11"
+    "@expo-harmony/config-plugins": "workspace:*"
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo-clipboard": "55.0.17"
+    "expo": "~57.0.30",
+    "expo-clipboard": "57.0.2",
+    "expo-modules-core": "~57.0.23"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "@react-native-oh/react-native-harmony": "0.84.1",
-    "expo": "55.0.31",
-    "expo-clipboard": "55.0.17",
-    "expo-modules-core": "55.0.26",
+    "expo": "57.0.30",
+    "expo-clipboard": "57.0.2",
+    "expo-modules-core": "57.0.23",
     "react": "19.2.3",
-    "react-native": "0.84.1"
+    "react-native": "0.86.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "harmony": {
+    "metro": {
+      "entrypoints": [
+        {
+          "upstream": "expo-clipboard",
+          "target": "src/Clipboard.harmony.ts"
+        }
+      ],
+      "redirects": [
+        {
+          "upstream": "expo-clipboard",
+          "origin": "build/ClipboardPasteButton.js",
+          "request": "./ExpoClipboardPasteButton",
+          "target": "src/ExpoClipboardPasteButton.harmony.ts"
+        }
+      ]
+    }
   }
 }

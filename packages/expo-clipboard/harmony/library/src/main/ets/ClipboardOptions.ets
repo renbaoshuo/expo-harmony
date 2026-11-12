@@ -7,6 +7,13 @@
 
 import { ExpoModuleError, ExpoRecordShape, ExpoValueType, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
 
+export enum ContentType {
+  PlainText = 'plain-text',
+  HTML = 'html',
+  Image = 'image',
+  URL = 'url',
+}
+
 export enum StringFormat {
   PlainText = 'plainText',
   HTML = 'html',
