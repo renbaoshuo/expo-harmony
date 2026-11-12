@@ -11,5 +11,5 @@
     "target": "ES2022",
     "types": ["react"]
   },
-  "include": ["src/**/*.ts", "index.d.ts"]
+  "include": ["src/**/*.ts", "index.d.ts", "plugin/index.d.ts"]
 }

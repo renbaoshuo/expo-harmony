@@ -1,0 +1,34 @@
+/*!
+ * @expo-harmony-copyright
+ *
+ * Copyright 2026-present, Baoshuo <i@baoshuo.ren> ( https://baoshuo.ren ).
+ * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
+ */
+
+{
+  "modelVersion": "5.0.0",
+  "name": "@expo-harmony-internal/expo-status-bar",
+  "version": "55.0.6-harmony.6",
+  "description": "HarmonyOS port of expo-status-bar",
+  "keywords": [
+    "react-native",
+    "expo",
+    "expo-harmony",
+    "harmonyos"
+  ],
+  "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-status-bar#readme",
+  "repository": "https://github.com/renbaoshuo/expo-harmony",
+  "author": {
+    "name": "Baoshuo",
+    "email": "i@baoshuo.ren",
+    "url": "https://github.com/renbaoshuo"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@expo-harmony/expo-status-bar": "./library"
+  },
+  "overrides": {
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
+    "@rnoh/react-native-openharmony": "0.86.1"
+  }
+}

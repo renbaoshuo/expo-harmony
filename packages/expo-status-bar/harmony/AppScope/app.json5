@@ -1,0 +1,15 @@
+/*!
+ * @expo-harmony-copyright
+ *
+ * Copyright 2026-present, Baoshuo <i@baoshuo.ren> ( https://baoshuo.ren ).
+ * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
+ */
+
+{
+  "app": {
+    "bundleName": "dev.expo.statusbar.build",
+    "vendor": "expo-harmony",
+    "versionCode": 550006,
+    "versionName": "55.0.6-harmony.6"
+  }
+}
