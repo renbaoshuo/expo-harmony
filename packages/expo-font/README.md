@@ -1,53 +1,17 @@
 # @expo-harmony/expo-font
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-font) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/font/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-font) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/font/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Font 的原生实现，与官方同版本的 `expo-font` 配套使用。支持运行时加载和注册自定义字体、将文字渲染为图片，以及通过配置插件预先打包字体资源。
+为 HarmonyOS 上的 React Native 应用提供 Expo Font 的原生实现，与官方同版本的 `expo-font` 配套使用。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
 ```bash
-npm install @expo-harmony/expo-font expo-font@55.0.8
-```
-
-鸿蒙适配会通过 Autolinking 自动接入。最低支持 HarmonyOS 5.0.1（API 13），宿主的 `compatibleSdkVersion` 也需满足此要求。
-
-字体可以在运行时用 `Font.loadAsync` 加载，也可以在预构建时打包进应用。运行时加载不用改 `app.json`。
-
-预构建打包要在 `app.json` 的 `plugins` 中注册 `@expo-harmony/expo-font`，并启用 `@expo-harmony/prebuild-config`：
-
-```json
-{
-  "expo": {
-    "plugins": [
-      [
-        "@expo-harmony/expo-font",
-        {
-          "fonts": ["./assets/fonts/Inter-Regular.ttf"]
-        }
-      ],
-      "@expo-harmony/prebuild-config"
-    ]
-  }
-}
-```
-
-打包的字体在 JavaScript 运行前完成注册，`Font.getLoadedFonts()` 会列出它们。
-
-`fonts` 参数接受字体文件路径、目录，或 `{ fontFamily, fontDefinitions: [{ path }] }`。传入目录时，目录下的 `.ttf`、`.otf` 文件（扩展名不区分大小写）按文件名推导系列名，`_bold`、`_italic`、`_bold_italic` 后缀会去掉。同一系列只能对应一个字体文件，不支持 `weight`、`style`，权重和斜体变体要用不同的系列名区分，否则预构建报错。
-
-字体路径也可以写在官方 `expo-font` 插件的 `fonts` 参数里。注册 `@expo-harmony/expo-font` 后，插件会读取这些路径并打包到 HarmonyOS，无需重复配置：
-
-```json
-{
-  "expo": {
-    "plugins": [
-      ["expo-font", { "fonts": ["./assets/fonts/Inter-Regular.ttf"] }],
-      "@expo-harmony/expo-font",
-      "@expo-harmony/prebuild-config"
-    ]
-  }
-}
+npm install @expo-harmony/expo-font expo-font
 ```
 
 ## API 对照表
@@ -56,115 +20,151 @@ npm install @expo-harmony/expo-font expo-font@55.0.8
 
 #### `useFonts(map)`
 
-返回 `[boolean, Error | null]`。字体加载完成后第一项为 `true`，失败时第二项为错误。`map` 是单个系列名，或名称到字体资源的映射。运行时改变传入的映射不会重新加载。
+`map` 是字体系列名到 `FontSource` 的映射。返回 `[loaded, error]`：字体加载完成后 `loaded` 为 `true`；加载失败时 `error` 为错误，否则为 `null`。组件挂载后修改 `map` 不会触发重新加载。
 
 ### Methods
 
 #### `Font.loadAsync(fontFamilyOrFontMap, source?)`
 
-返回 `Promise<void>`，注册字体系列。第一个参数是名称到字体资源的映射，也可以是单个名称，此时由第二个参数给出资源。
+返回 `Promise<void>`，用于加载并注册字体。`fontFamilyOrFontMap` 可以是字体系列名到字体源的映射；也可以是单个字体系列名，此时用 `source` 提供字体源。
 
-字体源可以是 `require('...')` 返回的资源模块 ID、远程 `http`、`https` 地址，或应用沙箱内的本地 `file://` 地址。打包资源以 `asset://` 地址传入时按应用内资源处理，文件名按字面读取，`%`、`#`、`?` 不会被解码或截断。远程地址在 JavaScript 层通过 `expo-asset` 下载到缓存目录，再交给本模块注册，需要应用具备 `ohos.permission.INTERNET` 权限。本地 `file://` 地址默认限于应用沙箱，沙箱外的文件要有文件访问授权才能读取。字体文件须在 1 字节到 32 MB 之间。
+字体源可为 `require()` 返回的资源模块 ID、Expo Asset、应用内打包资源，或远程 `http://`、`https://` 与本地 `file://` 地址。`rawfile://` 地址中的特殊字符须使用 URL 转义。远程地址需要 `ohos.permission.INTERNET`；本地文件默认限于应用沙箱，沙箱外的文件需要访问授权。字体文件大小须在 1 字节到 32 MiB 之间。
 
-系列已注册时再次调用直接返回，不比较资源。配置插件打包的系列在启动时已经注册，运行时用同名加载会被跳过。系统对动态注册字体的承诺范围是 `Text` 组件，`TextInput` 等其他组件上不保证生效。
+同一系列名和同一字体文件重复加载不会再次注册。预打包字体在应用启动时注册；动态加载的字体可用于 `Text`，在 `TextInput` 等其他组件上的效果不保证。
 
-加载方式随 HarmonyOS SDK 版本变化：
-
-- API 23 及以上异步加载，并校验字体文件，文件缺失、损坏、为空等情况会给出具体错误。
-- API 18 到 22 异步加载，不校验字体文件内容。
-- API 13 到 17 没有异步加载接口，注册在调用时同步完成。
+字体注册方式随 HarmonyOS SDK 版本变化：API 23 及以上异步加载并校验字体文件；API 18 至 22 异步加载但不校验文件内容；API 13 至 17 在调用时同步注册。
 
 #### `Font.getLoadedFonts()`
 
-返回 `string[]`，已注册的字体系列名称，按字母顺序排列。包含配置插件在启动时打包的字体和运行时加载的字体，不包含系统字体。
+返回按字母顺序排列的 `string[]`，包含预打包和运行时加载的字体系列名，不包含系统字体或通过其他接口注册的字体。
 
 #### `Font.isLoaded(fontFamily)`
 
-返回 `boolean`，字体系列是否已完成加载。
+返回 `boolean`，表示 `fontFamily` 是否已加载。
 
 #### `Font.isLoading(fontFamily)`
 
-返回 `boolean`，字体系列是否正在加载。一次 `loadAsync` 尚未完成时返回 `true`。
+返回 `boolean`，表示 `fontFamily` 是否仍在加载。
 
 #### `Font.renderToImageAsync(glyphs, options?)`
 
-返回 `Promise<RenderToImageResult>`，把文本渲染成 PNG 图片并写入应用缓存目录，`uri` 指向该文件。官方标记为 Android 和 iOS 专属接口，在 HarmonyOS 上可用。
+将 `glyphs` 渲染为 PNG 图片并写入应用缓存目录，返回 `Promise<RenderToImageResult>`。字号和行高必须为有限正数；设置 `lineHeight` 后，额外行距会均分到文字上下。多行文本的换行由系统处理。
 
-文本不超过 10 万个 UTF-16 码元，图片单边不超过 8192 像素，RGBA 像素缓冲区不超过 64 MiB。`size` 或 `lineHeight` 不是有限正数、缩放到物理像素后超过 8192、行高比例溢出或文本渲染结果为空时拒绝。设置 `lineHeight` 后将额外行距均分到文字上下。多行文本沿用系统段落的换行处理，跨平台输出不保证一致。
+#### `Font.unloadAsync(fontFamilyOrFontMap, options?)`
 
-> **未实现的内容**
->
-> - `Font.unloadAsync()`、`Font.unloadAllAsync()`：注册后的字体在应用运行期间保持可用，模块不提供注销接口，调用抛出 `UnavailabilityError`。
+- HarmonyOS 不支持注销已加载的字体，调用会失败。
 
-### Interfaces
+#### `Font.unloadAllAsync()`
 
-#### `RenderToImageOptions`
-
-| 属性         | 类型     | 说明                                    |
-| ------------ | -------- | --------------------------------------- |
-| `fontFamily` | `string` | 字体系列，默认系统字体                  |
-| `size`       | `number` | 字号，单位 dp，默认 24                  |
-| `color`      | `string` | 文字颜色，默认黑色                      |
-| `lineHeight` | `number` | 行高，单位 dp，不设置时使用字体默认行高 |
-
-#### `RenderToImageResult`
-
-| 属性     | 类型     | 说明                                |
-| -------- | -------- | ----------------------------------- |
-| `uri`    | `string` | 图片的 `file://` 地址               |
-| `width`  | `number` | 图片宽度，单位 dp                   |
-| `height` | `number` | 图片高度，单位 dp                   |
-| `scale`  | `number` | 缩放系数，dp 尺寸乘以它得到像素尺寸 |
+- HarmonyOS 不支持注销已加载的字体，调用会失败。
 
 ### Types
 
 #### `FontSource`
 
-`string | number | Asset | FontResource`。字符串按字体地址解析，数字按 `require` 的资源模块 ID 解析。
+`string | number | Asset | FontResource`。字符串表示字体地址，数字表示资源模块 ID，`Asset` 和 `FontResource` 表示字体资源。
 
 #### `FontResource`
 
-| 属性         | 类型               | 说明                                              |
-| ------------ | ------------------ | ------------------------------------------------- |
-| `uri`        | `string \| number` | 字体资源                                          |
-| `default`    | `string`           | 仅在 Web 上作为地址的备用来源，HarmonyOS 上不生效 |
-| `display`    | `FontDisplay`      | 官方标记为 Web 专属，HarmonyOS 上不生效           |
-| `testString` | `string`           | 官方标记为 Web 专属，HarmonyOS 上不生效           |
+| 属性 | 类型 | HarmonyOS 行为 |
+| --- | --- | --- |
+| `uri?` | `string \| number` | 字体资源地址或模块 ID |
 
-> **未实现的内容**
->
-> - `UnloadFontOptions`：配合 `unloadAsync()` 使用，HarmonyOS 上没有对应的注销接口。
+- `default`、`display`、`testString`：HarmonyOS 不使用这些字段控制字体加载。
+
+#### `UnloadFontOptions`
+
+卸载字体时使用的选项类型，为 `{ display?: FontDisplay }`。
+
+- HarmonyOS 不支持注销已加载字体，因此此类型没有可用的操作。
+
+#### `RenderToImageOptions`
+
+| 属性 | 类型 | HarmonyOS 行为 |
+| --- | --- | --- |
+| `fontFamily` | `string` | 字体系列名；默认使用系统字体 |
+| `size` | `number` | 字号，单位 dp；默认 `24` |
+| `color` | `string` | 文字颜色；默认黑色 |
+| `lineHeight` | `number` | 行高，单位 dp；不设置时使用字体默认行高 |
+
+#### `RenderToImageResult`
+
+| 属性 | 类型 | HarmonyOS 行为 |
+| --- | --- | --- |
+| `uri` | `string` | 生成图片的 `file://` 地址 |
+| `width` | `number` | 图片宽度，单位 dp |
+| `height` | `number` | 图片高度，单位 dp |
+| `scale` | `number` | 缩放系数；dp 尺寸乘以该值即为像素尺寸 |
 
 ### Enums
 
 #### `FontDisplay`
 
-| 成员       | 值           |
-| ---------- | ------------ |
-| `AUTO`     | `'auto'`     |
-| `BLOCK`    | `'block'`    |
+| 成员 | 值 |
+| --- | --- |
+| `AUTO` | `'auto'` |
+| `BLOCK` | `'block'` |
 | `FALLBACK` | `'fallback'` |
 | `OPTIONAL` | `'optional'` |
-| `SWAP`     | `'swap'`     |
+| `SWAP` | `'swap'` |
 
-控制 Web 上的 `font-display` 策略。HarmonyOS 上设置后没有效果，字体加载策略由系统决定。
+- HarmonyOS 不提供字体显示策略；这些枚举值不改变字体加载行为。
 
 ### Error codes
 
-| 错误码                      | 说明                                               |
-| --------------------------- | -------------------------------------------------- |
-| `ERR_FONT_API`              | `loadAsync` 参数组合不合法                         |
-| `ERR_FONT_SOURCE`           | 字体资源类型不正确，或地址无效、文件不存在、为空   |
-| `ERR_FONT_SOURCE_TOO_LARGE` | 字体文件超过 32 MB                                 |
-| `ERR_DOWNLOAD`              | 远程字体资源下载失败                               |
-| `ERR_FONT_FAMILY`           | 字体系列名称不合法                                 |
-| `ERR_FONT_RENDER_OPTIONS`   | `renderToImageAsync` 参数取值不合法                |
-| `ERR_FONT_RENDER_TOO_LARGE` | 文本或图片超出渲染上限                             |
-| `ERR_FONT_RENDER_EMPTY`     | 文本渲染结果为空                                   |
+#### `ERR_FONT_API`
 
-> **未实现的内容**
->
-> - `ERR_WEB_ENVIRONMENT`、`ERR_UNLOAD`：分别只在 Web 和字体注销场景下出现，HarmonyOS 上没有对应的功能。
+`loadAsync` 的参数组合无效，例如同时提供字体映射和第二个参数。
+
+#### `ERR_FONT_SOURCE`
+
+字体源缺失、类型或地址无效，或字体文件不存在、为空。
+
+#### `ERR_FONT_SOURCE_OUTSIDE_SANDBOX`
+
+本地字体文件位于应用沙箱外，且没有相应的文件访问授权。
+
+#### `ERR_FONT_SOURCE_TOO_LARGE`
+
+字体文件超过 32 MiB。
+
+#### `ERR_DOWNLOAD`
+
+远程字体资源下载失败。
+
+#### `ERR_FONT_FAMILY`
+
+字体系列名为空。
+
+#### `ERR_FONT_RENDER_OPTIONS`
+
+字号、行高或颜色参数无效。
+
+#### `ERR_INVALID_ARGUMENT_TYPE`
+
+渲染参数的类型不符合要求。
+
+#### `ERR_FONT_RENDER`
+
+系统无法完成文字渲染。
+
+#### `ERR_FONT_RENDER_TOO_LARGE`
+
+文本或生成图片超出渲染上限。
+
+#### `ERR_FONT_RENDER_EMPTY`
+
+文本渲染结果为空。
+
+#### `ERR_FONT_RENDER_WRITE`
+
+无法将生成的图片写入应用缓存目录。
+
+### Permissions
+
+#### `ohos.permission.INTERNET`
+
+加载远程 HTTP(S) 字体资源需要此权限。
 
 ## Author
 

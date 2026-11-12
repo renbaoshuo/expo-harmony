@@ -9,19 +9,19 @@
 
 const fs = require('node:fs');
 const { createHash } = require('node:crypto');
+const { createRequire } = require('node:module');
 const path = require('node:path');
 
 const { createRunOncePlugin } = require('@expo/config-plugins');
 const {
   HarmonyConfigPluginError,
-  atomicWrite,
-  recordManagedFile,
-  registerHarmonyConfigPlugin,
   stableHarmonyJson,
-  withHarmonyDangerousMod,
+  withRawfile,
 } = require('@expo-harmony/config-plugins');
 
 const pkg = require('../package.json');
+const maxFontBytes = 32 * 1024 * 1024;
+const fontExtensions = new Set(['.ttf', '.otf']);
 
 class ExpoFontPluginError extends HarmonyConfigPluginError {
   constructor(message, options = {}) {
@@ -121,15 +121,23 @@ function fontEntries(config, props) {
   return entries;
 }
 
-async function expandFontEntriesAsync(root, entries) {
+function expandFontEntries(root, entries) {
   const fonts = [];
+  const requireFromProject = createRequire(path.join(root, 'package.json'));
 
   for (const font of entries) {
-    const source = path.resolve(root, font.source);
+    let source = path.resolve(root, font.source);
     let stat;
 
     try {
-      stat = await fs.promises.stat(source);
+      try {
+        stat = fs.statSync(source);
+      } catch (cause) {
+        if (cause.code !== 'ENOENT') throw cause;
+        // Match Expo's package-style paths, resolved from the host application.
+        source = requireFromProject.resolve(font.source);
+        stat = fs.statSync(source);
+      }
     } catch (cause) {
       throw new ExpoFontPluginError(`Harmony font input does not exist: ${source}`, {
         cause,
@@ -145,15 +153,14 @@ async function expandFontEntriesAsync(root, entries) {
         );
       }
 
-      const children = (await fs.promises.readdir(source, { withFileTypes: true }))
-        .filter(child => child.isFile() && ['.ttf', '.otf'].includes(path.extname(child.name).toLowerCase()))
-        .sort((left, right) => left.name.localeCompare(right.name, 'en'));
+      const children = fs.readdirSync(source, { withFileTypes: true })
+        .filter(child => child.isFile() && fontExtensions.has(path.extname(child.name).toLowerCase()));
 
       for (const child of children) {
         const file = path.join(source, child.name);
         fonts.push({
           family: fontFamilyFromFilename(file),
-          source: await fs.promises.realpath(file),
+          source: fs.realpathSync(file),
         });
       }
 
@@ -169,7 +176,7 @@ async function expandFontEntriesAsync(root, entries) {
     fonts.push({
       ...font,
       family: font.family ?? fontFamilyFromFilename(source),
-      source: await fs.promises.realpath(source),
+      source: fs.realpathSync(source),
     });
   }
 
@@ -185,12 +192,7 @@ async function expandFontEntriesAsync(root, entries) {
   });
 }
 
-async function writeFontResourcesAsync(project, config, props) {
-  const root = path.join(project, 'harmony/entry/src/main/resources/rawfile');
-  const directory = path.join(root, 'fonts');
-  const manifest = path.join(root, 'expo-fonts.json');
-
-  const entries = await expandFontEntriesAsync(project, fontEntries(config, props));
+function fontResources(entries) {
   const sources = new Map();
 
   for (const entry of entries) {
@@ -205,91 +207,59 @@ async function writeFontResourcesAsync(project, config, props) {
     sources.set(entry.family, entry.source);
   }
 
+  const files = {};
   const records = [];
+
   for (const entry of entries) {
     const ext = path.extname(entry.source).toLowerCase();
-    if (!['.ttf', '.otf'].includes(ext)) {
+    if (!fontExtensions.has(ext)) {
       throw new ExpoFontPluginError(`Unsupported Harmony font file: ${entry.source}`, {
         file: entry.source,
       });
     }
 
-    const data = await fs.promises.readFile(entry.source);
-    if (data.length === 0) {
-      throw new ExpoFontPluginError(`Harmony font file is empty: ${entry.source}`, {
+    if (fs.statSync(entry.source).size > maxFontBytes) {
+      throw new ExpoFontPluginError(`Harmony font file exceeds ${maxFontBytes} bytes: ${entry.source}`, {
+        file: entry.source,
+      });
+    }
+
+    const data = fs.readFileSync(entry.source);
+    if (data.length === 0 || data.length > maxFontBytes) {
+      throw new ExpoFontPluginError(`Harmony font files must contain between 1 and ${maxFontBytes} bytes: ${entry.source}`, {
         file: entry.source,
       });
     }
 
     const digest = createHash('sha256').update(data).digest('hex');
-    const stem = entry.family.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-|-$/g, '')
-      || 'font';
-    const name = `${stem}-${digest.slice(0, 16)}${ext}`;
+    const file = `fonts/font-${digest}${ext}`;
 
-    await fs.promises.mkdir(directory, { recursive: true });
-    await atomicWrite(path.join(directory, name), data);
-
+    files[file] ??= { content: data };
     records.push({
       family: entry.family,
-      file: `fonts/${name}`,
+      file,
       sha256: digest,
       size: data.length,
     });
   }
 
-  let stale = [];
+  files['expo-fonts.json'] = { content: stableHarmonyJson({ fonts: records }) };
 
-  try {
-    const value = JSON.parse(await fs.promises.readFile(manifest, 'utf8'));
-    stale = Array.isArray(value.fonts) ? value.fonts.map(font => font?.file).filter(Boolean) : [];
-  } catch (cause) {
-    if (cause.code !== 'ENOENT' && !(cause instanceof SyntaxError)) {
-      throw new ExpoFontPluginError(`Unable to read the Harmony font manifest: ${manifest}`, {
-        cause,
-        file: manifest,
-      });
-    }
-  }
-
-  await fs.promises.mkdir(root, { recursive: true });
-  await atomicWrite(manifest, stableHarmonyJson({ fonts: records }));
-
-  const current = new Set(records.map(record => record.file));
-  for (const relative of stale) {
-    if (!/^fonts\/[A-Za-z0-9._-]+\.(?:ttf|otf)$/i.test(relative) || current.has(relative)) {
-      continue;
-    }
-
-    const file = path.join(root, relative);
-
-    try {
-      await fs.promises.unlink(file);
-    } catch (cause) {
-      if (cause.code !== 'ENOENT') {
-        throw new ExpoFontPluginError(`Unable to remove stale Harmony font: ${file}`, {
-          cause,
-          file,
-        });
-      }
-    }
-  }
-
-  return [manifest, ...records.map(record => path.join(root, record.file))];
+  return files;
 }
 
 const withHarmonyFonts = (config, props) => {
   const enabled = config.harmony?.bundleName || config.platforms?.includes('harmony');
   if (!enabled) return config;
 
-  const registered = registerHarmonyConfigPlugin(config, pkg.name);
+  const entries = fontEntries(config, props);
+  const root = config._internal?.projectRoot;
+  if (entries.length > 0 && !root) {
+    throw new ExpoFontPluginError('Expo Font requires an Expo project root to resolve Harmony fonts.');
+  }
 
-  return withHarmonyDangerousMod(registered, async (mod) => {
-    const files = await writeFontResourcesAsync(mod.modRequest.projectRoot, registered, props);
-
-    for (const file of files) recordManagedFile(mod, file, pkg.name);
-
-    return mod;
-  });
+  const files = fontResources(entries.length > 0 ? expandFontEntries(root, entries) : []);
+  return withRawfile(config, { owner: pkg.name, files });
 };
 
 module.exports = createRunOncePlugin(withHarmonyFonts, pkg.name, pkg.version);
