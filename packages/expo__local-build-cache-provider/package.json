@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo__local-build-cache-provider",
-  "version": "55.0.16-harmony.2",
+  "version": "57.0.9-harmony.0",
   "description": "HarmonyOS port of @expo/local-build-cache-provider",
   "keywords": [
     "react-native",
@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/local-build-cache-provider": "55.0.16"
+    "@expo/local-build-cache-provider": "57.0.9"
   },
   "engines": {
     "node": ">=20"
