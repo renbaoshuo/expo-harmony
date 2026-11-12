@@ -7,7 +7,6 @@
 
 import { ExpoSharedRef, ExpoView, ExpoViewContext, ExpoViewContentContext } from '@expo-harmony/expo-modules-core';
 import { image } from '@kit.ImageKit';
-import { display } from '@kit.ArkUI';
 import {
   ExpoImageLease,
   ExpoImageLoadCancellation,
@@ -39,7 +38,7 @@ export interface ImageViewProps {
   contentPosition?: ContentPosition | null;
   blurRadius?: number | null;
   transition?: TransitionOptions | null;
-  tintColor?: ESObject;
+  tintColor?: number | string | null;
   accessible?: boolean;
   accessibilityLabel?: string;
   focusable?: boolean;
@@ -108,8 +107,8 @@ class ImageLoadSourcePayload {
   readonly mediaType: string | null;
   readonly isAnimated: boolean;
 
-  constructor(resource: ExpoImageResource) {
-    this.url = resource.uri;
+  constructor(resource: ExpoImageResource, url: string) {
+    this.url = url;
     this.width = resource.width;
     this.height = resource.height;
     this.mediaType = resource.mediaType;
@@ -121,11 +120,11 @@ class ImageLoadPayload {
   readonly cacheType: string;
   readonly source: ImageLoadSourcePayload;
 
-  constructor(lease: ExpoImageLease) {
+  constructor(lease: ExpoImageLease, url: string) {
     this.cacheType = lease.cacheType;
 
     const resource = lease.resource;
-    this.source = new ImageLoadSourcePayload(resource);
+    this.source = new ImageLoadSourcePayload(resource, url);
   }
 }
 
@@ -198,32 +197,37 @@ export class ExpoImageView extends ExpoView {
   private previousLayer?: ExpoImageLayer;
   private currentPlaceholder: boolean = false;
   private previous?: ExpoImageLease;
-  private width: number = 0;
-  private height: number = 0;
+  private pixelWidth: number = 0;
+  private pixelHeight: number = 0;
   private generation: number = 0;
   private releaseTimer?: number;
   private locked: boolean = false;
   private destroyed: boolean = false;
   private backgrounded: boolean = false;
   private signature: string = '';
+  private reloadPending: boolean = false;
   private recycling?: string | null;
   private playing: boolean = true;
   private autoplay: boolean = true;
   private displayId: number = 0;
   private readonly acquireRef: (ref: ExpoSharedRef<image.PixelMap>) => Promise<ExpoImageLease>;
+  private readonly imageLoaded: (url: string, pixel: image.PixelMap) => void;
   private sourceRef?: ExpoSharedRef<image.PixelMap>;
   private displayedId?: number;
   private sourceCancel?: ExpoImageLoadCancellation;
   private placeholderCancel?: ExpoImageLoadCancellation;
+  private displayedPlaceholder?: string;
 
   constructor(
     context: ExpoViewContext,
     repository: ExpoImageRepository,
     acquireRef: (ref: ExpoSharedRef<image.PixelMap>) => Promise<ExpoImageLease>,
+    imageLoaded: (url: string, pixel: image.PixelMap) => void,
   ) {
     super(context);
     this.repository = repository;
     this.acquireRef = acquireRef;
+    this.imageLoaded = imageLoaded;
   }
 
   setRenderHandler(handler?: RenderHandler): void {
@@ -232,22 +236,20 @@ export class ExpoImageView extends ExpoView {
     if (handler !== undefined) handler(this.snapshot());
   }
 
-  setSize(width: number, height: number): void {
-    const nextWidth = Math.max(0, width);
-    const nextHeight = Math.max(0, height);
+  setPixelSize(width: number, height: number): void {
+    const w = Math.max(0, width);
+    const h = Math.max(0, height);
 
-    if (Math.abs(nextWidth - this.width) < 0.5 && Math.abs(nextHeight - this.height) < 0.5) return;
+    if (!Number.isFinite(w) || !Number.isFinite(h)) return;
+    if (Math.abs(w - this.pixelWidth) < 0.5 && Math.abs(h - this.pixelHeight) < 0.5) return;
 
-    this.width = nextWidth;
-    this.height = nextHeight;
+    this.pixelWidth = w;
+    this.pixelHeight = h;
 
     void this.reload(false);
   }
 
   commitProps(): void {
-    if (this.recycling !== this.props.recyclingKey) this.clearDisplayed();
-    this.recycling = this.props.recyclingKey;
-
     if (this.autoplay !== (this.props.autoplay !== false)) {
       this.autoplay = this.props.autoplay !== false;
       this.playing = this.currentPlaceholder || this.autoplay;
@@ -258,11 +260,8 @@ export class ExpoImageView extends ExpoView {
       source: ref === undefined ? this.props.source : null,
       placeholder: this.props.placeholder,
       contentFit: this.props.contentFit,
-      placeholderContentFit: this.props.placeholderContentFit,
-      contentPosition: this.props.contentPosition,
       cachePolicy: this.props.cachePolicy,
       allowDownscaling: this.props.allowDownscaling,
-      autoplay: this.props.autoplay,
       decodeFormat: this.props.decodeFormat,
       recyclingKey: this.props.recyclingKey,
       priority: this.props.priority,
@@ -279,8 +278,9 @@ export class ExpoImageView extends ExpoView {
     if (changed) {
       this.signature = signature;
       this.sourceRef = ref;
-      void this.reload(false);
+      this.reloadPending = true;
     }
+    if (this.reloadPending) void this.reload(false);
   }
 
   async startAnimating(): Promise<void> {
@@ -344,22 +344,33 @@ export class ExpoImageView extends ExpoView {
   }
 
   private async reload(force: boolean): Promise<void> {
-    if (this.destroyed || (this.locked && !force)) return;
+    if (this.destroyed) return;
+    if (this.locked && !force) {
+      this.reloadPending = true;
+      return;
+    }
 
+    this.reloadPending = false;
     this.cancelPendingLoads();
     const generation = (this.generation += 1);
 
-    if (this.width <= 0 || this.height <= 0) {
+    if (this.recycling !== this.props.recyclingKey) {
+      this.recycling = this.props.recyclingKey;
+      this.clearDisplayed();
+    }
+
+    const width = this.pixelWidth;
+    const height = this.pixelHeight;
+    if (width <= 0 || height <= 0) {
       if (this.current !== undefined || this.previous !== undefined) this.clearDisplayed();
       return;
     }
 
-    const density = display.getDefaultDisplaySync().densityPixels;
-    const targetWidth = this.width * density;
-    const targetHeight = this.height * density;
-    const source = Array.isArray(this.props.source) ? chooseSource(this.props.source, targetWidth, targetHeight) : undefined;
-    const placeholder = Array.isArray(this.props.placeholder) ? chooseSource(this.props.placeholder, targetWidth, targetHeight) : undefined;
+    const source = Array.isArray(this.props.source) ? chooseSource(this.props.source, width, height) : undefined;
+    const placeholder = Array.isArray(this.props.placeholder) ? chooseSource(this.props.placeholder, width, height) : undefined;
     const sharedSource = this.props.source instanceof ExpoSharedRef ? this.props.source : undefined;
+
+    if (this.currentPlaceholder && placeholder === undefined) this.clearDisplayed();
 
     if (source === undefined && sharedSource === undefined) {
       if (placeholder !== undefined) {
@@ -368,31 +379,33 @@ export class ExpoImageView extends ExpoView {
       return;
     }
 
-    if (this.current === undefined && placeholder !== undefined) {
+    if ((this.current === undefined || this.currentPlaceholder) && placeholder !== undefined) {
       void this.loadPlaceholder(placeholder, generation);
     }
 
     this.emit('onLoadStart');
 
     let cancellation: ExpoImageLoadCancellation | undefined;
+    let lease: ExpoImageLease | undefined;
+    const tintColor = this.props.tintColor;
 
     try {
-      let lease: ExpoImageLease;
       if (sharedSource !== undefined) {
         lease = await this.acquireRef(sharedSource);
-        if (this.props.tintColor != null) lease = await this.repository.tintLease(lease, this.props.tintColor);
+        if (generation !== this.generation || this.destroyed) return;
+        if (tintColor != null) lease = await this.repository.tintLease(lease, tintColor);
       } else {
         cancellation = new ExpoImageLoadCancellation();
         this.sourceCancel = cancellation;
 
         const options: ImageLoadOptions = {};
-        options.tintColor = this.props.tintColor;
+        options.tintColor = tintColor;
         options.priority = this.props.priority ?? undefined;
         options.decodeFormat = this.props.decodeFormat ?? undefined;
         options.contentFit = this.props.contentFit ?? undefined;
         if (this.props.allowDownscaling !== false && this.props.contentFit !== 'none' && this.props.contentFit !== 'fill') {
-          if (targetWidth > 0) options.maxWidth = targetWidth;
-          if (targetHeight > 0) options.maxHeight = targetHeight;
+          if (width > 0) options.maxWidth = width;
+          if (height > 0) options.maxHeight = height;
         }
 
         lease = await this.repository.load(
@@ -406,18 +419,21 @@ export class ExpoImageView extends ExpoView {
         );
       }
 
-      if (generation !== this.generation || this.destroyed) {
-        lease.release();
-        return;
-      }
+      if (generation !== this.generation || this.destroyed) return;
 
       this.cancelPlaceholderLoad();
-      this.display(lease, false);
-      this.emit('onLoad', new ImageLoadPayload(lease));
+      this.emit('onLoad', new ImageLoadPayload(lease, source?.uri ?? lease.resource.uri));
+      if (source !== undefined) this.imageLoaded(source.uri ?? '', lease.resource.frames[0]);
+      this.displayedPlaceholder = undefined;
+
+      const displayed = lease;
+      lease = undefined;
+      this.display(displayed, false);
     } catch (error) {
       if (generation !== this.generation || this.destroyed) return;
       this.emit('onError', { error: eventError(error as Object) });
     } finally {
+      lease?.release();
       if (cancellation !== undefined && this.sourceCancel === cancellation) {
         this.sourceCancel = undefined;
       }
@@ -425,17 +441,24 @@ export class ExpoImageView extends ExpoView {
   }
 
   private async loadPlaceholder(source: ImageSourceRecord, generation: number, replaceCurrent: boolean = false): Promise<void> {
+    const signature = JSON.stringify(source);
+    if (this.currentPlaceholder && this.displayedPlaceholder === signature) return;
+
     const cancellation = new ExpoImageLoadCancellation();
     this.placeholderCancel = cancellation;
 
     try {
       const lease = await this.repository.load(source, 'disk', {}, undefined, cancellation);
 
-      if (generation !== this.generation || this.destroyed || (this.current !== undefined && !this.currentPlaceholder && !replaceCurrent)) {
+      if (
+        cancellation.isCancelled() || generation !== this.generation || this.destroyed ||
+        (this.current !== undefined && !this.currentPlaceholder && !replaceCurrent)
+      ) {
         lease.release();
         return;
       }
 
+      this.displayedPlaceholder = signature;
       this.display(lease, true);
     } catch (error) {
       if (generation === this.generation && !cancellation.isCancelled()) {
@@ -521,8 +544,6 @@ export class ExpoImageView extends ExpoView {
   }
 
   private clearDisplayed(): void {
-    this.generation += 1;
-
     if (this.releaseTimer !== undefined) clearTimeout(this.releaseTimer);
     this.releaseTimer = undefined;
 
@@ -535,6 +556,7 @@ export class ExpoImageView extends ExpoView {
     this.previousLayer = undefined;
 
     this.currentPlaceholder = false;
+    this.displayedPlaceholder = undefined;
     this.displayedId = undefined;
 
     this.render?.(this.snapshot());
@@ -680,9 +702,14 @@ struct ExpoImageSurface {
     .accessibilityText(this.renderState.accessibilityLabel)
     .focusable(this.renderState.focusable)
     .onAreaChange((_: Area, area: Area): void => {
-      this.surfaceWidth = Number(area.width);
-      this.surfaceHeight = Number(area.height);
-      this.view.setSize(this.surfaceWidth, this.surfaceHeight);
+      const width = Number(area.width);
+      const height = Number(area.height);
+      if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+
+      this.surfaceWidth = width;
+      this.surfaceHeight = height;
+      const context = this.getUIContext();
+      this.view.setPixelSize(context.vp2px(width), context.vp2px(height));
     });
   }
 

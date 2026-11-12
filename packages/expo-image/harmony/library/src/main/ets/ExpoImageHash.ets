@@ -5,7 +5,8 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-// BlurHash / ThumbHash MIT attribution is included in the package LICENSE.
+// BlurHash by Wolt Enterprises: https://github.com/woltapp/blurhash
+// ThumbHash by Evan Wallace: https://github.com/evanw/thumbhash
 import image from '@ohos.multimedia.image';
 import util from '@ohos.util';
 import taskpool from '@ohos.taskpool';

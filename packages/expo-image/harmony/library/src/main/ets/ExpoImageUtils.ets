@@ -5,29 +5,19 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ColorMetrics } from '@kit.ArkUI';
+import { parseExpoColor } from '@expo-harmony/expo-modules-core';
 import { drawing } from '@kit.ArkGraphics2D';
 import { image } from '@kit.ImageKit';
 import deviceInfo from '@ohos.deviceInfo';
 import { ExpoImageError } from './ExpoImageError';
 
 export function colorComponents(value: number | string): number[] {
-  // React Native processColor returns AARRGGBB, including signed integers.
-  if (typeof value === 'number') {
-    if (!Number.isInteger(value) || value < -2147483648 || value > 4294967295) {
-      throw new ExpoImageError('ERR_IMAGE_INVALID_COLOR', 'Expected a React Native color.');
-    }
-
-    return [(value >>> 16) & 255, (value >>> 8) & 255, value & 255, value >>> 24];
+  try {
+    const color: number = parseExpoColor(value);
+    return [(color >>> 16) & 255, (color >>> 8) & 255, color & 255, color >>> 24];
+  } catch (_) {
+    throw new ExpoImageError('ERR_IMAGE_INVALID_COLOR', 'Expected a React Native color.');
   }
-
-  // JS loadAsync forwards CSS colors without processColor. ArkUI uses ARGB hex.
-  let color = value;
-  if (/^#[\da-f]{8}$/i.test(color)) color = `#${color.slice(7)}${color.slice(1, 7)}`;
-  else if (/^#[\da-f]{4}$/i.test(color)) color = `#${color[4]}${color[4]}${color[1]}${color[1]}${color[2]}${color[2]}${color[3]}${color[3]}`;
-  const metrics = ColorMetrics.resourceColor(color);
-
-  return [metrics.red, metrics.green, metrics.blue, metrics.alpha];
 }
 
 export async function copyPixelMap(pixel: image.PixelMap, maxSize?: number): Promise<image.PixelMap> {
@@ -141,30 +131,4 @@ export async function tintPixelMap(pixel: image.PixelMap, tint: number[]): Promi
 
     throw new ExpoImageError('ERR_IMAGE_TRANSFORM', String(error));
   }
-}
-
-export function filePathFromUri(uri: string): string {
-  const match = /^file:\/\/([^/?#]*)(\/[^?#]+)$/i.exec(uri);
-  if (match === null) throw new ExpoImageError('ERR_IMAGE_INVALID_SOURCE', 'Invalid local image URI.');
-
-  const path = decodeURIComponent(match[2]);
-  if (path.includes('\0')) throw new ExpoImageError('ERR_IMAGE_INVALID_SOURCE', 'Invalid local image path.');
-
-  // Provider authorities, including PhotoAccessHelper URIs, must be opened by CoreFileKit.
-  return match[1] === '' || match[1].toLowerCase() === 'localhost' ? path : uri;
-}
-
-export function packagedResourceName(uri: string, metroAsset: boolean): string {
-  const encoded = uri
-    .replace(/^(?:asset|rawfile):\/\//i, '')
-    .replace(/^\/+/, '')
-    .split(/[?#]/, 1)[0];
-  const decoded = decodeURIComponent(encoded);
-  const parts = decoded.split('/');
-  if (parts.some((part: string): boolean => part === '' || part === '.' || part === '..' || /[\0\\]/.test(part))) {
-    throw new ExpoImageError('ERR_IMAGE_INVALID_SOURCE', 'Invalid packaged image path.');
-  }
-
-  // RNOH's Metro bundle task puts asset:// resources under rawfile/assets.
-  return metroAsset ? `assets/${decoded}` : decoded;
 }

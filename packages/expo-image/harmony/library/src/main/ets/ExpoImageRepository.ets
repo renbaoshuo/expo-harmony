@@ -5,18 +5,19 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ExpoFileAccessKey, ExpoModuleContext, fileUriFromPath } from '@expo-harmony/expo-modules-core';
+import { ExpoModuleContext, isRnohRawfileResourceUri, rawResourcePathFromUri } from '@expo-harmony/expo-modules-core';
 import { common } from '@kit.AbilityKit';
+import type { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
+import { resourceManager } from '@kit.LocalizationKit';
 import { http } from '@kit.NetworkKit';
 import fs from '@ohos.file.fs';
 import fileHash from '@ohos.file.hash';
 import image from '@ohos.multimedia.image';
 import util from '@ohos.util';
 import { decodeBlurhash, decodeThumbhash } from './ExpoImageHash';
-import { colorComponents, copyPixelMap, tintPixelMap, ExifOrientation, readOrientation, orientPixelMap, animationIterations } from './ExpoImageUtils';
+import { animationIterations, colorComponents, copyPixelMap, ExifOrientation, orientPixelMap, readOrientation, tintPixelMap } from './ExpoImageUtils';
 import { ExpoImageError } from './ExpoImageError';
-import { filePathFromUri, packagedResourceName } from './ExpoImageUtils';
 
 const MAX_SOURCE_BYTES: number = 100 * 1024 * 1024;
 const CONNECT_TIMEOUT_MS: number = 15_000;
@@ -24,6 +25,7 @@ const READ_TIMEOUT_MS: number = 60_000;
 const IO_CHUNK_BYTES: number = 64 * 1024;
 const MAX_DECODED_BYTES: number = 256 * 1024 * 1024;
 const SVG_MEDIA_TYPE: string = 'image/svg+xml';
+const RAW_RESOURCE_NOT_FOUND: number = 9001005;
 
 export type CachePolicy = 'none' | 'disk' | 'memory' | 'memory-disk';
 export type CacheType = 'none' | 'disk' | 'memory';
@@ -103,25 +105,17 @@ class DownloadResult {
 }
 
 class RequestTracker {
-  private readonly requests: Set<http.HttpRequest> = new Set();
+  private readonly rejectRequests: Set<(error: ExpoImageError) => void> = new Set();
   private cancelled: boolean = false;
   private code: string = 'ERR_IMAGE_LOAD_CANCELLED';
   private message: string = 'The image load was cancelled.';
 
-  add(request: http.HttpRequest): void {
-    if (this.cancelled) {
-      try {
-        request.destroy();
-      } catch (_) {}
-
-      throw new ExpoImageError(this.code, this.message);
-    }
-
-    this.requests.add(request);
-  }
-
-  remove(request: http.HttpRequest): void {
-    this.requests.delete(request);
+  subscribe(reject: (error: ExpoImageError) => void): () => void {
+    this.throwIfCancelled();
+    this.rejectRequests.add(reject);
+    return (): void => {
+      this.rejectRequests.delete(reject);
+    };
   }
 
   cancelAll(code: string = 'ERR_IMAGE_LOAD_CANCELLED', message: string = 'The image load was cancelled.'): void {
@@ -131,13 +125,9 @@ class RequestTracker {
     this.code = code;
     this.message = message;
 
-    for (const request of this.requests) {
-      try {
-        request.destroy();
-      } catch (_) {}
-    }
-
-    this.requests.clear();
+    const error = new ExpoImageError(code, message);
+    for (const reject of this.rejectRequests) reject(error);
+    this.rejectRequests.clear();
   }
 
   isCancelled(): boolean {
@@ -146,6 +136,17 @@ class RequestTracker {
 
   throwIfCancelled(): void {
     if (this.cancelled) throw new ExpoImageError(this.code, this.message);
+  }
+}
+
+class CacheRequestGuard {
+  readonly cacheKey: string;
+  readonly tracker: RequestTracker | undefined;
+  valid: boolean = true;
+
+  constructor(cacheKey: string, tracker?: RequestTracker) {
+    this.cacheKey = cacheKey;
+    this.tracker = tracker;
   }
 }
 
@@ -158,6 +159,7 @@ class PendingImageSubscriber {
 }
 
 class PendingImageLoad {
+  readonly guard: CacheRequestGuard;
   readonly promise: Promise<ExpoImageResource>;
   readonly tracker: RequestTracker;
   private readonly subscribers: Set<PendingImageSubscriber> = new Set();
@@ -169,12 +171,14 @@ class PendingImageLoad {
   private accepting: boolean = true;
 
   constructor(
+    guard: CacheRequestGuard,
     promise: Promise<ExpoImageResource>,
     tracker: RequestTracker,
     retain: (resource: ExpoImageResource) => void,
     release: (resource: ExpoImageResource) => void,
     finish: () => void,
   ) {
+    this.guard = guard;
     this.promise = promise;
     this.tracker = tracker;
     this.retain = retain;
@@ -195,7 +199,7 @@ class PendingImageLoad {
   }
 
   addSubscriber(subscriber: PendingImageSubscriber): boolean {
-    if (!this.accepting) return false;
+    if (!this.accepting || !this.guard.valid) return false;
 
     this.subscribers.add(subscriber);
     return true;
@@ -231,6 +235,11 @@ class PendingImageLoad {
     this.deactivate();
   }
 
+  stopAccepting(): void {
+    this.guard.valid = false;
+    this.deactivate();
+  }
+
   private deactivate(): void {
     if (this.accepting) {
       this.accepting = false;
@@ -245,30 +254,87 @@ class PendingImageLoad {
   }
 }
 
-class DiskPathProtection {
-  private static readonly counts: Map<string, number> = new Map();
+class DiskPathState {
+  readers: number = 0;
+  revision: number = 0;
+  invalid: boolean = false;
+}
 
-  static retain(path: string): void {
-    DiskPathProtection.counts.set(path, (DiskPathProtection.counts.get(path) ?? 0) + 1);
+class DiskPathProtection {
+  private static readonly states: Map<string, DiskPathState> = new Map();
+
+  static retain(path: string): number {
+    let state = DiskPathProtection.states.get(path);
+    if (state === undefined) {
+      state = new DiskPathState();
+      DiskPathProtection.states.set(path, state);
+    }
+    state.readers += 1;
+
+    return state.revision;
   }
 
   static release(path: string): void {
-    const count = DiskPathProtection.counts.get(path) ?? 0;
-    if (count <= 1) DiskPathProtection.counts.delete(path);
-    else DiskPathProtection.counts.set(path, count - 1);
+    const state = DiskPathProtection.states.get(path);
+    if (state === undefined) return;
+
+    state.readers -= 1;
+    if (state.readers > 0) return;
+
+    if (state.invalid) DiskPathProtection.removeInvalid(path);
+    else DiskPathProtection.states.delete(path);
   }
 
   static snapshot(): Set<string> {
-    return new Set(DiskPathProtection.counts.keys());
+    return new Set(DiskPathProtection.states.keys());
   }
 
-  static isExclusivelyRetained(path: string): boolean {
-    return DiskPathProtection.counts.get(path) === 1;
+  static invalidate(path: string, revision: number): void {
+    const state = DiskPathProtection.states.get(path);
+    if (state !== undefined && state.revision === revision) state.invalid = true;
+  }
+
+  static clear(path: string): boolean {
+    const state = DiskPathProtection.states.get(path);
+    if (state === undefined) return true;
+
+    state.revision += 1;
+    state.invalid = true;
+
+    return state.readers > 0 || DiskPathProtection.removeInvalid(path);
+  }
+
+  static isCurrentRevision(path: string, revision: number): boolean {
+    return DiskPathProtection.states.get(path)?.revision === revision;
+  }
+
+  static isInvalid(path: string): boolean {
+    return DiskPathProtection.states.get(path)?.invalid === true;
+  }
+
+  static didWrite(path: string): void {
+    const state = DiskPathProtection.states.get(path);
+    if (state === undefined) return;
+
+    state.revision += 1;
+    state.invalid = false;
+  }
+
+  private static removeInvalid(path: string): boolean {
+    try {
+      if (fs.accessSync(path)) fs.unlinkSync(path);
+      DiskPathProtection.states.delete(path);
+      return true;
+    } catch (error) {
+      console.warn(`Expo Image could not remove an invalid cache entry: ${String(error)}`);
+      return false;
+    }
   }
 }
 
 export class ExpoImageResource {
   readonly key: string;
+  readonly cacheKey: string;
   readonly uri: string;
   readonly frames: image.PixelMap[];
   readonly delays: number[];
@@ -299,8 +365,10 @@ export class ExpoImageResource {
     isAnimated: boolean,
     cacheType: CacheType,
     iterations: number = -1,
+    cacheKey: string = uri,
   ) {
     this.key = key;
+    this.cacheKey = cacheKey;
     this.uri = uri;
     this.frames = frames;
     this.delays = delays;
@@ -526,20 +594,60 @@ function assertSourceSize(size: number, description: string): void {
   }
 }
 
-async function readPackagedResource(context: common.UIAbilityContext, name: string): Promise<ArrayBuffer> {
+async function readPackagedResource(
+  context: common.UIAbilityContext,
+  uri: string,
+  tracker: RequestTracker,
+  legacyEncoded: boolean,
+): Promise<ArrayBuffer> {
+  let name: string;
   try {
-    const descriptor = await context.resourceManager.getRawFd(name);
+    name = rawResourcePathFromUri(uri, legacyEncoded);
+  } catch (error) {
+    throw new ExpoImageError('ERR_IMAGE_INVALID_SOURCE', String(error));
+  }
+
+  const resources = context.resourceManager;
+
+  try {
+    tracker.throwIfCancelled();
+    let descriptor: resourceManager.RawFileDescriptor;
+
+    try {
+      descriptor = resources.getRawFdSync(name);
+    } catch (error) {
+      tracker.throwIfCancelled();
+      if (!/^asset:\/\//i.test(uri) || (error as BusinessError).code !== RAW_RESOURCE_NOT_FOUND) throw error as Error;
+
+      // Older Metro asset URLs may encode characters that RNOH now preserves literally.
+      let fallback = name;
+
+      try {
+        fallback = rawResourcePathFromUri(uri, true);
+      } catch (_) {
+        // A literal rawfile name need not have a valid URL-encoded spelling.
+      }
+      if (fallback === name) throw error as Error;
+
+      name = fallback;
+      descriptor = resources.getRawFdSync(name);
+    }
+
     try {
       assertSourceSize(descriptor.length, 'packaged image');
     } finally {
-      await context.resourceManager.closeRawFd(name);
+      // Keep the size probe and close on the same turn. ResourceManager borrows the FD by name.
+      resources.closeRawFdSync(name);
     }
 
-    const bytes = await context.resourceManager.getRawFileContent(name);
+    tracker.throwIfCancelled();
+    const bytes = await resources.getRawFileContent(name);
+    tracker.throwIfCancelled();
     assertSourceSize(bytes.byteLength, 'packaged image');
 
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   } catch (error) {
+    tracker.throwIfCancelled();
     if (error instanceof ExpoImageError) {
       throw new ExpoImageError(error.code, error.message);
     }
@@ -548,11 +656,16 @@ async function readPackagedResource(context: common.UIAbilityContext, name: stri
   }
 }
 
-async function readLocalFile(uri: string): Promise<ArrayBuffer> {
+async function readLocalFile(context: ExpoModuleContext, uri: string, tracker?: RequestTracker): Promise<ArrayBuffer> {
   let file: fileIo.File | undefined;
   try {
-    file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
-    const size = (await fileIo.stat(file.fd)).size;
+    tracker?.throwIfCancelled();
+    file = context.openFileForRead(uri);
+    const stat = await fileIo.stat(file.fd);
+    tracker?.throwIfCancelled();
+    if (!stat.isFile()) throw new ExpoImageError('ERR_IMAGE_RESOURCE', 'The local image must be a regular file.');
+
+    const size = stat.size;
     assertSourceSize(size, 'local image');
 
     const bytes = new Uint8Array(size);
@@ -561,6 +674,7 @@ async function readLocalFile(uri: string): Promise<ArrayBuffer> {
     while (offset < size) {
       const chunk = new ArrayBuffer(Math.min(IO_CHUNK_BYTES, size - offset));
       const read = await fileIo.read(file.fd, chunk);
+      tracker?.throwIfCancelled();
       if (read <= 0) throw new ExpoImageError('ERR_IMAGE_FILE_READ', 'The local image could not be read completely.');
 
       bytes.set(new Uint8Array(chunk, 0, read), offset);
@@ -583,34 +697,13 @@ async function readLocalFile(uri: string): Promise<ArrayBuffer> {
   }
 }
 
-async function localInput(context: common.UIAbilityContext, uri: string): Promise<DecodeInput> {
-  if (/^asset:\/\//i.test(uri)) {
-    return await readPackagedResource(context, resolvePackagedResourceName(uri, true));
-  }
-  if (/^rawfile:\/\//i.test(uri)) {
-    return await readPackagedResource(context, resolvePackagedResourceName(uri, false));
-  }
-  if (uri.startsWith('/')) return await readLocalFile(uri);
-  if (/^file:\/\//i.test(uri)) {
-    try {
-      return await readLocalFile(filePathFromUri(uri));
-    } catch (error) {
-      if (error instanceof ExpoImageError) throw new ExpoImageError(error.code, error.message);
-      throw new ExpoImageError('ERR_IMAGE_INVALID_SOURCE', String(error));
-    }
-  }
-  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(uri)) {
+async function localInput(context: ExpoModuleContext, uri: string, tracker: RequestTracker): Promise<ArrayBuffer> {
+  if (uri.startsWith('/') || /^file:\/\//i.test(uri)) return await readLocalFile(context, uri, tracker);
+  const hasScheme = /^[A-Za-z][A-Za-z0-9+.-]*:/.test(uri);
+  if (hasScheme && !/^asset:\/\//i.test(uri) && !/^rawfile:/i.test(uri) && !isRnohRawfileResourceUri(uri)) {
     throw new ExpoImageError('ERR_IMAGE_UNSUPPORTED_SOURCE', 'The image source uses an unsupported URI scheme.');
   }
-  return await readPackagedResource(context, resolvePackagedResourceName(uri, false));
-}
-
-function resolvePackagedResourceName(uri: string, metroAsset: boolean): string {
-  try {
-    return packagedResourceName(uri, metroAsset);
-  } catch (error) {
-    throw new ExpoImageError('ERR_IMAGE_INVALID_SOURCE', String(error));
-  }
+  return await readPackagedResource(context.uiAbilityContext, uri, tracker, !hasScheme);
 }
 
 async function download(
@@ -620,25 +713,30 @@ async function download(
   tracker: RequestTracker,
   progress?: ImageProgressCallback,
 ): Promise<DownloadResult> {
+  tracker.throwIfCancelled();
   const request = http.createHttp();
-  tracker.add(request);
-
-  request.on('dataReceiveProgress', (value: http.DataReceiveProgressInfo): void => {
-    if (!tracker.isCancelled()) {
-      progress?.({ loaded: value.receiveSize, total: value.totalSize < 0 ? 0 : value.totalSize });
-    }
-  });
+  let unsubscribe: (() => void) | undefined;
 
   try {
-    const response = await request.request(uri, {
-      method: http.RequestMethod.GET,
-      header: headers,
-      expectDataType: http.HttpDataType.ARRAY_BUFFER,
-      connectTimeout: CONNECT_TIMEOUT_MS,
-      readTimeout: READ_TIMEOUT_MS,
-      maxLimit: MAX_SOURCE_BYTES,
-      usingCache: false,
-      priority,
+    request.on('dataReceiveProgress', (value: http.DataReceiveProgressInfo): void => {
+      if (!tracker.isCancelled()) {
+        progress?.({ loaded: value.receiveSize, total: value.totalSize < 0 ? 0 : value.totalSize });
+      }
+    });
+
+    const response = await new Promise<http.HttpResponse>((resolve, reject): void => {
+      // Network Kit documents resource destruction but does not promise to settle the request.
+      unsubscribe = tracker.subscribe(reject);
+      request.request(uri, {
+        method: http.RequestMethod.GET,
+        header: headers,
+        expectDataType: http.HttpDataType.ARRAY_BUFFER,
+        connectTimeout: CONNECT_TIMEOUT_MS,
+        readTimeout: READ_TIMEOUT_MS,
+        maxLimit: MAX_SOURCE_BYTES,
+        usingCache: false,
+        priority,
+      }).then(resolve, reject);
     });
 
     tracker.throwIfCancelled();
@@ -668,7 +766,7 @@ async function download(
     console.error(`Expo Image download failed for '${uri}': ${String(error)}`);
     throw new ExpoImageError('ERR_IMAGE_DOWNLOAD', 'The image could not be downloaded.');
   } finally {
-    tracker.remove(request);
+    unsubscribe?.();
     try {
       request.destroy();
     } catch (_) {}
@@ -685,6 +783,7 @@ export class ExpoImageRepository {
   private readonly directory: string;
   private readonly memory: Map<string, ExpoImageResource> = new Map();
   private readonly pending: Map<string, PendingImageLoad> = new Map();
+  private readonly cacheRequests: Set<CacheRequestGuard> = new Set();
   private readonly resources: Set<ExpoImageResource> = new Set();
   private maxDiskSize: number = 0;
   private maxMemoryCost: number = 0;
@@ -700,9 +799,12 @@ export class ExpoImageRepository {
   configure(config: ImageCacheConfig): void {
     this.assertAlive();
 
-    if (config.maxDiskSize !== undefined) this.maxDiskSize = this.cacheLimit(config.maxDiskSize, 'maxDiskSize');
-    if (config.maxMemoryCost !== undefined) this.maxMemoryCost = this.cacheLimit(config.maxMemoryCost, 'maxMemoryCost');
-    if (config.maxMemoryCount !== undefined) this.maxMemoryCount = this.cacheLimit(config.maxMemoryCount, 'maxMemoryCount');
+    const maxDiskSize = this.cacheLimit(config.maxDiskSize ?? this.maxDiskSize, 'maxDiskSize');
+    const maxMemoryCost = this.cacheLimit(config.maxMemoryCost ?? this.maxMemoryCost, 'maxMemoryCost');
+    const maxMemoryCount = this.cacheLimit(config.maxMemoryCount ?? this.maxMemoryCount, 'maxMemoryCount');
+    this.maxDiskSize = maxDiskSize;
+    this.maxMemoryCost = maxMemoryCost;
+    this.maxMemoryCount = maxMemoryCount;
 
     this.evictMemory();
     this.evictDisk();
@@ -724,8 +826,10 @@ export class ExpoImageRepository {
       throw new ExpoImageError('ERR_IMAGE_INVALID_SOURCE', 'The image source URI must be a string.');
     }
 
-    const uri = source.uri?.trim() ?? '';
-    if (uri.length === 0) throw new ExpoImageError('ERR_IMAGE_INVALID_SOURCE', 'The image source URI is empty.');
+    const uri = source.uri ?? '';
+    if (uri.trim().length === 0 || uri.includes('\0')) {
+      throw new ExpoImageError('ERR_IMAGE_INVALID_SOURCE', 'The image source URI is empty or contains a null character.');
+    }
     if (uri.startsWith('sf:/')) throw new ExpoImageError('ERR_IMAGE_UNSUPPORTED_SOURCE', 'SF Symbols are not available on HarmonyOS.');
 
     const policy = normalizedPolicy(cachePolicy);
@@ -757,13 +861,23 @@ export class ExpoImageRepository {
 
     if (pending === undefined || !pending.addSubscriber(subscriber)) {
       const tracker = new RequestTracker();
+      const guard = new CacheRequestGuard(identity, tracker);
+      this.cacheRequests.add(guard);
       let entry: PendingImageLoad | undefined;
-      const promise = this.loadResource(source, uri, identity, key, policy, options, (event: ImageProgress): void => entry?.notify(event), tracker);
+      const promise = this.loadResource(source, uri, identity, key, policy, options, (event: ImageProgress): void => entry?.notify(event), tracker, guard)
+        .finally((): void => {
+          this.cacheRequests.delete(guard);
+        });
 
       entry = new PendingImageLoad(
+        guard,
         promise,
         tracker,
-        (resource: ExpoImageResource): void => this.retain(resource),
+        (resource: ExpoImageResource): void => {
+          // Hold the pending load's reference before exposing it to cache eviction.
+          this.retain(resource);
+          if (guard.valid && !this.destroyed && !tracker.isCancelled()) this.maybeCache(resource, policy);
+        },
         (resource: ExpoImageResource): void => this.release(resource),
         (): void => {
           if (entry !== undefined && this.pending.get(taskKey) === entry) {
@@ -817,6 +931,111 @@ export class ExpoImageRepository {
 
   async pixelForHash(resource: ExpoImageResource, maxSize?: number): Promise<image.PixelMap> {
     return await copyPixelMap(resource.frames[0], maxSize);
+  }
+
+  async writeToCache(source: string | image.PixelMap, key: string): Promise<void> {
+    this.assertAlive();
+
+    const path = cachePath(this.directory, key);
+    const temporary = temporaryPath(this.directory);
+    let file: fs.File | undefined;
+    let packer: image.ImagePacker | undefined;
+    this.retainDiskPath(path);
+
+    try {
+      if (typeof source === 'string') {
+        if (!/^file:\/\//i.test(source)) {
+          throw new ExpoImageError('ERR_IMAGE_CACHE_REMOTE_SOURCE', 'The cache source must be a local file URI or an ImageRef. Use prefetch for remote images.');
+        }
+        await writeAll(temporary, await readLocalFile(this.context, source));
+      } else {
+        // Cache seeding from a decoded ref intentionally flattens animation to its first frame.
+        packer = image.createImagePacker();
+        file = await fs.open(temporary, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+        await packer.packToFile(source, file.fd, { format: 'image/png', quality: 100 });
+        await fs.close(file.fd);
+        file = undefined;
+        assertSourceSize((await fs.stat(temporary)).size, 'encoded cache image');
+      }
+
+      this.assertAlive();
+      // The temporary file is complete before it replaces any existing cached bytes.
+      fs.moveFileSync(temporary, path, 0);
+      DiskPathProtection.didWrite(path);
+      for (const guard of this.cacheRequests) {
+        if (guard.cacheKey === key) guard.valid = false;
+      }
+
+      for (const pending of Array.from(this.pending.values())) {
+        if (pending.guard.cacheKey === key) pending.stopAccepting();
+      }
+
+      for (const resource of Array.from(this.memory.values())) {
+        if (resource.cacheKey === key) this.discard(resource);
+      }
+    } catch (error) {
+      if (error instanceof ExpoImageError) throw new ExpoImageError(error.code, error.message);
+      throw new ExpoImageError('ERR_IMAGE_CACHE_WRITE', `The image could not be written to the cache: ${String(error)}`);
+    } finally {
+      if (file !== undefined) {
+        try { await fs.close(file.fd); } catch (_) {}
+      }
+      if (packer !== undefined) {
+        try { await packer.release(); } catch (_) {}
+      }
+      try { await fs.unlink(temporary); } catch (_) {}
+      this.releaseDiskPath(path);
+      this.evictDisk();
+    }
+  }
+
+  async readFromCache(key: string): Promise<ExpoImageLease | null> {
+    this.assertAlive();
+
+    const source: ImageSourceRecord = { uri: key, cacheKey: key };
+    const memoryKey = imageKey(key, {}, source, {});
+    const cached = this.memory.get(memoryKey);
+    if (cached !== undefined) return new ExpoImageLease(this, cached, 'memory');
+
+    const path = this.getCachePath(key);
+    if (path === null) return this.findCachedVariant(key);
+
+    const guard = new CacheRequestGuard(key);
+    this.cacheRequests.add(guard);
+    const revision = this.retainDiskPath(path);
+
+    try {
+      const resource = await this.decodeResource(memoryKey, key, path, 'disk', undefined, source, {});
+      if (this.destroyed) {
+        await resource.dispose();
+        this.assertAlive();
+      }
+      return new ExpoImageLease(this, this.maybeCache(resource, guard.valid ? 'memory' : 'none'));
+    } catch (error) {
+      // A corrupt cached entry is a miss too; never fall back to a network request.
+      this.assertAlive();
+      if (guard.valid && error instanceof ExpoImageError && error.code === 'ERR_IMAGE_DECODE') {
+        DiskPathProtection.invalidate(path, revision);
+      }
+      console.warn(`Expo Image could not read its cached image: ${String(error)}`);
+
+      return this.findCachedVariant(key);
+    } finally {
+      this.cacheRequests.delete(guard);
+      this.releaseDiskPath(path);
+    }
+  }
+
+  private findCachedVariant(cacheKey: string): ExpoImageLease | null {
+    // Decoded variants have separate internal keys for headers, scale and transforms.
+    let mostRecent: ExpoImageResource | undefined;
+    for (const resource of this.memory.values()) {
+      if (resource.cacheKey === cacheKey && (mostRecent === undefined || resource.lastAccess >= mostRecent.lastAccess)) {
+        mostRecent = resource;
+      }
+    }
+
+    return mostRecent === undefined ? null : new ExpoImageLease(this, mostRecent, 'memory');
   }
 
   adoptPixelMap(pixel: image.PixelMap): ExpoImageLease {
@@ -923,11 +1142,24 @@ export class ExpoImageRepository {
   }
 
   clearDisk(): boolean {
-    if (!fs.accessSync(this.directory)) return true;
-
-    let success = true;
     const retained = this.retainedDiskPaths();
-    for (const name of fs.listFileSync(this.directory)) {
+    let success = true;
+
+    for (const path of retained) {
+      if (path.startsWith(`${this.directory}/`) && !DiskPathProtection.clear(path)) success = false;
+    }
+
+    let files: string[];
+
+    try {
+      if (!fs.accessSync(this.directory)) return success;
+      files = fs.listFileSync(this.directory);
+    } catch (error) {
+      console.warn(`Expo Image could not list its disk cache: ${String(error)}`);
+      return false;
+    }
+
+    for (const name of files) {
       const path = `${this.directory}/${name}`;
       if (path.endsWith('.image') && !retained.has(path)) {
         try {
@@ -944,7 +1176,7 @@ export class ExpoImageRepository {
 
   getCachePath(key: string): string | null {
     const path = cachePath(this.directory, key);
-    if (!fs.accessSync(path)) return null;
+    if (DiskPathProtection.isInvalid(path) || !fs.accessSync(path)) return null;
 
     try {
       fs.utimes(path, Date.now());
@@ -972,6 +1204,13 @@ export class ExpoImageRepository {
 
     this.destroyed = true;
 
+    // Seeded requests can be detached from the deduplication map while their subscribers finish.
+    for (const guard of this.cacheRequests) {
+      guard.valid = false;
+      guard.tracker?.cancelAll('ERR_IMAGE_RUNTIME_DESTROYED', 'The Expo Image repository has been destroyed.');
+    }
+
+    this.cacheRequests.clear();
     for (const pending of this.pending.values()) {
       pending.cancel('ERR_IMAGE_RUNTIME_DESTROYED', 'The Expo Image repository has been destroyed.');
     }
@@ -1007,9 +1246,12 @@ export class ExpoImageRepository {
     options: ImageLoadOptions,
     progress: ImageProgressCallback | undefined,
     tracker: RequestTracker,
+    guard: CacheRequestGuard,
   ): Promise<ExpoImageResource> {
     let input: DecodeInput;
     let diskPath: string | undefined;
+    let diskRevision: number = 0;
+    let downloaded: DownloadResult | undefined;
     let cacheType: CacheType = 'none';
     let reportedType: string | undefined;
 
@@ -1049,8 +1291,7 @@ export class ExpoImageRepository {
         this.assertAlive();
         tracker.throwIfCancelled();
 
-        const resource = new ExpoImageResource(key, uri, [pixel], [], output.size.width, output.size.height, 1, null, false, 'none');
-        this.maybeCache(resource, policy);
+        const resource = new ExpoImageResource(key, uri, [pixel], [], output.size.width, output.size.height, 1, null, false, 'none', -1, cacheKey);
         pixel = undefined;
 
         return resource;
@@ -1063,64 +1304,43 @@ export class ExpoImageRepository {
     }
 
     const remote = /^https?:\/\//i.test(uri);
-    if (remote && hasDisk(policy)) {
-      diskPath = cachePath(this.directory, cacheKey);
-      this.retainDiskPath(diskPath);
+    const cachedPath = cachePath(this.directory, cacheKey);
+    if (hasDisk(policy) && (remote || fs.accessSync(cachedPath))) {
+      diskPath = cachedPath;
+      diskRevision = this.retainDiskPath(diskPath);
     }
 
     try {
-      if (diskPath !== undefined) {
-        if (fs.accessSync(diskPath)) {
-          input = diskPath;
-          cacheType = 'disk';
-          try {
-            fs.utimes(diskPath, Date.now());
-          } catch (_) {}
-        } else {
-          const result = await this.downloadToDisk(uri, source, options, progress, diskPath, tracker);
-          reportedType = result.contentType;
-          input = diskPath;
-        }
-      } else if (remote) {
-        const result = await download(uri, copyHeaders(source.headers), requestPriority(options.priority), tracker, progress);
+      if (diskPath !== undefined && fs.accessSync(diskPath) && !DiskPathProtection.isInvalid(diskPath)) {
+        input = diskPath;
+        cacheType = 'disk';
+        try {
+          fs.utimes(diskPath, Date.now());
+        } catch (_) {}
+      } else {
+        const result = await this.readSource(uri, source, options, progress, tracker);
+        if (remote && diskPath !== undefined) downloaded = result;
+        // Decode this request's bytes even if a concurrent seed replaced the cache path.
         input = result.buffer;
         reportedType = result.contentType;
-      } else if (/^data:/i.test(uri)) {
-        input = await dataUriBuffer(uri);
-        reportedType = contentType(uri.slice(5, uri.indexOf(',')));
-      } else {
-        if ((uri.startsWith('/') || /^file:\/\//i.test(uri)) && this.context.services.get(ExpoFileAccessKey) !== undefined) {
-          this.context.filePathForRead(uri.startsWith('/') ? fileUriFromPath(uri) : uri);
-        }
-        input = await localInput(this.context.uiAbilityContext, uri);
       }
 
       let resource: ExpoImageResource;
 
       try {
-        resource = await this.decodeResource(key, uri, input, cacheType, reportedType, source, options);
+        resource = await this.decodeResource(key, uri, input, cacheType, reportedType, source, options, tracker);
       } catch (error) {
         tracker.throwIfCancelled();
 
-        const canInvalidate = diskPath !== undefined && DiskPathProtection.isExclusivelyRetained(diskPath);
-        if (canInvalidate && diskPath !== undefined && fs.accessSync(diskPath)) {
-          try {
-            fs.unlinkSync(diskPath);
-          } catch (_) {}
-        }
-
-        if (remote && cacheType === 'disk' && diskPath !== undefined && canInvalidate) {
-          const result = await this.downloadToDisk(uri, source, options, progress, diskPath, tracker);
+        if (cacheType === 'disk' && diskPath !== undefined && error instanceof ExpoImageError && error.code === 'ERR_IMAGE_DECODE') {
+          DiskPathProtection.invalidate(diskPath, diskRevision);
+          const result = await this.readSource(uri, source, options, progress, tracker);
+          if (remote) downloaded = result;
           reportedType = result.contentType;
 
           try {
-            resource = await this.decodeResource(key, uri, diskPath, 'none', reportedType, source, options);
+            resource = await this.decodeResource(key, uri, result.buffer, 'none', reportedType, source, options, tracker);
           } catch (retryError) {
-            if (DiskPathProtection.isExclusivelyRetained(diskPath) && fs.accessSync(diskPath)) {
-              try {
-                fs.unlinkSync(diskPath);
-              } catch (_) {}
-            }
             if (retryError instanceof ExpoImageError) {
               throw new ExpoImageError(retryError.code, retryError.message);
             }
@@ -1136,16 +1356,22 @@ export class ExpoImageRepository {
         }
       }
 
+      // Do not commit a 200 OK body until Image Kit has successfully decoded it.
+      if (downloaded !== undefined && diskPath !== undefined) {
+        try {
+          await this.writeToDisk(downloaded.buffer, diskPath, diskRevision, tracker, guard);
+        } catch (error) {
+          if (!tracker.isCancelled()) console.warn(`Expo Image could not cache its downloaded image: ${String(error)}`);
+        }
+      }
+
       if (this.destroyed || tracker.isCancelled()) {
         resource.dispose();
         tracker.throwIfCancelled();
         throw new ExpoImageError('ERR_IMAGE_RUNTIME_DESTROYED', 'The Expo Image repository has been destroyed.');
       }
 
-      const result = this.maybeCache(resource, policy);
-      if (hasDisk(policy)) this.evictDisk(diskPath);
-
-      return result;
+      return resource;
     } finally {
       if (diskPath !== undefined) {
         this.releaseDiskPath(diskPath);
@@ -1154,25 +1380,45 @@ export class ExpoImageRepository {
     }
   }
 
-  private async downloadToDisk(
+  private async readSource(
     uri: string,
     source: ImageSourceRecord,
     options: ImageLoadOptions,
     progress: ImageProgressCallback | undefined,
-    path: string,
     tracker: RequestTracker,
   ): Promise<DownloadResult> {
-    const result = await download(uri, copyHeaders(source.headers), requestPriority(options.priority), tracker, progress);
-
     tracker.throwIfCancelled();
+    if (/^https?:\/\//i.test(uri)) {
+      return await download(uri, copyHeaders(source.headers), requestPriority(options.priority), tracker, progress);
+    }
+    if (/^data:/i.test(uri)) {
+      return new DownloadResult(await dataUriBuffer(uri), contentType(uri.slice(5, uri.indexOf(','))));
+    }
+    return new DownloadResult(await localInput(this.context, uri, tracker));
+  }
+
+  private async writeToDisk(
+    buffer: ArrayBuffer,
+    path: string,
+    revision: number,
+    tracker: RequestTracker,
+    guard: CacheRequestGuard,
+  ): Promise<void> {
+    tracker.throwIfCancelled();
+    if (!guard.valid || !DiskPathProtection.isCurrentRevision(path, revision)) return;
 
     const temp = temporaryPath(this.directory);
 
     try {
-      await writeAll(temp, result.buffer);
+      await writeAll(temp, buffer);
       tracker.throwIfCancelled();
-      if (fs.accessSync(path)) fs.unlinkSync(temp);
-      else fs.moveFileSync(temp, path, 0);
+      // Preserve a newer cache entry or clear that happened during the download.
+      if (!guard.valid || !DiskPathProtection.isCurrentRevision(path, revision) || (fs.accessSync(path) && !DiskPathProtection.isInvalid(path))) {
+        fs.unlinkSync(temp);
+      } else {
+        fs.moveFileSync(temp, path, 0);
+        DiskPathProtection.didWrite(path);
+      }
     } catch (error) {
       if (fs.accessSync(temp)) {
         try {
@@ -1180,10 +1426,9 @@ export class ExpoImageRepository {
         } catch (_) {}
       }
 
+      if (error instanceof ExpoImageError) throw new ExpoImageError(error.code, error.message);
       throw new ExpoImageError('ERR_IMAGE_FILE_WRITE', `The image cache file could not be committed: ${String(error)}`);
     }
-
-    return result;
   }
 
   private async decodeResource(
@@ -1194,7 +1439,9 @@ export class ExpoImageRepository {
     reported: string | undefined,
     source: ImageSourceRecord,
     options: ImageLoadOptions,
+    tracker?: RequestTracker,
   ): Promise<ExpoImageResource> {
+    tracker?.throwIfCancelled();
     let decoder: image.ImageSource;
 
     try {
@@ -1208,6 +1455,7 @@ export class ExpoImageRepository {
 
     try {
       const info = await decoder.getImageInfo();
+      tracker?.throwIfCancelled();
       const count = await decoder.getFrameCount();
 
       if (![info.size.width, info.size.height, count].every((value: number): boolean => Number.isSafeInteger(value) && value > 0)) {
@@ -1236,6 +1484,7 @@ export class ExpoImageRepository {
       if (animated) {
         const delays = await decoder.getDelayTimeList();
         const iterations = await animationIterations(decoder, mime);
+        tracker?.throwIfCancelled();
 
         let frames = await decoder.createPixelMapList({
           editable: orientation !== ExifOrientation.Normal,
@@ -1244,7 +1493,10 @@ export class ExpoImageRepository {
         });
         transient = frames.slice();
 
-        for (const frame of frames) await orientPixelMap(frame, orientation);
+        for (const frame of frames) {
+          tracker?.throwIfCancelled();
+          await orientPixelMap(frame, orientation);
+        }
 
         if (frames.length === 0) {
           throw new ExpoImageError('ERR_IMAGE_DECODE', 'The animated image did not contain any decodable frames.');
@@ -1254,6 +1506,7 @@ export class ExpoImageRepository {
           const tinted: image.PixelMap[] = [];
 
           for (const frame of frames) {
+            tracker?.throwIfCancelled();
             const pixel = await tintPixelMap(frame, tint);
             tinted.push(pixel);
             transient.push(pixel);
@@ -1270,13 +1523,14 @@ export class ExpoImageRepository {
         }
 
         const output: image.Size = options.contentFit === undefined ? frames[0].getImageInfoSync().size : { width, height };
-        const resource = new ExpoImageResource(key, uri, frames, delays, output.width, output.height, scale, mime, true, cache, iterations);
+        const resource = new ExpoImageResource(key, uri, frames, delays, output.width, output.height, scale, mime, true, cache, iterations, source.cacheKey ?? uri);
 
         transient = [];
 
         return resource;
       }
 
+      tracker?.throwIfCancelled();
       let pixel = await decoder.createPixelMap({
         editable: orientation !== ExifOrientation.Normal,
         desiredSize: size,
@@ -1284,6 +1538,7 @@ export class ExpoImageRepository {
       });
       transient = [pixel];
 
+      tracker?.throwIfCancelled();
       await orientPixelMap(pixel, orientation);
 
       if (tint !== undefined) {
@@ -1299,13 +1554,13 @@ export class ExpoImageRepository {
 
       // Only view requests set contentFit; ImageRef needs the decoded layout size.
       const output: image.Size = options.contentFit === undefined ? pixel.getImageInfoSync().size : { width, height };
-      const resource = new ExpoImageResource(key, uri, [pixel], [], output.width, output.height, scale, mime, false, cache);
+      const resource = new ExpoImageResource(key, uri, [pixel], [], output.width, output.height, scale, mime, false, cache, -1, source.cacheKey ?? uri);
 
       transient = [];
 
       return resource;
     } catch (error) {
-      console.error(`Expo Image decode failed for '${uri}': ${String(error)}`);
+      if (!tracker?.isCancelled()) console.error(`Expo Image decode failed for '${uri}': ${String(error)}`);
 
       if (error instanceof ExpoImageError) {
         throw new ExpoImageError(error.code, error.message);
@@ -1394,23 +1649,31 @@ export class ExpoImageRepository {
     }
   }
 
-  private evictDisk(protectedPath?: string): void {
-    if (this.maxDiskSize <= 0 || !fs.accessSync(this.directory)) return;
+  private evictDisk(): void {
+    if (this.maxDiskSize <= 0) return;
 
     const retained = this.retainedDiskPaths();
-    const files = fs
-      .listFileSync(this.directory)
-      .map((name: string): string => `${this.directory}/${name}`)
-      .filter((path: string): boolean => path.endsWith('.image'));
+    let files: string[];
+
+    try {
+      if (!fs.accessSync(this.directory)) return;
+      files = fs.listFileSync(this.directory);
+    } catch (error) {
+      console.warn(`Expo Image could not list its disk cache: ${String(error)}`);
+      return;
+    }
 
     let total = 0;
     const stats: Array<[string, number, number]> = [];
 
-    for (const path of files) {
+    for (const name of files) {
+      if (!name.endsWith('.image')) continue;
+      const path = `${this.directory}/${name}`;
+
       try {
         const stat = fs.statSync(path);
         total += stat.size;
-        if (!retained.has(path) && path !== protectedPath) stats.push([path, stat.size, stat.mtime]);
+        if (!retained.has(path)) stats.push([path, stat.size, stat.mtime]);
       } catch (_) {}
     }
 
@@ -1429,8 +1692,8 @@ export class ExpoImageRepository {
     return DiskPathProtection.snapshot();
   }
 
-  private retainDiskPath(path: string): void {
-    DiskPathProtection.retain(path);
+  private retainDiskPath(path: string): number {
+    return DiskPathProtection.retain(path);
   }
 
   private releaseDiskPath(path: string): void {

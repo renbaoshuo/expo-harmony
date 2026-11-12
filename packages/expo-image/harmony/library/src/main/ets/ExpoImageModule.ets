@@ -207,6 +207,8 @@ class ExpoImageRef extends ExpoSharedRef<image.PixelMap> {
 export class ExpoImageModule extends ExpoModule {
   private repository?: ExpoImageRepository;
   private readonly views: Set<ExpoImageView> = new Set();
+  private hasImageLoadedListener: boolean = false;
+  private backgrounded: boolean = false;
 
   constructor(context: ExpoModuleContext) {
     super(context);
@@ -233,7 +235,9 @@ export class ExpoImageModule extends ExpoModule {
           context,
           this.images(),
           (ref: ExpoSharedRef<image.PixelMap>): Promise<ExpoImageLease> => this.acquireRef(ref),
+          (url: string, pixel: image.PixelMap): void => this.emitImageLoaded(url, pixel),
         );
+        if (this.backgrounded) instance.onBackground();
         this.views.add(instance);
 
         return instance;
@@ -390,6 +394,13 @@ export class ExpoImageModule extends ExpoModule {
 
     return new ExpoModuleDefinition()
       .name('ExpoImage')
+      .events(['imageLoaded'])
+      .onStartObserving('imageLoaded', (): void => {
+        this.hasImageLoadedListener = true;
+      })
+      .onStopObserving('imageLoaded', (): void => {
+        this.hasImageLoadedListener = false;
+      })
       .sharedObjectClass(reference)
       .view(view)
       .syncFunction(
@@ -415,6 +426,7 @@ export class ExpoImageModule extends ExpoModule {
             const lease = await this.images().load(source, 'memory-disk', options ?? {});
 
             try {
+              this.emitImageLoaded(source.uri ?? '', lease.resource.frames[0]);
               return reference.instance(new ExpoImageRef(this.context, lease));
             } catch (error) {
               lease.release();
@@ -423,6 +435,37 @@ export class ExpoImageModule extends ExpoModule {
             }
           },
         ).returns(reference.valueType()),
+      )
+      .asyncFunction(
+        'writeToCacheAsync',
+        ExpoFunction.typed2(HASH_SOURCE, STRING, async (source: string | ExpoSharedRef<image.PixelMap>, cacheKey: string): Promise<void> => {
+          if (typeof source === 'string') {
+            await this.images().writeToCache(source, cacheKey);
+            return;
+          }
+
+          const lease = await this.acquireRef(source);
+
+          try {
+            await this.images().writeToCache(lease.resource.frames[0], cacheKey);
+          } finally {
+            lease.release();
+          }
+        }),
+      )
+      .asyncFunction(
+        'readFromCacheAsync',
+        ExpoFunction.typed1(STRING, async (cacheKey: string): Promise<ExpoImageRef | null> => {
+          const lease = await this.images().readFromCache(cacheKey);
+          if (lease === null) return null;
+
+          try {
+            return reference.instance(new ExpoImageRef(this.context, lease));
+          } catch (error) {
+            lease.release();
+            throw new ExpoImageError('ERR_IMAGE_INVALID_REF', String(error));
+          }
+        }).returns(reference.valueType().nullable()),
       )
       .asyncFunction('clearMemoryCache', async (): Promise<boolean> => this.images().clearMemory())
       .asyncFunction('clearDiskCache', async (): Promise<boolean> => this.images().clearDisk())
@@ -458,16 +501,31 @@ export class ExpoImageModule extends ExpoModule {
           }
         }),
       )
-      .onBackground((): void => this.views.forEach((view: ExpoImageView): void => view.onBackground()))
-      .onForeground((): void => this.views.forEach((view: ExpoImageView): void => view.onForeground()))
+      .onBackground((): void => {
+        this.backgrounded = true;
+        this.views.forEach((view: ExpoImageView): void => view.onBackground());
+      })
+      .onForeground((): void => {
+        this.backgrounded = false;
+        this.views.forEach((view: ExpoImageView): void => view.onForeground());
+      })
       .onMemoryLevel((): void => {
         this.repository?.clearMemory();
       })
       .onDestroy((): void => {
+        this.hasImageLoadedListener = false;
         this.views.forEach((view: ExpoImageView): void => view.destroy());
         this.views.clear();
         this.repository?.destroy();
       });
+  }
+
+  private emitImageLoaded(url: string, pixel: image.PixelMap): void {
+    if (!this.hasImageLoadedListener || url.length === 0) return;
+    const size = pixel.getImageInfoSync().size;
+    if (size.width <= 0 || size.height <= 0) return;
+
+    this.sendEvent('imageLoaded', { url, width: size.width, height: size.height });
   }
 
   private async acquireRef(ref: ExpoSharedRef<image.PixelMap>): Promise<ExpoImageLease> {
