@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ExpoFileAccessKey, ExpoModuleContext, ExpoModuleError } from '@expo-harmony/expo-modules-core';
+import { ExpoModuleContext, ExpoModuleError } from '@expo-harmony/expo-modules-core';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { http } from '@kit.NetworkKit';
@@ -43,7 +43,9 @@ export async function writeBytes(path: string, bytes: Uint8Array): Promise<void>
   try {
     let offset = 0;
     while (offset < bytes.byteLength) {
-      const data = bytes.buffer.slice(bytes.byteOffset + offset, bytes.byteOffset + bytes.byteLength);
+      const data = offset === 0 && bytes.byteLength === bytes.buffer.byteLength
+        ? bytes.buffer
+        : bytes.buffer.slice(bytes.byteOffset + offset, bytes.byteOffset + bytes.byteLength);
       const count = await fileIo.write(file.fd, data);
       if (count <= 0) throw new Error('Unable to write the PDF file.');
       offset += count;
@@ -56,20 +58,16 @@ export async function writeBytes(path: string, bytes: Uint8Array): Promise<void>
 export async function materializePdf(
   source: string,
   path: string,
-  requests: Set<http.HttpRequest>,
+  downloadCancels: Set<(error: ExpoModuleError) => void>,
   assertActive: () => void,
   context: ExpoModuleContext,
 ): Promise<void> {
   try {
     assertActive();
 
-    const parsed = new uri.URI(source);
-    // Absent URI components are null at runtime despite the SDK's string types.
-    const scheme = (parsed.scheme ?? '').toLowerCase();
-
-    if (scheme === 'http' || scheme === 'https') {
-      await downloadPdf(parsed.toString(), path, requests, assertActive);
-    } else if (scheme === 'data') {
+    if (/^https?:/i.test(source)) {
+      await downloadPdf(new uri.URI(source).toString(), path, downloadCancels, assertActive);
+    } else if (/^data:/i.test(source)) {
       const comma = source.indexOf(',');
       const metadata = source.slice(5, comma).toLowerCase().split(';');
       if (comma < 0 || metadata[0] !== 'application/pdf' || metadata[metadata.length - 1] !== 'base64') {
@@ -81,100 +79,120 @@ export async function materializePdf(
 
       await writeBytes(path, bytes);
     } else {
-      let input = source;
-      if (scheme === 'file') {
-        if (parsed.query || parsed.fragment) throw new Error('File URIs must not contain a query or fragment.');
-        if (parsed.path?.includes('\0')) throw new Error('File paths must not contain a NUL character.');
-
-        // Keep provider authorities for DocumentPicker grants. URI.path is already percent-decoded;
-        // decoding again changes literal percent escapes in filenames.
-        if (!parsed.authority || parsed.authority.toLowerCase() === 'localhost') {
-          input = parsed.path ?? '';
-          if (!input.startsWith('/')) throw new Error('A local file URI must contain an absolute path.');
-        }
-      } else if (scheme.length > 0 || !source.startsWith('/')) {
-        throw new Error('Expected an HTTP(S), file, or PDF data URI.');
-      }
-      if (input.includes('\0')) throw new Error('File paths must not contain a NUL character.');
-
-      if (context.services.get(ExpoFileAccessKey) !== undefined) context.filePathForRead(input);
-
-      const file = await fileIo.open(input, fileIo.OpenMode.READ_ONLY);
-
-      try {
-        assertActive();
-        context.assertFileAccess(file.path);
-        if (!(await fileIo.stat(file.fd)).isFile()) throw new Error('The URI must refer to a file.');
-
-        await fileIo.copyFile(file.fd, path);
-      } finally {
-        await fileIo.close(file);
-      }
+      await copyLocalPdf(source, path, assertActive, context);
     }
 
-    await assertPdfFile(path);
+    assertActive();
+    await assertPdfHeader(path);
+    assertActive();
+    if (canIUse('SystemCapability.OfficeService.PDFService.Core')) {
+      const document = new pdfService.PdfDocument();
+      try {
+        const status = document.loadDocument(path);
+        if (
+          status !== pdfService.ParseResult.PARSE_SUCCESS &&
+          status !== pdfService.ParseResult.PARSE_ERROR_PASSWORD &&
+          status !== pdfService.ParseResult.PARSE_ERROR_CERT
+        ) {
+          throw new Error(`PDF Kit could not open the source PDF (${status}).`);
+        }
+      } finally {
+        document.releaseDocument();
+      }
+    }
   } catch (error) {
-    await removeFile(path);
-
     if (error instanceof ExpoModuleError) {
       throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
     }
 
-    // HttpRequest.destroy() rejects with a platform error, so recheck lifecycle cancellation.
     assertActive();
     throw new ExpoModuleError('ERR_PRINT_CANNOT_LOAD_URI', 'Unable to load the PDF URI.', error as Object);
   }
 }
 
-async function downloadPdf(source: string, path: string, requests: Set<http.HttpRequest>, assertActive: () => void): Promise<void> {
+async function copyLocalPdf(source: string, path: string, assertActive: () => void, context: ExpoModuleContext): Promise<void> {
+  // Preserve the historical file:/path spelling as well as standard file URIs.
+  const input = context.fileSourceForRead(/^file:\/(?!\/)/i.test(source) ? `file://${source.slice(5)}` : source);
+
+  const file = await fileIo.open(input, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
+  try {
+    assertActive();
+    if (!(await fileIo.stat(file.fd)).isFile()) throw new Error('The URI must refer to a file.');
+
+    assertActive();
+    context.readPathForDescriptor(input, file);
+    await fileIo.copyFile(file.fd, path);
+  } finally {
+    await fileIo.close(file);
+  }
+}
+
+async function downloadPdf(
+  source: string,
+  path: string,
+  downloadCancels: Set<(error: ExpoModuleError) => void>,
+  assertActive: () => void,
+): Promise<void> {
   const file = await fileIo.open(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
   let client: http.HttpRequest | undefined;
-  let failure: string | undefined;
+  let cancel: (error: ExpoModuleError) => void = (): void => {};
+  let stopped = false;
 
   try {
     assertActive();
 
     client = http.createHttp();
-    requests.add(client);
+    const cancelled = new Promise<number>((_resolve: (status: number) => void, reject: (error: ExpoModuleError) => void): void => {
+      cancel = (error: ExpoModuleError): void => {
+        stopped = true;
+        reject(error);
+      };
+    });
+    downloadCancels.add(cancel);
+
     client.on('dataReceive', (buffer: ArrayBuffer): void => {
-      if (failure !== undefined) return;
+      if (stopped) return;
 
       try {
         // Synchronous writes preserve stream order without buffering the entire PDF.
         let offset = 0;
         while (offset < buffer.byteLength) {
-          const count = fileIo.writeSync(file.fd, buffer.slice(offset));
+          const count = fileIo.writeSync(file.fd, offset === 0 ? buffer : buffer.slice(offset));
           if (count <= 0) throw new Error('Unable to write downloaded PDF data.');
           offset += count;
         }
       } catch (error) {
-        failure = `Unable to save downloaded PDF: ${(error as Error).message}`;
-        client?.destroy();
+        cancel(new ExpoModuleError('ERR_PRINT_CANNOT_LOAD_URI', 'Unable to save downloaded PDF data.', error as Object));
       }
     });
 
-    const status = await client.requestInStream(source, {
-      method: http.RequestMethod.GET,
-      connectTimeout: NETWORK_TIMEOUT_MS,
-      readTimeout: NETWORK_TIMEOUT_MS,
-      usingCache: false,
-    });
-
-    if (failure !== undefined) throw new Error(failure);
+    // Destroying the request can leave its promise pending.
+    const status = await Promise.race([
+      cancelled,
+      client.requestInStream(source, {
+        method: http.RequestMethod.GET,
+        connectTimeout: NETWORK_TIMEOUT_MS,
+        readTimeout: NETWORK_TIMEOUT_MS,
+        usingCache: false,
+      }),
+    ]);
     if (status < 200 || status >= 300) throw new Error(`PDF request failed with HTTP status ${status}.`);
   } finally {
-    if (client !== undefined) requests.delete(client);
+    stopped = true;
+    downloadCancels.delete(cancel);
+
     try {
       client?.off('dataReceive');
     } catch (_) {}
     try {
       client?.destroy();
     } catch (_) {}
+
     await fileIo.close(file);
   }
 }
 
-async function assertPdfFile(path: string): Promise<void> {
+async function assertPdfHeader(path: string): Promise<void> {
   const file = await fileIo.open(path, fileIo.OpenMode.READ_ONLY);
 
   try {

@@ -13,10 +13,9 @@ import {
   ExpoModuleError,
   fileUriFromPath,
 } from '@expo-harmony/expo-modules-core';
-import { http } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
 import { materializePdf, outputPath, pageCount, removeFile, startPrint, writeBytes } from './PrintFiles';
-import { PRINT_OPTIONS, PrintOptions } from './PrintOptions';
+import { ORIENTATION_LANDSCAPE, PRINT_OPTIONS, PrintOptions } from './PrintOptions';
 import { PrintRenderer } from './PrintRenderer';
 
 class PrintResult {
@@ -36,12 +35,12 @@ export class ExpoPrintModule extends ExpoModule {
   private printing: boolean = false;
   private queue: Promise<void> = Promise.resolve();
   private renderers: Set<PrintRenderer> = new Set<PrintRenderer>();
-  private requests: Set<http.HttpRequest> = new Set<http.HttpRequest>();
+  private downloadCancels: Set<(error: ExpoModuleError) => void> = new Set<(error: ExpoModuleError) => void>();
 
   definition(): ExpoModuleDefinition {
     return new ExpoModuleDefinition()
       .name('ExpoPrint')
-      .constant('Orientation', { portrait: 'portrait', landscape: 'landscape' })
+      .constant('Orientation', { portrait: 'portrait', landscape: ORIENTATION_LANDSCAPE })
       .asyncFunction(
         'print',
         ExpoFunction.typed1(PRINT_OPTIONS, async (options: PrintOptions): Promise<void> => {
@@ -85,10 +84,11 @@ export class ExpoPrintModule extends ExpoModule {
 
       if (options.html !== undefined) {
         const bytes = await this.render(options, generation);
+        this.assertActive(generation);
 
         await writeBytes(path, bytes);
       } else {
-        await materializePdf(options.uri!, path, this.requests, (): void => this.assertActive(generation), this.context);
+        await materializePdf(options.uri!, path, this.downloadCancels, (): void => this.assertActive(generation), this.context);
       }
 
       this.assertActive(generation);
@@ -122,6 +122,8 @@ export class ExpoPrintModule extends ExpoModule {
       this.assertActive(generation);
 
       path = await outputPath(this.context.cachePath);
+      this.assertActive(generation);
+
       await writeBytes(path, bytes);
       this.assertActive(generation);
 
@@ -182,16 +184,12 @@ export class ExpoPrintModule extends ExpoModule {
 
   private cancelPending(message: string): void {
     this.generation += 1;
+    const error = new ExpoModuleError('ERR_PRINT_CANCELLED', message);
     this.renderers.forEach((renderer: PrintRenderer): void => {
-      renderer.fail(new ExpoModuleError('ERR_PRINT_CANCELLED', message));
+      renderer.fail(error);
     });
-
-    this.requests.forEach((request: http.HttpRequest): void => {
-      try {
-        request.destroy();
-      } catch (_) {}
-    });
-    this.requests.clear();
+    this.downloadCancels.forEach((cancel: (error: ExpoModuleError) => void): void => cancel(error));
+    this.downloadCancels.clear();
   }
 
   private destroy(): void {

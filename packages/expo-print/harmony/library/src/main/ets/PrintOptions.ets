@@ -5,67 +5,96 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ExpoModuleError, ExpoValueType, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
+import { ExpoModuleError, ExpoRecordShape, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
 import { webview } from '@kit.ArkWeb';
 
 export const POINTS_PER_INCH: number = 72;
 export const CSS_PIXELS_PER_INCH: number = 96;
+export const ORIENTATION_LANDSCAPE: string = 'landscape';
 const MAX_TEXT_ZOOM: number = 2147483647;
 
-export class PageMargins {
-  top: number = 0;
-  right: number = 0;
-  bottom: number = 0;
-  left: number = 0;
+interface PageMargins {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
 }
 
-export class PrintOptions {
+export interface PrintOptions {
   html?: string;
   uri?: string;
-  width: number = 612;
-  height: number = 792;
+  width: number;
+  height: number;
   orientation?: string;
-  margins: PageMargins = new PageMargins();
-  textZoom: number = 100;
-  base64: boolean = false;
+  margins: PageMargins;
+  textZoom: number;
+  base64: boolean;
 }
 
-export const PRINT_OPTIONS = new ExpoValueType<PrintOptions>(
-  'PrintOptions',
-  (value: ESObject, path: string): PrintOptions => decodeOptions(value, path),
-  (value: PrintOptions): ESObject => value,
+const PAGE_MARGINS = ExpoValueTypes.shapedRecord<PageMargins>(
+  'PageMargins',
+  new ExpoRecordShape()
+    .field('top', ExpoValueTypes.number().optional())
+    .field('right', ExpoValueTypes.number().optional())
+    .field('bottom', ExpoValueTypes.number().optional())
+    .field('left', ExpoValueTypes.number().optional()),
+  (fields: Record<string, ESObject>): PageMargins => ({
+    top: fields.top ?? 0,
+    right: fields.right ?? 0,
+    bottom: fields.bottom ?? 0,
+    left: fields.left ?? 0,
+  }),
+  (margins: PageMargins): Record<string, ESObject> => {
+    const fields: Record<string, ESObject> = {};
+    fields.top = margins.top;
+    fields.right = margins.right;
+    fields.bottom = margins.bottom;
+    fields.left = margins.left;
+
+    return fields;
+  },
 );
 
-function decodeOptions(value: ESObject, path: string): PrintOptions {
-  const record = requireRecord(value, path);
+export const PRINT_OPTIONS = ExpoValueTypes.shapedRecord<PrintOptions>(
+  'PrintOptions',
+  new ExpoRecordShape()
+    .field('html', ExpoValueTypes.string().optional())
+    .field('uri', ExpoValueTypes.string().optional())
+    .field('orientation', ExpoValueTypes.string().optional())
+    .field('width', ExpoValueTypes.number().optional())
+    .field('height', ExpoValueTypes.number().optional())
+    .field('textZoom', ExpoValueTypes.number().optional())
+    .field('base64', ExpoValueTypes.boolean())
+    .field('margins', PAGE_MARGINS.optional()),
+  (fields: Record<string, ESObject>): PrintOptions => ({
+    html: fields.html,
+    uri: fields.uri,
+    orientation: fields.orientation,
+    width: fields.width ?? 612,
+    height: fields.height ?? 792,
+    textZoom: fields.textZoom ?? 100,
+    base64: fields.base64 ?? false,
+    margins: fields.margins ?? { top: 0, right: 0, bottom: 0, left: 0 },
+  }),
+  (options: PrintOptions): Record<string, ESObject> => {
+    const fields: Record<string, ESObject> = {};
+    fields.html = options.html;
+    fields.uri = options.uri;
+    fields.orientation = options.orientation;
+    fields.width = options.width;
+    fields.height = options.height;
+    fields.textZoom = options.textZoom;
+    fields.base64 = options.base64;
+    fields.margins = options.margins;
 
-  const options = new PrintOptions();
-  options.html = optionalString(record['html'], `${path}.html`);
-  options.uri = optionalString(record['uri'], `${path}.uri`);
-  options.orientation = optionalString(record['orientation'], `${path}.orientation`);
-  options.width = optionalNumber(record['width'], `${path}.width`) ?? options.width;
-  options.height = optionalNumber(record['height'], `${path}.height`) ?? options.height;
-  options.textZoom = optionalNumber(record['textZoom'], `${path}.textZoom`) ?? options.textZoom;
-  if (record['base64'] !== undefined) {
-    options.base64 = ExpoValueTypes.boolean().decode(record['base64'], `${path}.base64`);
-  }
-
-  const margins: ESObject = record['margins'];
-  if (margins !== undefined && margins !== null) {
-    const fields = requireRecord(margins, `${path}.margins`);
-    options.margins.top = optionalNumber(fields['top'], `${path}.margins.top`) ?? 0;
-    options.margins.right = optionalNumber(fields['right'], `${path}.margins.right`) ?? 0;
-    options.margins.bottom = optionalNumber(fields['bottom'], `${path}.margins.bottom`) ?? 0;
-    options.margins.left = optionalNumber(fields['left'], `${path}.margins.left`) ?? 0;
-  }
-
-  return options;
-}
+    return fields;
+  },
+);
 
 export function pdfConfiguration(options: PrintOptions): webview.PdfConfiguration {
   let width = options.width;
   let height = options.height;
-  if (options.orientation === 'landscape' && height > width) {
+  if (options.orientation === ORIENTATION_LANDSCAPE && height > width) {
     width = options.height;
     height = options.width;
   }
@@ -118,19 +147,4 @@ export function pdfConfiguration(options: PrintOptions): webview.PdfConfiguratio
     scale: 1,
     shouldPrintBackground: true,
   };
-}
-
-function requireRecord(value: ESObject, path: string): Record<string, ESObject> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new ExpoModuleError('ERR_PRINT_INVALID_OPTIONS', `${path} must be an object.`);
-  }
-  return value as Record<string, ESObject>;
-}
-
-function optionalString(value: ESObject, path: string): string | undefined {
-  return value === undefined || value === null ? undefined : ExpoValueTypes.string().decode(value, path);
-}
-
-function optionalNumber(value: ESObject, path: string): number | undefined {
-  return value === undefined || value === null ? undefined : ExpoValueTypes.number().decode(value, path);
 }
