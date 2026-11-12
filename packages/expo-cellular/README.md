@@ -1,105 +1,116 @@
 # @expo-harmony/expo-cellular
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-cellular) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/cellular/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-cellular) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/cellular/)
 
 为 HarmonyOS 上的 React Native 应用提供 Expo Cellular 的原生实现，与官方同版本的 `expo-cellular` 配套使用。
 
 ## 安装
 
-```bash
-npm install @expo-harmony/expo-cellular expo-cellular@55.0.17
-```
+本包适配 Expo SDK 57。
 
-最低支持 HarmonyOS 5.0.1（API 13），宿主应用的 `compatibleSdkVersion` 不能低于这个版本。HAR 已声明 `ohos.permission.GET_NETWORK_INFO`，这是普通级别、安装时授予的权限。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
+```bash
+npm install @expo-harmony/expo-cellular expo-cellular
+```
 
 ## API 对照表
 
 ### Hooks
 
-#### `usePermissions(options)`
+#### `usePermissions(options?)`
 
-返回 `[PermissionResponse | null, request, get]`，分别是权限状态、申请权限和查询权限的函数。HarmonyOS 不弹出授权框，三项都直接给出已授权结果。
+返回 `[PermissionResponse | null, request, get]`，分别是权限状态、申请权限和查询权限的函数。挂载后状态初始为 `null`，查询完成后为已授权。HarmonyOS 不弹出授权框。
 
 ### Methods
 
 #### `Cellular.getCellularGenerationAsync()`
 
-返回 `Promise<CellularGeneration>`，当前蜂窝网络代际。
-
-双卡设备取默认订阅的 SIM 卡。SIM 卡未插入、未就绪或权限被拒时返回 `UNKNOWN`。代际按默认数据卡的无线接入技术映射到枚举，无法识别的技术（包括 IWLAN）也返回 `UNKNOWN`。
-
-`CELLULAR_5G` 只对应系统上报的 NR，系统上报其他技术时按对应代际返回。
+返回 `Promise<CellularGeneration>`，表示当前蜂窝网络代际。使用默认数据 SIM 卡的网络类型；设备通过 Wi-Fi 联网时仍可返回蜂窝网络代际。SIM 卡未就绪、权限不可用、蜂窝网络信息不可用或网络类型无法识别时返回 `UNKNOWN`。5G 仅对应系统上报的 NR；其他未映射类型（包括 IWLAN）返回 `UNKNOWN`。
 
 #### `Cellular.allowsVoipAsync()`
 
-返回 `Promise<boolean | null>`，恒为 `null`。HarmonyOS 没有提供判断运营商是否允许 VoIP 的接口。
+返回 `Promise<boolean | null>`。
+
+- HarmonyOS 不提供运营商 VoIP 状态查询，因此始终返回 `null`。
 
 #### `Cellular.getIsoCountryCodeAsync()`
 
-返回 `Promise<string | null>`，服务商的 ISO 国家码，小写。取默认订阅 SIM 卡记录的国家码，没有 SIM 卡、SIM 卡未就绪或值为空时返回 `null`。
+返回 `Promise<string | null>`，服务商的 ISO 国家码，字母为小写。优先使用默认语音 SIM 卡；未设置有效的默认语音卡或设备不支持语音通话时使用默认数据卡。没有就绪的 SIM 卡或记录为空时返回 `null`。
 
 #### `Cellular.getCarrierNameAsync()`
 
-返回 `Promise<string | null>`，服务商名称，取自 SIM 卡内的服务商名称记录，与当前注册的网络无关。没有 SIM 卡、SIM 卡未就绪或记录为空时返回 `null`。
-
-双卡设备上取默认订阅的卡。这个值与 MCC/MNC 的取卡方式不同，两者可能来自不同的卡。
+返回 `Promise<string | null>`，SIM 卡中记录的服务商名称，与当前注册的网络无关。优先使用默认语音 SIM 卡；未设置有效的默认语音卡或设备不支持语音通话时使用默认数据卡。没有就绪的 SIM 卡或记录为空时返回 `null`。
 
 #### `Cellular.getMobileCountryCodeAsync()`
 
-返回 `Promise<string | null>`，移动国家码（MCC），取 SIM 卡归属 PLMN 的前三位。没有 SIM 卡、SIM 卡未就绪或 PLMN 不是 5 到 6 位数字时返回 `null`。
+返回 `Promise<string | null>`，SIM 卡归属 PLMN 的 MCC（三位移动国家码）。依次使用默认数据、短信和语音 SIM 卡；SIM 卡未就绪或 PLMN 不是 5 到 6 位数字时返回 `null`。
 
 #### `Cellular.getMobileNetworkCodeAsync()`
 
-返回 `Promise<string | null>`，移动网络码（MNC），取 SIM 卡归属 PLMN 中 MCC 之后的部分，为 2 到 3 位数字。取卡方式与 MCC 相同，返回 `null` 的条件也一致。
-
-#### `Cellular.getPermissionsAsync()`
-
-返回 `Promise<PermissionResponse>`，恒为已授权。查询不读取系统运行时授权状态，也不弹出授权框。
-
-#### `Cellular.requestPermissionsAsync()`
-
-返回 `Promise<PermissionResponse>`，恒为已授权，不弹出授权框，与 `getPermissionsAsync()` 一致。
+返回 `Promise<string | null>`，SIM 卡归属 PLMN 中 MCC 之后的 MNC（两位或三位移动网络码）。SIM 卡选择顺序及返回 `null` 的条件与 `getMobileCountryCodeAsync()` 相同。
 
 ### Types
 
 #### `PermissionResponse`
 
-| 属性          | 类型                   | 说明             |
-| ------------- | ---------------------- | ---------------- |
-| `status`      | `PermissionStatus`     | 恒为 `'granted'` |
-| `granted`     | `boolean`              | 恒为 `true`      |
-| `expires`     | `PermissionExpiration` | 恒为 `'never'`   |
-| `canAskAgain` | `boolean`              | 恒为 `true`      |
+- `status: PermissionStatus`：始终为 `'granted'`。
+- `granted: boolean`：始终为 `true`。
+- `expires: PermissionExpiration`：始终为 `'never'`。
+- `canAskAgain: boolean`：始终为 `true`。
 
 #### `PermissionExpiration`
 
-`'never' | number`，HarmonyOS 上只返回 `'never'`。
+类型为 `'never' | number`。HarmonyOS 上只返回 `'never'`。
 
 #### `PermissionHookOptions`
 
-`usePermissions` 的选项类型，控制挂载时是否自动查询或申请权限。权限恒为已授权，这些选项不改变结果。
+`usePermissions` 的可选参数，包含以下布尔值：
+
+- `get`：挂载时自动查询权限，默认 `true`。
+- `request`：挂载时自动申请权限，默认 `false`。HarmonyOS 不会显示授权框；若同时设为 `true`，只执行申请。
 
 ### Enums
 
+#### `CellularGeneration`
+
+- `UNKNOWN = 0`：未连接蜂窝网络或无法判断。
+- `CELLULAR_2G = 1`：系统上报 GSM 或 1xRTT。
+- `CELLULAR_3G = 2`：系统上报 WCDMA、HSPA、HSPAP、TD-SCDMA、EVDO 或 EHRPD。
+- `CELLULAR_4G = 3`：系统上报 LTE 或 LTE-CA。
+- `CELLULAR_5G = 4`：系统上报 NR。
+
 #### `PermissionStatus`
 
-| 成员           | 值               |
-| -------------- | ---------------- |
-| `DENIED`       | `'denied'`       |
-| `GRANTED`      | `'granted'`      |
-| `UNDETERMINED` | `'undetermined'` |
+- `DENIED = 'denied'`
+- `GRANTED = 'granted'`
+- `UNDETERMINED = 'undetermined'`
 
 HarmonyOS 上只返回 `GRANTED`。
 
-#### `CellularGeneration`
+### Error codes
 
-| 成员          | 值  | 含义                                             |
-| ------------- | --- | ------------------------------------------------ |
-| `UNKNOWN`     | `0` | 未连接蜂窝网络或无法判断                         |
-| `CELLULAR_2G` | `1` | 2G，含 GSM、1xRTT                                |
-| `CELLULAR_3G` | `2` | 3G，含 WCDMA、HSPA、HSPAP、TD-SCDMA、EVDO、EHRPD |
-| `CELLULAR_4G` | `3` | 4G，含 LTE、LTE-CA                               |
-| `CELLULAR_5G` | `4` | 5G，仅含 NR                                      |
+#### `ERR_CELLULAR_GENERATION`
+
+系统查询蜂窝网络类型失败时抛出；权限、能力或 SIM 卡不可用等情况返回 `UNKNOWN`。
+
+#### `ERR_CELLULAR_SIM`
+
+系统查询 SIM 卡信息失败时抛出；SIM 卡不存在或系统不支持相关信息时返回 `null`。
+
+### Permissions
+
+#### `Cellular.getPermissionsAsync()`
+
+返回 `Promise<PermissionResponse>`。HarmonyOS 上返回已授权状态，不弹出授权框。
+
+#### `Cellular.requestPermissionsAsync()`
+
+返回 `Promise<PermissionResponse>`。HarmonyOS 上返回已授权状态，不弹出授权框，与 `getPermissionsAsync()` 一致。
+
+#### `ohos.permission.GET_NETWORK_INFO`
+
+本包声明此普通权限以读取网络信息；HarmonyOS 在安装时授予，无需弹窗申请。
 
 ## Author
 

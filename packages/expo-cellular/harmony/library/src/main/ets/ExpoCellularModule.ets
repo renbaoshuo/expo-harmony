@@ -24,7 +24,9 @@ enum SimField {
 }
 
 const PERMISSION_DENIED: number = 201;
+const CAPABILITY_NOT_SUPPORTED: number = 801;
 const NO_SIM_CARD: number = 8300004;
+const NO_DEFAULT_SLOT: number = -1;
 const MOBILE_COUNTRY_CODE_LENGTH: number = 3;
 const TELEPHONY_CORE_CAPABILITY: string = 'SystemCapability.Telephony.CoreService';
 const CELLULAR_DATA_CAPABILITY: string = 'SystemCapability.Telephony.CellularData';
@@ -68,14 +70,10 @@ export class ExpoCellularModule extends ExpoModule {
   private async getCellularGeneration(): Promise<CellularGeneration> {
     try {
       if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
-        // Upstream gates on the default SIM before querying the data subscription.
-        // HarmonyOS exposes the default data slot, not Android's active data subscription.
-        if ((await this.getReadyDefaultSlot()) === null) return CellularGeneration.UNKNOWN;
-
         if (canIUse(CELLULAR_DATA_CAPABILITY)) {
           const slot = await data.getDefaultCellularDataSlotId();
 
-          if (!isValidSlot(slot, sim.getMaxSimCount())) return CellularGeneration.UNKNOWN;
+          if (!(await this.isSimReady(slot))) return CellularGeneration.UNKNOWN;
 
           const tech = await radio.getRadioTech(slot);
 
@@ -105,7 +103,9 @@ export class ExpoCellularModule extends ExpoModule {
     } catch (error) {
       const code = (error as BusinessError).code;
 
-      if (code === PERMISSION_DENIED || code === NO_SIM_CARD) return CellularGeneration.UNKNOWN;
+      if (code === PERMISSION_DENIED || code === CAPABILITY_NOT_SUPPORTED || code === NO_SIM_CARD) {
+        return CellularGeneration.UNKNOWN;
+      }
 
       throw new ExpoModuleError('ERR_CELLULAR_GENERATION', 'Unable to query HarmonyOS cellular radio technology.', error as Object);
     }
@@ -114,11 +114,14 @@ export class ExpoCellularModule extends ExpoModule {
   private async readSimValue(field: SimField): Promise<string | null> {
     try {
       if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
-        const slot = await this.getReadyDefaultSlot();
+        const slot = field === SimField.OPERATOR_NUMERIC
+          ? await this.getOperatorSlot()
+          : await this.getDefaultSubscriptionSlot();
 
-        if (slot === null) return null;
+        if (!(await this.isSimReady(slot))) return null;
 
         let value: string;
+
         switch (field) {
           case SimField.ISO_COUNTRY_CODE:
             value = await sim.getISOCountryCodeForSim(slot);
@@ -127,7 +130,7 @@ export class ExpoCellularModule extends ExpoModule {
             value = await sim.getSimSpn(slot);
             break;
           case SimField.OPERATOR_NUMERIC:
-            value = await sim.getSimOperatorNumeric(await this.getOperatorSlot(slot));
+            value = await sim.getSimOperatorNumeric(slot);
             break;
         }
 
@@ -136,7 +139,9 @@ export class ExpoCellularModule extends ExpoModule {
 
       return null;
     } catch (error) {
-      if ((error as BusinessError).code === NO_SIM_CARD) return null;
+      const code = (error as BusinessError).code;
+
+      if (code === CAPABILITY_NOT_SUPPORTED || code === NO_SIM_CARD) return null;
 
       throw new ExpoModuleError('ERR_CELLULAR_SIM', 'Unable to query HarmonyOS SIM information.', error as Object);
     }
@@ -148,53 +153,66 @@ export class ExpoCellularModule extends ExpoModule {
     return operator !== null && /^\d{5,6}$/.test(operator) ? operator : null;
   }
 
-  private async getOperatorSlot(fallback: number): Promise<number> {
+  private async getOperatorSlot(): Promise<number> {
     // AOSP resolves PLMN through data/SMS/voice defaults, unlike SPN and country code.
     if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
       const count = sim.getMaxSimCount();
 
       if (canIUse(CELLULAR_DATA_CAPABILITY)) {
-        const slot = await data.getDefaultCellularDataSlotId();
+        const slot = await readDefaultSlot(() => data.getDefaultCellularDataSlotId());
 
         if (isValidSlot(slot, count)) return slot;
       }
 
       if (canIUse(SMS_CAPABILITY)) {
-        const slot = await sms.getDefaultSmsSlotId();
+        const slot = await readDefaultSlot(() => sms.getDefaultSmsSlotId());
 
         if (isValidSlot(slot, count)) return slot;
       }
 
-      const slot = await sim.getDefaultVoiceSlotId();
-
-      if (isValidSlot(slot, count)) return slot;
+      return await readDefaultSlot(() => sim.getDefaultVoiceSlotId());
     }
 
-    return fallback;
+    return NO_DEFAULT_SLOT;
   }
 
-  private async getReadyDefaultSlot(): Promise<number | null> {
+  private async getDefaultSubscriptionSlot(): Promise<number> {
     if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
-      let voice: boolean = false;
-      if (canIUse(CALL_MANAGER_CAPABILITY)) {
-        voice = call.hasVoiceCapability();
+      if (canIUse(CALL_MANAGER_CAPABILITY) && call.hasVoiceCapability()) {
+        const slot = await readDefaultSlot(() => sim.getDefaultVoiceSlotId());
+
+        if (isValidSlot(slot, sim.getMaxSimCount())) return slot;
       }
 
-      let slot: number | null = null;
-      if (voice) {
-        slot = await sim.getDefaultVoiceSlotId();
-      } else if (canIUse(CELLULAR_DATA_CAPABILITY)) {
-        slot = await data.getDefaultCellularDataSlotId();
-      }
-
-      if (slot === null || !isValidSlot(slot, sim.getMaxSimCount())) return null;
-
-      const state = await sim.getSimState(slot);
-
-      return state === sim.SimState.SIM_STATE_READY || state === sim.SimState.SIM_STATE_LOADED ? slot : null;
+      if (canIUse(CELLULAR_DATA_CAPABILITY)) return await data.getDefaultCellularDataSlotId();
     }
 
-    return null;
+    return NO_DEFAULT_SLOT;
+  }
+
+  private async isSimReady(slot: number): Promise<boolean> {
+    if (canIUse(TELEPHONY_CORE_CAPABILITY) && isValidSlot(slot, sim.getMaxSimCount())) {
+      const state = await sim.getSimState(slot);
+
+      return state === sim.SimState.SIM_STATE_READY || state === sim.SimState.SIM_STATE_LOADED;
+    }
+
+    return false;
+  }
+}
+
+async function readDefaultSlot(getSlot: () => Promise<number>): Promise<number> {
+  try {
+    return await getSlot();
+  } catch (error) {
+    const code = (error as BusinessError).code;
+
+    // TelephonyKit can reject a default voice or SMS lookup with -1 when no slot is available.
+    if (code === NO_DEFAULT_SLOT || code === CAPABILITY_NOT_SUPPORTED || code === NO_SIM_CARD) {
+      return NO_DEFAULT_SLOT;
+    }
+
+    throw error as Error;
   }
 }
 
