@@ -6,7 +6,7 @@
  */
 
 import type { Want } from '@kit.AbilityKit';
-import { uri } from '@kit.ArkTS';
+import { uri, url } from '@kit.ArkTS';
 import {
   ExpoAppLifecycleState,
   ExpoFunction,
@@ -17,8 +17,7 @@ import {
   ExpoValueTypes,
 } from '@expo-harmony/expo-modules-core';
 
-// Standard implicit-Want values. The Stage-model wantConstant module does not
-// export Action/Entity enums (those belong to the deprecated FA-model API).
+// Stage-model Want does not expose the legacy Action and Entity enums.
 const VIEW_DATA_ACTION: string = 'ohos.want.action.viewData';
 const BROWSABLE_ENTITY: string = 'entity.system.browsable';
 
@@ -125,22 +124,22 @@ export class ExpoWebBrowserModule extends ExpoModule {
   }
 
   private async openBrowser(url: string): Promise<BrowserResult> {
-    this.assertForeground();
-    if (this.launching || this.session !== undefined) return { type: ResultType.LOCKED };
-    validateBrowserURL(url);
+    if (!this.canLaunchBrowser()) return { type: ResultType.LOCKED };
+    validateURL(url, true);
 
     await this.launchBrowser(url);
+    this.assertHost();
 
     return { type: ResultType.OPENED };
   }
 
   private async openAuthSession(url: string, redirect: string | undefined): Promise<BrowserResult> {
-    this.assertForeground();
-    if (this.launching || this.session !== undefined) {
+    if (!this.canLaunchBrowser()) {
       throw new ExpoModuleError('ERR_WEB_BROWSER_ALREADY_OPEN', 'A browser session is already open.');
     }
-    validateBrowserURL(url);
-    if (redirect !== undefined) parseURL(redirect);
+
+    validateURL(url, true);
+    if (redirect !== undefined) validateURL(redirect, false);
 
     return new Promise<BrowserResult>((resolve, reject): void => {
       const session = new AuthSession(redirect, resolve, reject);
@@ -148,6 +147,9 @@ export class ExpoWebBrowserModule extends ExpoModule {
 
       this.launchBrowser(url)
         .then((): void => {
+          if (this.session !== session) return;
+          this.assertHost();
+
           session.launched = true;
           if (session.pendingRedirect !== undefined) {
             this.finishAuthSession(session, { type: ResultType.SUCCESS, url: session.pendingRedirect });
@@ -159,7 +161,7 @@ export class ExpoWebBrowserModule extends ExpoModule {
           if (this.session !== session) return;
 
           this.session = undefined;
-          // Match SDK 55's auth-start failure contract while preserving host errors.
+          // Match SDK 57's auth-start failure contract while preserving host errors.
           session.reject(
             error.code === 'ERR_WEB_BROWSER_OPEN_BROWSER'
               ? new ExpoModuleError('ERR_WEB_AUTH_SESSION_FAILED_TO_START', 'The authentication session could not be started.')
@@ -171,7 +173,7 @@ export class ExpoWebBrowserModule extends ExpoModule {
 
   private async launchBrowser(url: string): Promise<void> {
     this.launching = true;
-    const canceled = new Promise<void>((_resolve, reject): void => {
+    const cancellation = new Promise<void>((_resolve, reject): void => {
       this.cancel = reject;
     });
 
@@ -182,12 +184,10 @@ export class ExpoWebBrowserModule extends ExpoModule {
           entities: [BROWSABLE_ENTITY],
           uri: url,
         }),
-        canceled,
+        cancellation,
       ]);
-    } catch (error) {
-      if (error instanceof ExpoModuleError && error.code === 'ERR_WEB_BROWSER_DESTROYED') {
-        throw new ExpoModuleError('ERR_WEB_BROWSER_DESTROYED', 'The WebBrowser host was destroyed during a browser launch.');
-      }
+    } catch (_) {
+      this.assertHost();
 
       // Platform errors may echo the authentication URL; do not expose their cause.
       throw new ExpoModuleError('ERR_WEB_BROWSER_OPEN_BROWSER', 'Unable to open the web browser.');
@@ -199,12 +199,12 @@ export class ExpoWebBrowserModule extends ExpoModule {
 
   private receiveRedirect(url: string | undefined): void {
     const session = this.session;
+
     if (session !== undefined && session.redirect && url?.startsWith(session.redirect)) {
       if (session.launched) {
         this.finishAuthSession(session, { type: ResultType.SUCCESS, url });
       } else if (session.pendingRedirect === undefined) {
-        // A fast callback may precede startAbility's result. Preserve the first
-        // match, but only report success after the system confirms the launch.
+        // Keep the first redirect until the system confirms the launch.
         session.pendingRedirect = url;
       }
     }
@@ -217,14 +217,23 @@ export class ExpoWebBrowserModule extends ExpoModule {
     session.resolve(result);
   }
 
-  private assertForeground(): void {
+  private assertHost(): void {
     if (this.destroyed || !this.context.isValid) {
       throw new ExpoModuleError('ERR_WEB_BROWSER_DESTROYED', 'The WebBrowser host has been destroyed.');
     }
+  }
+
+  private canLaunchBrowser(): boolean {
+    this.assertHost();
+
+    // The first launch may background the host before an overlapping call arrives.
+    if (this.launching || this.session !== undefined) return false;
 
     if (this.context.isHeadless || this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) {
       throw new ExpoModuleError('ERR_WEB_BROWSER_UNAVAILABLE', 'Opening a browser requires a foreground UIAbility.');
     }
+
+    return true;
   }
 
   private destroy(): void {
@@ -239,22 +248,31 @@ export class ExpoWebBrowserModule extends ExpoModule {
   }
 }
 
-function parseURL(value: string): uri.URI {
-  try {
-    const parsed = new uri.URI(value);
-    if (parsed.scheme && !new RegExp('\\s').test(value)) return parsed;
-  } catch (_) {
-    // Do not include URLs in errors: auth URLs can contain tokens or codes.
+function validateURL(value: string, requireWeb: boolean): void {
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(value)?.[1]?.toLowerCase();
+
+  if (scheme === undefined || /[\s\u0000-\u001f\u007f]/.test(value)) {
+    throw new ExpoModuleError('ERR_WEB_BROWSER_INVALID_URL', 'A valid absolute URL is required.');
   }
 
-  throw new ExpoModuleError('ERR_WEB_BROWSER_INVALID_URL', 'A valid absolute URL is required.');
-}
+  const isWeb = scheme === 'http' || scheme === 'https';
+  if (requireWeb && !isWeb) {
+    throw new ExpoModuleError('ERR_WEB_BROWSER_INVALID_URL', 'The browser URL must use HTTP or HTTPS.');
+  }
 
-function validateBrowserURL(value: string): void {
-  const parsed = parseURL(value);
-  const scheme = parsed.scheme.toLowerCase();
+  // The web URL parser can infer an authority from inputs such as https:example.com.
+  if (isWeb && !/^https?:\/\/[^/\\?#]/i.test(value)) {
+    throw new ExpoModuleError('ERR_WEB_BROWSER_INVALID_URL', 'An HTTP or HTTPS URL must include a host.');
+  }
 
-  if ((scheme !== 'https' && scheme !== 'http') || !parsed.host) {
-    throw new ExpoModuleError('ERR_WEB_BROWSER_INVALID_URL', 'The browser URL must use HTTP or HTTPS and include a host.');
+  try {
+    if (isWeb) {
+      url.URL.parseURL(value);
+    } else {
+      new uri.URI(value);
+    }
+  } catch (_) {
+    // Auth URLs can contain tokens or codes, so omit the platform's raw error.
+    throw new ExpoModuleError('ERR_WEB_BROWSER_INVALID_URL', 'A valid absolute URL is required.');
   }
 }
