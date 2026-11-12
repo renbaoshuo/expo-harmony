@@ -1,30 +1,30 @@
 # @expo-harmony/cli
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/cli)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/cli) | [Expo CLI 文档](https://docs.expo.dev/more/expo-cli/)
 
-Expo 项目的 HarmonyOS 命令行工具，用于启动 Metro 开发服务、生成原生工程，以及构建、安装和运行应用。
+为 HarmonyOS 上的 React Native 应用提供项目所需的 Expo CLI，与官方同版本的 `@expo/cli` 配套使用。
 
 ## 安装
+
+本包适配 Expo SDK 57。在 Expo 应用项目目录中运行以下命令安装：
 
 ```sh
 npm install --save-dev @expo-harmony/cli
 ```
 
-请将 CLI 安装在应用项目中，并使用 Node.js 20 或更高版本。Metro 配置需要接入 `@expo-harmony/metro-config`。
+## 项目配置
 
-通过 Expo 配置生成原生工程的项目（CNG），还需要在 Expo 配置中注册 `@expo-harmony/prebuild-config` 插件。
+Metro 配置需要使用 `@expo-harmony/metro-config`。通过 Expo 配置生成原生工程的项目（CNG），还需要在 Expo 配置中注册 `@expo-harmony/prebuild-config` 插件。手工维护 `harmony/` 工程的项目可以使用 bare 模式，按原生工程中的配置构建和运行，无需注册 prebuild 插件。
 
-手工维护 `harmony/` 工程的项目可以使用 bare 模式，按原生工程中的配置构建和运行，无需注册 prebuild 插件。
-
-构建 HAP 需要 HarmonyOS SDK（含 HMS 和 OpenHarmony 组件）、OHPM 和 Hvigor。连接设备或模拟器还需要 HDC。可以运行 `npx expo-harmony doctor` 检查环境。
+构建 HAP 需要 HarmonyOS SDK（含 HMS 和 OpenHarmony 组件）、OHPM 和 Hvigor。连接设备需要 HDC。可以运行 `npx expo-harmony doctor` 检查环境。
 
 ## 命令
 
 | 命令 | 作用 |
 | --- | --- |
 | `expo-harmony start` | 启动 Metro 开发服务 |
-| `expo-harmony prebuild` | 使用 Expo CNG 生成或更新 HarmonyOS 原生工程 |
-| `expo-harmony prebuild --clean` | 删除并重新生成由 CNG 管理的原生工程 |
+| `expo-harmony prebuild` | 使用 Expo CNG 清理并重新生成 HarmonyOS 原生工程 |
+| `expo-harmony prebuild --no-clean` | 在现有原生工程上增量更新 |
 | `expo-harmony prebuild --check` | 检查 CNG 生成的文件是否需要更新 |
 | `expo-harmony build` | 构建 HAP |
 | `expo-harmony doctor` | 检查项目配置、依赖、开发环境和签名配置 |
@@ -67,11 +67,11 @@ npx expo-harmony start --clear
 
 ```sh
 npx expo-harmony prebuild
-npx expo-harmony prebuild --clean
+npx expo-harmony prebuild --no-clean
 npx expo-harmony prebuild --check
 ```
 
-`prebuild` 根据 Expo 配置生成或更新 HarmonyOS 原生工程，仅用于 CNG 项目。平台固定为 Harmony，也可显式传入 `--platform harmony`。它使用 `@expo-harmony/template` 模板，不接受 `--template` 选项。
+`prebuild` 根据 Expo 配置生成 HarmonyOS 原生工程，仅用于 CNG 项目。
 
 命令会先检查项目配置和依赖，有错误时停止。这一步不要求安装好原生构建工具。
 
@@ -81,9 +81,9 @@ npx expo-harmony prebuild --check
 - `--npm`、`--yarn`、`--pnpm` 或 `--bun`：选择包管理器，最多指定一个。
 - `--skip-dependency-update <packages>`：跳过指定依赖的版本更新。
 
-`--clean` 删除原生工程后重新生成。如果工程缺少 CNG 清单或模板标记，或者目录是符号链接、位于项目之外，命令会拒绝删除。
+默认情况下，`prebuild` 会清理并重新生成原生工程。使用 `--no-clean` 可以保留现有工程并增量更新。
 
-`--check` 比较现有文件与当前配置生成的文件，不修改项目文件。没有差异时退出码为 0，有差异时列出变更并以退出码 2 结束。这个选项不能和会修改工程的选项一起使用。
+`--check` 比较现有文件与当前配置生成的文件，不修改项目文件。没有差异时退出码为 0，有差异时列出变更并以退出码 2 结束。这个选项不能同时指定清理方式、依赖安装或依赖更新选项。
 
 ## Build
 
@@ -116,7 +116,7 @@ npx expo-harmony doctor
 - HDC、OHPM、Hvigor 是否可用
 - 原生工程的 Hvigor 文件和自动链接配置
 
-有 `error` 级别的问题时，命令以非零退出码结束。CNG 工程未配置外部签名文件时会显示警告，仍可构建未签名的 HAP。首次生成、删除 `harmony/` 后重新生成或使用 `prebuild --clean` 时，若配置的签名文件或材料缺失、无效，会给出警告并按未签名生成；签名配置可用时仍会正常应用。对已有工程执行普通 prebuild 或 doctor 时，签名文件缺失或无效会被视为 `error`。证书是否有效，需要在构建时由 Hvigor 检查。
+有 `error` 级别的问题时，命令以非零退出码结束。未配置签名时，CNG 工程仍可构建未签名的 HAP。配置签名后，CLI 会检查签名文件和材料是否存在；证书是否有效由 Hvigor 在构建时检查。
 
 ## Modules
 
@@ -193,7 +193,7 @@ CLI 先读取环境变量指定的工具路径，再查找 DevEco Studio 的安�
 | `HARMONY_OHPM` | 指定 OHPM 路径 |
 | `HARMONY_HVIGORW` | 指定 Hvigor 路径 |
 | `HARMONY_NODE` | 指定 OHPM、Hvigor 使用的 Node.js 路径 |
-| `EXPO_HARMONY_NODE` | 指定原生构建过程中运行 Expo Harmony CLI 的 Node.js 路径，要求 Node.js 20 或更高版本 |
+| `EXPO_HARMONY_NODE` | 指定原生构建过程中运行 Expo Harmony CLI 的 Node.js 路径 |
 | `DEVECO_SDK_HOME`、`HARMONY_HOME` 或 `OHOS_SDK_HOME` | 指定 HarmonyOS SDK 根目录 |
 
 ### 超时

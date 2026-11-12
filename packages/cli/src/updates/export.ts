@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ExpoConfigWithHarmony } from '@expo-harmony/config-plugins';
+import type { EnvMode } from '@expo-harmony/expo__config/internal/project-config';
 import { atomicWriteJson } from '../file';
 import { HarmonyCliError } from '../errors';
 import { readProjectRuntimeAsync } from '../runtime/config';
@@ -44,9 +45,10 @@ export async function publishUpdatesConfigurationAsync(
 export async function publishEmbeddedUpdateAsync(
   root: string,
   paths: { rawfileRoot: string; bundle: string; metadataRoot: string },
-  assets: UpdateAsset[]
+  assets: UpdateAsset[],
+  mode: EnvMode
 ): Promise<void> {
-  const project = await readProjectRuntimeAsync(root);
+  const project = await readProjectRuntimeAsync(root, { mode });
   const bundle = await fs.readFile(paths.bundle);
   const hash = crypto.createHash('sha256').update(Uint8Array.from(bundle)).digest('base64url');
   const directory = path.join(paths.rawfileRoot, 'expo-updates');

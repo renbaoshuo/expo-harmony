@@ -9,14 +9,10 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
-import { getConfig } from '@expo/config';
 import { normalizeHarmonyConfig } from '@expo-harmony/config-plugins';
-import { verifyModulesAsync } from '@expo-harmony/expo-modules-autolinking';
-import {
-  HarmonyPlatformDirectory,
-  isRnohAutolinkingDisabled,
-  validateHarmonySigningConfigFile,
-} from '@expo-harmony/prebuild-config/internal';
+import { getHarmonyProjectConfig, type EnvMode } from '@expo-harmony/expo__config/internal/project-config';
+import { resolveRnohCliPackageJsonPath, verifyModulesAsync } from '@expo-harmony/expo-modules-autolinking';
+import { isRnohAutolinkingDisabled, validateHarmonySigningConfigFile } from '@expo-harmony/prebuild-config/internal';
 
 import { spawnAsync } from '../process';
 import { resolveTimeoutMs } from '../timeout';
@@ -25,6 +21,8 @@ import { resolveHarmonyBuildPlanIfPresentAsync } from '../native/project';
 import { resolveHarmonyToolchain, type HarmonyTool } from '../native/toolchain';
 import { ProjectPackages, RequiredProjectPackages } from '../upstream';
 import { isBareHarmonyProject } from '../native/bare';
+import { loadHarmonyMetroMetadataAsync } from '../expo';
+import { resolveMetroRuntimeRoot } from '../runtime/config';
 
 export interface DoctorCheck {
   details?: unknown;
@@ -40,7 +38,7 @@ export interface DoctorResult {
 }
 
 interface DoctorOptions {
-  freshPrebuild?: boolean;
+  envMode?: EnvMode;
   requireBuildTools?: boolean;
   requireDeviceTools?: boolean;
   validateGeneratedProject?: boolean;
@@ -71,52 +69,16 @@ function canResolvePackage(root, name) {
   }
 }
 
-async function validateMetroConfigAsync(root) {
-  const require = createRequire(path.join(root, 'package.json'));
-  let metro;
-
-  try {
-    metro = require('metro-config');
-  } catch (cause) {
-    throw new Error('Cannot load the project-local metro-config package.', { cause });
-  }
-
-  if (typeof metro.resolveConfig !== 'function') {
-    const version = (() => {
-      try {
-        return require('metro-config/package.json').version;
-      } catch {
-        return 'unknown';
-      }
-    })();
-
-    throw new Error(`metro-config ${version} does not expose resolveConfig().`);
-  }
-
-  const present = Object.hasOwn(process.env, 'EXPO_METRO_TARGET');
-  const previous = process.env.EXPO_METRO_TARGET;
-  let resolved;
-
-  try {
-    process.env.EXPO_METRO_TARGET = 'harmony';
-    resolved = await metro.resolveConfig(undefined, root);
-  } finally {
-    if (present) process.env.EXPO_METRO_TARGET = previous;
-    else delete process.env.EXPO_METRO_TARGET;
-  }
-
-  const config = resolved?.config;
-  const platforms = config?.resolver?.platforms;
-  const platformExtensions = config?.resolver?.unstable_platformExtensions?.harmony;
-  const extensions = Array.isArray(platformExtensions) && platformExtensions.includes('harmony');
-
-  if ((!Array.isArray(platforms) || !platforms.includes('harmony')) && !extensions) {
+async function validateMetroConfigAsync(root: string, mode?: EnvMode) {
+  const { platform, extensions, runtime } = await loadHarmonyMetroMetadataAsync(root, mode);
+  if (!platform && !extensions) {
     throw new Error('The resolved Metro config must register the harmony platform or platform extensions.');
   }
 
   return {
     extensions,
-    runtimePackage: config?.resolver?.resolveRequest?.harmonyRuntime?.harmonyPackage ?? ProjectPackages.rnohRuntime,
+    runtimePackage: runtime?.harmonyPackage ?? ProjectPackages.rnohRuntime,
+    runtimeRoot: runtime?.harmonyPackageRoot,
   };
 }
 
@@ -131,10 +93,10 @@ async function doctorUnlockedAsync(root: string, options: DoctorOptions = {}): P
       const plan = await resolveHarmonyBuildPlanIfPresentAsync(root);
       checks.push(check('native-config', 'pass', `Bare Harmony project: ${plan.bundleName} / ${plan.moduleName}. Native files own the configuration.`));
     } else {
-      config = getConfig(root, {
+      config = getHarmonyProjectConfig(root, {
         isModdedConfig: true,
         skipSDKVersionRequirement: true,
-      }).exp;
+      }, options.envMode).exp;
       normalizeHarmonyConfig(config);
       checks.push(check('app-config', 'pass', 'Harmony app config is valid.'));
     }
@@ -156,15 +118,7 @@ async function doctorUnlockedAsync(root: string, options: DoctorOptions = {}): P
         const signing = await validateHarmonySigningConfigFile(root, harmony.signingConfigFile);
         checks.push(check('signing', 'pass', `Harmony signing config ${signing.name} is valid.`));
       } catch (error) {
-        const fresh = options.freshPrebuild || !fs.existsSync(path.join(root, HarmonyPlatformDirectory));
-        checks.push(check(
-          'signing',
-          fresh ? 'warn' : 'error',
-          fresh
-            ? `The fresh Harmony project will be generated unsigned because signing materials are unavailable: ${error.message}`
-            : error.message,
-          { code: error.code || 'ERR_HARMONY_SIGNING_INVALID' }
-        ));
+        checks.push(check('signing', 'error', error.message, { code: error.code || 'ERR_HARMONY_SIGNING_INVALID' }));
       }
     } else {
       checks.push(check('signing', 'warn', 'No external signing config is set; unsigned generation remains available.'));
@@ -173,11 +127,13 @@ async function doctorUnlockedAsync(root: string, options: DoctorOptions = {}): P
 
   let harmonyPlatformExtensions = false;
   let runtimePackage: string = ProjectPackages.rnohRuntime;
+  let runtimeRoot: string | undefined;
 
   try {
-    const metro = await validateMetroConfigAsync(root);
+    const metro = await validateMetroConfigAsync(root, options.envMode);
     harmonyPlatformExtensions = metro.extensions;
     runtimePackage = metro.runtimePackage;
+    runtimeRoot = metro.runtimeRoot;
     checks.push(check('metro', 'pass', 'The resolved Metro config enables Harmony.'));
   } catch (error) {
     checks.push(check('metro', 'error', `Cannot load a Harmony-enabled Metro config: ${error.message}`, { code: error.code || 'ERR_HARMONY_METRO_CONFIG' }));
@@ -193,7 +149,7 @@ async function doctorUnlockedAsync(root: string, options: DoctorOptions = {}): P
       checks.push(check(
         'out-of-tree',
         'warn',
-        'expo.experiments.outOfTreePlatforms is not enabled; Expo CLI 55.0.33+ drops harmony from its platform resolution (export options, dev server platform detection) without it.'
+        'expo.experiments.outOfTreePlatforms is not enabled; Expo CLI drops harmony from its platform resolution (export options, dev server platform detection) without it.'
       ));
     } else {
       checks.push(check(
@@ -206,7 +162,22 @@ async function doctorUnlockedAsync(root: string, options: DoctorOptions = {}): P
 
   const packages = RequiredProjectPackages.map(name => name === ProjectPackages.rnohRuntime ? runtimePackage : name);
   for (const name of packages) {
-    if (canResolvePackage(root, name)) {
+    let available = false;
+    try {
+      if (name === ProjectPackages.rnohCli) {
+        available = fs.existsSync(resolveRnohCliPackageJsonPath());
+      } else if (name === runtimePackage) {
+        const directory = resolveMetroRuntimeRoot(root, {
+          reactPackage: 'react', harmonyPackage: runtimePackage, harmonyPackageRoot: runtimeRoot,
+        });
+        available = fs.existsSync(path.join(directory, 'package.json'));
+      } else {
+        available = canResolvePackage(root, name);
+      }
+    } catch {
+      // Package resolution failures become diagnostics below.
+    }
+    if (available) {
       checks.push(check(`package:${name}`, 'pass', `${name} is resolvable.`));
     } else {
       checks.push(check(`package:${name}`, 'error', `${name} is not resolvable from the app.`));
@@ -215,7 +186,11 @@ async function doctorUnlockedAsync(root: string, options: DoctorOptions = {}): P
 
   if (options.validateModules !== false) {
     try {
-      const result = await verifyModulesAsync({ platform: 'harmony', projectRoot: root });
+      const result = await verifyModulesAsync({
+        platform: 'harmony',
+        projectRoot: root,
+        ...(options.envMode === 'production' ? { buildType: 'release' } : {}),
+      });
       const errors = result.diagnostics.filter(item => item.severity === 'error');
       const warnings = result.diagnostics.filter(item => item.severity === 'warning');
 
@@ -311,7 +286,7 @@ async function doctorUnlockedAsync(root: string, options: DoctorOptions = {}): P
 }
 
 async function doctorAsync(root: string, options: DoctorOptions = {}): Promise<DoctorResult> {
-  return withHarmonyProjectLockAsync(root, 'doctor', () => doctorUnlockedAsync(root, options));
+  return withHarmonyProjectLockAsync(root, 'doctor', canonicalRoot => doctorUnlockedAsync(canonicalRoot, options));
 }
 
 function formatDoctor(result: DoctorResult): string {

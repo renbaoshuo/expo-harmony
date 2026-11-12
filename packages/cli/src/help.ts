@@ -11,11 +11,11 @@ Commands:
   start                 Start Expo Metro for Harmony development
   runtime               Describe project requirements; --client file checks compatibility
   runtime --publish     Embed capabilities from prepared native build inputs
-  prebuild              Generate the Harmony native project with Expo CNG
-  prebuild --clean      Safely recreate the managed Harmony directory
+  prebuild              Safely recreate the Harmony native project with Expo CNG
+  prebuild --no-clean   Apply changes to the existing Harmony native project
   prebuild --check      Compare generated desired state without project writes
   build                 Build a HAP without selecting or contacting a device
-  doctor                Validate config, versions, Metro, RNOH, SDK, and signing
+  doctor                Validate config, Metro, RNOH, SDK, and signing
   modules list          List native module candidates and their discovery source
   modules inspect       Resolve Harmony metadata (--package narrows the result)
   modules verify        Validate module config, registration conflicts and safe paths
@@ -38,7 +38,7 @@ Options:
   --private-key-path <path>
                         Sign development manifests using the configured Updates certificate
   --port <number>       Metro and device reverse port (default: 8081)
-  --sync                Re-run prebuild before building
+  --sync                Recreate the CNG project before building
   --output-dir <path>   OTA export directory (default: dist)
   --asset-url <url>     HTTP(S) root hosting exported OTA assets
   --check               Validate an existing export without writing

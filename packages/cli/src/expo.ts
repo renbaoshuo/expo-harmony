@@ -5,11 +5,14 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import fs from 'node:fs';
+import { fork } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
+import type { EnvMode } from '@expo-harmony/expo__config/internal/project-config';
+
 import { HarmonyCliError } from './errors';
+import { resolveTimeoutMs } from './timeout';
 
 interface ExpoHermesBundleOptions {
   code: string;
@@ -28,69 +31,89 @@ type ExpoHermesBuilder = (
   options: ExpoHermesBundleOptions
 ) => Promise<ExpoHermesBundleOutput>;
 
-function resolveExpoCli(projectRoot) {
+function resolveExpoCli(projectRoot: string) {
   const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
-  let packageJsonPath;
-
   try {
-    packageJsonPath = projectRequire.resolve('expo/package.json');
+    return {
+      cliPath: projectRequire.resolve('expo/bin/cli'),
+      packageJsonPath: projectRequire.resolve('expo/package.json'),
+    };
   } catch (cause) {
-    throw new HarmonyCliError('ERR_HARMONY_EXPO_CLI_NOT_FOUND', 'Cannot resolve the project-local expo package.', { cause, operation: 'resolve-expo-cli' });
+    throw new HarmonyCliError('ERR_HARMONY_EXPO_CLI_NOT_FOUND', 'Cannot resolve the project-local Expo CLI.', { cause, operation: 'resolve-expo-cli' });
   }
+}
 
-  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-  const bin = typeof packageJson.bin === 'string' ? packageJson.bin : packageJson.bin?.expo;
+function requireFromExpo(projectRoot: string): NodeRequire {
+  const project = createRequire(path.join(projectRoot, 'package.json'));
+  return createRequire(project.resolve('expo/package.json'));
+}
 
-  if (typeof bin !== 'string' || !bin) {
-    throw new HarmonyCliError('ERR_HARMONY_EXPO_CLI_NOT_FOUND', 'The project-local expo package has no expo binary.', { operation: 'resolve-expo-cli' });
-  }
+function requireFromExpoCli(projectRoot: string): NodeRequire {
+  const expo = requireFromExpo(projectRoot);
+  return createRequire(expo.resolve('@expo/cli/package.json'));
+}
 
-  const cliPath = path.resolve(path.dirname(packageJsonPath), bin);
+interface HarmonyMetroRuntime {
+  reactPackage: string;
+  harmonyPackage: string;
+  harmonyPackageRoot?: string;
+}
 
-  if (!fs.existsSync(cliPath)) {
-    throw new HarmonyCliError('ERR_HARMONY_EXPO_CLI_NOT_FOUND', `Expo CLI binary does not exist: ${cliPath}`, { operation: 'resolve-expo-cli' });
-  }
+interface HarmonyMetroMetadata {
+  platform: boolean;
+  extensions: boolean;
+  runtime?: HarmonyMetroRuntime;
+}
 
-  return { cliPath, packageJsonPath };
+function readExpoConfigInChildAsync<T>(
+  projectRoot: string,
+  operation: 'metro' | 'native-runtime' | 'fingerprint',
+  mode: EnvMode = 'development',
+  input?: object
+): Promise<T> {
+  // Config evaluation can be async. Give it the project's dotenv values without
+  // changing the environment seen by other projects or native tools.
+  return new Promise((resolve, reject) => {
+    const child = fork(require.resolve('./internal/projectConfig'), [mode, operation], {
+      cwd: projectRoot,
+      env: { ...process.env, EXPO_HARMONY: '1', EXPO_METRO_TARGET: 'harmony' },
+      execArgv: [],
+      stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+      signal: AbortSignal.timeout(resolveTimeoutMs(operation === 'fingerprint' ? 'fingerprint' : 'project-config',
+        operation === 'fingerprint' ? 300_000 : 60_000)),
+    });
+    child.once('message', (message: { result?: T; error?: string; code?: string }) => {
+      if (message.result !== undefined) resolve(message.result);
+      else reject(new HarmonyCliError(message.code || 'ERR_HARMONY_CONFIG_INVALID',
+        message.error || 'Expo did not return project configuration.', { operation: 'project-config' }));
+    });
+    child.once('error', reject);
+    child.once('close', code => reject(new Error(`Expo project config process exited with code ${code}.`)));
+    if (input) {
+      child.send(input, (error) => {
+        if (error) reject(error);
+      });
+    }
+  });
+}
+
+function loadHarmonyMetroMetadataAsync(projectRoot: string, mode?: EnvMode) {
+  return readExpoConfigInChildAsync<HarmonyMetroMetadata>(projectRoot, 'metro', mode);
 }
 
 function resolveExpoHermesBuilder(projectRoot: string): ExpoHermesBuilder {
-  const projectRequire = createRequire(path.join(projectRoot, 'package.json'));
-  let packageJsonPath;
-
-  try {
-    packageJsonPath = projectRequire.resolve('@expo/metro-config/package.json');
-  } catch (cause) {
-    throw new HarmonyCliError(
-      'ERR_HARMONY_EXPORT_HERMES',
-      'Cannot resolve the project-local @expo/metro-config package required for Hermes export.',
-      { cause, operation: 'resolve-expo-hermes' }
-    );
-  }
-
+  const expo = requireFromExpo(projectRoot);
+  const packageJsonPath = expo.resolve('@expo/metro-config/package.json');
   const modulePath = path.join(path.dirname(packageJsonPath), 'build', 'serializer', 'exportHermes.js');
-  let moduleExports;
-
-  try {
-    moduleExports = projectRequire(modulePath);
-  } catch (cause) {
-    throw new HarmonyCliError(
-      'ERR_HARMONY_EXPORT_HERMES',
-      `Cannot load the Expo Hermes exporter: ${modulePath}`,
-      { cause, operation: 'resolve-expo-hermes' }
-    );
-  }
-
-  if (typeof moduleExports?.buildHermesBundleAsync !== 'function') {
-    throw new HarmonyCliError(
-      'ERR_HARMONY_EXPORT_HERMES',
-      'The project-local @expo/metro-config package does not expose buildHermesBundleAsync().',
-      { operation: 'resolve-expo-hermes' }
-    );
-  }
-
-  return moduleExports.buildHermesBundleAsync as ExpoHermesBuilder;
+  return expo(modulePath).buildHermesBundleAsync as ExpoHermesBuilder;
 }
 
-export { resolveExpoCli, resolveExpoHermesBuilder };
-export type { ExpoHermesBuilder };
+export {
+  loadHarmonyMetroMetadataAsync,
+  readExpoConfigInChildAsync,
+  requireFromExpo,
+  requireFromExpoCli,
+  resolveExpoCli,
+  resolveExpoHermesBuilder,
+};
+export type { ExpoHermesBuilder, HarmonyMetroRuntime };

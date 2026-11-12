@@ -9,9 +9,8 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
-import { resolveEntryPoint } from '@expo/config/paths';
-
 import { HarmonyCliError } from './errors';
+import { requireFromExpo } from './expo';
 
 function isFile(file) {
   try {
@@ -22,21 +21,22 @@ function isFile(file) {
 }
 
 function resolveHarmonyEntryPoint(projectRoot) {
-  const packageJsonPath = path.join(projectRoot, 'package.json');
+  const manifest = path.join(projectRoot, 'package.json');
   try {
-    const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    const pkg = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+    const { resolveEntryPoint } = requireFromExpo(projectRoot)('@expo/config/paths');
     let entry = resolveEntryPoint(projectRoot, { pkg, platform: 'harmony' });
 
     if (!isFile(entry) && typeof pkg.main === 'string' && pkg.main) {
-      const logicalPackageRoot = entry;
-      const resolved = createRequire(packageJsonPath).resolve(pkg.main);
+      const directory = entry;
+      const resolved = createRequire(manifest).resolve(pkg.main);
 
       try {
-        const relative = path.relative(fs.realpathSync(logicalPackageRoot), fs.realpathSync(resolved));
+        const relative = path.relative(fs.realpathSync(directory), fs.realpathSync(resolved));
         entry = relative !== '..'
           && !relative.startsWith(`..${path.sep}`)
           && !path.isAbsolute(relative)
-          ? path.join(logicalPackageRoot, relative)
+          ? path.join(directory, relative)
           : resolved;
       } catch {
         entry = resolved;

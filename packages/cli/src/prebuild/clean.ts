@@ -34,7 +34,7 @@ async function assertSafeCleanTarget(projectRoot) {
   if (!plan || plan.workflow !== 'cng') {
     throw new HarmonyCliError(
       'ERR_HARMONY_CLEAN_TARGET',
-      `Refusing to clean ${target} because its CNG manifest is missing. Please delete it manually or run prebuild without --clean.`,
+      `Refusing to clean ${target} because its CNG manifest is missing. Please delete it manually or run prebuild with --no-clean.`,
       { operation: 'clean' }
     );
   }

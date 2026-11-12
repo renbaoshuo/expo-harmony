@@ -72,7 +72,7 @@ async function buildHarmonyAsync(
   return withHarmonyProjectLockAsync(
     root,
     'build',
-    () => buildHarmonyUnlockedAsync(root, options)
+    canonicalRoot => buildHarmonyUnlockedAsync(canonicalRoot, options)
   );
 }
 

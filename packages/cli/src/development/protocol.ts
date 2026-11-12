@@ -5,9 +5,18 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+import type { ExpoConfigWithHarmony } from '@expo-harmony/config-plugins';
+
 import { HarmonyCliError } from '../errors';
 
 export const HarmonyManifestPath = '/manifest';
+
+export function harmonyDevelopmentProjectId(
+  config: Pick<ExpoConfigWithHarmony, 'owner' | 'slug' | 'extra'>,
+  bundleName: string
+): string {
+  return config.extra?.eas?.projectId || `@${config.owner || 'anonymous'}/${config.slug}/${bundleName}`;
+}
 
 export function canonicalHarmonyManifestURL(value: string): string {
   let url: URL;

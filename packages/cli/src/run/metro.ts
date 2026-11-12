@@ -86,11 +86,12 @@ function probeMetroAsync(
   });
 }
 
-async function requireExistingMetroAsync(port: number): Promise<MetroSession> {
+async function requireExistingMetroAsync(projectRoot: string, port: number, host?: string): Promise<MetroSession> {
   const status = await probeMetroAsync(port);
 
   if (status === 'metro') {
     return {
+      development: await readDevelopmentSessionAsync(projectRoot, port, host),
       owner: 'existing',
       port,
       stop: async () => {},
@@ -100,7 +101,7 @@ async function requireExistingMetroAsync(port: number): Promise<MetroSession> {
 
   const code = status === 'free' ? 'ERR_HARMONY_METRO_UNAVAILABLE' : 'ERR_HARMONY_METRO_PORT_IN_USE';
   const message = status === 'free'
-    ? `No Metro server is running on port ${port}; start Expo Metro before using --no-bundler.`
+    ? `No Metro server is running on port ${port}; use expo-harmony start before using --no-bundler.`
     : `Port ${port} is occupied by a process that is not a compatible Metro server.`;
 
   throw new HarmonyCliError(code, message, { operation: 'metro-probe' });
@@ -145,6 +146,7 @@ async function startExpoMetroAsync(
     cwd: projectRoot,
     env: {
       ...process.env,
+      EXPO_HARMONY: '1',
       EXPO_METRO_TARGET: 'harmony',
       REACT_NATIVE_PACKAGER_HOSTNAME: host,
     },
@@ -210,6 +212,7 @@ async function startExpoMetroAsync(
           async waitAsync() {
             const result = await managed.completion;
             if (managed.wasStopped()) return;
+
             const interrupted = result.signal === 'SIGINT' || result.signal === 'SIGTERM';
             if (result.code === 0 || interrupted) return;
 

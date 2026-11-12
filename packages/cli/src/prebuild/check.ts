@@ -12,6 +12,8 @@ import path from 'node:path';
 
 import {
   compareAsync,
+  HarmonyPlatformDirectory,
+  mirrorHarmonyCheckPath,
   stageAsync,
 } from '@expo-harmony/prebuild-config/internal';
 
@@ -41,23 +43,20 @@ interface CheckOptions {
   buildType?: 'debug' | 'release';
 }
 
-function mirrorRoot(temp, project) {
-  const absolute = path.resolve(project);
-  const parsed = path.parse(absolute);
-  const volume = parsed.root.replace(/[^A-Za-z0-9]+/gu, '') || 'root';
-  const segments = absolute.slice(parsed.root.length).split(path.sep).filter(Boolean);
-
-  return path.join(temp, 'filesystem', volume, ...segments);
-}
-
 async function linkModuleEntryAsync(
   source: string,
   target: string,
   entry: fs.Dirent
 ) {
-  const directory = entry.isSymbolicLink()
-    ? (await fs.promises.stat(source)).isDirectory()
-    : entry.isDirectory();
+  let directory = entry.isDirectory();
+  if (entry.isSymbolicLink()) {
+    try {
+      directory = (await fs.promises.stat(source)).isDirectory();
+    } catch (cause) {
+      if (cause.code === 'ENOENT') return;
+      throw cause;
+    }
+  }
 
   if (process.platform === 'win32' && !directory) {
     await fs.promises.copyFile(source, target);
@@ -134,7 +133,8 @@ async function copyAsync(
   project: string,
   target: string,
   plan: HarmonyBuildPlan,
-  temp = path.dirname(target)
+  temp: string,
+  buildType?: CheckOptions['buildType']
 ) {
   await fs.promises.cp(project, target, {
     recursive: true,
@@ -152,7 +152,7 @@ async function copyAsync(
 
   // Link individual packages so dependency scanners retain paths inside the mirror.
   await linkModulesAsync(modules, path.join(target, 'node_modules'));
-  await stageAsync(project, target, temp);
+  await stageAsync(project, target, temp, buildType === 'release' ? 'production' : 'development');
 }
 
 async function withGeneratedProjectAsync<T>(
@@ -160,16 +160,15 @@ async function withGeneratedProjectAsync<T>(
   options: CheckOptions & { clean?: boolean; skipPatches?: boolean },
   action: (expected: string, checksum: string) => Promise<T>
 ): Promise<T> {
-  project = path.resolve(project);
+  project = await fs.promises.realpath(project);
   const plan = await resolveHarmonyBuildPlanAsync(project);
-  const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'expo-harmony-check-'));
-  const expected = mirrorRoot(temp, project);
+  const temp = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'expo-harmony-check-')));
+  const expected = mirrorHarmonyCheckPath(temp, project);
+  const clean = options.clean !== false;
   let packed;
 
   try {
-    await copyAsync(project, expected, plan, temp);
-    if (options.clean) await fs.promises.rm(path.join(expected, 'harmony'), { recursive: true, force: true });
-
+    await copyAsync(project, expected, plan, temp, options.buildType);
     packed = await packAsync(project);
 
     const expo = resolveExpoCli(project);
@@ -180,12 +179,15 @@ async function withGeneratedProjectAsync<T>(
       '--platform', 'harmony',
       '--template', packed.tarball,
       '--no-install',
+      ...(clean ? [] : ['--no-clean']),
     ], {
       capture: true,
       cwd: expected,
       env: {
         ...createHarmonyToolchainEnv(),
         ...packed.env,
+        NODE_ENV: process.env.NODE_ENV || (options.buildType === 'release' ? 'production' : 'development'),
+        EXPO_HARMONY_PREBUILD_FRESH: clean || !fs.existsSync(path.join(expected, HarmonyPlatformDirectory)) ? '1' : '0',
         ...(options.buildType ? { EXPO_HARMONY_BUILD_TYPE: options.buildType } : {}),
         EXPO_HARMONY_CHECK_MIRROR_ROOT: temp,
         ...(options.skipPatches ? { EXPO_HARMONY_SKIP_PATCHES: '1' } : {}),
@@ -214,7 +216,7 @@ async function checkAsync(project, options: CheckOptions = {}) {
   return withHarmonyProjectLockAsync(
     project,
     'prebuild-check',
-    () => withGeneratedProjectAsync(project, options, expected => compareAsync(project, expected))
+    root => withGeneratedProjectAsync(root, options, expected => compareAsync(root, expected))
   );
 }
 

@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { HarmonyCliError } from '../errors';
+import { assertSafeRelative } from '../path';
 import { spawnAsync } from '../process';
 
 interface Api {
@@ -23,48 +24,8 @@ interface Api {
 
 function resolve(project: string) {
   const load = createRequire(path.join(project, 'package.json'));
-  let api: Api;
-
-  try {
-    api = load('@expo-harmony/prebuild-config/internal/template');
-  } catch (cause) {
-    throw new HarmonyCliError(
-      'ERR_HARMONY_TEMPLATE_INVALID',
-      'Cannot load @expo-harmony/prebuild-config/internal/template from the project. Update the project-local prebuild config to a compatible version.',
-      { cause, operation: 'resolve-template' }
-    );
-  }
-
-  if (typeof api?.ROOT_ENV !== 'string' || typeof api.resolveBundled !== 'function') {
-    throw new HarmonyCliError(
-      'ERR_HARMONY_TEMPLATE_INVALID',
-      'The project-local @expo-harmony/prebuild-config template API is invalid.',
-      { operation: 'resolve-template' }
-    );
-  }
-
-  let template: ReturnType<Api['resolveBundled']>;
-  try {
-    template = api.resolveBundled();
-  } catch (cause) {
-    throw new HarmonyCliError(
-      'ERR_HARMONY_TEMPLATE_INVALID',
-      'Cannot resolve the Harmony template declared by the project-local prebuild config.',
-      { cause, operation: 'resolve-template' }
-    );
-  }
-
-  if (!template
-    || typeof template.root !== 'string'
-    || !path.isAbsolute(template.root)
-    || typeof template.version !== 'string'
-    || !template.version) {
-    throw new HarmonyCliError(
-      'ERR_HARMONY_TEMPLATE_INVALID',
-      'The project-local @expo-harmony/prebuild-config returned an invalid template descriptor.',
-      { operation: 'resolve-template' }
-    );
-  }
+  const api: Api = load('@expo-harmony/prebuild-config/internal/template');
+  const template = api.resolveBundled();
 
   return {
     env: { [api.ROOT_ENV]: template.root },
@@ -72,59 +33,110 @@ function resolve(project: string) {
   };
 }
 
-function normalizeNpmPackResult(result: unknown): { filename?: unknown }[] | null {
-  if (Array.isArray(result)) return result;
-  if (result && typeof result === 'object') return Object.values(result);
-  return null;
+interface NpmPack {
+  filename?: string;
+  files?: { path: string }[];
 }
 
-async function packAsync(project: string) {
-  const template = resolve(project);
-  const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'expo-harmony-template-'));
+async function npmPackAsync(project: string, root: string, temp: string, dryRun = false): Promise<NpmPack | undefined> {
   const result = await spawnAsync('npm', [
     'pack',
     '--json',
     '--ignore-scripts',
+    ...(dryRun ? ['--dry-run'] : []),
     '--cache', path.join(temp, '.npm-cache'),
     '--pack-destination', temp,
-    template.root,
+    root,
   ], { capture: true, cwd: project, operation: 'pack-template' });
 
   if (result.code !== 0) {
-    await fs.promises.rm(temp, { recursive: true, force: true });
     throw new HarmonyCliError('ERR_HARMONY_TEMPLATE_INVALID', `npm pack failed: ${result.stderr.trim()}`, {
       exitCode: result.code,
       operation: 'pack-template',
     });
   }
 
-  let packs;
-
   try {
-    packs = normalizeNpmPackResult(JSON.parse(result.stdout));
+    const packs = JSON.parse(result.stdout);
+    if (Array.isArray(packs)) return packs[0];
+    if (packs && typeof packs === 'object') return Object.values<NpmPack>(packs)[0];
   } catch (cause) {
-    await fs.promises.rm(temp, { recursive: true, force: true });
     throw new HarmonyCliError('ERR_HARMONY_TEMPLATE_INVALID', 'npm pack returned invalid JSON.', {
       cause,
       operation: 'pack-template',
     });
   }
+}
 
-  const filename = packs?.[0]?.filename;
-  const tarball = filename && path.join(temp, filename);
+async function stageWorkspaceTemplateAsync(project: string, root: string, temp: string): Promise<string> {
+  const manifest = path.join(root, 'package.json');
+  const pkg = JSON.parse(await fs.promises.readFile(manifest, 'utf8'));
+  const defaults = Object.entries<string>(pkg.dependencies ?? {})
+    .filter(([, specifier]) => typeof specifier === 'string' && specifier.startsWith('workspace:'));
+  if (!defaults.length) return root;
 
-  if (!tarball || !fs.existsSync(tarball)) {
-    await fs.promises.rm(temp, { recursive: true, force: true });
-    throw new HarmonyCliError('ERR_HARMONY_TEMPLATE_INVALID', 'npm pack did not create a template tarball.', { operation: 'pack-template' });
+  const load = createRequire(manifest);
+  for (const [name, specifier] of defaults) {
+    try {
+      const range = specifier.slice('workspace:'.length);
+      if (!['*', '^', '~'].includes(range)) {
+        throw new Error(`Unsupported workspace dependency selector: ${specifier}`);
+      }
+
+      const dependency = load.resolve(`${name}/package.json`);
+      const { version } = JSON.parse(await fs.promises.readFile(dependency, 'utf8'));
+      if (typeof version !== 'string' || !version) throw new Error('Missing package version.');
+
+      pkg.dependencies[name] = range === '*' ? version : range + version;
+    } catch (cause) {
+      throw new HarmonyCliError('ERR_HARMONY_TEMPLATE_INVALID', `Cannot resolve the workspace template default for ${name}: ${cause.message}`, {
+        cause,
+        operation: 'pack-template',
+      });
+    }
   }
 
-  return {
-    tarball,
-    env: template.env,
-    async cleanup() {
-      await fs.promises.rm(temp, { recursive: true, force: true });
-    },
-  };
+  const pack = await npmPackAsync(project, root, temp, true);
+  if (!Array.isArray(pack?.files)) {
+    throw new HarmonyCliError('ERR_HARMONY_TEMPLATE_INVALID', 'npm pack did not list the workspace template files.', { operation: 'pack-template' });
+  }
+
+  const stage = path.join(temp, 'template');
+
+  await fs.promises.mkdir(stage);
+  for (const file of pack.files) {
+    const relative = assertSafeRelative(file.path, 'npm pack');
+    if (relative === 'package.json') continue;
+
+    const target = path.join(stage, relative);
+
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    await fs.promises.copyFile(path.join(root, relative), target);
+  }
+  // Match the published workspace manifest so both pack paths produce the same checksum.
+  await fs.promises.writeFile(path.join(stage, 'package.json'), JSON.stringify(pkg, null, 2));
+
+  return stage;
+}
+
+async function packAsync(project: string) {
+  const template = resolve(project);
+  const temp = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'expo-harmony-template-'));
+  const cleanup = () => fs.promises.rm(temp, { recursive: true, force: true });
+  try {
+    const root = await stageWorkspaceTemplateAsync(project, template.root, temp);
+    const pack = await npmPackAsync(project, root, temp);
+    const filename = pack?.filename;
+    const tarball = filename && path.join(temp, filename);
+    if (!tarball || !fs.existsSync(tarball)) {
+      throw new HarmonyCliError('ERR_HARMONY_TEMPLATE_INVALID', 'npm pack did not create a template tarball.', { operation: 'pack-template' });
+    }
+
+    return { tarball, env: template.env, cleanup };
+  } catch (cause) {
+    await cleanup();
+    throw cause;
+  }
 }
 
 export {

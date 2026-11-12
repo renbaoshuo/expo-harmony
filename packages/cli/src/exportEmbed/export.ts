@@ -6,7 +6,6 @@
  */
 
 import fs from 'node:fs';
-import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -16,10 +15,11 @@ import { resolveHarmonyEntryPoint } from '../entry';
 import { HarmonyCliError } from '../errors';
 import { withHarmonyProjectLockAsync } from '../projectLock';
 import { resolveHarmonyBuildPlanAsync } from '../native/project';
+import type { HarmonyBuildMode } from '../native/types';
 import { formatDiagnostics, spawnAsync } from '../process';
 import { resolveTimeoutMs } from '../timeout';
 import { resolveExpoHermesBuilder } from '../expo';
-import { readMetroRuntimeAsync } from '../runtime/config';
+import { readMetroRuntimeAsync, resolveMetroRuntimeRoot } from '../runtime/config';
 import {
   assertHermesBundle, assertSourceMap, exportPaths,
   publishExportAsync, validatePublishedExportAsync,
@@ -27,6 +27,7 @@ import {
 } from './manifest';
 
 export interface ExportOptions {
+  buildMode?: HarmonyBuildMode;
   check?: boolean;
   outputDirectory?: string;
   resetCache?: boolean;
@@ -47,8 +48,10 @@ async function exportEmbedUnlockedAsync(
   root: string,
   options: ExportOptions = {}
 ): Promise<HarmonyExportManifest> {
+  const buildMode = options.buildMode ?? 'release';
+  const mode = buildMode === 'release' ? 'production' : 'development';
   if (!options.skipDoctor) {
-    const doctor = await doctorAsync(root);
+    const doctor = await doctorAsync(root, { envMode: mode, requireDeviceTools: false });
     if (!doctor.ok) {
       const checks = doctor.checks.filter(check => check.status === 'error').map(check => check.id);
 
@@ -56,7 +59,7 @@ async function exportEmbedUnlockedAsync(
     }
   }
 
-  const plan = await resolveHarmonyBuildPlanAsync(root, { buildMode: 'release' });
+  const plan = await resolveHarmonyBuildPlanAsync(root, { buildMode });
   const paths = options.outputDirectory
     ? {
         rawfileRoot: path.join(options.outputDirectory, 'embedded'), bundle: path.join(options.outputDirectory, 'embedded/hermes_bundle.hbc'),
@@ -91,9 +94,10 @@ async function exportEmbedUnlockedAsync(
       cwd: root,
       env: {
         ...process.env,
+        NODE_ENV: process.env.NODE_ENV || mode,
+        EXPO_HARMONY: '1',
         EXPO_METRO_TARGET: 'harmony',
         HERMES_V1_ENABLED: 'true',
-        NODE_ENV: 'production',
       },
       operation: 'expo-export-embed',
       outputLimit: 4 * 1024 * 1024,
@@ -110,27 +114,25 @@ async function exportEmbedUnlockedAsync(
       );
     }
 
-    // Expo 55 only infers Hermes for iOS and Android. Keep Harmony bundling in the Expo CLI,
+    // Expo only infers Hermes for its built-in native platforms. Keep Harmony bundling in the Expo CLI,
     // then explicitly hand its JS and source map to Expo's own Hermes exporter.
     try {
       const [code, map] = await Promise.all([
         fs.promises.readFile(temp.javascript, 'utf8'),
         fs.promises.readFile(temp.metroSourceMap, 'utf8'),
       ]);
-      const buildHermesBundleAsync = resolveExpoHermesBuilder(root);
+      const buildHermes = resolveExpoHermesBuilder(root);
 
       // Expo resolves hermes-compiler from react-native. For Harmony, resolve it
       // from RNOH instead of the app's Android/iOS React Native installation.
-      const require = createRequire(path.join(root, 'package.json'));
-      const metro = await readMetroRuntimeAsync(root);
-      const runtime = path.dirname(require.resolve(metro.harmonyPackage + '/package.json'));
+      const runtime = resolveMetroRuntimeRoot(root, await readMetroRuntimeAsync(root, mode));
       const modules = path.join(directory, 'node_modules');
 
       await fs.promises.mkdir(modules);
       await fs.promises.symlink(runtime, path.join(modules, 'react-native'),
         process.platform === 'win32' ? 'junction' : 'dir');
 
-      const output = await buildHermesBundleAsync({
+      const output = await buildHermes({
         code,
         filename: entry,
         map,
@@ -138,8 +140,8 @@ async function exportEmbedUnlockedAsync(
         projectRoot: directory,
       });
 
-      if (!(output?.hbc instanceof Uint8Array) || typeof output.sourcemap !== 'string') {
-        throw new Error('Expo did not return Hermes bytecode and a composed source map.');
+      if (typeof output.sourcemap !== 'string') {
+        throw new Error('Expo did not return a composed Hermes source map.');
       }
 
       await Promise.all([
@@ -148,11 +150,7 @@ async function exportEmbedUnlockedAsync(
       ]);
     } catch (cause) {
       if (cause instanceof HarmonyCliError) {
-        throw new HarmonyCliError(cause.code, cause.message, {
-          cause,
-          exitCode: cause.exitCode,
-          operation: cause.operation,
-        });
+        throw cause;
       }
 
       throw new HarmonyCliError(
@@ -162,11 +160,11 @@ async function exportEmbedUnlockedAsync(
       );
     }
 
-    const bytecode = await assertHermesBundle(temp.bundle);
+    const bytecode = assertHermesBundle(temp.bundle);
     await assertSourceMap(temp.sourceMap);
 
     const manifest = await publishExportAsync(root, paths, temp, entry, bytecode);
-    await publishEmbeddedUpdateAsync(root, paths, JSON.parse(await fs.promises.readFile(temp.metadata, 'utf8')));
+    await publishEmbeddedUpdateAsync(root, paths, JSON.parse(await fs.promises.readFile(temp.metadata, 'utf8')), mode);
 
     return manifest;
   } finally {
@@ -181,7 +179,7 @@ async function exportEmbedAsync(
   return withHarmonyProjectLockAsync(
     root,
     'export:embed',
-    () => exportEmbedUnlockedAsync(root, options)
+    canonicalRoot => exportEmbedUnlockedAsync(canonicalRoot, options)
   );
 }
 

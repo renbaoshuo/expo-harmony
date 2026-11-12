@@ -6,19 +6,17 @@
  */
 
 import crypto from 'node:crypto';
-import { createRequire } from 'node:module';
-
-import { resolveExpoCli } from '../expo';
-import { resolveHarmonyBuildPlanAsync } from '../native/project';
-import { resolveRuntimeRequirementsAsync } from '../runtime/contract';
-import { canonicalHarmonyManifestURL, createHarmonyLaunchLink, HarmonyManifestPath } from './protocol';
+import { stripPrivateHarmonyConfig } from '@expo-harmony/expo__config/internal/project-config';
+import { requireFromExpoCli } from '../expo';
+import { resolveRuntimeProjectAsync } from '../runtime/contract';
+import { canonicalHarmonyManifestURL, createHarmonyLaunchLink, harmonyDevelopmentProjectId, HarmonyManifestPath } from './protocol';
 
 async function createManifestResponseAsync(middleware, options, require: NodeRequire) {
   const { ExpoGoManifestHandlerMiddleware: Manifest, ResponseContentType: Types } = require('./build/src/start/server/middleware/ExpoGoManifestHandlerMiddleware');
   const { getCodeSigningInfoAsync, signManifestString } = require('./build/src/utils/codesigning');
   const { serializeDictionary } = require('structured-headers');
   const { exp, expoGoConfig, bundleUrl, hostUri } = await middleware._resolveProjectSettingsAsync(options);
-  const requirements = await resolveRuntimeRequirementsAsync(middleware.projectRoot);
+  const { bundleName, requirements } = await resolveRuntimeProjectAsync(middleware.projectRoot);
   const signing = await getCodeSigningInfoAsync(exp, options.expectSignature, middleware.options.privateKeyPath);
   const scope = await Manifest.getScopeKeyAsync({ slug: exp.slug, codeSigningInfo: signing });
 
@@ -28,7 +26,6 @@ async function createManifestResponseAsync(middleware, options, require: NodeReq
   bundle.searchParams.set('unstable_transformProfile', 'hermes-stable');
   bundle.searchParams.set('lazy', 'false');
 
-  const name = exp.harmony?.bundleName || (await resolveHarmonyBuildPlanAsync(middleware.projectRoot)).bundleName;
   const id = exp.extra?.eas?.projectId;
   const address = canonicalHarmonyManifestURL(`${bundle.origin}${options.harmonyManifestPath ?? `${HarmonyManifestPath}?platform=harmony`}`);
   const manifest = JSON.stringify({
@@ -40,11 +37,11 @@ async function createManifestResponseAsync(middleware, options, require: NodeReq
     metadata: {},
     extra: {
       eas: { projectId: id ?? undefined },
-      expoClient: { ...exp, hostUri },
+      expoClient: { ...stripPrivateHarmonyConfig(exp), hostUri },
       expoGo: expoGoConfig,
       scopeKey: scope,
       harmony: {
-        projectId: id || `@${exp.owner || 'anonymous'}/${exp.slug}/${name}`,
+        projectId: harmonyDevelopmentProjectId(exp, bundleName),
         manifestUrl: address,
         launchLink: createHarmonyLaunchLink(address),
         requirements,
@@ -75,20 +72,18 @@ async function createManifestResponseAsync(middleware, options, require: NodeReq
 }
 
 export function installHarmonyManifest(root: string) {
-  const expo = createRequire(resolveExpoCli(root).cliPath);
-  const require = createRequire(expo.resolve('@expo/cli/package.json'));
+  const require = requireFromExpoCli(root);
 
   const { BundlerDevServer } = require('./build/src/start/server/BundlerDevServer');
   const { parsePlatformHeader } = require('./build/src/start/server/middleware/resolvePlatform');
   const create = BundlerDevServer.prototype.getManifestMiddlewareAsync;
 
-  // Reuse Expo's terminal QR renderer and dev-session publishing with our
-  // registered link, rather than emitting a second, incompatible QR code.
   const nativeURL = BundlerDevServer.prototype.getNativeRuntimeUrl;
   const redirectURL = BundlerDevServer.prototype.getRedirectUrl;
   BundlerDevServer.prototype.getNativeRuntimeUrl = function (options = {}) {
     const address = this.getUrlCreator().constructUrl({ ...options, scheme: 'http' });
     if (!address) return nativeURL.call(this, options);
+
     const manifest = new URL(HarmonyManifestPath, address);
     manifest.searchParams.set('platform', 'harmony');
     return createHarmonyLaunchLink(manifest.toString());
@@ -108,17 +103,16 @@ export function installHarmonyManifest(root: string) {
     middleware.getParsedHeaders = (request) => {
       if (parsePlatformHeader(request) !== 'harmony') return parse.call(middleware, request);
 
-      // Bypass only the upstream platform assertion without changing the actual request.
       const url = new URL(request.url, 'http://localhost');
       url.searchParams.delete('platform');
       url.searchParams.append('platform', 'harmony');
       const manifest = new URL(canonicalHarmonyManifestURL(url.toString()));
-      const harmonyManifestPath = manifest.pathname + manifest.search;
+      const address = manifest.pathname + manifest.search;
       url.searchParams.set('platform', 'ios');
       const copy = Object.create(request);
       copy.url = url.pathname + url.search;
 
-      return { ...parse.call(middleware, copy), platform: 'harmony', harmonyManifestPath };
+      return { ...parse.call(middleware, copy), platform: 'harmony', harmonyManifestPath: address };
     };
     middleware._getManifestResponseAsync = options => options.platform === 'harmony'
       ? createManifestResponseAsync(middleware, options, require)

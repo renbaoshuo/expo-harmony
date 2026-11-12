@@ -11,6 +11,7 @@ import path from 'node:path';
 
 import { HarmonyCliError } from '../errors';
 import { atomicCopy, atomicWriteJson, describeFile, listFiles, removeEmptyParents } from '../file';
+import { readHermesBytecode } from '../native/hermes';
 import { assertSafeRelative, isInside, toPosixPath } from '../path';
 import type { ExportTemporary } from './export';
 
@@ -30,7 +31,6 @@ export interface HarmonyExportManifest {
   transformProfile: 'hermes-stable';
 }
 
-const HermesMagic = Buffer.from('c61fbc03c103191f', 'hex');
 const ManifestSchemaVersion = 1;
 
 function exportPaths(plan: {
@@ -45,24 +45,11 @@ function exportPaths(plan: {
   return plan.exportPaths;
 }
 
-async function assertHermesBundle(file) {
-  let handle;
+function assertHermesBundle(file: string) {
   try {
-    handle = await fs.promises.open(file, 'r');
-    const header = Buffer.alloc(12);
-    const { bytesRead } = await handle.read(header, 0, header.length, 0);
-    const stat = await handle.stat();
-
-    if (bytesRead < header.length || stat.size <= header.length
-      || header.subarray(0, HermesMagic.length).toString('hex') !== HermesMagic.toString('hex')) {
-      throw new Error('Expo export did not produce non-empty Hermes bytecode.');
-    }
-
-    return { bytecodeVersion: header.readUInt32LE(8), size: stat.size };
+    return readHermesBytecode(file);
   } catch (cause) {
     throw new HarmonyCliError('ERR_HARMONY_EXPORT_INVALID_BUNDLE', 'The Harmony export output is not a valid Hermes bytecode bundle.', { cause, operation: 'validate-export' });
-  } finally {
-    await handle?.close();
   }
 }
 
@@ -111,7 +98,7 @@ async function publishExportAsync(
   paths: ReturnType<typeof exportPaths>,
   temporary: ExportTemporary,
   entryFile: string,
-  bytecode: Awaited<ReturnType<typeof assertHermesBundle>>
+  bytecode: ReturnType<typeof assertHermesBundle>
 ) {
   const previous = await readPreviousManifest(paths.manifest);
   const previouslyOwned = new Set((previous?.assets || []).map(asset => asset.path));
@@ -167,10 +154,17 @@ async function publishExportAsync(
     await atomicWriteJson(manifest, paths.manifest, path.dirname(paths.manifest));
 
     const nextOwned = new Set(assets.map(asset => asset.path));
+    const rawfileRoot = await fs.promises.realpath(paths.rawfileRoot);
     for (const stale of previouslyOwned) {
       if (nextOwned.has(stale)) continue;
+
       const destination = path.join(paths.rawfileRoot, assertSafeRelative(stale, 'Previous export manifest'));
-      if (!isInside(paths.rawfileRoot, destination)) continue;
+      const parent = await fs.promises.realpath(path.dirname(destination)).catch((error) => {
+        if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
+        throw error;
+      });
+      if (!parent || !isInside(rawfileRoot, parent)) continue;
+
       await fs.promises.rm(destination, { force: true });
       await removeEmptyParents(destination, paths.rawfileRoot);
     }
@@ -195,7 +189,7 @@ async function validatePublishedExportAsync(paths: ReturnType<typeof exportPaths
     throw new HarmonyCliError('ERR_HARMONY_EXPORT_MANIFEST', 'Harmony export manifest does not exist. Run expo-harmony export:embed first.', { operation: 'check-export' });
   }
 
-  const bytecode = await assertHermesBundle(paths.bundle);
+  const bytecode = assertHermesBundle(paths.bundle);
   const sourceMap = await assertSourceMap(paths.sourceMap);
   const expectedBundle = await describeFile(paths.bundle);
   if (manifest.bundle?.sha256 !== expectedBundle.sha256
@@ -220,7 +214,6 @@ async function validatePublishedExportAsync(paths: ReturnType<typeof exportPaths
 }
 
 export {
-  HermesMagic,
   assertHermesBundle,
   assertSourceMap,
   exportPaths,

@@ -11,7 +11,7 @@ import path from 'node:path';
 import {
   HarmonyNativeInputsFingerprintVersion,
   fingerprintHarmonyNativeInputsSync,
-} from '@expo-harmony/config-plugins/internal/native-inputs';
+} from '@expo-harmony/expo-modules-autolinking/native-inputs';
 
 import { HarmonyCliError } from '../errors';
 import { type HarmonyBuildPlan } from './types';

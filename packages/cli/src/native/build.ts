@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { getConfig } from '@expo/config';
+import { getHarmonyProjectConfig } from '@expo-harmony/expo__config/internal/project-config';
 import path from 'node:path';
 
 import { commitHarmonyNativeBuildCacheAsync, prepareHarmonyNativeBuildCacheAsync } from './cache';
@@ -34,10 +34,11 @@ export async function buildNativeAsync(
   steps: Record<string, number>
 ): Promise<NativeBuildResult> {
   let exported: NativeBuildResult['export'] = null;
-  const embedded = plan.buildMode === 'release' || getConfig(root).exp.updates?.useNativeDebug === true;
+  const embedded = plan.buildMode === 'release' || getHarmonyProjectConfig(root).exp.updates?.useNativeDebug === true;
   if (embedded) {
     progress(options, 'Exporting the release Hermes bundle');
     const manifest = await timedAsync(steps, 'export', () => exportEmbedAsync(root, {
+      buildMode: plan.buildMode,
       resetCache: options.resetCache,
       skipDoctor: true,
     }));
@@ -69,6 +70,7 @@ export async function buildNativeAsync(
       ...process.env,
       EXPO_HARMONY_NODE: process.env.EXPO_HARMONY_NODE || process.execPath,
       EXPO_METRO_TARGET: 'harmony',
+      EXPO_HARMONY_BUILD_TYPE: plan.buildMode,
       HERMES_V1_ENABLED: 'true',
       ...(plan.workflow === 'bare' ? { EXPO_HARMONY_NATIVE_PREPARED: '1' } : {}),
       ...(embedded ? { EXPO_HARMONY_BUNDLE_PREBUILT: '1' } : {}),

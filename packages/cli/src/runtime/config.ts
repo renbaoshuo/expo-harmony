@@ -10,23 +10,29 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
-import { getConfig } from '@expo/config';
 import { compileHarmonyModsAsync, normalizeHarmonyConfig, parseHarmonySdkVersion, type ExpoConfigWithHarmony } from '@expo-harmony/config-plugins';
 import type { HarmonyRuntimeContract } from '@expo-harmony/expo-modules-autolinking/runtime';
 import { withHarmonyPrebuildConfig } from '@expo-harmony/prebuild-config';
+import { getHarmonyProjectConfig, type EnvMode } from '@expo-harmony/expo__config/internal/project-config';
 import JSON5 from 'json5';
 
 import { fingerprintHarmonyAsync } from './fingerprint';
 import { HarmonyCliError } from '../errors';
+import { loadHarmonyMetroMetadataAsync, readExpoConfigInChildAsync, requireFromExpo, type HarmonyMetroRuntime } from '../expo';
+import { isBareHarmonyProject } from '../native/bare';
+import { resolveBundledRnohRuntime } from '@expo-harmony/expo-modules-autolinking';
 import { resolveHarmonyBuildPlanAsync } from '../native/project';
 import type { HarmonyBuildPlan } from '../native/types';
+import { ProjectPackages } from '../upstream';
 
-export interface HarmonyMetroRuntime {
-  reactPackage: string;
-  harmonyPackage: string;
-}
-
-export async function resolveRuntimeVersionAsync(root: string, config: ExpoConfigWithHarmony, app): Promise<string> {
+export async function resolveRuntimeVersionAsync(
+  root: string,
+  config: ExpoConfigWithHarmony,
+  app,
+  modules?: Readonly<HarmonyRuntimeContract['modules']>,
+  mode?: EnvMode,
+  metro?: HarmonyMetroRuntime
+): Promise<string> {
   const runtimeVersion = config.harmony?.runtimeVersion ?? config.runtimeVersion;
 
   if (typeof runtimeVersion === 'object' && runtimeVersion?.policy === 'nativeVersion') {
@@ -34,19 +40,17 @@ export async function resolveRuntimeVersionAsync(root: string, config: ExpoConfi
   }
 
   if (typeof runtimeVersion === 'object' && runtimeVersion?.policy === 'fingerprint') {
-    const metro = await readMetroRuntimeAsync(root);
-    return (await fingerprintHarmonyAsync(root, metro.harmonyPackage)).hash;
+    const runtime = metro ?? await readMetroRuntimeAsync(root, mode);
+    return (await fingerprintHarmonyAsync(root, resolveMetroRuntimeRoot(root, runtime), modules, config, mode)).hash;
   }
 
   if (typeof runtimeVersion === 'object' && runtimeVersion?.policy === 'appVersion') {
     return config.harmony?.versionName ?? config.version ?? '1.0.0';
   }
 
-  const require = createRequire(path.join(root, 'package.json'));
-  const expo = createRequire(require.resolve('expo/package.json'));
-  const { getRuntimeVersionAsync } = expo('@expo/config-plugins/build/utils/Updates');
+  const { getRuntimeVersionAsync } = requireFromExpo(root)('@expo/config-plugins/build/utils/Updates');
   const version = await getRuntimeVersionAsync(root, {
-    ...config,
+    sdkVersion: config.sdkVersion,
     runtimeVersion: runtimeVersion ?? { policy: 'sdkVersion' },
   }, 'harmony');
 
@@ -61,23 +65,20 @@ export async function resolveRuntimeVersionAsync(root: string, config: ExpoConfi
   return version;
 }
 
-export async function readMetroRuntimeAsync(root: string): Promise<HarmonyMetroRuntime> {
-  const require = createRequire(path.join(root, 'package.json'));
-  const previous = process.env.EXPO_METRO_TARGET;
-  let config;
-
-  try {
-    process.env.EXPO_METRO_TARGET = 'harmony';
-    config = (await require('metro-config').resolveConfig(undefined, root)).config;
-  } finally {
-    if (previous === undefined) delete process.env.EXPO_METRO_TARGET;
-    else process.env.EXPO_METRO_TARGET = previous;
-  }
-
-  return config?.resolver?.resolveRequest?.harmonyRuntime ?? {
+export async function readMetroRuntimeAsync(root: string, mode?: EnvMode): Promise<HarmonyMetroRuntime> {
+  const { runtime } = await loadHarmonyMetroMetadataAsync(root, mode);
+  return runtime ?? {
     reactPackage: 'react',
-    harmonyPackage: '@react-native-oh/react-native-harmony',
+    harmonyPackage: ProjectPackages.rnohRuntime,
   };
+}
+
+export function resolveMetroRuntimeRoot(root: string, runtime: HarmonyMetroRuntime): string {
+  if (runtime.harmonyPackageRoot) return runtime.harmonyPackageRoot;
+  if (runtime.harmonyPackage === ProjectPackages.rnohRuntime) return resolveBundledRnohRuntime(root);
+
+  const require = createRequire(path.join(root, 'package.json'));
+  return path.dirname(require.resolve(runtime.harmonyPackage + '/package.json'));
 }
 
 function nativeLibFilterHash(filter): string | undefined {
@@ -106,7 +107,7 @@ function nativeConfig(profile, module, build, product: string, ability: string):
     ...(hash ? { nativeLibFilterHash: hash } : {}),
     permissions: [...new Set<string>((module.requestPermissions || []).map(item => item.name))].sort(),
     querySchemes: [...new Set<string>(module.querySchemes || [])].sort(),
-    backgroundModes: [...new Set<string>(entry.backgroundModes || [])].sort(),
+    backgroundModes: [...new Set<string>(entry?.backgroundModes || [])].sort(),
     abiFilters: [...(build.buildOption?.externalNativeOptions?.abiFilters || [])].sort(),
   };
 }
@@ -121,13 +122,13 @@ export function readNativeRuntime(plan: HarmonyBuildPlan) {
   return { app, config: nativeConfig(profile, module, build, plan.productName, plan.abilityName) };
 }
 
-export async function readProjectRuntimeAsync(root: string) {
-  const { exp } = getConfig(root, { skipSDKVersionRequirement: true, isModdedConfig: true });
+export async function evaluateProjectNativeRuntimeAsync(root: string, mode?: EnvMode) {
+  const { exp } = getHarmonyProjectConfig(root, { skipSDKVersionRequirement: true, isModdedConfig: true }, mode);
   const config = exp as ExpoConfigWithHarmony;
   let native: ReturnType<typeof readNativeRuntime>;
   let bundle: string;
 
-  if (config.harmony) {
+  if (config.harmony && !isBareHarmonyProject(root)) {
     const settings = normalizeHarmonyConfig(config);
     const evaluated = await compileHarmonyModsAsync(withHarmonyPrebuildConfig(config), {
       projectRoot: root,
@@ -152,10 +153,23 @@ export async function readProjectRuntimeAsync(root: string) {
     bundle = plan.bundleName;
   }
 
+  const serializable = { ...config };
+  delete (serializable as { mods?: unknown }).mods;
+  return { config: serializable, bundleName: bundle, native };
+}
+
+export async function readProjectRuntimeAsync(root: string, options: {
+  mode?: EnvMode;
+  modules?: Readonly<HarmonyRuntimeContract['modules']>;
+  metro?: HarmonyMetroRuntime;
+} = {}) {
+  const { mode, modules, metro } = options;
+  const { config, bundleName, native } = isBareHarmonyProject(root)
+    ? await evaluateProjectNativeRuntimeAsync(root, mode)
+    : await readExpoConfigInChildAsync<Awaited<ReturnType<typeof evaluateProjectNativeRuntimeAsync>>>(root, 'native-runtime', mode);
+
   return {
-    config,
-    bundleName: bundle,
-    native: native.config,
-    runtimeVersion: await resolveRuntimeVersionAsync(root, config, native.app),
+    config, bundleName, native: native.config,
+    runtimeVersion: await resolveRuntimeVersionAsync(root, config, native.app, modules, mode, metro),
   };
 }

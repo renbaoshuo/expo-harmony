@@ -11,7 +11,7 @@ import { withHarmonyProjectLockAsync } from '../projectLock';
 import { parsePrebuildArgs } from './options';
 
 export const command: Command = async (argv, io) => {
-  const args = parseCommandArgs(args => parsePrebuildArgs(args, { allowProject: true }), argv, io);
+  const args = parseCommandArgs(parsePrebuildArgs, argv, io);
   if (!args) return 0;
 
   const { projectRoot: root, options } = args;
@@ -25,16 +25,16 @@ export const command: Command = async (argv, io) => {
     root,
     check ? 'prebuild-check' : 'prebuild',
     async () => {
-      if (clean) {
+      if (clean && !check) {
         const { assertSafeCleanTarget } = await import('./clean.js');
         await assertSafeCleanTarget(root);
       }
 
       const { doctorAsync, formatDoctor } = await import('../doctor/doctor.js');
       const doctor = await doctorAsync(root, {
-        freshPrebuild: clean,
         requireBuildTools: false,
-        validateGeneratedProject: !clean,
+        requireDeviceTools: false,
+        validateGeneratedProject: check || !clean,
         validateModules: false,
       });
       if (!doctor.ok) {

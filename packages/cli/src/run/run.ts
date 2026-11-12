@@ -6,7 +6,7 @@
  */
 
 import path from 'node:path';
-import { getConfig } from '@expo/config';
+import { getHarmonyProjectConfig } from '@expo-harmony/expo__config/internal/project-config';
 
 import {
   configureMetroPortAsync,
@@ -142,12 +142,12 @@ async function runHarmonyUnlockedAsync(
   };
 
   try {
-    if (settings.variant === 'debug' && getConfig(root).exp.updates?.useNativeDebug !== true) {
+    if (settings.variant === 'debug' && getHarmonyProjectConfig(root).exp.updates?.useNativeDebug !== true) {
       progress(settings, settings.noBundler
         ? 'Connecting to the existing Expo Metro server'
         : 'Starting Expo Metro');
       metro = await timedAsync(steps, 'metro', () => settings.noBundler
-        ? requireExistingMetroAsync(settings.port)
+        ? requireExistingMetroAsync(root, settings.port, settings.host)
         : startExpoMetroAsync(root, {
             host: settings.host,
             interactive: settings.interactiveBundler,
@@ -226,7 +226,7 @@ async function runHarmonySessionAsync(
   return withHarmonyProjectLockAsync(
     root,
     'run',
-    () => runHarmonyUnlockedAsync(root, options)
+    canonicalRoot => runHarmonyUnlockedAsync(canonicalRoot, options)
   );
 }
 

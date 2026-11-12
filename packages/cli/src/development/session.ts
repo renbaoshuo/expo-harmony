@@ -12,7 +12,7 @@ import type { HarmonyDevelopmentManifest } from '@expo-harmony/expo-modules-auto
 import { HarmonyCliError } from '../errors';
 import { readProjectRuntimeAsync } from '../runtime/config';
 import { resolveDevelopmentHostAsync } from './host';
-import { createHarmonyLaunchLink, HarmonyManifestPath } from './protocol';
+import { createHarmonyLaunchLink, harmonyDevelopmentProjectId, HarmonyManifestPath } from './protocol';
 
 export async function readDevelopmentSessionAsync(root: string, port: number, hostname?: string) {
   const project = await readProjectRuntimeAsync(root);
@@ -63,7 +63,7 @@ export async function readDevelopmentSessionAsync(root: string, port: number, ho
     );
   });
 
-  const identity = config.extra?.eas?.projectId || `@${config.owner || 'anonymous'}/${config.slug}/${project.bundleName}`;
+  const identity = harmonyDevelopmentProjectId(config, project.bundleName);
   if (manifest.extra?.harmony?.projectId !== identity
     || manifest.runtimeVersion !== project.runtimeVersion) {
     throw new HarmonyCliError(

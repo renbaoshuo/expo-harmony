@@ -5,11 +5,10 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { createRequire } from 'node:module';
 import os from 'node:os';
 
 import { HarmonyCliError } from '../errors';
-import { resolveExpoCli } from '../expo';
+import { requireFromExpoCli } from '../expo';
 
 export function parseHostOption(host?: string): string | undefined {
   if (host !== undefined && !/^[A-Za-z0-9.-]+$/.test(host)) {
@@ -58,9 +57,7 @@ export async function resolveDevelopmentHostAsync(root: string, hostname?: strin
   if (preferred.length > 1) {
     // Use Expo's route discovery to choose between equally suitable interfaces,
     // but do not let a VPN default route displace an available LAN interface.
-    const expo = createRequire(resolveExpoCli(root).cliPath);
-    const require = createRequire(expo.resolve('@expo/cli/package.json'));
-    const { getGatewayAsync } = require('./build/src/utils/ip');
+    const { getGatewayAsync } = requireFromExpoCli(root)('./build/src/utils/ip');
     const gateway = await getGatewayAsync();
     if (preferred.some(candidate => candidate.address === gateway.address)) return gateway.address;
   }

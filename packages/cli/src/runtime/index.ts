@@ -43,7 +43,7 @@ export const command: Command = async (argv, io) => {
     const plan = await resolveHarmonyBuildPlanAsync(root, { buildMode: options.variant as 'debug' | 'release' });
     await publishRuntimeContractAsync(root, plan);
 
-    io.log('Published Harmony runtime capabilities and host validator.');
+    io.log('Published Harmony runtime capabilities.');
   } else {
     const contract = await resolveRuntimeRequirementsAsync(root);
 

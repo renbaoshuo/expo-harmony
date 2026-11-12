@@ -35,22 +35,33 @@ async function prepareNativeProjectAsync(
     buildMode: options.variant,
   }));
   const exists = Boolean(plan && fs.existsSync(plan.harmonyRoot));
+  const freshPrebuild = plan?.workflow !== 'bare' && (!exists || options.sync);
 
   if (plan?.workflow === 'bare' && options.sync) {
     throw new HarmonyCliError('ERR_HARMONY_BARE_SYNC', '--sync regenerates CNG projects and cannot be used with a manually maintained bare project.', { operation: 'build' });
   }
 
+  if (freshPrebuild) {
+    const { assertSafeCleanTarget } = await import('../prebuild/clean.js');
+    await assertSafeCleanTarget(root);
+  }
+
   progress(options, 'Checking the Harmony project');
   const doctor = await timedAsync(steps, 'doctor', () => doctorAsync(root, {
+    envMode: options.variant === 'release' ? 'production' : 'development',
     requireBuildTools: true,
     requireDeviceTools: options.requireDeviceTools,
-    validateGeneratedProject: exists,
+    validateGeneratedProject: exists && !freshPrebuild,
     validateModules: false,
   }));
   if (!doctor.ok) {
-    const checks = doctor.checks.filter(check => check.status === 'error').map(check => check.id);
+    const checks = doctor.checks.filter(check => check.status === 'error');
+    const ids = checks.map(check => check.id).join(', ') || 'unknown';
+    const signing = checks.find(check => check.id === 'signing');
 
-    throw new HarmonyCliError('ERR_HARMONY_DOCTOR_FAILED', `Harmony doctor found blocking checks: ${checks.join(', ') || 'unknown'}.`, { operation: 'doctor' });
+    throw new HarmonyCliError('ERR_HARMONY_DOCTOR_FAILED',
+      `Harmony doctor found blocking checks: ${ids}.${signing ? ` ${signing.message}` : ''}`,
+      { operation: 'doctor' });
   }
 
   if (plan?.workflow === 'bare') {

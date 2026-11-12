@@ -13,6 +13,7 @@ const PrebuildOptions = {
   'bun': { type: 'boolean' },
   'check': { type: 'boolean' },
   'clean': { type: 'boolean' },
+  'no-clean': { type: 'boolean' },
   'no-install': { type: 'boolean' },
   'npm': { type: 'boolean' },
   'platform': { short: 'p', type: 'string' },
@@ -22,7 +23,7 @@ const PrebuildOptions = {
   'yarn': { type: 'boolean' },
 } as const;
 
-function parsePrebuildArgs(argv: string[], options: { allowProject?: boolean } = {}) {
+function parsePrebuildArgs(argv: string[]) {
   const { positionals, values } = parseArgs(PrebuildOptions, argv);
 
   if (values.platform !== undefined && values.platform !== 'harmony') {
@@ -41,22 +42,24 @@ function parsePrebuildArgs(argv: string[], options: { allowProject?: boolean } =
     );
   }
 
-  if (positionals.length > (options.allowProject ? 1 : 0)) {
-    const unexpected = positionals[options.allowProject ? 1 : 0];
+  if (positionals.length > 1) {
     throw new HarmonyCliError(
       'ERR_HARMONY_CONFIG_INVALID',
-      `Unexpected prebuild positional argument: ${unexpected}`,
+      `Unexpected prebuild positional argument: ${positionals[1]}`,
       { operation: 'parse-arguments' }
     );
   }
 
-  const packageManagerFlags = ['npm', 'yarn', 'pnpm', 'bun'].filter(name => values[name]);
-  if (packageManagerFlags.length > 1) {
+  const managers = ['npm', 'yarn', 'pnpm', 'bun'].filter(name => values[name]);
+  if (values.clean && values['no-clean']) {
+    throw new HarmonyCliError('ERR_HARMONY_CONFIG_INVALID', '--clean and --no-clean cannot be combined.', { operation: 'parse-arguments' });
+  }
+  if (managers.length > 1) {
     throw new HarmonyCliError('ERR_HARMONY_CONFIG_INVALID', 'Choose at most one package manager: --npm, --yarn, --pnpm, or --bun.', { operation: 'parse-arguments' });
   }
 
   const passthrough: string[] = [];
-  for (const name of ['clean', 'npm', 'yarn', 'pnpm', 'bun', 'no-install']) {
+  for (const name of ['clean', 'no-clean', 'npm', 'yarn', 'pnpm', 'bun', 'no-install']) {
     if (values[name]) passthrough.push(`--${name}`);
   }
 
@@ -66,7 +69,7 @@ function parsePrebuildArgs(argv: string[], options: { allowProject?: boolean } =
 
   return {
     check: Boolean(values.check),
-    clean: Boolean(values.clean),
+    clean: !values['no-clean'],
     help: Boolean(values.help),
     passthrough,
     project: positionals[0],

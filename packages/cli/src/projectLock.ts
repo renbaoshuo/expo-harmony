@@ -76,6 +76,7 @@ async function readLockOwnerAsync(lockPath: string): Promise<LockOwner | null> {
       || typeof candidate.token !== 'string') {
       return null;
     }
+
     return candidate as LockOwner;
   } catch (_cause) {
     return null;
@@ -109,7 +110,9 @@ async function removeStaleProjectLockAsync(
       || current.size !== observed.size) {
       return false;
     }
+
     await fs.promises.unlink(lockPath);
+
     return true;
   } catch (_cause) {
     return false;
@@ -130,7 +133,9 @@ async function releaseOwnedLockAsync(
       || current.dev !== owned.dev || current.ino !== owned.ino) {
       return false;
     }
+
     await fs.promises.unlink(lockPath);
+
     return true;
   } catch (_cause) {
     return false;
@@ -181,8 +186,10 @@ async function acquireHarmonyProjectLockAsync(
       return {
         async releaseAsync() {
           if (released) return;
+
           released = true;
           if (await releaseOwnedLockAsync(handle, lockPath, owned)) return;
+
           throw new HarmonyCliError(
             'ERR_HARMONY_PROJECT_LOCK',
             'The Harmony native operation lock changed before it could be released safely.',
@@ -217,6 +224,7 @@ async function acquireHarmonyProjectLockAsync(
           { operation }
         );
       }
+
       await delayAsync(Math.min(DefaultPollIntervalMs, Math.max(1, deadline - Date.now())));
     }
   }
@@ -225,16 +233,16 @@ async function acquireHarmonyProjectLockAsync(
 async function withHarmonyProjectLockAsync<T>(
   projectRoot: string,
   operation: string,
-  callback: () => Promise<T> | T
+  callback: (projectRoot: string) => Promise<T> | T
 ): Promise<T> {
   const canonicalRoot = await canonicalProjectRootAsync(projectRoot);
   const active = ActiveLock.getStore();
-  if (active?.projectRoot === canonicalRoot && !active.released) return await callback();
+  if (active?.projectRoot === canonicalRoot && !active.released) return await callback(canonicalRoot);
 
   const lease = await acquireHarmonyProjectLockAsync(canonicalRoot, operation);
   const context: ActiveProjectLock = { projectRoot: canonicalRoot, released: false };
   try {
-    return await ActiveLock.run(context, callback);
+    return await ActiveLock.run(context, callback, canonicalRoot);
   } finally {
     context.released = true;
     await lease.releaseAsync();

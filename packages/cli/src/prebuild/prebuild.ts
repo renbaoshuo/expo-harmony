@@ -33,9 +33,11 @@ async function prebuildParsedUnlockedAsync(
   if (isBareHarmonyProject(projectRoot)) {
     throw new HarmonyCliError('ERR_HARMONY_BARE_PREBUILD', 'This Harmony project is manually maintained. Build it directly; prebuild cannot overwrite a bare project.', { operation: 'prebuild' });
   }
-  if (passthrough.includes('--clean')) await assertSafeCleanTarget(projectRoot);
 
-  const freshHarmonyProject = passthrough.includes('--clean')
+  const clean = !passthrough.includes('--no-clean');
+  if (clean) await assertSafeCleanTarget(projectRoot);
+
+  const freshHarmonyProject = clean
     || !fs.existsSync(path.join(projectRoot, HarmonyPlatformDirectory));
 
   const expo = resolveExpoCli(projectRoot);
@@ -54,6 +56,7 @@ async function prebuildParsedUnlockedAsync(
       env: {
         ...createHarmonyToolchainEnv(),
         ...packed.env,
+        NODE_ENV: process.env.NODE_ENV || (options.buildType === 'release' ? 'production' : 'development'),
         EXPO_HARMONY_PREBUILD_FRESH: freshHarmonyProject ? '1' : '0',
         ...(options.buildType ? { EXPO_HARMONY_BUILD_TYPE: options.buildType } : {}),
       },
@@ -97,7 +100,7 @@ async function prebuildParsedAsync(
   return withHarmonyProjectLockAsync(
     projectRoot,
     'prebuild',
-    () => prebuildParsedUnlockedAsync(projectRoot, passthrough, options)
+    root => prebuildParsedUnlockedAsync(root, passthrough, options)
   );
 }
 
