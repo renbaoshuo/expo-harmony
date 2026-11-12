@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo__config",
-  "version": "55.0.21-harmony.2",
+  "version": "57.0.10-harmony.0",
   "description": "HarmonyOS port of @expo/config",
   "keywords": [
     "react-native",
@@ -21,12 +21,28 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/config": "55.0.21"
+    "@expo/config": "57.0.10"
   },
   "engines": {
     "node": ">=20"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./internal/project-config": {
+      "types": "./internal/project-config.d.ts",
+      "default": "./internal/project-config.js"
+    },
+    "./index.js": "./index.js",
+    "./index.d.ts": "./index.d.ts",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@expo/env": "2.4.3"
   }
 }
