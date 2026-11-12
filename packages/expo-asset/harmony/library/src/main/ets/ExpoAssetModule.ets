@@ -6,7 +6,6 @@
  */
 
 import {
-  ExpoFileAccessKey,
   ExpoFunction,
   ExpoModule,
   ExpoModuleContext,
@@ -14,20 +13,24 @@ import {
   ExpoModuleError,
   ExpoValueTypes,
   fileUriFromPath,
+  isRnohRawfileResourceUri,
+  openRawResourceFile,
+  rawResourcePathFromUri,
 } from '@expo-harmony/expo-modules-core';
-import fs from '@ohos.file.fs';
-import fileUri from '@ohos.file.fileuri';
-import fileHash from '@ohos.file.hash';
-import request from '@ohos.request';
-import cryptoFramework from '@ohos.security.cryptoFramework';
-import util from '@ohos.util';
+import { fileIo as fs, hash as fileHash } from '@kit.CoreFileKit';
+import { request } from '@kit.BasicServicesKit';
+import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import { util } from '@kit.ArkTS';
 
 type CancelRequest = (error: ExpoAssetError) => void;
 
 class ExpoAssetError extends ExpoModuleError {
-  constructor(code: string, message: string) {
+  readonly canRemoveTemporaryFile: boolean;
+
+  constructor(code: string, message: string, canRemoveTemporaryFile: boolean = true) {
     super(code, message);
     this.name = 'ExpoAssetError';
+    this.canRemoveTemporaryFile = canRemoveTemporaryFile;
   }
 }
 
@@ -96,21 +99,25 @@ export class ExpoAssetModule extends ExpoModule {
   private async download(uri: string, md5: string | null, type: string): Promise<string> {
     const scheme = uriScheme(uri);
     if (scheme === 'file') {
-      if (this.context.services.get(ExpoFileAccessKey) !== undefined) this.context.filePathForRead(uri);
+      this.context.fileSourceForRead(uri);
       return uri;
     }
 
-    const ext = safeAssetType(type);
-    const key = md5 === null ? md5String(uri) : safeMd5(md5);
+    const resource = isRawResource(uri, scheme) ? rawResourceName(uri) : undefined;
+    if (resource === undefined && scheme !== 'http' && scheme !== 'https') {
+      throw new ExpoAssetError('ERR_ASSET_UNSUPPORTED_URI', sanitizedUri(uri));
+    }
 
-    const cache = new fileUri.FileUri(this.context.cacheDirectory).path.replace(/\/$/, '');
+    const ext = safeAssetType(type);
+    const hash = md5 === null ? null : safeMd5(md5);
+    const key = hash ?? md5String(uri);
+    const cache = this.context.cachePath.replace(/\/$/, '');
     const file = `${cache}/ExponentAsset-${key}.${ext}`;
 
     const pending = this.inflight.get(file);
     if (pending !== undefined) return await pending;
 
-    const task = this.materialize(uri, md5, file);
-    task.catch((_: Error): void => {});
+    const task = this.materialize(uri, resource, hash, file);
     this.inflight.set(file, task);
 
     try {
@@ -120,30 +127,41 @@ export class ExpoAssetModule extends ExpoModule {
     }
   }
 
-  private async materialize(uri: string, md5: string | null, file: string): Promise<string> {
+  private async materialize(uri: string, resource: string | undefined, md5: string | null, file: string): Promise<string> {
+    this.context.assertFileAccess(file, 'read');
+
     let cached = false;
+
     try {
-      cached = (await fs.access(file)) && (await this.matches(file, md5));
+      cached = (await fs.lstat(file)).isFile() && (await this.matches(file, md5));
     } catch (_) {}
 
     this.assertActive();
 
     if (cached) return fileUriFromPath(file);
 
-    const temp = `${file}.expo-${Date.now()}-${Math.floor(Math.random() * 0x7fffffff)}.tmp`;
+    const temp = `${file}.expo-${util.generateRandomUUID()}.tmp`;
+    this.context.assertFileAccess(file, 'write');
+    this.context.assertFileAccess(temp, 'write');
+
     try {
-      if (isRawResource(uri)) await this.copyRawResource(uri, temp);
+      if (resource !== undefined) await this.copyRawResource(resource, temp);
       else await this.downloadHttp(uri, temp);
 
       this.assertActive();
+      this.context.assertFileAccess(file, 'write');
 
       await fs.moveFile(temp, file, 0);
 
       return fileUriFromPath(file);
     } catch (error) {
-      try {
-        await fs.unlink(temp);
-      } catch (_) {}
+      if (!(error instanceof ExpoAssetError) || error.canRemoveTemporaryFile) {
+        try {
+          await fs.unlink(temp);
+        } catch (_) {}
+      } else {
+        this.context.logger.warn('Retaining an Expo asset temporary file because the native download could not be stopped.');
+      }
 
       if (error instanceof ExpoAssetError) {
         throw new ExpoAssetError(error.code, error.message);
@@ -154,49 +172,41 @@ export class ExpoAssetModule extends ExpoModule {
   }
 
   private async matches(path: string, md5: string | null): Promise<boolean> {
-    return md5 === null || (await fileHash.hash(path, 'md5')).toLowerCase() === md5.toLowerCase();
+    return md5 === null || (await fileHash.hash(path, 'md5')).toLowerCase() === md5;
   }
 
-  private async copyRawResource(uri: string, file: string): Promise<void> {
-    const name = rawResourceName(uri);
+  private async copyRawResource(name: string, file: string): Promise<void> {
     const resources = this.context.uiAbilityContext.resourceManager;
-    let opened = false;
 
     try {
       this.assertActive();
 
-      const desc = await resources.getRawFd(name);
-      opened = true;
+      const input = openRawResourceFile(resources, name);
 
-      this.assertActive();
-
-      const output = await fs.open(file, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
       try {
-        this.assertActive();
+        const output = await fs.open(file, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+        try {
+          const buffer = new ArrayBuffer(64 * 1024);
+          let written = 0;
 
-        fs.lseek(desc.fd, desc.offset, fs.WhenceType.SEEK_SET);
-        fs.lseek(output.fd, 0, fs.WhenceType.SEEK_SET);
+          while (written < input.length) {
+            this.assertActive();
 
-        const buffer = new ArrayBuffer(64 * 1024);
-        let written = 0;
+            const size = Math.min(buffer.byteLength, input.length - written);
+            const count = await fs.read(input.file.fd, buffer, { offset: input.offset + written, length: size });
+            this.assertActive();
+            if (count <= 0) {
+              throw new ExpoAssetError('ERR_ASSET_RESOURCE_UNAVAILABLE', `Cannot read the complete packaged asset '${name}'.`);
+            }
 
-        while (written < desc.length) {
-          const size = Math.min(buffer.byteLength, desc.length - written);
-          const count = await fs.read(desc.fd, buffer, { length: size });
-
-          this.assertActive();
-
-          if (count <= 0) {
-            throw new ExpoAssetError('ERR_ASSET_RESOURCE_UNAVAILABLE', `Cannot read the complete packaged asset '${name}'.`);
+            await writeAllAsync(output.fd, count === buffer.byteLength ? buffer : buffer.slice(0, count));
+            written += count;
           }
-
-          await writeAllAsync(output.fd, count === buffer.byteLength ? buffer : buffer.slice(0, count));
-
-          this.assertActive();
-          written += count;
+        } finally {
+          await fs.close(output.fd);
         }
       } finally {
-        await fs.close(output.fd);
+        await fs.close(input.file.fd);
       }
     } catch (error) {
       if (error instanceof ExpoAssetError) {
@@ -204,24 +214,11 @@ export class ExpoAssetModule extends ExpoModule {
       }
 
       throw new ExpoAssetError('ERR_ASSET_RESOURCE_UNAVAILABLE', `Cannot read packaged asset '${name}': ${cleanErrorMessage(error as Object)}`);
-    } finally {
-      if (opened) {
-        try {
-          await resources.closeRawFd(name);
-        } catch (error) {
-          this.context.logger.warn(`Unable to close packaged Expo asset '${name}': ${cleanErrorMessage(error as Object)}`);
-        }
-      }
     }
   }
 
   private async downloadHttp(uri: string, file: string): Promise<void> {
     this.assertActive();
-
-    const scheme = uriScheme(uri);
-    if (scheme !== 'http' && scheme !== 'https') {
-      throw new ExpoAssetError('ERR_ASSET_UNSUPPORTED_URI', sanitizedUri(uri));
-    }
 
     let task: request.DownloadTask;
     try {
@@ -271,8 +268,20 @@ export class ExpoAssetModule extends ExpoModule {
       const cancel = (error: ExpoAssetError): void => {
         if (settled) return;
 
-        settle(error);
-        task.delete().catch((_: Object): void => {});
+        settled = true;
+        cleanup();
+        // Only confirmed deletion permits materialize to remove the temporary file.
+        // Otherwise retain it: the native writer may still be using it.
+        const cancelled = (deleted: boolean): void => reject(new ExpoAssetError(error.code, error.message, deleted) as Error);
+
+        try {
+          task.delete().then(
+            (deleted: boolean): void => cancelled(deleted),
+            (_: Object): void => cancelled(false),
+          );
+        } catch (_) {
+          cancelled(false);
+        }
       };
 
       this.requests.set(task, cancel);
@@ -302,38 +311,16 @@ export class ExpoAssetModule extends ExpoModule {
   }
 }
 
-function isRawResource(uri: string): boolean {
-  const scheme = uriScheme(uri);
-  return scheme === 'asset' || scheme === 'rawfile' || scheme === undefined;
+function isRawResource(uri: string, scheme: string | undefined): boolean {
+  return scheme === 'asset' || scheme === 'rawfile' || scheme === undefined || isRnohRawfileResourceUri(uri);
 }
 
 function rawResourceName(uri: string): string {
-  const scheme = uriScheme(uri);
-  const rnoh = scheme === 'asset';
-  let path = scheme === undefined ? uri : uri.slice(uri.indexOf(':') + 1).replace(/^\/{2}/, '');
-  path = path.replace(/^\/+/, '');
-
-  // RNOH asset:// paths are literal; only rawfile:// uses URL encoding.
-  if (scheme === 'rawfile') {
-    const encoded = path.split(/[?#]/, 1)[0];
-    if (/%(?:00|2f|5c)/i.test(encoded)) {
-      throw new ExpoAssetError('ERR_ASSET_INVALID_RESOURCE', sanitizedUri(uri));
-    }
-
-    try {
-      path = decodeURIComponent(encoded);
-    } catch (_) {
-      throw new ExpoAssetError('ERR_ASSET_INVALID_RESOURCE', sanitizedUri(uri));
-    }
-  }
-
-  const parts = path.split('/');
-  if (path.includes('\\') || parts.some((part: string): boolean => part.length === 0 || part === '.' || part === '..' || part.includes('\0'))) {
+  try {
+    return rawResourcePathFromUri(uri);
+  } catch (_) {
     throw new ExpoAssetError('ERR_ASSET_INVALID_RESOURCE', sanitizedUri(uri));
   }
-
-  const name = parts.join('/');
-  return rnoh ? `assets/${name}` : name;
 }
 
 async function writeAllAsync(fd: number, data: ArrayBuffer): Promise<number> {

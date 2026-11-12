@@ -1,16 +1,18 @@
 # @expo-harmony/expo-asset
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-asset) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/asset/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-asset) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/asset/)
 
 为 HarmonyOS 上的 React Native 应用提供 Expo Asset 的原生实现，与官方同版本的 `expo-asset` 配套使用。
 
 ## 安装
 
-```bash
-npm install @expo-harmony/expo-asset expo-asset@55.0.20
-```
+本包适配 Expo SDK 57。
 
-本包适配 Expo SDK 55 的 `expo-asset`，原生模块通过 Expo Harmony 自动链接。HAR 已声明 `ohos.permission.INTERNET` 普通权限。最低支持 HarmonyOS 5.0.1（API 13），宿主应用的 `compatibleSdkVersion` 也要满足这一要求。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
+```bash
+npm install @expo-harmony/expo-asset expo-asset
+```
 
 ## API 对照表
 
@@ -18,108 +20,152 @@ npm install @expo-harmony/expo-asset expo-asset@55.0.20
 
 #### `useAssets(moduleIds)`
 
-返回 `[Asset[] | undefined, Error | undefined]`。资源就绪前第一项是 `undefined`，加载失败时第二项是错误。动态改变传入的资源列表不会触发重新加载。
-
-### Classes
-
-#### `Asset`
-
-表示应用中的一个资源，提供名称、类型等元数据和加载资源的方法。
-
-#### `Asset.downloaded`
-
-类型：`boolean`
-
-`downloadAsync()` 完成后为 `true`，默认 `false`。
-
-#### `Asset.hash`
-
-类型：`string | null`，只读
-
-资源数据的 MD5 值，没有时为 `null`。
-
-#### `Asset.height`
-
-类型：`number | null`
-
-图片高度除以缩放系数后的值。
-
-#### `Asset.localUri`
-
-类型：`string | null`
-
-`downloadAsync()` 完成后指向本地文件的 `file://` 地址。
-
-#### `Asset.name`
-
-类型：`string`
-
-不含扩展名、也不含 `@` 起缩放后缀的文件名。
-
-#### `Asset.type`
-
-类型：`string`，只读
-
-文件扩展名。
-
-#### `Asset.uri`
-
-类型：`string`，只读
-
-资源数据地址。开发时指向 Metro 开发服务器；打包后是 `asset://` 开头的应用内资源路径，可以直接交给 `Image` 使用。这一点和 Android 用资源名、iOS 用包内相对路径不同。
-
-#### `Asset.width`
-
-类型：`number | null`
-
-图片宽度除以缩放系数后的值。
-
-#### `Asset.downloadAsync()`
-
-返回 `Promise<Asset>`。把资源数据下载到应用缓存目录，文件名形如 `ExponentAsset-{cacheFileId}.{extension}`。
-
-缓存里已有同名文件时，资源带 `hash` 会校验内容，不匹配则重新下载；没有 `hash` 时直接复用。相同缓存路径的并发请求共用一次下载。缓存目录由系统管理，应用会话之间不保证保留。
-
-支持 `http`、`https`、`asset://`、`rawfile://` 和本地 `file://` 地址；不带协议的地址按打包资源处理。`file://` 直接返回，`asset://` 和 `rawfile://` 从应用内打包资源复制，`data:` 和 Android 的 `content:` 等来源不支持，其他协议报错。`asset://` 对应应用包内的 `resources/rawfile/assets/` 目录，`rawfile://` 和不带协议的地址对应 `resources/rawfile/`；`asset://` 和不带协议的路径按字面文件名解释，`#`、`?`、`%` 保留原样，`rawfile://` 按 URL 百分号编码解释，文件名里的 `#` 要写成 `%23`，路径中不允许出现 `..`。下载允许使用计费网络和漫游。
-
-#### `Asset.fromMetadata(meta)`
-
-用资源元数据构造 `Asset`。hash 相同的资源重复构造返回同一个实例。
-
-#### `Asset.fromModule(virtualAssetModule)`
-
-参数是 `require('path/to/file')` 的返回值、外部网络 URL，或含 `uri`、`width`、`height` 的对象。传入模块 ID 时按 `require` 的结果解析，找不到对应的打包资源会抛出错误。
-
-#### `Asset.fromURI(uri)`
-
-按地址构造 `Asset`。同一个地址重复调用返回同一个实例。
-
-#### `Asset.loadAsync(moduleId)`
-
-返回 `Promise<Asset[]>`。`Asset.fromModule(module).downloadAsync` 的便捷封装。参数可以是单个资源或数组，全部保存到磁盘后返回 `Asset` 数组。
+参数为一个 Metro 资源模块 ID 或模块 ID 数组，返回 `[Asset[] | undefined, Error | undefined]`。资源加载完成前第一项为 `undefined`；加载失败时第二项为错误。组件挂载后动态改变资源列表不会触发重新加载。
 
 ### Types
 
+#### `Asset`
+
+资源实例，包含资源地址及可用的名称、类型、尺寸和本地地址等信息。
+
+#### `Asset.downloaded`
+
+类型：`boolean`。下载完成后为 `true`，初始值通常为 `false`。
+
+#### `Asset.hash`
+
+类型：`string | null`，只读。资源的 MD5 值；通过 `Asset.fromURI()` 创建时为 `null`。
+
+#### `Asset.height`
+
+类型：`number | null`。图片高度，按资源缩放系数折算；未提供时为 `null`。
+
+#### `Asset.localUri`
+
+类型：`string | null`。`downloadAsync()` 成功后为指向本地资源的 `file://` 地址；尚无本地地址时为 `null`。
+
+#### `Asset.name`
+
+类型：`string`。打包资源使用元数据中的文件名（不含扩展名及 `@` 缩放后缀）；由 `Asset.fromURI()` 创建时为空字符串。
+
+#### `Asset.type`
+
+类型：`string`，只读。资源文件扩展名；通过 `Asset.fromURI()` 创建时从地址后缀推断，Base64 data URI 则从 MIME 类型推断。
+
+#### `Asset.uri`
+
+类型：`string`，只读。资源来源地址。通过 `Asset.fromURI()` 创建时保留传入地址；打包资源可使用下文 `downloadAsync()` 支持的 HarmonyOS 资源地址。
+
+#### `Asset.width`
+
+类型：`number | null`。图片宽度，按资源缩放系数折算；未提供时为 `null`。
+
 #### `AssetDescriptor`
 
-| 属性             | 类型             |
-| ---------------- | ---------------- |
-| `hash`（可选）   | `string \| null` |
-| `height`（可选） | `number \| null` |
-| `name`           | `string`         |
-| `type`           | `string`         |
-| `uri`            | `string`         |
-| `width`（可选）  | `number \| null` |
+| 属性 | 类型 | 说明 |
+| --- | --- | --- |
+| `name` | `string` | 资源名称 |
+| `type` | `string` | 文件扩展名 |
+| `uri` | `string` | 资源地址 |
+| `hash`（可选） | `string \| null` | 资源 MD5 |
+| `width`（可选） | `number \| null` | 图片宽度 |
+| `height`（可选） | `number \| null` | 图片高度 |
 
 #### `AssetMetadata`
 
-`Pick<PackagerAsset, 'httpServerLocation' | 'name' | 'hash' | 'type' | 'scales' | 'width' | 'height'>` 加上：
+包含 `PackagerAsset` 的 `httpServerLocation`、`name`、`hash`、`type`、`scales`、`width`、`height` 字段，并可选提供 `uri`、`fileHashes` 和 `fileUris`。
 
-| 属性                 | 类型       |
-| -------------------- | ---------- |
-| `fileHashes`（可选） | `string[]` |
-| `fileUris`（可选）   | `string[]` |
-| `uri`（可选）        | `string`   |
+### Methods
+
+#### `new Asset(descriptor)`
+
+以 `AssetDescriptor` 创建资源实例，返回 `Asset`。
+
+#### `Asset.downloadAsync()`
+
+返回 `Promise<Asset>`。下载或读取资源后，`localUri` 指向本地 `file://` 地址，`downloaded` 变为 `true`。系统可能清理本地缓存。
+
+支持 `http://`、`https://`、`file://`、`asset://`、`rawfile://`、`resource://RAWFILE/` 和不带协议的打包资源地址。`file://` 地址会原样作为 `localUri` 返回；不支持的协议会以 `ERR_ASSET_UNSUPPORTED_URI` 拒绝 Promise。
+
+- 不支持 `data:` URI；HarmonyOS 实现不提供将内嵌数据 URI 保存为本地文件的处理。
+
+打包资源中，`asset://` 对应 `resources/rawfile/assets/`，`rawfile://`、`resource://RAWFILE/` 和不带协议的地址对应 `resources/rawfile/`。`rawfile://` 路径按 URL 百分号编码解析，文件名中的 `#`、`?` 等字符应百分号编码；其他打包资源路径按字面值解析。路径不能包含 `..`。
+
+提供 `hash` 时会校验本地缓存内容，不匹配时重新获取资源；没有 `hash` 时会复用已有缓存。HTTP(S) 下载可使用计费网络和漫游网络。
+
+#### `Asset.fromMetadata(meta)`
+
+根据 `AssetMetadata` 创建资源实例。具有相同资源 `hash` 的元数据会返回同一个实例。
+
+#### `Asset.fromModule(virtualAssetModule)`
+
+根据 Metro 资源模块 ID（如 `require('./image.png')` 的返回值）、字符串 URI，或包含 `uri`、`width`、`height` 的对象创建 `Asset`。模块 ID 不在资源注册表中时会抛出错误。
+
+#### `Asset.fromURI(uri)`
+
+根据 URI 创建 `Asset`。重复传入相同 URI 会返回同一个实例。
+
+#### `Asset.loadAsync(moduleIds)`
+
+参数为单个数字模块 ID 或 URI 字符串，或数字 ID 数组、URI 字符串数组。返回 `Promise<Asset[]>`；全部资源加载完成后解析。
+
+### Error codes
+
+#### `ERR_ASSET_DOWNLOAD_FAILED`
+
+HTTP(S) 下载无法启动或完成时，资源 Promise 会携带此 `code` 拒绝。
+
+#### `ERR_ASSET_INVALID_HASH`
+
+`hash` 不是 32 位十六进制 MD5 时，资源 Promise 会携带此 `code` 拒绝。
+
+#### `ERR_ASSET_INVALID_RESOURCE`
+
+打包资源 URI 或路径格式无效时，资源 Promise 会携带此 `code` 拒绝。
+
+#### `ERR_ASSET_INVALID_TYPE`
+
+文件扩展名超过 64 个字符，或包含不支持的字符时，资源 Promise 会携带此 `code` 拒绝。
+
+#### `ERR_ASSET_RESOURCE_UNAVAILABLE`
+
+无法读取对应的打包资源时，资源 Promise 会携带此 `code` 拒绝。
+
+#### `ERR_ASSET_RUNTIME_DESTROYED`
+
+下载尚未完成时 Expo 运行时已结束，资源 Promise 会携带此 `code` 拒绝。
+
+#### `ERR_ASSET_UNSUPPORTED_URI`
+
+URI 使用了不支持的协议时，资源 Promise 会携带此 `code` 拒绝。
+
+#### `ERR_ASSET_WRITE_FAILED`
+
+无法完整写入本地资源文件时，资源 Promise 会携带此 `code` 拒绝。
+
+### Permissions
+
+#### `ohos.permission.INTERNET`
+
+用于 HTTP(S) 资源下载；本包在 HarmonyOS 模块中声明此权限。
+
+## 配置插件
+
+要将资源加入 Harmony 应用包，可在 Expo 配置中加入插件并列出文件或目录，路径相对项目根目录。目录只读取第一层文件。插件支持 `.png`、`.jpg`、`.gif`、`.mp4`、`.mp3`、`.lottie`、`.riv`、`.glb`、`.json` 和 `.db`，字体请使用 `@expo-harmony/expo-font`。
+
+```json
+{
+  "expo": {
+    "plugins": [
+      ["@expo-harmony/expo-asset", { "assets": ["./fixtures/example.glb"] }]
+    ]
+  }
+}
+```
+
+插件会将资源放在 `expo-asset/` 目录下，各文件名须唯一。用 `Asset.fromURI('rawfile:///expo-asset/example.glb').downloadAsync()` 加载资源。
+
+如果 Expo 配置中已通过 `expo-asset` 插件设置 `assets`，Harmony 插件也会使用这些路径。
 
 ## Author
 
