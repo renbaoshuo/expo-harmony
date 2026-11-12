@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-standard-web-crypto",
-  "version": "55.0.12-harmony.2",
+  "version": "57.0.4-harmony.0",
   "description": "HarmonyOS port of expo-standard-web-crypto",
   "keywords": [
     "react-native",
@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "expo-standard-web-crypto": "55.0.12"
+    "expo-standard-web-crypto": "57.0.4"
   },
   "engines": {
     "node": ">=20"
