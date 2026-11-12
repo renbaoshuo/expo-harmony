@@ -15,6 +15,7 @@ const stateNames: Record<Battery.BatteryState, string> = {
   [Battery.BatteryState.UNPLUGGED]: '使用电池',
   [Battery.BatteryState.CHARGING]: '充电中',
   [Battery.BatteryState.FULL]: '已充满',
+  [Battery.BatteryState.NOT_CHARGING]: '已接电，暂停充电',
 };
 
 export default function App() {
@@ -26,13 +27,16 @@ export default function App() {
   useEffect(() => {
     let active = true;
     const pending: Partial<Battery.PowerState> = {};
+
     const update = (value: Partial<Battery.PowerState>) => {
       if (!active) return;
+
       Object.assign(pending, value);
       setSnapshot(previous => previous ? { ...previous, ...value } : previous);
       setEvents(previous => previous + 1);
       console.info('[bare-battery] event', JSON.stringify(value));
     };
+
     const subscriptions = [
       Battery.addBatteryLevelListener(update),
       Battery.addBatteryStateListener(update),
@@ -45,12 +49,14 @@ export default function App() {
       Battery.isBatteryOptimizationEnabledAsync(),
     ]).then(([power, available, optimized]) => {
       if (!active) return;
+
       const next = { ...power, ...pending, available, optimized };
       setSnapshot(next);
       console.info('[bare-battery] snapshot', JSON.stringify(next));
     }).catch((reason) => {
       if (active) setError(String(reason));
     });
+
     return () => {
       active = false;
       subscriptions.forEach(subscription => subscription.remove());
@@ -58,6 +64,7 @@ export default function App() {
   }, [revision]);
 
   const percent = snapshot && snapshot.batteryLevel >= 0 ? Math.round(snapshot.batteryLevel * 100) : null;
+
   return (
     <ScrollView contentContainerStyle={styles.page}>
       <Text style={styles.eyebrow}>EXPO MODULES · HARMONYOS</Text>

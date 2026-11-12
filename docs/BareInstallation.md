@@ -8,7 +8,7 @@ Expo 支持在已有的 React Native 应用中按需引入工具和模块，整�
 
 ## 环境和版本
 
-- Node.js 20 或更高版本。
+- Node.js 20.19.4+（20.x）、22.13+（22.x）、24.3+（24.x）或 25+。
 - DevEco Studio，并安装完整的 HarmonyOS SDK（包含 HMS、OpenHarmony 组件，以及 OHPM、Hvigor 和 HDC 等工具）。
 - 一个已有的 RNOH 工程，原生目录位于应用根目录下的 `harmony/`，入口模块目录为 `harmony/entry`。
 - 一台 HarmonyOS 设备，或一个在 DevEco Studio Device Manager 中创建的模拟器。
@@ -19,25 +19,25 @@ Expo 支持在已有的 React Native 应用中按需引入工具和模块，整�
 
 | 依赖                                                                 | 版本                |
 | -------------------------------------------------------------------- | ------------------- |
-| `expo`                                                               | `55.0.26`           |
-| `expo-modules-core`                                                  | `55.0.25`           |
-| `expo-battery`                                                       | `55.0.13`           |
-| `react` / `react-native`                                             | `19.2.3` / `0.84.1` |
-| `@react-native-oh/react-native-harmony`                              | `0.84.1`            |
-| `@react-native-oh/react-native-harmony-cli`                          | `0.84.1`            |
-| 原生包 `@rnoh/react-native-openharmony`                              | `0.84.1`            |
-| `hermes-compiler`                                                   | `250829098.0.9`     |
-| `react-native-worklets` / `@react-native-ohos/react-native-worklets` | `0.7.4` / `1.0.0`   |
+| `expo`                                                               | `57.0.31`           |
+| `expo-modules-core`                                                  | `57.0.24`           |
+| `expo-battery`                                                       | `57.0.3`            |
+| `react` / `react-native`                                             | `19.2.3` / `0.86.3` |
+| `@react-native-oh/react-native-harmony`                              | `0.86.1`            |
+| `@react-native-oh/react-native-harmony-cli`                          | `0.86.1`            |
+| 原生包 `@rnoh/react-native-openharmony`                              | `0.86.1`            |
+| `hermes-compiler`                                                   | `250829098.0.17`     |
+| `react-native-worklets` / `@react-native-ohos/react-native-worklets` | `0.11.4` / `1.1.0-beta.1` |
 
-只接入 HarmonyOS 平台时，React 和 React Native 的版本跟随 RNOH 即可。项目中已有的 iOS、Android 工程可以保留各自需要的版本；如果需要同时使用两套 React 和 React Native，请参照[两套 React Native 如何共存](./QuickStart.md#两套-react-native-如何共存)配置 Metro 别名。
+SDK 57 示例在各平台共用 React 19.2.3 和 React Native 0.86.3。HarmonyOS 打包时，Metro 配置会使用配套的 RNOH 0.86.1 实现 React Native 平台入口。
 
 ## 安装依赖
 
 以下命令均在应用根目录执行。首先安装 Expo、各模块的 JS 包和 Harmony 实现：
 
 ```sh
-npm install expo@55.0.26 expo-modules-core@55.0.25 expo-battery@55.0.13
-npm install @expo-harmony/cli @expo-harmony/metro-config @expo-harmony/expo-modules-autolinking @expo-harmony/expo @expo-harmony/expo-modules-core @expo-harmony/expo-battery
+npm install expo@57.0.31 expo-modules-core@57.0.24 expo-asset@57.0.20 expo-constants@57.0.22 expo-battery@57.0.3
+npm install @expo-harmony/cli @expo-harmony/metro-config @expo-harmony/expo-modules-autolinking @expo-harmony/expo @expo-harmony/expo-modules-core @expo-harmony/expo-asset @expo-harmony/expo-constants @expo-harmony/expo-battery
 ```
 
 `expo-battery` 提供业务代码使用的 JS API，`@expo-harmony/expo-battery` 提供 HarmonyOS 原生实现，两者都需要安装。`@expo-harmony/expo` 提供原生应用宿主和生命周期接入，`@expo-harmony/expo-modules-core` 是 Expo Modules 的 HarmonyOS 运行时。
@@ -45,22 +45,22 @@ npm install @expo-harmony/cli @expo-harmony/metro-config @expo-harmony/expo-modu
 再安装 RNOH 和 Worklets 相关依赖：
 
 ```sh
-npm install --save-exact @react-native-oh/react-native-harmony@0.84.1 @react-native-oh/react-native-harmony-cli@0.84.1
-npm install react-native-worklets@0.7.4 @react-native-ohos/react-native-worklets@1.0.0
+npm install --save-exact @react-native-oh/react-native-harmony@0.86.1 @react-native-oh/react-native-harmony-cli@0.86.1
+npm install react-native-worklets@0.11.4
 ```
 
 以下打包依赖也需要显式安装：
 
 ```sh
-npm install @expo/metro-runtime@55.0.12 @expo/metro-config@55.0.26 @expo/log-box@55.0.12
-npm install metro@0.83.3 metro-config@0.83.7
-npm install --save-exact hermes-compiler@250829098.0.9
+npm install @expo/metro-runtime@57.0.17 @expo/metro-config@57.0.13 @expo/log-box@57.0.4
+npm install metro@0.84.3 metro-config@0.84.3
+npm install --save-exact hermes-compiler@250829098.0.17
 npm install --save-dev @babel/core@7.29.7 @react-native-community/cli@15.1.3
 ```
 
-安装后请核对各包的 `peerDependencies`，例如当前的 Battery 适配包要求 `expo-battery@55.0.13`。Expo 官方文档中的版本会随 SDK 更新而变化，本文的版本组合以示例工程为准。
+安装后请核对各包的 `peerDependencies`，例如当前的 Battery 适配包要求 `expo-battery@57.0.3`。Expo 官方文档中的版本会随 SDK 更新而变化，本文的版本组合以示例工程为准。
 
-`hermes-compiler` 必须作为应用的直接依赖安装，与原生 RNOH HAR 内嵌的 Hermes 配套，供运行时契约读取版本和 Release 字节码编译使用。CLI 不再限制固定版本组合，但仍检查项目依赖与原生构建的实际版本是否一致；解析方式和升级说明见 [QuickStart 的安装依赖一节](./QuickStart.md#安装依赖)。
+`hermes-compiler` 必须作为应用的直接依赖安装，与原生 RNOH HAR 内嵌的 Hermes 配套，供运行时契约读取版本和 Release 字节码编译使用。CLI 不再限制固定版本组合，但仍检查项目依赖与原生构建的实际版本是否一致。
 
 ## 配置 JS 入口和打包工具
 
@@ -83,9 +83,10 @@ npm install --save-dev @babel/core@7.29.7 @react-native-community/cli@15.1.3
 }
 ```
 
-`index.js` 注册应用：
+`index.js` 先导入 Expo 的初始化代码，再通过 AppRegistry 注册应用。Expo 初始化会加载 Asset 和 Constants。
 
 ```js
+import 'expo';
 import { AppRegistry } from 'react-native';
 import App from './App';
 import { name } from './app.json';
@@ -169,6 +170,7 @@ SDK 版本在 `build-profile.json5` 中设置，示例使用最低兼容版本 A
 import type { ExpoHarmonyHostProvider } from '@expo-harmony/expo';
 import { ExpoRNAbility } from '@expo-harmony/expo';
 import { expoHarmonyHostProvider } from '../generated/ExpoHarmonyHostProvider';
+import { expoHarmonyWorkerScriptUrl } from '../PackageProvider';
 
 export default class EntryAbility extends ExpoRNAbility {
   override getPagePath(): string {
@@ -180,7 +182,7 @@ export default class EntryAbility extends ExpoRNAbility {
   }
 
   protected override getExpoHarmonyWorkerScriptUrl(): string {
-    return 'entry/ets/workers/RNOHWorker.ets';
+    return expoHarmonyWorkerScriptUrl;
   }
 }
 ```
@@ -191,19 +193,21 @@ export default class EntryAbility extends ExpoRNAbility {
 
 在同一个 Expo 宿主和 RNOH coordinator 中，managed root 共享运行时：由第一个 root 完成配置，后续 root 绑定同一个实例，不会重新配置。需要使用不同的实例选项时，可以显式创建实例并通过 unmanaged `rnInstance` 传入，实例的替换和销毁由它的实际所有者负责。移除 root 只解绑页面，不会销毁宿主运行时，最终清理由 Ability 的销毁屏障完成。`onSetUp` 会在 root 首次展示实例之前执行；初次启动会先安装宿主绑定与异常观察，再执行 `onSetUp` 并加载 bundle，加载期间加入的 root 也会在展示前完成各自的 `onSetUp`。如果进程由后台 ExtensionAbility 先启动，它的 coordinator 不会自动迁移给之后的 UIAbility。
 
-Worker 使用 [`RNOHWorker.ets`](../apps/bare/harmony/entry/src/main/ets/workers/RNOHWorker.ets)，通过 `setupRNOHWorker` 接入同一份包列表。请确认 `module.json5` 的 `abilities[].srcEntry`、页面路由和 Ability 中的 Worker 路径都指向这些文件。
+Worker 使用 [`RNOHWorker.ets`](../apps/bare/harmony/entry/src/main/ets/workers/RNOHWorker.ets)，将生成的 `createRNOHWorkerPackages` 传给 `setupRNOHWorker`。该入口保留第三方 RNOH 包的 Worker 注册，并将 Expo 的 ArkUI 模块和视图留在 UI 线程。通过 `entry/build-profile.json5` 的 `buildOption.sourceOption.workers` 将动态加载的脚本打包进 HAP。`PackageProvider.ets` 中 Worker URL 的第一段须与 `module.json5` 的 `module.name` 一致，供 UIAbility 和后台宿主共用。
 
 权限、URL Scheme、图标以及模块所需的原生资源都由项目自行维护，config plugin 的选项不会在 bare 构建时写入原生文件。例如，访问 Metro 开发服务需要 `ohos.permission.INTERNET` 权限。
 
+需要受限权限的应用应先向华为申请，通过后将权限加入入口模块 `module.json5` 的 `requestPermissions`，并使用包含获批权限的签名 Profile。单次选取文件、照片或联系人可以使用系统选择器提供的授权。[华为受限开放权限](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/restricted-permissions)
+
 ### 配置 OHPM 和 Hvigor
 
-在 [`harmony/oh-package.json5`](../apps/bare/harmony/oh-package.json5) 中声明与 JS 侧配套的 `@rnoh/react-native-openharmony@0.84.1`。Expo Core、Battery 和 Worklets 的 HAR 依赖会在执行自动链接时写入，无需手工添加。
+在 [`harmony/oh-package.json5`](../apps/bare/harmony/oh-package.json5) 中声明与 JS 侧配套的 `@rnoh/react-native-openharmony@0.86.1`。Expo Core、Battery 和 Worklets 的 HAR 依赖会在执行自动链接时写入，无需手工添加。
 
 合并以下构建文件：
 
 | 文件                                                                                    | 配置内容                                                                                                                                      |
 | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`harmony/hvigor/hvigor-config.json5`](../apps/bare/harmony/hvigor/hvigor-config.json5) | 声明 `@rnoh/hvigor-plugin`，示例中指向 `../../node_modules/@react-native-oh/react-native-harmony-cli/harmony/rnoh-hvigor-plugin-0.84.1.tgz`。 |
+| [`harmony/hvigor/hvigor-config.json5`](../apps/bare/harmony/hvigor/hvigor-config.json5) | 声明 `@rnoh/hvigor-plugin`，示例中指向 `../../node_modules/@react-native-oh/react-native-harmony-cli/harmony/rnoh-hvigor-plugin-0.86.1.tgz`。 |
 | [`harmony/hvigorfile.ts`](../apps/bare/harmony/hvigorfile.ts)                           | 保留 `appTasks` 和 RNOH 项目插件，关闭后者的 bundler，设置 `HERMES_V1_ENABLED=true`，并接入 Expo Harmony 的准备与打包任务。                   |
 | [`harmony/entry/hvigorfile.ts`](../apps/bare/harmony/entry/hvigorfile.ts)               | 保留 `hapTasks` 和 RNOH codegen，将 RNOH 插件的 `autolinking` 设为 `null`，由 Expo Harmony 统一处理自动链接。                                 |
 
@@ -212,12 +216,12 @@ Worker 使用 [`RNOHWorker.ets`](../apps/bare/harmony/entry/src/main/ets/workers
 根 `hvigorfile.ts` 从 CLI 的公开入口导入两个函数：
 
 ```ts
-import { prepareHarmonyNativeBuild, bundleHarmonyNativeBuild } from '@expo-harmony/cli/native-build';
+import { prepareHarmonyBundleTask, prepareHarmonyNativeBuild } from '@expo-harmony/cli/native-build';
 ```
 
 在 `hvigor.nodesEvaluated` 中调用 `prepareHarmonyNativeBuild(projectRoot, mode)`，其中 `projectRoot` 是包含 `package.json` 的应用根目录，`mode` 为 `debug` 或 `release`。该函数会执行自动链接、安装 OHPM 依赖，并生成 CMake 构建所需的 `native-inputs.cmake` 等文件。
 
-Release 构建还需要注册一个调用 `bundleHarmonyNativeBuild(projectRoot)` 的任务，并安排在目标的 `ProcessResource` 之后、`CompileResource` 之前。完整的任务注册方式见上表中的根 `hvigorfile.ts`。这样从 DevEco Studio 发起 Release 构建时，JS 和资源也会被打包进 HAP。
+使用 `prepareHarmonyBundleTask(projectRoot, mode, onBuildFinished)` 返回资源任务，安排在目标的 `ProcessResource` 之后、`CompileResource` 之前。Release 和开启 `updates.useNativeDebug` 的 Debug 构建会打包并校验 Hermes 字节码。连接 Metro 的 Debug 构建暂存旧字节码，并在构建结束后恢复。任务注册方式见上表中的根 `hvigorfile.ts`。
 
 ## 生成自动链接文件
 
@@ -260,7 +264,7 @@ export default function App() {
 }
 ```
 
-这两个 Hook 会读取电池状态并订阅变化。电量取值范围为 `0` 到 `1`，无法获取时为 `-1`，因此显示百分比前要先处理未知值。API 用法见 [Expo SDK 55 Battery 文档](https://docs.expo.dev/versions/v55.0.0/sdk/battery/)；HarmonyOS 的返回值和事件行为见 [Battery 适配包说明](../packages/expo-battery/README.md)。
+这两个 Hook 会读取电池状态并订阅变化。电量取值范围为 `0` 到 `1`，无法获取时为 `-1`，因此显示百分比前要先处理未知值。API 用法见 [Expo SDK 57 Battery 文档](https://docs.expo.dev/versions/v57.0.0/sdk/battery/)；HarmonyOS 的返回值和事件行为见 [Battery 适配包说明](../packages/expo-battery/README.md)。
 
 示例应用 [`apps/bare/App.tsx`](../apps/bare/App.tsx) 还调用了 `getPowerStateAsync()`、`isAvailableAsync()` 和 `isBatteryOptimizationEnabledAsync()`，订阅电量、充电状态与低电量模式变化，并在组件卸载时移除监听。运行示例后可以查看电量、电源状态和事件计数，也可以点击“重新读取电池状态”检查当前值。在没有真实电池的模拟器上读到未知电量，并不代表模块接入失败。
 

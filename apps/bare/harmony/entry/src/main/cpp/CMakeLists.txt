@@ -46,6 +46,4 @@ add_library(rnoh_app SHARED
 
 target_link_libraries(rnoh_app PUBLIC rnoh)
 target_include_directories(rnoh_app PRIVATE "${RNOH_CODEGEN_ROOT}")
-target_include_directories(rnoh_app PRIVATE
-  "${OH_MODULES_DIR}/@expo-harmony/expo-modules-core/src/main/cpp/package")
 autolink_libraries(rnoh_app)

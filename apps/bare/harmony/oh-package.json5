@@ -11,17 +11,21 @@
   "version": "1.0.0",
   "license": "MIT",
   "dependencies": {
-    "@rnoh/react-native-openharmony": "0.84.1",
-    "@expo-harmony/expo": "55.0.31-harmony.3",
-    "@expo-harmony/expo-battery": "55.0.17-harmony.3",
-    "@expo-harmony/expo-modules-core": "55.0.26-harmony.3",
-    "@react-native-ohos/react-native-worklets": "1.0.0"
+    "@rnoh/react-native-openharmony": "0.86.1",
+    "@expo-harmony/expo": "57.0.30-harmony.0",
+    "@expo-harmony/expo-asset": "57.0.20-harmony.0",
+    "@expo-harmony/expo-battery": "57.0.3-harmony.0",
+    "@expo-harmony/expo-constants": "57.0.22-harmony.0",
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
+    "@react-native-ohos/react-native-worklets": "1.1.0-beta.1"
   },
   "overrides": {
-    "@rnoh/react-native-openharmony": "0.84.1",
-    "@expo-harmony/expo": "55.0.31-harmony.3",
-    "@expo-harmony/expo-battery": "55.0.17-harmony.3",
-    "@expo-harmony/expo-modules-core": "55.0.26-harmony.3",
-    "@react-native-ohos/react-native-worklets": "1.0.0"
+    "@rnoh/react-native-openharmony": "0.86.1",
+    "@expo-harmony/expo": "57.0.30-harmony.0",
+    "@expo-harmony/expo-asset": "57.0.20-harmony.0",
+    "@expo-harmony/expo-battery": "57.0.3-harmony.0",
+    "@expo-harmony/expo-constants": "57.0.22-harmony.0",
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
+    "@react-native-ohos/react-native-worklets": "1.1.0-beta.1"
   }
 }

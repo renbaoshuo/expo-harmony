@@ -7,6 +7,7 @@
 
 import type { ExpoHarmonyHostProvider } from '@expo-harmony/expo';
 import { ExpoRNAbility } from '@expo-harmony/expo';
+import { expoHarmonyWorkerScriptUrl } from '../PackageProvider';
 import { expoHarmonyHostProvider } from '../generated/ExpoHarmonyHostProvider';
 
 export default class EntryAbility extends ExpoRNAbility {
@@ -19,6 +20,6 @@ export default class EntryAbility extends ExpoRNAbility {
   }
 
   protected override getExpoHarmonyWorkerScriptUrl(): string {
-    return 'entry/ets/workers/RNOHWorker.ets';
+    return expoHarmonyWorkerScriptUrl;
   }
 }

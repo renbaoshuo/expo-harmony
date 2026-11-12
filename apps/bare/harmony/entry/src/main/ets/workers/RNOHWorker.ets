@@ -6,10 +6,10 @@
  */
 
 import { setupRNOHWorker } from '@rnoh/react-native-openharmony/src/main/ets/setupRNOHWorker';
-import { getRNOHPackages } from '../PackageProvider';
+import { createRNOHWorkerPackages } from '../RNOHWorkerPackagesFactory';
 
 setupRNOHWorker({
   createWorkerRNInstanceConfig: () => ({
-    thirdPartyPackagesFactory: getRNOHPackages,
+    thirdPartyPackagesFactory: createRNOHWorkerPackages,
   }),
 });

@@ -11,8 +11,10 @@ import { hapTasks } from '@ohos/hvigor-ohos-plugin';
 import { createRNOHModulePlugin } from '@rnoh/hvigor-plugin';
 
 const projectRoot = path.resolve('..');
+
 function resolveNodeModulesPath() {
   let directory = projectRoot;
+
   while (true) {
     const candidate = path.join(directory, 'node_modules');
     if (fs.existsSync(candidate)) return candidate;
@@ -21,6 +23,7 @@ function resolveNodeModulesPath() {
     directory = parent;
   }
 }
+
 const nodeModulesPath = resolveNodeModulesPath();
 
 export default {
@@ -33,6 +36,7 @@ export default {
         cppOutputPath: './entry/src/main/cpp/rnoh_codegen/generated',
       },
       autolinking: null,
+      metro: null,
     }),
   ],
 };

@@ -7,12 +7,6 @@
 
 #include <RNOH/PackageProvider.h>
 
-#include <package/ExpoModulesCorePackage.h>
-
-namespace rnoh {
-using ExpoModulesCorePackage = expo::harmony::ExpoModulesCorePackage;
-}
-
 #include <memory>
 #include <vector>
 
