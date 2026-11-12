@@ -42,8 +42,13 @@ const LOCKS: Map<number, window.Orientation> = new Map([
   [OrientationLock.LANDSCAPE_RIGHT, window.Orientation.LANDSCAPE_INVERTED],
 ]);
 
+// Official deviceType value; setPreferredOrientation does not take effect on 2in1.
+// Use the string contract because DeviceTypes.TYPE_2IN1 is only available since API 20.
+const TWO_IN_ONE_DEVICE_TYPE: string = '2in1';
 const ORIENTATION_CONVERSION_API_LEVEL: number = 23;
 const CAPABILITY_NOT_SUPPORTED: number = 801;
+const INVALID_DISPLAY: number = 1400001;
+const DISPLAY_SERVICE_ABNORMAL: number = 1400003;
 
 // convertOrientationAndRotation returns these values, not window.Orientation.
 enum WindowDirection {
@@ -53,16 +58,8 @@ enum WindowDirection {
   LANDSCAPE = 3,
 }
 
-// Display.rotation uses quarter turns, not degrees; the SDK provides no enum.
-enum DisplayRotation {
-  ROTATION_0 = 0,
-  ROTATION_90 = 1,
-  ROTATION_180 = 2,
-  ROTATION_270 = 3,
-}
-
 export function supportsOrientationLock(value: number): boolean {
-  return LOCKS.has(value);
+  return deviceInfo.deviceType !== TWO_IN_ONE_DEVICE_TYPE && LOCKS.has(value);
 }
 
 export function toPreferredOrientation(value: number): window.Orientation {
@@ -110,10 +107,21 @@ export function requirePlatformOrientation(value: number): window.Orientation {
 
 export function readOrientation(win: window.Window): Orientation {
   const props = win.getWindowProperties();
-  const screen = props.displayId === undefined ? display.getDefaultDisplaySync() : display.getDisplayByIdSync(props.displayId);
   const rect = props.windowRect;
 
   if (rect.width <= 0 || rect.height <= 0) return Orientation.UNKNOWN;
+
+  let screen: display.Display;
+
+  try {
+    screen = props.displayId === undefined ? display.getDefaultDisplaySync() : display.getDisplayByIdSync(props.displayId);
+  } catch (error) {
+    const code = (error as BusinessError).code;
+    // The display can disappear before the window's displayId is updated.
+    if (code === (props.displayId === undefined ? INVALID_DISPLAY : DISPLAY_SERVICE_ABNORMAL)) return Orientation.UNKNOWN;
+
+    throw error as Error;
+  }
 
   if (deviceInfo.sdkApiVersion >= ORIENTATION_CONVERSION_API_LEVEL && canIUse('SystemCapability.Window.SessionManager')) {
     try {
@@ -123,27 +131,15 @@ export function readOrientation(win: window.Window): Orientation {
         screen.orientation,
       );
 
-      return matchWindowShape(fromWindowDirection(direction), rect);
+      return fromWindowDirection(direction);
     } catch (error) {
       if ((error as BusinessError).code !== CAPABILITY_NOT_SUPPORTED) {
-        throw new ExpoModuleError('ERR_SCREEN_ORIENTATION_CONVERSION', `Unable to convert the current screen orientation: ${String(error)}`);
+        throw new ExpoModuleError('ERR_SCREEN_ORIENTATION_CONVERSION', `Unable to convert the current screen orientation: ${String(error)}`, error);
       }
     }
   }
 
-  if (screen.width <= 0 || screen.height <= 0) return Orientation.UNKNOWN;
-
-  // Window resizing must not change the display's inferred natural orientation.
-  return matchWindowShape(fromRotationAndSize(screen.rotation, screen.width, screen.height), rect);
-}
-
-function matchWindowShape(orientation: Orientation, rect: window.Rect): Orientation {
-  const portrait = orientation === Orientation.PORTRAIT_UP || orientation === Orientation.PORTRAIT_DOWN;
-  if (orientation === Orientation.UNKNOWN || (rect.width !== rect.height && portrait !== rect.height > rect.width)) {
-    return Orientation.UNKNOWN;
-  }
-
-  return orientation;
+  return fromDisplayOrientation(screen.orientation);
 }
 
 function fromWindowDirection(value: number): Orientation {
@@ -161,20 +157,17 @@ function fromWindowDirection(value: number): Orientation {
   }
 }
 
-function fromRotationAndSize(rotation: number, width: number, height: number): Orientation {
-  const portrait =
-    ((rotation === DisplayRotation.ROTATION_0 || rotation === DisplayRotation.ROTATION_180) && height > width) ||
-    ((rotation === DisplayRotation.ROTATION_90 || rotation === DisplayRotation.ROTATION_270) && width > height);
-
-  switch (rotation) {
-    case DisplayRotation.ROTATION_0:
-      return portrait ? Orientation.PORTRAIT_UP : Orientation.LANDSCAPE_RIGHT;
-    case DisplayRotation.ROTATION_90:
-      return portrait ? Orientation.LANDSCAPE_RIGHT : Orientation.PORTRAIT_DOWN;
-    case DisplayRotation.ROTATION_180:
-      return portrait ? Orientation.PORTRAIT_DOWN : Orientation.LANDSCAPE_LEFT;
-    case DisplayRotation.ROTATION_270:
-      return portrait ? Orientation.LANDSCAPE_LEFT : Orientation.PORTRAIT_UP;
+function fromDisplayOrientation(value: display.Orientation): Orientation {
+  // The logical display direction already accounts for the device's natural orientation.
+  switch (value) {
+    case display.Orientation.PORTRAIT:
+      return Orientation.PORTRAIT_UP;
+    case display.Orientation.PORTRAIT_INVERTED:
+      return Orientation.PORTRAIT_DOWN;
+    case display.Orientation.LANDSCAPE:
+      return Orientation.LANDSCAPE_RIGHT;
+    case display.Orientation.LANDSCAPE_INVERTED:
+      return Orientation.LANDSCAPE_LEFT;
     default:
       return Orientation.UNKNOWN;
   }

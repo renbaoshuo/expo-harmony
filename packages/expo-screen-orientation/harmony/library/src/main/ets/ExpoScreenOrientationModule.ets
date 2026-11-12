@@ -27,7 +27,6 @@ export class ExpoScreenOrientationModule extends ExpoModule {
     return (
       new ExpoModuleDefinition()
         .name('ExpoScreenOrientation')
-        // Expo JS uses RN Dimensions; registration only keeps native-emitter compatibility.
         .events(['expoDidUpdateDimensions'])
         .asyncFunction(
           'lockAsync',
@@ -75,11 +74,12 @@ export class ExpoScreenOrientationModule extends ExpoModule {
 
   private setOrientation(orientation: window.Orientation): Promise<void> {
     return this.useWindow(async (win: window.Window): Promise<void> => {
-      if (!this.originals.has(win)) {
-        this.originals.set(win, win.getPreferredOrientation());
-      }
+      const original = this.originals.has(win) ? undefined : win.getPreferredOrientation();
 
+      // Always apply the request: the OS may have changed orientation since the
+      // previous lock, including when returning to a previously applied policy.
       await win.setPreferredOrientation(orientation);
+      if (original !== undefined) this.originals.set(win, original);
     });
   }
 
@@ -89,7 +89,13 @@ export class ExpoScreenOrientationModule extends ExpoModule {
     return this.serialize(async (): Promise<T> => {
       this.assertWindowAvailable(generation);
 
-      const win = this.stage!.getMainWindowSync();
+      let win: window.Window;
+
+      try {
+        win = this.stage!.getMainWindowSync();
+      } catch (error) {
+        throw new ExpoModuleError('ERR_SCREEN_ORIENTATION_WINDOW', 'Screen orientation requires a current UIAbility window.', error);
+      }
 
       const result = await task(win);
 
@@ -150,6 +156,7 @@ export class ExpoScreenOrientationModule extends ExpoModule {
 
   private async restoreOrientations(): Promise<void> {
     let failure: Object | undefined;
+
     for (const entry of this.originals) {
       try {
         await entry[0].setPreferredOrientation(entry[1]);
