@@ -47,7 +47,6 @@
 - [expo-contacts](./packages/expo-contacts/)：访问手机的系统联系人。
 - [expo-crypto](./packages/expo-crypto/)：通用的加密操作。
 - [expo-dev-client](./packages/expo-dev-client/)：提供 Expo 开发客户端入口，聚合开发启动器与开发菜单。
-- [expo-dev-client-components](./packages/expo-dev-client-components/)：expo-dev-client 共用的 JS 组件与配置。
 - [expo-dev-launcher](./packages/expo-dev-launcher/)：Expo 开发构建的原生启动器，支持项目地址、最近项目、mDNS 发现和系统扫码。
 - [expo-dev-menu](./packages/expo-dev-menu/)：Expo 开发菜单的原生实现，提供菜单界面、FAB、偏好和源码浏览。
 - [expo-dev-menu-interface](./packages/expo-dev-menu-interface/)：提供 Expo Dev Menu 的管理、桥接、宿主代理和键盘响应接口定义。
