@@ -1,27 +1,17 @@
 # @expo-harmony/expo-device
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-device) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/device/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-device) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/device/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Device 的原生实现，与官方同版本的 `expo-device` 配套使用。支持读取设备品牌、型号、系统版本、CPU 架构、总内存、设备类型和开机时长。
+为 HarmonyOS 上的 React Native 应用提供 Expo Device 的原生实现，与官方同版本的 `expo-device` 配套使用。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
 ```bash
-npm install @expo-harmony/expo-device expo-device@55.0.21
-```
-
-鸿蒙适配会通过 Autolinking 自动接入。最低支持 HarmonyOS 5.0.1（API 13），宿主的 `compatibleSdkVersion` 也需满足此要求。
-
-HAR 内声明的设备类型为 `default`（手机）、`tablet`（平板）和 `2in1`（PC），TV、可穿戴和车机不在清单内。下文 `Device.deviceType` 里 `tv` 对应 `TV` 只是类型字符串的转换规则，不代表支持 TV 设备。
-
-业务代码依旧使用官方包：
-
-```ts
-import * as Device from 'expo-device';
-
-console.log(Device.modelName, Device.totalMemory);
-const type = await Device.getDeviceTypeAsync();
-const uptime = await Device.getUptimeAsync();
+npm install @expo-harmony/expo-device expo-device
 ```
 
 ## API 对照表
@@ -30,120 +20,139 @@ const uptime = await Device.getUptimeAsync();
 
 #### `Device.isDevice`
 
-类型：`boolean`
-
-恒为 `true`。HarmonyOS 没有公开的模拟器检测接口，在模拟器上同样返回 `true`。
+类型为 `boolean`，始终返回 `true`。
 
 #### `Device.brand`
 
-类型：`string | null`
-
-设备品牌。取不到或为空时返回 `null`。
+类型为 `string | null`，返回设备品牌；系统未提供时返回 `null`。
 
 #### `Device.manufacturer`
 
-类型：`string | null`
-
-设备制造商。取不到或为空时返回 `null`。
+类型为 `string | null`，返回设备制造商；系统未提供时返回 `null`。
 
 #### `Device.modelName`
 
-类型：`string | null`
+类型为 `string | null`，返回面向用户的设备型号名称。优先使用市场名称，其次使用产品型号；两者都未提供时返回 `null`。
 
-面向用户的设备型号名称。优先取市场名称，没有时取产品型号。两者都为空时返回 `null`。
+#### `Device.modelId`
 
-#### `Device.deviceType`
+类型为 `string | null`，返回系统提供的产品型号标识；未提供时返回 `null`。
 
-类型：`DeviceType | null`
+#### `Device.designName`
 
-设备类型，按系统上报的设备类型字符串映射：`default` 和 `phone` 对应 `PHONE`，`tablet` 对应 `TABLET`，`2in1` 对应 `DESKTOP`，`tv` 对应 `TV`，其余值对应 `UNKNOWN`。可穿戴、车机等类型归入 `UNKNOWN`。恒为有效枚举值，不会返回 `null`。
+类型为 `string | null`，始终返回 `null`。
+
+- HarmonyOS 不提供设备设计名称。
+
+#### `Device.productName`
+
+类型为 `string | null`，始终返回 `null`。
+
+- HarmonyOS 不提供设备产品名称字段。
+
+#### `Device.deviceYearClass`
+
+类型为 `number | null`，始终返回 `null`。
+
+- HarmonyOS 不提供设备年份分级。
 
 #### `Device.totalMemory`
 
-类型：`number | null`
+类型为 `number | null`，返回设备总内存，单位为字节。读取失败或数值无效时返回 `null`。
 
-设备总内存，单位字节。指整台设备的物理内存，不是应用堆或进程的内存上限。读取失败或结果不是正安全整数时返回 `null`。
+#### `Device.deviceType`
+
+类型为 `DeviceType | null`。根据系统报告的设备类型返回 `PHONE`、`TABLET`、`DESKTOP`、`TV` 或 `UNKNOWN`：`default` 和 `phone` 映射为 `PHONE`，`tablet` 映射为 `TABLET`，`2in1` 映射为 `DESKTOP`，`tv` 映射为 `TV`，其他值映射为 `UNKNOWN`。HarmonyOS 上始终返回有效枚举值，不会返回 `null`。
 
 #### `Device.supportedCpuArchitectures`
 
-类型：`string[] | null`
-
-设备支持的处理器架构列表，取系统上报的架构清单并去掉空项。清单为空时返回 `null`。
+类型为 `string[] | null`，返回系统报告的处理器架构标识列表；列表为空时返回 `null`。
 
 #### `Device.osName`
 
-类型：`string | null`
-
-操作系统名称，取发行方提供的名称原值，不做解析。为空时返回 `null`。
+类型为 `string | null`，返回系统名称；系统未提供时返回 `null`。
 
 #### `Device.osVersion`
 
-类型：`string | null`
-
-操作系统版本，取发行方提供的版本字符串原值，不做解析。为空时返回 `null`。
+类型为 `string | null`，返回系统版本；系统未提供时返回 `null`。
 
 #### `Device.osBuildId`
 
-类型：`string | null`
+类型为 `string | null`，返回系统显示版本；系统未提供时返回 `null`。
 
-系统显示版本。为空时返回 `null`。
+#### `Device.osInternalBuildId`
 
-> **未实现的内容**
->
-> - `Device.modelId`：iOS 专属字段，HarmonyOS 上没有内部型号 ID。
-> - `Device.designName`：Android 专属字段，HarmonyOS 上没有对应值。
-> - `Device.productName`：Android 专属字段，HarmonyOS 上没有对应值。
-> - `Device.deviceYearClass`：设备年份分级，HarmonyOS 上没有该分级。
-> - `Device.deviceName`：用户可编辑的设备名称。HarmonyOS 上读取它需要 `ohos.permission.DISTRIBUTED_DATASYNC` 权限，本包不申请，返回 `null`。
-> - `Device.osInternalBuildId`：HarmonyOS 没有与官方语义一致的内部构建 ID。
-> - `Device.osBuildFingerprint`：Android 专属字段，HarmonyOS 上没有构建指纹。
-> - `Device.platformApiLevel`：Android 专属字段，HarmonyOS 的系统 API 版本语义不同。
+类型为 `string | null`，返回系统内部版本标识；系统未提供时返回 `null`。
+
+#### `Device.osBuildFingerprint`
+
+类型为 `string | null`，返回系统提供的构建信息标识；系统未提供时返回 `null`。
+
+#### `Device.platformApiLevel`
+
+类型为 `number | null`，始终返回 `null`。
+
+- HarmonyOS 不提供与该字段语义对应的 API 级别值。
+
+#### `Device.deviceName`
+
+类型为 `string | null`，返回系统设置中的设备名称；系统未提供名称或读取受限时返回 `null`。
 
 ### Methods
 
 #### `Device.getDeviceTypeAsync()`
 
-返回 `Promise<DeviceType>`，取值与 `Device.deviceType` 一致。
+无参数，返回 `Promise<DeviceType>`，结果与 `Device.deviceType` 相同。
 
 #### `Device.getUptimeAsync()`
 
-返回 `Promise<number>`，自上次开机以来的毫秒数，不计入深度休眠，与官方在 Android 上的语义一致。读取失败或结果不是非负安全整数时抛出 `ERR_DEVICE_UPTIME`。
+无参数，返回 `Promise<number>`，表示自上次开机以来的毫秒数，不计入深度休眠。读取失败或结果无效时以 `ERR_DEVICE_UPTIME` 拒绝。
 
 #### `Device.getPlatformFeaturesAsync()`
 
-返回 `Promise<string[]>`，恒为空数组。官方标记为 Android 专属接口，HarmonyOS 上没有对应的平台特性清单。
+无参数，返回 `Promise<string[]>`。
+
+- HarmonyOS 不提供平台特性列表，因此始终返回空数组。
 
 #### `Device.hasPlatformFeatureAsync(feature)`
 
-返回 `Promise<boolean>`，恒为 `false`。官方标记为 Android 专属接口，HarmonyOS 上没有对应的平台特性清单。
+参数 `feature: string`，返回 `Promise<boolean>`。
 
-> **未实现的内容**
->
-> - `Device.getMaxMemoryAsync()`：Android 上返回 Java 虚拟机的内存上限，HarmonyOS 上没有等价概念，调用抛出 `UnavailabilityError`。
-> - `Device.isRootedExperimentalAsync()`：HarmonyOS 没有可靠的 root 检测接口，调用抛出 `UnavailabilityError`。
-> - `Device.isSideLoadingEnabledAsync()`：HarmonyOS 没有对应的侧载查询接口，调用抛出 `UnavailabilityError`。
+- HarmonyOS 不提供平台特性列表，因此始终返回 `false`。
+
+#### `Device.getMaxMemoryAsync()`
+
+无参数，返回 `Promise<number>`。
+
+- HarmonyOS 不提供应用可用内存上限查询；调用时以 `UnavailabilityError` 拒绝。
+
+#### `Device.isRootedExperimentalAsync()`
+
+无参数，返回 `Promise<boolean>`。
+
+- HarmonyOS 不提供可靠的 root 状态查询；调用时以 `UnavailabilityError` 拒绝。
+
+#### `Device.isSideLoadingEnabledAsync()`
+
+无参数，返回 `Promise<boolean>`。
+
+- HarmonyOS 不提供侧载状态查询；调用时以 `UnavailabilityError` 拒绝。
 
 ### Enums
 
 #### `DeviceType`
 
-| 成员      | 值  | 含义                     |
-| --------- | --- | ------------------------ |
-| `UNKNOWN` | `0` | 无法识别的设备类型       |
-| `PHONE`   | `1` | 手机                     |
-| `TABLET`  | `2` | 平板                     |
-| `DESKTOP` | `3` | 桌面设备，对应 2in1 设备 |
-| `TV`      | `4` | 电视                     |
+- `UNKNOWN = 0`：无法识别的设备类型。
+- `PHONE = 1`：手机。
+- `TABLET = 2`：平板。
+- `DESKTOP = 3`：二合一设备。
+- `TV = 4`：电视。
 
 ### Error codes
 
 #### `ERR_DEVICE_UPTIME`
 
-`getUptimeAsync()` 读取失败或返回值不合法时抛出。
-
-#### `ERR_DEVICE_ROOT_DETECTION`
-
-只在 root 检测时抛出，HarmonyOS 上不会出现。
+`Device.getUptimeAsync()` 读取失败或返回值无效时抛出。
 
 ## Author
 

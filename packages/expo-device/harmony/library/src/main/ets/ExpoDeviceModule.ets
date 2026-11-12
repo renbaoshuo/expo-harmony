@@ -6,7 +6,7 @@
  */
 
 import { ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoModuleError } from '@expo-harmony/expo-modules-core';
-import { deviceInfo, systemDateTime } from '@kit.BasicServicesKit';
+import { deviceInfo, settings, systemDateTime } from '@kit.BasicServicesKit';
 import { hidebug } from '@kit.PerformanceAnalysisKit';
 
 enum DeviceType {
@@ -33,7 +33,7 @@ export class ExpoDeviceModule extends ExpoModule {
       .constant('modelName', (): string | null => {
         return nonEmptyOrNull(deviceInfo.marketName) ?? nonEmptyOrNull(deviceInfo.productModel);
       })
-      .constant('modelId', null)
+      .constant('modelId', (): string | null => nonEmptyOrNull(deviceInfo.productModel))
       .constant('designName', null)
       .constant('productName', null)
       .constant('deviceYearClass', null)
@@ -50,10 +50,20 @@ export class ExpoDeviceModule extends ExpoModule {
       .constant('osName', (): string | null => nonEmptyOrNull(deviceInfo.distributionOSName))
       .constant('osVersion', (): string | null => nonEmptyOrNull(deviceInfo.distributionOSVersion))
       .constant('osBuildId', (): string | null => nonEmptyOrNull(deviceInfo.displayVersion))
-      .constant('osInternalBuildId', null)
-      .constant('osBuildFingerprint', null)
+      .constant('osInternalBuildId', (): string | null => {
+        const version = deviceInfo.incrementalVersion;
+        // HarmonyOS can report this placeholder before a commercial release.
+        return version === 'default' ? null : nonEmptyOrNull(version);
+      })
+      .constant('osBuildFingerprint', (): string | null => nonEmptyOrNull(deviceInfo.versionId))
       .constant('platformApiLevel', null)
-      .constant('deviceName', null)
+      .constant('deviceName', (): string | null => {
+        try {
+          return nonEmptyOrNull(settings.getValueSync(this.context.uiAbilityContext, settings.general.DEVICE_NAME, ''));
+        } catch {
+          return null;
+        }
+      })
       .asyncFunction('getDeviceTypeAsync', async (): Promise<DeviceType> => getDeviceType())
       .asyncFunction('getUptimeAsync', async (): Promise<number> => {
         let uptime: number;
