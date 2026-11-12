@@ -1,21 +1,17 @@
 # @expo-harmony/expo-task-manager
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-task-manager) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/task-manager/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-task-manager) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/task-manager/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Task Manager 的原生实现，与官方同版本的 `expo-task-manager` 配套使用。TaskManager 是后台任务的基础设施：系统触发任务时，它负责启动 JS 运行环境、执行 `defineTask` 定义的任务函数，再把结果回传给注册任务的模块。鸿蒙上通过它运行后台任务的是 expo-background-fetch 和 expo-background-task，任务的注册和系统调度由这两个包各自的接口负责。
+为 HarmonyOS 上的 React Native 应用提供 Expo Task Manager 的原生实现，与官方同版本的 `expo-task-manager` 配套使用。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
 ```bash
-npm install @expo-harmony/expo-task-manager expo-task-manager@~55.0.20
-```
-
-本包适配 Expo SDK 55 的 `expo-task-manager`，原生模块通过 Expo Harmony 自动链接。最低支持 HarmonyOS 5.0.1（API 13），宿主的 `compatibleSdkVersion` 也要满足这一要求。
-
-业务代码从官方包导入：
-
-```ts
-import * as TaskManager from 'expo-task-manager';
+npm install @expo-harmony/expo-task-manager expo-task-manager
 ```
 
 ## API 对照表
@@ -24,80 +20,85 @@ import * as TaskManager from 'expo-task-manager';
 
 #### `TaskManager.defineTask(taskName, taskExecutor)`
 
-定义名为 `taskName` 的任务函数。任务触发时以 `TaskManagerTaskBody` 为参数调用，函数 resolve 的值作为执行结果回传给注册该任务的模块。`taskName` 要与注册时使用的名称一致。
+定义任务处理函数。`taskName` 是非空任务名，必须与注册任务时使用的名称一致；`taskExecutor` 接收 `TaskManagerTaskBody`，返回的值会作为任务结果回传。参数不符合要求时会输出警告并忽略定义。
 
-调用必须发生在 JS 全局作用域，不能放在 React 组件的生命周期方法里：任务可能在应用未启动时触发，那时只加载 JS 代码，没有组件被挂载。
+任务函数需在应用加载时于全局作用域定义，以便任务触发时可找到处理函数。任务可能在应用界面未打开时触发。
 
-已注册但未定义的任务被执行时，会打印警告并自动注销该任务。
+触发时找不到对应定义的已注册任务不会执行，并会自动注销。
 
 #### `TaskManager.getRegisteredTasksAsync()`
 
-返回 `Promise<TaskManagerTask[]>`，当前应用注册的全部任务。注册信息保存在应用的持久存储中，应用重启后仍保留。
+返回 `Promise<TaskManagerTask[]>`，包含当前应用已注册任务的名称、类型和选项。注册信息会在应用重启后保留。
 
 #### `TaskManager.getTaskOptionsAsync(taskName)`
 
-返回 `Promise<TaskOptions>`，注册该任务时传入的选项。任务不存在时返回 `null`。
+`taskName` 为任务名。返回 `Promise<TaskOptions | null>`：任务已注册时返回注册选项，否则返回 `null`。
 
 #### `TaskManager.isAvailableAsync()`
 
-返回 `Promise<boolean>`，HarmonyOS 上始终为 `true`。官方文档提到的 Expo Go 限制不适用于鸿蒙。
+返回 `Promise<boolean>`。在 HarmonyOS 上始终返回 `true`。
 
 #### `TaskManager.isTaskDefined(taskName)`
 
-返回 `boolean`，任务是否已用 `defineTask` 定义。
+`taskName` 为任务名。返回 `boolean`，表示当前运行中是否已通过 `defineTask` 定义；应用重新启动后需重新定义任务。
 
 #### `TaskManager.isTaskRegisteredAsync(taskName)`
 
-返回 `Promise<boolean>`，任务是否已注册。注册信息跨会话保留。
+`taskName` 为任务名。返回 `Promise<boolean>`，表示该任务是否已注册。注册信息会跨应用重启保留。
 
 #### `TaskManager.unregisterTaskAsync(taskName)`
 
-注销任务，返回 `Promise<void>`。任务未注册时拒绝。官方建议优先使用注册该任务的模块提供的注销方法，例如 `BackgroundFetch.unregisterTaskAsync`。
+注销名为 `taskName` 的任务，返回 `Promise<void>`。任务未注册时会报错。已开始的执行仍可能在截止时间前返回结果。
 
 #### `TaskManager.unregisterAllTasksAsync()`
 
-注销当前应用注册的全部任务，返回 `Promise<void>`。没有已注册任务时直接返回。适合用户退出登录这类不再需要后台任务的场景。
+注销当前应用已注册的全部任务，返回 `Promise<void>`。没有已注册任务时也会正常完成。
 
-### Interfaces
+### Types
 
 #### `TaskManagerError`
+
+任务失败时可在 `TaskManagerTaskBody.error` 中收到此错误对象。
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
 | `code` | `string \| number` | 错误码 |
 | `message` | `string` | 错误信息 |
 
-任务失败时，错误通过 `TaskManagerTaskBody` 的 `error` 字段送达。
-
 #### `TaskManagerTask`
+
+表示当前应用已注册的任务。
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
-| `taskName` | `string` | 注册时使用的任务名 |
-| `taskType` | `string` | 任务类型，由注册它的模块决定 |
-| `options` | `any` | 注册时传入的选项 |
+| `taskName` | `string` | 注册任务时使用的名称 |
+| `taskType` | `string` | 注册任务的模块提供的类型 |
+| `options` | `any` | 注册任务时传入的选项 |
 
-#### `TaskManagerTaskBody`
+#### `TaskManagerTaskBody<T = unknown>`
+
+传给任务处理函数的执行信息。
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
 | `data` | `T` | 任务数据，结构由任务类型决定 |
-| `error` | `TaskManagerError \| null` | 任务携带的错误，否则为 `null` |
-| `executionInfo` | `TaskManagerTaskBodyExecutionInfo` | 本次执行的信息 |
+| `error` | `TaskManagerError \| null` | 任务错误；无错误时为 `null` |
+| `executionInfo` | `TaskManagerTaskBodyExecutionInfo` | 本次任务执行的信息 |
 
 #### `TaskManagerTaskBodyExecutionInfo`
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
-| `eventId` | `string` | 本次执行的 ID，任务完成时随结果回传 |
-| `taskName` | `string` | 任务名 |
-| `appState?` | `'active' \| 'background' \| 'inactive'` | 应用状态。官方标记为 iOS 专属字段，鸿蒙上不返回 |
+| `eventId` | `string` | 本次执行的唯一 ID，完成时随结果回传 |
+| `taskName` | `string` | 任务名称 |
 
-### Types
+- HarmonyOS 不提供 `appState` 字段。
 
-#### `TaskManagerTaskExecutor`
+#### `TaskManagerTaskExecutor<T = any>`
 
-任务函数的类型：`(body: TaskManagerTaskBody<T>) => Promise<any>`，作为 `defineTask` 的第二个参数传入。单次执行最长两分钟，超时后本次执行结束，任务函数之后 resolve 的结果会被丢弃。系统可能在任务完成前终止应用进程，HarmonyOS 不保证任务恰好执行一次，任务函数中的副作用需要业务代码容忍重复或丢失。
+任务处理函数的类型为 `(body: TaskManagerTaskBody<T>) => Promise<any>`。没有单独设置截止时间的执行最长为两分钟；由后台任务触发的执行按对应的截止时间处理，超时后返回的结果会被忽略。
+
+系统可能在任务完成前终止应用进程，任务也可能重复执行或未能完成。请确保任务处理函数能容忍重复执行或遗漏。
 
 ## Author
 
