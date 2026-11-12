@@ -94,15 +94,16 @@ export function createMesh(
 
   const width = (columns - 1) * stepsX + 1;
   const height = (rows - 1) * stepsY + 1;
+  const count = width * height;
 
-  if (!Number.isSafeInteger(width * height) || width * height > MAX_VERTEX_COUNT) {
+  if (!Number.isSafeInteger(count) || count > MAX_VERTEX_COUNT) {
     throw new Error(`ExpoMeshGradient supports at most ${MAX_VERTEX_COUNT} sampled vertices. Reduce resolution or dimensions.`);
   }
 
   for (let i = 0; i < points.length; i += 1) {
     const point = points[i];
 
-    if (point.length !== 2 || !point.every((value: number): boolean => Number.isFinite(Math.fround(value)))) {
+    if (point.length !== 2 || !Number.isFinite(Math.fround(point[0])) || !Number.isFinite(Math.fround(point[1]))) {
       throw new Error('ExpoMeshGradient points must contain two finite float coordinates.');
     }
     if (!Number.isInteger(colors[i]) || colors[i] < -2147483648 || colors[i] > 4294967295) {

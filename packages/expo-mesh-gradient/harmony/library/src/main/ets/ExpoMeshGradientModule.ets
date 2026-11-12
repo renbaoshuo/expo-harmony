@@ -11,6 +11,7 @@ import {
   ExpoModule,
   ExpoModuleContext,
   ExpoModuleDefinition,
+  ExpoRecordShape,
   ExpoValueTypes,
   ExpoView,
   ExpoViewContext,
@@ -19,16 +20,31 @@ import {
 import type { ExpoViewContentContext } from '@expo-harmony/expo-modules-core';
 import { createMesh, DEFAULT_RESOLUTION, MeshGradientData } from './MeshGradientData';
 
+// React Native can send undefined or null for an unrecognized color or a missing coordinate.
+const MESH_NUMBER = ExpoValueTypes.number().defaulted(NaN);
+
+interface MeshResolution {
+  x?: number;
+  y?: number;
+}
+
+const MESH_RESOLUTION = ExpoValueTypes.shapedRecord<MeshResolution>(
+  'MeshResolution',
+  new ExpoRecordShape().field('x', ExpoValueTypes.number()).field('y', ExpoValueTypes.number()),
+  (fields: Record<string, ESObject>): MeshResolution => fields as MeshResolution,
+  (value: MeshResolution): Record<string, ESObject> => value as Record<string, ESObject>,
+);
+
 @Observed
 class ExpoMeshGradientView extends ExpoView {
   columns: number = 0;
   rows: number = 0;
   points: number[][] = [];
   colors: number[] = [];
-  resolution: Record<string, number> = {};
+  resolution: MeshResolution = {};
   smoothsColors: boolean = true;
   mesh?: MeshGradientData;
-  redraw?: () => void;
+  redraw?: (mesh: MeshGradientData | undefined) => void;
 
   constructor(context: ExpoViewContext) {
     super(context);
@@ -41,8 +57,8 @@ class ExpoMeshGradientView extends ExpoView {
         this.rows,
         this.points,
         this.colors,
-        this.resolution['x'] ?? DEFAULT_RESOLUTION,
-        this.resolution['y'] ?? DEFAULT_RESOLUTION,
+        this.resolution.x ?? DEFAULT_RESOLUTION,
+        this.resolution.y ?? DEFAULT_RESOLUTION,
         this.smoothsColors,
       );
     } catch (error) {
@@ -50,7 +66,7 @@ class ExpoMeshGradientView extends ExpoView {
       console.warn(`ExpoMeshGradient cleared an invalid mesh: ${String(error)}`);
     }
 
-    this.redraw?.();
+    this.redraw?.(this.mesh);
   }
 }
 
@@ -71,7 +87,7 @@ class MeshRenderNode extends RenderNode {
     canvas.attachBrush(this.brush);
 
     try {
-      // DST selects vertex colors; the brush still composites them with SRC_OVER.
+      // DST selects the vertex colors. The brush composites them with SRC_OVER.
       canvas.drawVertices(
         drawing.VertexMode.TRIANGLES_VERTEXMODE,
         mesh.positions.length,
@@ -143,14 +159,15 @@ class MeshNodeController extends NodeController {
 struct ExpoMeshGradientContent {
   @ObjectLink view: ExpoMeshGradientView;
   private controller: MeshNodeController = new MeshNodeController();
+  private readonly redraw = (mesh: MeshGradientData | undefined): void => this.controller.update(mesh);
 
   aboutToAppear(): void {
-    this.view.redraw = (): void => this.controller.update(this.view.mesh);
-    this.controller.update(this.view.mesh);
+    this.view.redraw = this.redraw;
+    this.redraw(this.view.mesh);
   }
 
   aboutToDisappear(): void {
-    this.view.redraw = undefined;
+    if (this.view.redraw === this.redraw) this.view.redraw = undefined;
     this.controller.dispose();
   }
 
@@ -197,7 +214,7 @@ export class ExpoMeshGradientModule extends ExpoModule {
       )
       .prop(
         'points',
-        ExpoValueTypes.array(ExpoValueTypes.array(ExpoValueTypes.number())),
+        ExpoValueTypes.array(ExpoValueTypes.array(MESH_NUMBER).defaulted([])),
         (view: ExpoMeshGradientView, value: number[][]): void => {
           view.points = value;
         },
@@ -205,7 +222,7 @@ export class ExpoMeshGradientModule extends ExpoModule {
       )
       .prop(
         'colors',
-        ExpoValueTypes.array(ExpoValueTypes.number()),
+        ExpoValueTypes.array(MESH_NUMBER),
         (view: ExpoMeshGradientView, value: number[]): void => {
           view.colors = value;
         },
@@ -213,8 +230,8 @@ export class ExpoMeshGradientModule extends ExpoModule {
       )
       .prop(
         'resolution',
-        ExpoValueTypes.record(ExpoValueTypes.number()),
-        (view: ExpoMeshGradientView, value: Record<string, number>): void => {
+        MESH_RESOLUTION,
+        (view: ExpoMeshGradientView, value: MeshResolution): void => {
           view.resolution = value;
         },
         {},
@@ -227,8 +244,6 @@ export class ExpoMeshGradientModule extends ExpoModule {
         },
         true,
       )
-      .prop('mask', ExpoValueTypes.boolean(), (_view: ExpoMeshGradientView, _value: boolean): void => {}, false)
-      .prop('ignoresSafeArea', ExpoValueTypes.boolean(), (_view: ExpoMeshGradientView, _value: boolean): void => {}, true)
       .onDidUpdateProps((view: ExpoMeshGradientView): void => view.update())
       .onDestroy((view: ExpoMeshGradientView): void => {
         view.redraw = undefined;

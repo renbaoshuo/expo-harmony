@@ -1,24 +1,26 @@
 # @expo-harmony/expo-mesh-gradient
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-mesh-gradient) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/mesh-gradient/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-mesh-gradient) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/mesh-gradient/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo MeshGradient 的原生实现，与官方同版本的 `expo-mesh-gradient` 配套使用。支持网格顶点、颜色插值、透明度和子视图，直接使用官方 JavaScript 实现。
+为 HarmonyOS 上的 React Native 应用提供 Expo Mesh Gradient 的原生实现，与官方同版本的 `expo-mesh-gradient` 配套使用。
 
 ## 安装
 
-```bash
-npm install @expo-harmony/expo-mesh-gradient expo-mesh-gradient@55.0.18
-```
+本包适配 Expo SDK 57。
 
-本包适配 Expo SDK 55 的 `expo-mesh-gradient`，原生模块通过 Expo Harmony 自动链接。最低支持 HarmonyOS 6.1.0（API 23），宿主的 `compatibleSdkVersion` 也要满足这一要求。网格绘制使用从 API 23 开始提供的 ArkTS `drawing.Canvas.drawVertices`。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 23（HarmonyOS 6.1.0）。
+
+```bash
+npm install @expo-harmony/expo-mesh-gradient expo-mesh-gradient
+```
 
 ## API 对照表
 
-### Component
+### Components
 
 #### `MeshGradientView`
 
-网格渐变视图，从 `expo-mesh-gradient` 导入。支持 React Native `ViewProps`，子视图显示在渐变上方并保留交互。
+绘制网格渐变的视图，从 `expo-mesh-gradient` 导入。接受 React Native `ViewProps` 和子视图；子视图显示在渐变上方并可交互。
 
 ```tsx
 import { MeshGradientView } from 'expo-mesh-gradient';
@@ -32,40 +34,45 @@ import { MeshGradientView } from 'expo-mesh-gradient';
 />;
 ```
 
-#### `columns` / `rows`
+##### `columns`
 
-类型：`number`，默认 `0`。分别为每行、每列的顶点数量，取非负整数。空网格以及不足两行或两列的网格不绘制三角形。
+类型：`number`，默认 `0`。指定每行的顶点数，须为非负整数。值为 `0` 或 `1` 时不绘制渐变。
 
-#### `points`
+##### `rows`
 
-类型：`number[][]`，默认 `[]`。按行排列的二维顶点，长度须为 `columns * rows`。每个坐标相对于视图宽高，必须是有限数值，允许超出 `[0, 1]`，超出视图的图形会被裁剪。坐标重合的边保留重合端点。
+类型：`number`，默认 `0`。指定每列的顶点数，须为非负整数。值为 `0` 或 `1` 时不绘制渐变。
 
-#### `colors`
+##### `points`
 
-类型：`ColorValue[]`，默认 `[]`。每个顶点的颜色，长度须为 `columns * rows`，支持透明度。官方 JavaScript 使用 `processColor` 转换为 ARGB 整数；与 Android 一样，不支持对象形式的动态原生颜色。
+类型：`number[][]`，默认 `[]`。按行排列的顶点坐标，数量须为 `columns * rows`；每个顶点为 `[x, y]`，坐标相对于视图宽高，须为有限数值。坐标可以超出 `[0, 1]`，超出视图的部分会被裁剪。
 
-#### `smoothsColors`
+##### `colors`
 
-类型：`boolean`，默认 `true`。开启时使用 sRGB 通道的 smoothstep 三次插值；关闭时采用 Oklab 色彩空间插值，与上游 Android 的 Compose `lerp` 一致。几何形状始终使用三次曲线，先横向、后纵向按曲线长度采样。
+类型：`ColorValue[]`，默认 `[]`。每个顶点对应一个颜色，数量须为 `columns * rows`，支持透明度。不支持对象形式的动态颜色。
 
-HarmonyOS 遵循上游 Android 的网格算法，包括矩形网格纵向边界使用列数判断的行为。系统路径测量、光栅化和浮点精度可能产生细微差异，不保证与 Android 或 SwiftUI 逐像素一致。
+##### `smoothsColors`
 
-#### `resolution`
+类型：`boolean`，默认 `true`。控制顶点之间的颜色过渡：`true` 使用 sRGB 色彩空间的平滑过渡，`false` 使用 Oklab 色彩空间的线性过渡。网格边缘以曲线连接；行列数不相等时，部分纵向边缘形状可能与预期不同。
 
-类型：`{ x?: number; y?: number }`，`x`、`y` 各自默认 `8`，取正整数。控制每条边的采样段数；默认值与上游 Android 原生实现一致，上游类型注释中的默认值 `1` 与原生实现不同。
+##### `resolution`
 
-采样后的顶点数 `((columns - 1) * x + 1) * ((rows - 1) * y + 1)` 不得超过 `65536`，以满足 Drawing 的 16 位顶点索引范围。超限、非法维度或分辨率、顶点与颜色数量不匹配等输入会清除渐变并输出警告，恢复有效属性后重新绘制；桥接类型错误由 Expo Modules Core 拒绝。
+类型：`{ x?: number; y?: number }`，`x`、`y` 各自默认 `8`，须为正整数。控制网格曲线的细分程度。HarmonyOS 的默认值为 `8`。
 
-> **未实现的内容**
->
-> - `mask`：iOS 专属的子视图 alpha 蒙版，HarmonyOS 上不生效，子视图仍正常显示并接收交互。
-> - `ignoresSafeArea`：iOS 专属的安全区设置，HarmonyOS 始终按 React Native 布局范围绘制。
+行列数、分辨率、顶点或颜色不符合要求时，渐变会被清除并在控制台输出警告；子视图仍可交互。采样顶点数上限为 `65,536`，超出时不会绘制渐变。有效参数恢复后会重新绘制。
+
+##### `mask`
+
+- HarmonyOS 上不生效：不支持根据子视图的透明度裁剪渐变，子视图仍会显示并响应交互。
+
+##### `ignoresSafeArea`
+
+- HarmonyOS 上不生效：视图按 React Native 布局范围绘制，不会扩展到安全区域之外。
 
 ### Types
 
 #### `MeshGradientViewProps`
 
-沿用官方类型，在 `ViewProps` 上增加网格维度、顶点、颜色、采样分辨率及平台专属属性，具体行为见上文。
+`MeshGradientView` 的属性类型，包含 React Native `ViewProps` 以及 `columns`、`rows`、`points`、`colors`、`smoothsColors`、`resolution`、`mask` 和 `ignoresSafeArea`。HarmonyOS 上的属性行为见 [`MeshGradientView`](#meshgradientview)。
 
 ## Author
 
