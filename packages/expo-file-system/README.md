@@ -1,254 +1,180 @@
 # @expo-harmony/expo-file-system
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-file-system) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/filesystem/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-file-system) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/filesystem/)
 
 为 HarmonyOS 上的 React Native 应用提供 Expo FileSystem 的原生实现，与官方同版本的 `expo-file-system` 配套使用。
 
 ## 安装
 
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 21（HarmonyOS 6.0.1）。
+
 ```bash
-npm install @expo-harmony/expo-file-system expo-file-system@55.0.26
+npm install @expo-harmony/expo-file-system expo-file-system
 ```
-
-本包已声明 `ohos.permission.INTERNET`。应用沙箱内的文件，以及通过系统选择器临时访问的文件或目录，都可以直接读写。最低支持 HarmonyOS 6.0.1（API 21），宿主应用的 `compatibleSdkVersion` 不能低于这个版本。
-
-如果需要在应用重启后继续访问所选文件或目录，需配置 `ohos.permission.FILE_ACCESS_PERSIST`。本包默认不声明该权限，可在 `app.json` 的 `expo.harmony.permissions` 数组中添加以下声明：
-
-```json
-{ "name": "ohos.permission.FILE_ACCESS_PERSIST" }
-```
-
-修改 `app.json` 后，需要重新 prebuild 并构建应用。bare 工程可将上述声明加入入口模块 `module.json5` 的 `requestPermissions` 数组。
-
-该权限从 API 12 起为 `normal` 级别，上架应用市场仍需按华为的 [受限权限说明](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/restricted-permissions#ohospermissionfile_access_persist) 申请。
-
-持久授权成功后，应用会在下次启动时恢复访问。未配置该权限或未能取得持久授权时，本次选择仍可使用，应用重启后可能需要重新选择。
-
-本地路径操作限定在应用沙箱内：文档目录、缓存目录，以及通过系统选择器授权的路径。路径中出现符号链接时拒绝。Legacy `copyAsync` 还支持读取系统已授权的文件 URI，目标仍需在应用沙箱或已授权路径内。
 
 ## API 对照表
 
-### Classes
+现代 API 从 `expo-file-system` 导入；Legacy API 从 `expo-file-system/legacy` 导入。
 
-#### `Directory`
+### Constants
 
-目录引用，路径可以不存在。构造时接受若干路径片段，首段可以是 `Directory` 或 `File`。
+#### `documentDirectory`
 
-#### `Directory.uri`
+Legacy 常量，类型为 `string`，返回以 `file://` 开头、以 `/` 结尾的应用文档目录地址。
 
-类型：`string`，只读
+#### `cacheDirectory`
 
-目录地址，`move()` 或 `rename()` 后会变化。
+Legacy 常量，类型为 `string`，返回以 `file://` 开头、以 `/` 结尾的应用缓存目录地址。
 
-#### `Directory.exists`
+#### `bundleDirectory`
 
-类型：`boolean`，只读
+Legacy 常量，类型为 `string`，返回 `rawfile:///` 打包资源目录地址。
 
-目录是否存在。
+#### `DEFAULT_DEBOUNCE_MS`
 
-#### `Directory.size`
+值为 `100`，单位毫秒，是文件变更订阅的默认防抖间隔。
 
-类型：`number | null`，只读
+### Methods
 
-目录大小，为内部所有文件大小之和。目录不存在、无法读取或内部有符号链接时返回 `null`。
+#### `new Directory(...uris)`
 
-#### `Directory.name`
-
-类型：`string`，只读
-
-目录名称。
-
-#### `Directory.parentDirectory`
-
-类型：`Directory`，只读
-
-上级目录。
+接受路径字符串、`File` 或 `Directory`，返回目录引用。路径可以尚不存在；打包资源目录可读，不可写。
 
 #### `Directory.create(options?)`
 
-创建当前地址指向的目录。`options` 默认 `{}`。
-
-| 选项            | 默认值  | 说明                               |
-| --------------- | ------- | ---------------------------------- |
-| `intermediates` | `false` | 创建缺失的父目录                   |
-| `overwrite`     | `false` | 目录已存在时视为成功，保留原有内容 |
-| `idempotent`    | `false` | 目录已存在时静默返回               |
-
-目录已存在时，`idempotent` 为 `true` 直接返回，否则 `overwrite` 为 `true` 也返回且保留内容，两者都不满足时抛出错误。路径上是同名文件时抛出错误。
+创建目录，返回 `void`。`intermediates` 默认 `false`，为 `true` 时创建缺失的父目录。目标已存在时，`idempotent` 为 `true` 可静默返回；否则 `overwrite` 为 `true` 时保留目录内容并返回；两者都不是 `true` 时抛错。
 
 #### `Directory.createDirectory(name)`
 
-在目录下新建子目录，返回 `Directory`。`name` 不能为空、不能是 `.` 或 `..`，也不能含 `/`、`\` 或空字符。子目录已存在时抛出错误。
+在目录下创建子目录并返回 `Directory`。`name` 不能是空字符串、`.` 或 `..`，也不能含路径分隔符或空字符；目标已存在时抛错。
 
 #### `Directory.createFile(name, mimeType)`
 
-在目录下新建空文件，返回 `File`。`mimeType` 不生效，文件已存在时抛出错误。
+在目录下创建空文件并返回 `File`。`mimeType` 不影响创建结果；目标已存在时抛错。
 
-#### `Directory.copy(destination)`
+#### `Directory.copy(destination, options?)`
 
-复制目录。`destination` 是目录时复制到该目录下的同名子目录，否则复制到该路径。目标已存在、源和目标重叠、目标在源内部或 `destination` 为 `File` 时抛出错误。
+复制目录，返回 `Promise<void>`。`destination` 为目录时复制为其中的同名子目录，否则复制到该路径；目标为 `File`、源目标重叠或目标位于源目录内部时抛错。`options.overwrite` 默认为 `false`，为 `true` 时替换已有目标。
 
-#### `Directory.move(destination)`
+#### `Directory.copySync(destination, options?)`
 
-移动目录，成功后更新 `uri`。目标已存在或 `destination` 为 `File` 时抛出错误。跨卷移动时先复制再删除源。
+同步复制目录，参数和目标处理规则与 `Directory.copy()` 相同。
+
+#### `Directory.move(destination, options?)`
+
+移动目录，返回 `Promise<void>`，成功后更新 `uri`。`destination` 为已存在目录时移入并保留原目录名，否则移至指定路径。目标为 `File` 或在未开启覆盖时目标已存在时抛错。`options.overwrite` 默认为 `false`。
+
+#### `Directory.moveSync(destination, options?)`
+
+同步移动目录，参数和目标处理规则与 `Directory.move()` 相同，成功后更新 `uri`。
 
 #### `Directory.rename(newName)`
 
-重命名目录，成功后更新 `uri`。新名称已被占用时抛出错误。
+在当前父目录内重命名目录，成功后更新 `uri`。目标名称已存在时抛错。
 
 #### `Directory.delete()`
 
-删除目录及其全部内容。目录不存在时抛出错误。
+删除目录及其全部内容。目录不存在或无法删除时抛错。
 
 #### `Directory.info()`
 
-返回 `DirectoryInfo`。`files` 为目录内条目名称，`size` 为内部文件大小之和，`modificationTime` 单位为毫秒。`creationTime` 恒为 `null`。
+返回 `DirectoryInfo`。`files` 为直接子项名称数组，`size` 为目录内文件大小总和，`modificationTime` 单位为毫秒。HarmonyOS 不提供目录创建时间，`creationTime` 为 `null`。
 
 #### `Directory.list()`
 
-返回目录内的 `File` 和 `Directory` 实例。目录不存在时抛出错误。
+返回目录中的 `File` 和 `Directory` 实例数组。目录不存在或不可读取时抛错。
 
 #### `Directory.pickDirectoryAsync(initialUri?)`
 
-静态方法。打开系统目录选择器，返回 `Promise<Directory>`。`initialUri` 指定选择器的起始位置。用户取消时拒绝。默认使用临时访问授权，应用重启后可能需要重新选择。若需保留授权，请按[安装](#安装)中的说明配置 `ohos.permission.FILE_ACCESS_PERSIST`。
+打开系统目录选择器，返回 `Promise<Directory>`。`initialUri` 指定初始目录。默认使用临时授权；需要在应用重启后继续访问时见 `ohos.permission.FILE_ACCESS_PERSIST`。用户取消时 Promise 拒绝；设备不支持系统目录选择能力时抛错。
 
-#### `File`
+#### `new File(...uris)`
 
-文件引用，路径可以不存在。构造时接受若干路径片段，首段可以是 `Directory` 或 `File`。实现 `Blob` 接口。打包资源只读，写入、删除、移动等操作会抛出错误。
-
-#### `File.uri`
-
-类型：`string`，只读
-
-文件地址，`move()` 或 `rename()` 后会变化。
-
-#### `File.exists`
-
-类型：`boolean`，只读
-
-文件是否存在。打包资源（`asset://`、`rawfile://`）也可以查询。
-
-#### `File.size`
-
-类型：`number`，只读
-
-文件大小，单位字节。文件不存在或不可读时为 0。
-
-#### `File.md5`
-
-类型：`string | null`，只读
-
-文件的 MD5。文件不存在或不可读时为 `null`。
-
-#### `File.modificationTime`
-
-类型：`number | null`，只读
-
-最后修改时间，单位毫秒。文件不存在或不可读时为 `null`。
-
-#### `File.creationTime`
-
-类型：`number | null`，只读
-
-恒为 `null`，HarmonyOS 没有提供文件的创建时间。
-
-#### `File.type`
-
-类型：`string`，只读
-
-按扩展名推断的 MIME 类型，无法识别时为空字符串。
-
-#### `File.contentUri`
-
-类型：`string`，只读
-
-文件的 `file://` 地址。打包资源会先复制到缓存目录再返回。官方标记为 Android 专属属性，在 HarmonyOS 上可用；HarmonyOS 没有 content URI 概念。
-
-#### `File.name`
-
-类型：`string`，只读
-
-文件名称，含扩展名。
-
-#### `File.extension`
-
-类型：`string`，只读
-
-文件扩展名，如 `.png`。
-
-#### `File.parentDirectory`
-
-类型：`Directory`，只读
-
-上级目录。
+接受路径字符串、`File` 或 `Directory`，返回文件引用。路径可以尚不存在。支持应用沙箱路径、系统选择器授权的文件地址和打包资源地址；打包资源只读。
 
 #### `File.create(options?)`
 
-创建空文件。`intermediates` 默认 `false`，创建缺失的父目录；`overwrite` 默认 `false`，文件已存在时抛出错误，为 `true` 时删除原文件后重建。路径上是目录时抛出错误。
+创建空文件，返回 `void`。`intermediates` 默认 `false`，为 `true` 时创建缺失的父目录。`overwrite` 默认为 `false`；为 `true` 时替换已有文件。路径指向目录时抛错。
 
 #### `File.write(content, options?)`
 
-写入内容。`content` 为字符串时按 `encoding` 编码，默认 `utf8`，可取 `base64`；为 `Uint8Array` 时按字节写入。`append` 默认 `false`，为 `true` 时追加到文件末尾。
+写入字符串或 `Uint8Array`，返回 `void`。字符串默认按 UTF-8 编码，也可用 `encoding: 'base64'`；`append: true` 时追加。`Uint8Array` 按字节写入。
 
 #### `File.text()`
 
-返回 `Promise<string>`，按 UTF-8 读取全部内容。
+按 UTF-8 读取文件，返回 `Promise<string>`。
 
 #### `File.textSync()`
 
-返回 `string`，按 UTF-8 读取全部内容。
+按 UTF-8 同步读取文件，返回 `string`。
 
 #### `File.base64()`
 
-返回 `Promise<string>`，读取全部内容并编码为 base64。
+读取全部文件内容并编码为 Base64，返回 `Promise<string>`。
 
 #### `File.base64Sync()`
 
-返回 `string`，读取全部内容并编码为 base64。
+同步读取全部文件内容并编码为 Base64，返回 `string`。
 
 #### `File.bytes()`
 
-返回 `Promise<Uint8Array>`，读取全部内容。
+读取全部文件内容，返回 `Promise<Uint8Array>`。
 
 #### `File.bytesSync()`
 
-返回 `Uint8Array`，读取全部内容。
+同步读取全部文件内容，返回 `Uint8Array`。
 
 #### `File.arrayBuffer()`
 
-返回 `Promise<ArrayBuffer>`，读取全部内容。
+读取全部文件内容，返回 `Promise<ArrayBuffer>`。
+
+#### `File.json()`
+
+将文件按 UTF-8 读取并解析为 JSON，返回 `Promise<any>`。内容不是有效 JSON 时拒绝。
+
+#### `File.formData()`
+
+按文件的 MIME 类型解析表单内容，返回 `Promise<FormData>`。
 
 #### `File.info(options?)`
 
-返回 `FileInfo`。`options.md5` 为 `true` 时结果包含 `md5`，默认 `false`。`modificationTime` 单位为毫秒，`creationTime` 恒为 `null`。路径上是目录时抛出错误。
+返回 `FileInfo`。`options.md5` 为 `true` 时包含 MD5。`modificationTime` 单位为毫秒；HarmonyOS 不提供文件创建时间，`creationTime` 为 `null`。路径指向目录时抛错。
 
-#### `File.copy(destination)`
+#### `File.copy(destination, options?)`
 
-复制文件。`destination` 是目录时复制到该目录下的同名文件，否则复制到该路径。目标已存在时抛出错误。
+复制文件，返回 `Promise<void>`。`destination` 为目录时复制为其中的同名文件，否则复制到该路径。`options.overwrite` 默认为 `false`，为 `true` 时替换已有目标。
 
-#### `File.move(destination)`
+#### `File.copySync(destination, options?)`
 
-移动文件，成功后更新 `uri`。目标已存在时抛出错误。
+同步复制文件，参数和目标处理规则与 `File.copy()` 相同。
+
+#### `File.move(destination, options?)`
+
+移动文件，返回 `Promise<void>`。`destination` 为目录时移入并保留文件名，否则移至指定路径；成功后更新 `uri`。`options.overwrite` 默认为 `false`，为 `true` 时替换已有目标。
+
+#### `File.moveSync(destination, options?)`
+
+同步移动文件，参数和目标处理规则与 `File.move()` 相同，成功后更新 `uri`。
 
 #### `File.rename(newName)`
 
-重命名文件，成功后更新 `uri`。目标已存在时抛出错误。
+在当前父目录内重命名文件，成功后更新 `uri`。目标名称已存在时抛错。
 
 #### `File.delete()`
 
-删除文件。文件不存在时抛出错误。
+删除文件。文件不存在或无法删除时抛错。
 
-#### `File.open()`
+#### `File.open(mode?)`
 
-以读写方式打开文件，返回 `FileHandle`。文件不存在时抛出错误。
+打开已存在的文件并返回 `FileHandle`。本地文件默认 `FileMode.ReadWrite`；系统选择器返回的文件地址默认 `FileMode.ReadOnly`。
 
 #### `File.readableStream()`
 
-返回 `ReadableStream<Uint8Array>`，按 1 KB 分块读取。
+返回 `ReadableStream<Uint8Array>`，供分块读取文件内容。
 
 #### `File.stream()`
 
-返回 `ReadableStream<Uint8Array>`，与 `readableStream()` 相同。
+返回与 `File.readableStream()` 相同的可读流。
 
 #### `File.writableStream()`
 
@@ -256,436 +182,876 @@ npm install @expo-harmony/expo-file-system expo-file-system@55.0.26
 
 #### `File.slice(start?, end?, contentType?)`
 
-返回 `Blob`，内容为文件字节的切片。会先把整个文件读入内存。
+返回包含所选字节区间的 `Blob`。
 
 #### `File.downloadFileAsync(url, destination, options?)`
 
-静态方法。下载文件，返回 `Promise<File>`。`destination` 是目录时文件名取自 `Content-Disposition` 或地址末段，没有扩展名时按 `Content-Type` 补全。目标已存在且 `idempotent` 不为 `true` 时拒绝，`idempotent` 为 `true` 时覆盖。响应状态码不在 2xx 范围内时拒绝。`url` 也可以是打包资源地址，此时直接从应用资源复制。
+静态方法，下载文件并返回 `Promise<File>`。`destination` 为目录时，文件名由响应头或 URL 确定。目标已存在时默认拒绝；`options.idempotent: true` 时覆盖。HTTP 非 2xx 状态时拒绝。`options.onProgress` 接收 `{ bytesWritten, totalBytes }`；`options.signal` 可取消下载，取消时以 `AbortError` 拒绝。`url` 也可指向打包资源。
+
+#### `File.pickFileAsync(options?)`
+
+静态方法，打开系统文件选择器。`initialUri` 指定初始位置；`mimeTypes` 接受 MIME 字符串或字符串数组，`'*/*'` 表示不筛选；`multipleFiles` 默认为 `false`。默认使用临时授权；需要在应用重启后继续访问时见 `ohos.permission.FILE_ACCESS_PERSIST`。成功时返回 `{ result: File | File[], canceled: false }`；取消时返回 `{ result: null, canceled: true }`。系统无法识别的 MIME 类型可能导致选择失败。
 
 #### `File.pickFileAsync(initialUri?, mimeType?)`
 
-静态方法。打开系统文件选择器，返回 `Promise<File>`。`mimeType` 用于过滤可选文件，省略或传 `*/*` 时不过滤，无法映射到扩展名时抛出错误。用户取消时拒绝。每次只允许选择一个文件。
+兼容旧签名，返回所选 `File` 或 `File[]`；取消时 Promise 拒绝。
 
-#### `Paths`
+#### `File.upload(url, options?)`
 
-内置目录和路径工具。
+立即上传文件，返回 `Promise<UploadResult>`。支持 `POST`、`PUT`、`PATCH`、请求头、二进制或 multipart、文件字段名、MIME 类型、额外表单字段、进度回调和取消信号；上传类型默认二进制。HTTP 非 2xx 响应仍返回响应正文、状态码和响应头；传输失败、文件不可读或取消时拒绝。取消信号触发时以 `AbortError` 拒绝。
 
-#### `Paths.document`
+#### `File.createUploadTask(url, options?)`
 
-类型：`Directory`，只读
+创建尚未启动的 `UploadTask`。
 
-文档目录，不会被系统清理。
+#### `File.createDownloadTask(url, destination, options?)`
 
-#### `Paths.cache`
+静态方法，创建尚未启动的 `DownloadTask`。`destination` 可为文件或目录。
 
-类型：`Directory`，只读
+#### `new UploadTask(file, url, options?)`
 
-缓存目录，系统在存储空间不足时可能清理。
+创建尚未启动的上传任务。
 
-#### `Paths.bundle`
+#### `UploadTask.uploadAsync()`
 
-类型：`Directory`，只读
+启动上传并返回 `Promise<UploadResult>`。HTTP 非 2xx 响应也会作为结果返回。
 
-打包资源目录，地址为 `rawfile:///`，只读。这个目录对应 HarmonyOS 的 `rawfile` 根目录。
+#### `UploadTask.cancel()`
 
-RNOH/Metro 生成的 `asset://path/to/file` 则对应 `rawfile/assets/path/to/file`，可以直接交给 `File` 或 Legacy 文件读取接口。文件对象返回的地址会规范化为 `rawfile:///assets/path/to/file`，重新构造对象或传给音频、资源等模块后仍指向同一资源。`rawfile://path/to/file` 和 `asset:///path/to/file` 继续相对于 `rawfile` 根目录解析。
+取消尚未完成的上传；进行中的 `uploadAsync()` 会因取消而拒绝。
 
-#### `Paths.appleSharedContainers`
+#### `UploadTask.release()`
 
-类型：`Record<string, Directory>`，只读
+释放上传任务句柄。
 
-恒为空对象。
+#### `new DownloadTask(url, destination, options?)`
 
-#### `Paths.totalDiskSpace`
+创建尚未启动的下载任务。`destination` 可为文件或目录。
 
-类型：`number`，只读
+#### `DownloadTask.downloadAsync()`
 
-设备存储总容量，单位字节。
+启动下载并返回 `Promise<File | null>`。下载完成时返回 `File`；暂停时返回 `null`。
 
-#### `Paths.availableDiskSpace`
+#### `DownloadTask.pause()`
 
-类型：`number`，只读
+请求暂停进行中的下载。
 
-设备存储可用容量，单位字节。
+#### `DownloadTask.pauseAsync()`
+
+请求暂停并等待任务进入暂停状态，返回 `Promise<void>`。
+
+#### `DownloadTask.resumeAsync()`
+
+从暂停位置继续下载，返回 `Promise<File | null>`；再次暂停时返回 `null`。
+
+#### `DownloadTask.cancel()`
+
+取消尚未完成的下载；进行中的下载 Promise 会因取消而拒绝。
+
+#### `DownloadTask.savable()`
+
+任务暂停时返回可保存的 `DownloadPauseState`。
+
+#### `DownloadTask.fromSavable(state, options?)`
+
+根据保存状态创建处于暂停状态的 `DownloadTask`。没有有效续传数据时抛错。
+
+#### `DownloadTask.release()`
+
+释放下载任务句柄。
 
 #### `Paths.info(...uris)`
 
-返回 `PathInfo`，表示路径是否存在、是否为目录。路径不存在或在沙箱外时 `exists` 为 `false`，`isDirectory` 为 `null`。
+返回 `PathInfo`，指出路径是否存在及是否为目录。路径不存在或超出可访问范围时，`exists` 为 `false`，`isDirectory` 为 `null`。
 
 #### `Paths.join(...paths)`
 
-拼接路径片段，参数可以是字符串、`File` 或 `Directory`。
+拼接路径，参数可为字符串、`File` 或 `Directory`，返回 `string`。
 
 #### `Paths.relative(from, to)`
 
-计算 `to` 相对 `from` 的路径。
+返回 `to` 相对 `from` 的路径字符串。参数可为字符串、`File` 或 `Directory`。
 
 #### `Paths.isAbsolute(path)`
 
-判断是否为绝对路径。
+判断路径是否为绝对路径，返回 `boolean`。
 
 #### `Paths.normalize(path)`
 
-规范化路径。
+规范化路径，返回 `string`。
 
 #### `Paths.dirname(path)`
 
-返回上级目录。
+返回路径的父目录字符串。
 
 #### `Paths.basename(path, ext?)`
 
-返回文件名，`ext` 指定时去掉该后缀。
+返回路径的末级名称；提供 `ext` 时移除匹配的后缀。
 
 #### `Paths.extname(path)`
 
-返回扩展名。
+返回路径的扩展名。
 
 #### `Paths.parse(path)`
 
-拆分为 `root`、`dir`、`base`、`ext`、`name`。
-
-#### `FileHandle`
-
-文件句柄，由 `File.open()` 返回，可读写。
-
-#### `FileHandle.offset`
-
-类型：`number | null`，可读写
-
-当前读写位置，单位字节，读写后自动前进。赋值为 `null` 会抛出错误。句柄关闭后为 `null`。
-
-#### `FileHandle.size`
-
-类型：`number | null`，只读
-
-文件大小，单位字节。句柄关闭后为 `null`。
+将路径拆分为 `root`、`dir`、`base`、`ext` 和 `name`。
 
 #### `FileHandle.readBytes(length)`
 
-从当前位置读取指定字节数，返回 `Uint8Array`，位置随之前进。读到文件末尾时返回实际读到的字节，可能为空。
+从当前偏移读取最多 `length` 个字节，返回 `Uint8Array`；到达文件末尾时返回实际读取长度。
 
 #### `FileHandle.writeBytes(bytes)`
 
-从当前位置写入字节，位置随之前进。
+从当前偏移写入 `Uint8Array`。
 
 #### `FileHandle.close()`
 
-关闭句柄。关闭后再读写会抛出错误。
-
-### Constants
-
-以下常量从 `expo-file-system/legacy` 导入。
-
-#### `documentDirectory`
-
-类型：`string`
-
-文档目录的 `file://` 地址，末尾带 `/`。
-
-#### `cacheDirectory`
-
-类型：`string`
-
-缓存目录的 `file://` 地址，末尾带 `/`。
-
-#### `bundleDirectory`
-
-类型：`string`
-
-打包资源目录的 `file://` 地址，末尾带 `/`。
-
-### Methods
-
-以下方法从 `expo-file-system/legacy` 导入。从 `expo-file-system` 顶层导入的 `getInfoAsync`、`readAsStringAsync` 等同名方法已废弃，调用时抛出错误。
+关闭文件句柄；关闭后再次读写会抛错。
 
 #### `getInfoAsync(fileUri, options?)`
 
-返回 `Promise<FileInfo>`。`modificationTime` 单位为秒，`options.md5` 为 `true` 时包含 `md5`。
+Legacy 方法，返回 `Promise<FileInfo>`。`options.md5` 为 `true` 时包含 MD5；`modificationTime` 单位为秒。
 
 #### `readAsStringAsync(fileUri, options?)`
 
-按 `encoding` 读取，默认 `utf8`，可取 `base64`。`position` 和 `length` 只在 `base64` 下生效。支持打包资源地址。
+Legacy 方法，按 `encoding` 读取文件，默认 UTF-8，也可指定 Base64。`position` 和 `length` 按字节计。
 
 #### `writeAsStringAsync(fileUri, contents, options?)`
 
-按 `encoding` 写入，默认 `utf8`，可取 `base64`。`append` 为 `true` 时追加到末尾。
+Legacy 方法，按 `encoding` 写入字符串，默认 UTF-8，也可指定 Base64；`append: true` 时追加。
 
 #### `deleteAsync(fileUri, options?)`
 
-删除文件或目录。`idempotent` 为 `true` 时路径不存在也不报错。
+Legacy 方法，删除文件或目录。`idempotent: true` 时，路径不存在也不报错。
 
 #### `moveAsync({ from, to })`
 
-移动文件或目录。源是打包资源时拒绝。
+Legacy 方法，移动文件或目录。打包资源不可移动。
 
 #### `copyAsync({ from, to })`
 
-复制文件或目录，目标已存在时覆盖。源是打包资源时从应用资源复制。源也可以是系统已授权的文件 URI（例如图库的 `file://media/...`、文档选择器的 `file://docs/...`），此时按只读文件复制，不支持复制系统 URI 指向的目录。目标必须是本地沙箱或已授权路径。
-
-应传入系统返回的完整 URI，授权撤销、文件不可读或复制失败时拒绝。复制的内容由系统文件提供方决定，仅存在于云端的文件能否复制还取决于网络和授权。覆盖已有目标失败时会保留原文件。`ph://`、`assets-library://` 和 Android 的 `content://` 不是 HarmonyOS 的 URI，仍不支持。这一能力只在 Legacy `copyAsync` 中提供，需要用现代 `File` API 操作系统 URI 指向的文件时，可以先复制到沙箱再构造 `File`。
+Legacy 方法，复制文件或目录；目标存在时覆盖。可将打包资源或系统选择器授权的文件复制到应用沙箱。系统授权 URI 指向的目录不支持复制。
 
 #### `makeDirectoryAsync(fileUri, options?)`
 
-新建目录。`intermediates` 为 `true` 时创建缺失的父目录，且目标已存在时不报错。
+Legacy 方法，新建目录。`intermediates: true` 时创建缺失的父目录；目标已存在且为目录时不报错。
 
 #### `readDirectoryAsync(fileUri)`
 
-返回 `Promise<string[]>`，目录内条目的名称。
+Legacy 方法，返回 `Promise<string[]>`，内容为目录中的条目名称。
 
 #### `getTotalDiskCapacityAsync()`
 
-返回 `Promise<number>`，设备存储总容量，单位字节。
+Legacy 方法，返回设备存储总容量，单位为字节。
 
 #### `getFreeDiskStorageAsync()`
 
-返回 `Promise<number>`，设备存储可用容量，单位字节。
+Legacy 方法，返回设备存储可用容量，单位为字节。
 
 #### `getContentUriAsync(fileUri)`
 
-HarmonyOS 上直接返回传入的地址。
+Legacy 方法，返回对应的 `file://` 地址；系统选择器授权的文件 URI 会保留其系统地址。HarmonyOS 不生成 `content://` 地址。
 
 #### `downloadAsync(uri, fileUri, options?)`
 
-下载到 `fileUri`，返回 `FileSystemDownloadResult`。目标已存在时覆盖，`options.md5` 为 `true` 时结果包含 `md5`。非 2xx 响应不拒绝，状态码在结果的 `status` 中。
+Legacy 方法，将资源下载到指定文件，返回 `Promise<FileSystemDownloadResult>`。`options.headers` 设置请求头；目标已存在时覆盖；`options.md5: true` 时结果包含 MD5。HTTP 非 2xx 响应仍以 `status` 返回，不拒绝 Promise。
 
 #### `uploadAsync(url, fileUri, options?)`
 
-上传文件，返回 `FileSystemUploadResult`。`uploadType` 取 `BINARY_CONTENT`（0）或 `MULTIPART`（1），默认 `BINARY_CONTENT`；`httpMethod` 取 `POST`、`PUT`、`PATCH`，默认 `POST`。
+Legacy 方法，上传文件并返回 `Promise<FileSystemUploadResult>`。`uploadType` 可为 `BINARY_CONTENT`（`0`）或 `MULTIPART`（`1`）；`httpMethod` 可为 `POST`、`PUT`、`PATCH`，默认 `POST`。HTTP 非 2xx 响应仍返回结果。
 
 #### `createDownloadResumable(uri, fileUri, options?, callback?, resumeData?)`
 
-返回 `DownloadResumable`。`downloadAsync()` 开始下载，`pauseAsync()` 暂停并返回含 `resumeData` 的状态，`resumeAsync()` 从 `resumeData` 续传，`cancelAsync()` 取消。进度通过 `callback` 上报。
+创建 `DownloadResumable`。调用 `downloadAsync()` 开始下载；`pauseAsync()` 暂停并返回可保存状态；`resumeAsync()` 从状态续传；`cancelAsync()` 取消。进度回调接收 `DownloadProgressData`。
 
 #### `createUploadTask(url, fileUri, options?, callback?)`
 
-返回 `UploadTask`。`uploadAsync()` 开始上传，`cancelAsync()` 取消。进度通过 `callback` 上报。
+创建 `UploadTask`。调用 `uploadAsync()` 开始上传，`cancelAsync()` 取消。进度回调接收 `UploadProgressData`。
+
+#### `UploadTask.uploadAsync()`（Legacy）
+
+开始 Legacy 上传任务，返回 `Promise<FileSystemUploadResult | null | undefined>`。
+
+#### `DownloadResumable.downloadAsync()`
+
+开始或继续 Legacy 下载任务，返回 `Promise<FileSystemDownloadResult | null | undefined>`。
+
+#### `DownloadResumable.pauseAsync()`
+
+暂停 Legacy 下载任务，返回可保存的 `DownloadPauseState`。
+
+#### `DownloadResumable.resumeAsync()`
+
+从暂停状态继续 Legacy 下载任务，返回 `Promise<FileSystemDownloadResult | null | undefined>`。
+
+#### `DownloadResumable.savable()`
+
+返回包含下载地址、目标地址、选项及续传数据的状态对象。
+
+#### `FileSystemCancellableNetworkTask.cancelAsync()`
+
+取消 Legacy 上传或下载任务，返回 `Promise<void>`。
 
 #### `StorageAccessFramework.requestDirectoryPermissionsAsync(initialUri?)`
 
-打开系统目录选择器，返回 `Promise<FileSystemRequestDirectoryPermissionsResult>`。授权后返回目录地址。默认使用临时访问授权，应用重启后可能需要重新选择。若需保留授权，请按[安装](#安装)中的说明配置 `ohos.permission.FILE_ACCESS_PERSIST`。
+打开系统目录选择器并返回 `Promise<FileSystemRequestDirectoryPermissionsResult>`。默认使用临时授权；需要在应用重启后继续访问时见 `ohos.permission.FILE_ACCESS_PERSIST`。成功时结果包含 `directoryUri`；用户取消时 `granted` 为 `false`。
+
+#### `StorageAccessFramework.readAsStringAsync(fileUri, options?)`
+
+Legacy `readAsStringAsync()` 的别名，参数和返回行为相同。
+
+#### `StorageAccessFramework.writeAsStringAsync(fileUri, contents, options?)`
+
+Legacy `writeAsStringAsync()` 的别名，参数和返回行为相同。
+
+#### `StorageAccessFramework.deleteAsync(fileUri, options?)`
+
+Legacy `deleteAsync()` 的别名，参数和返回行为相同。
+
+#### `StorageAccessFramework.moveAsync({ from, to })`
+
+Legacy `moveAsync()` 的别名，参数和返回行为相同。
+
+#### `StorageAccessFramework.copyAsync({ from, to })`
+
+Legacy `copyAsync()` 的别名，参数和返回行为相同。
 
 #### `StorageAccessFramework.readDirectoryAsync(dirUri)`
 
-返回目录内条目的 `file://` 地址，目录条目以 `/` 结尾。
+返回 `Promise<string[]>`，内容为目录子项的 `file://` 地址；目录地址以 `/` 结尾。
 
 #### `StorageAccessFramework.makeDirectoryAsync(parentUri, dirName)`
 
-新建子目录，返回其地址。
+在指定目录下创建子目录，返回其 `file://` 地址。
 
 #### `StorageAccessFramework.createFileAsync(parentUri, fileName, mimeType)`
 
-新建空文件，返回其地址。`fileName` 不含扩展名时按 `mimeType` 补全。
+在指定目录下创建空文件并返回其 `file://` 地址。`fileName` 不含扩展名时，按 MIME 类型补充扩展名。
 
-> **未实现的内容**
->
-> - `deleteLegacyDocumentDirectoryAndroid()`：Android 专属接口，HarmonyOS 上不执行任何操作。
-> - `StorageAccessFramework.getUriForDirectoryInRoot(folderName)`：Android 专属接口，返回的地址在 HarmonyOS 上无法使用。
+#### `StorageAccessFramework.getUriForDirectoryInRoot(folderName)`
+
+- HarmonyOS 不提供根目录访问接口；该方法返回的 `content://` 地址不能用于本包的文件访问。
+
+#### `deleteLegacyDocumentDirectoryAndroid()`
+
+- HarmonyOS 上不执行操作。
+
+### Event subscriptions
+
+#### `File.watch(callback, options?)`
+
+订阅文件变更，返回带 `remove()` 的 `WatchSubscription`。回调收到 `created`、`modified`、`deleted` 或 `renamed` 事件。`options.debounce` 默认 100 毫秒；`options.events` 可筛选事件。监听范围限于应用可访问且系统允许监听的路径；文件被删除或重命名时订阅自动停止。
+
+#### `Directory.watch(callback, options?)`
+
+订阅目录及其直接子项变更，返回带 `remove()` 的 `WatchSubscription`。事件类型和筛选选项与 `File.watch()` 相同；目录被删除或移动时订阅自动停止。重命名事件在可关联时包含 `newTarget`。
+
+#### `UploadTask.addListener('progress', listener)`
+
+订阅上传进度，回调参数为 `UploadProgress`，返回可调用 `remove()` 的订阅。
+
+#### `DownloadTask.addListener('progress', listener)`
+
+订阅下载进度，回调参数为 `DownloadProgress`，返回可调用 `remove()` 的订阅。
 
 ### Types
 
+#### `Directory`
+
+目录引用类型。构造时接受路径片段，首段可为 `File` 或 `Directory`；`uri` 指向目录地址。
+
+#### `Directory.uri`
+
+只读 `string`。目录移动或重命名成功后更新。
+
+#### `Directory.exists`
+
+只读 `boolean`，表示目录是否存在且可访问。
+
+#### `Directory.size`
+
+只读 `number | null`，为目录内文件大小总和；目录不存在或无法读取时为 `null`。
+
+#### `Directory.name`
+
+只读 `string`，目录名称。
+
+#### `Directory.parentDirectory`
+
+只读 `Directory`，上级目录。
+
+#### `File`
+
+文件引用类型，实现 `Blob` 接口。构造时接受路径片段，首段可为 `File` 或 `Directory`。
+
+#### `File.uri`
+
+只读 `string`。文件移动或重命名成功后更新。
+
+#### `File.exists`
+
+只读 `boolean`。打包资源地址可用于查询是否存在。
+
+#### `File.size`
+
+只读 `number`，单位字节；文件不存在或不可读时为 `0`。
+
+#### `File.md5`
+
+只读 `string | null`；文件不存在或不可读时为 `null`。
+
+#### `File.lastModified`
+
+只读 `number | null`，最后修改时间，单位毫秒；文件不存在或不可读时为 `null`。
+
+#### `File.modificationTime`
+
+只读 `number | null`，最后修改时间，单位毫秒；为 `lastModified` 的废弃别名。
+
+#### `File.creationTime`
+
+只读 `number | null`。HarmonyOS 不提供文件创建时间，始终为 `null`。
+
+#### `File.type`
+
+只读 `string`，按扩展名推断 MIME 类型；无法识别时为空字符串。
+
+#### `File.contentUri`
+
+只读 `string`，返回可访问的 `file://` 地址；系统选择器授权的文件保留系统返回的 URI。HarmonyOS 不使用 `content://`。
+
+#### `File.name`
+
+只读 `string`，文件名称，含扩展名。
+
+#### `File.extension`
+
+只读 `string`，文件扩展名，例如 `.png`。
+
+#### `File.parentDirectory`
+
+只读 `Directory`，文件所在目录。
+
+#### `Paths`
+
+静态路径工具和设备存储信息入口。
+
+#### `Paths.document`
+
+只读 `Directory`，应用文档目录；存储内容不会由系统作为缓存清理。
+
+#### `Paths.cache`
+
+只读 `Directory`，应用缓存目录；存储空间不足时系统可能清理其中内容。
+
+#### `Paths.bundle`
+
+只读 `Directory`，只读打包资源目录，地址为 `rawfile:///`。`asset://path/to/file` 对应打包资源目录下的 `assets/path/to/file`。
+
+#### `Paths.appleSharedContainers`
+
+只读 `Record<string, Directory>`。
+
+- HarmonyOS 不提供共享容器；此属性始终为空对象。
+
+#### `Paths.totalDiskSpace`
+
+只读 `number`，设备存储总容量，单位为字节。
+
+#### `Paths.availableDiskSpace`
+
+只读 `number`，设备存储可用容量，单位为字节。
+
+#### `FileHandle`
+
+由 `File.open()` 返回的文件句柄。
+
+#### `FileHandle.offset`
+
+`number | null`，可读写，单位字节。读写后按实际字节数前进；设为超过文件大小的位置时，后续写入从文件末尾开始。设为 `null` 时保留当前位置；句柄关闭后为 `null`。
+
+#### `FileHandle.size`
+
+只读 `number | null`，文件大小，单位字节；句柄关闭后为 `null`。
+
+#### `UploadTask`
+
+上传任务类型。
+
+#### `UploadTask.state`
+
+只读 `UploadTaskState`。
+
+#### `DownloadTask`
+
+下载任务类型。
+
+#### `DownloadTask.state`
+
+只读 `DownloadTaskState`。
+
+#### `DownloadResumable`
+
+Legacy 可暂停下载任务类型，提供暂停、继续、取消和保存状态的方法。
+
+#### `StorageAccessFramework`
+
+Legacy 文件和目录选择器接口。
+
 #### `DirectoryCreateOptions`
 
-| 属性            | 类型      | 说明                               |
-| --------------- | --------- | ---------------------------------- |
-| `idempotent`    | `boolean` | 目录已存在时静默返回，默认 `false` |
-| `intermediates` | `boolean` | 创建缺失的父目录，默认 `false`     |
-| `overwrite`     | `boolean` | 目录已存在时视为成功，默认 `false` |
+| 属性 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `intermediates` | `boolean` | `false` | 创建缺失的父目录。 |
+| `overwrite` | `boolean` | `false` | 目录已存在时视为成功，保留原内容。 |
+| `idempotent` | `boolean` | `false` | 目录已存在时静默返回。 |
 
 #### `FileCreateOptions`
 
-| 属性            | 类型      | 说明                           |
-| --------------- | --------- | ------------------------------ |
-| `intermediates` | `boolean` | 创建缺失的父目录，默认 `false` |
-| `overwrite`     | `boolean` | 文件已存在时覆盖，默认 `false` |
+| 属性 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `intermediates` | `boolean` | `false` | 创建缺失的父目录。 |
+| `overwrite` | `boolean` | `false` | 用空文件替换已有文件。 |
 
-#### `DownloadOptions`
+#### `FileWriteOptions`
 
-| 属性         | 类型                     | 说明                           |
-| ------------ | ------------------------ | ------------------------------ |
-| `headers`    | `Record<string, string>` | 请求头                         |
-| `idempotent` | `boolean`                | 目标已存在时覆盖，默认 `false` |
+- `encoding`：`EncodingType`、`'utf8'` 或 `'base64'`，默认 `'utf8'`。
+- `append`：默认 `false`；为 `true` 时追加到文件末尾。
+
+#### `RelocationOptions`
+
+`{ overwrite?: boolean }`。`overwrite` 默认 `false`；为 `true` 时替换已有目标。
 
 #### `InfoOptions`
 
-| 属性  | 类型      | 说明                         |
-| ----- | --------- | ---------------------------- |
-| `md5` | `boolean` | 是否返回 `md5`，默认 `false` |
-
-#### `PathInfo`
-
-| 属性          | 类型              | 说明                             |
-| ------------- | ----------------- | -------------------------------- |
-| `exists`      | `boolean`         | 路径是否存在                     |
-| `isDirectory` | `boolean \| null` | 是否为目录，路径不存在时为 `null` |
+`{ md5?: boolean }`。`md5` 默认 `false`。
 
 #### `FileInfo`
 
-| 属性               | 类型             | 说明                   |
-| ------------------ | ---------------- | ---------------------- |
-| `exists`           | `boolean`        | 文件是否存在           |
-| `uri`              | `string`         | 文件地址               |
-| `size`             | `number`         | 文件大小，单位字节     |
-| `modificationTime` | `number`         | 最后修改时间，单位毫秒 |
-| `creationTime`     | `number \| null` | 恒为 `null`            |
-| `md5`              | `string`         | 请求 `md5` 时包含      |
+现代文件信息对象，包含 `exists`、`uri`、`size`、`modificationTime`、`creationTime` 和可选 `md5`。时间单位为毫秒，`creationTime` 在 HarmonyOS 上为 `null`。
 
 #### `DirectoryInfo`
 
-| 属性               | 类型             | 说明                   |
-| ------------------ | ---------------- | ---------------------- |
-| `exists`           | `boolean`        | 目录是否存在           |
-| `uri`              | `string`         | 目录地址               |
-| `size`             | `number`         | 目录大小，单位字节     |
-| `modificationTime` | `number`         | 最后修改时间，单位毫秒 |
-| `creationTime`     | `number \| null` | 恒为 `null`            |
-| `files`            | `string[]`       | 目录内条目名称         |
+目录信息对象，包含 `exists`、`uri`、`size`、`modificationTime`、`creationTime` 和 `files`。时间单位为毫秒，`creationTime` 在 HarmonyOS 上为 `null`。
 
-以下为 Legacy 类型。
+#### `PathInfo`
 
-#### `FileSystemAcceptedUploadHttpMethod`
+`{ exists: boolean, isDirectory: boolean | null }`。
 
-`'POST' | 'PUT' | 'PATCH'`，默认 `'POST'`。
+#### `PickFileGeneralOptions`
 
-#### `FileInfo`（Legacy）
+| 属性 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `initialUri` | `string` | — | 选择器初始位置。 |
+| `mimeTypes` | 字符串或字符串数组 | — | MIME 类型筛选；`'*/*'` 不筛选。 |
+| `multipleFiles` | `boolean` | `false` | 是否允许多选。 |
 
-| 属性               | 类型      | 说明                 |
-| ------------------ | --------- | -------------------- |
-| `exists`           | `boolean` | 文件是否存在         |
-| `uri`              | `string`  | 文件地址             |
-| `size`             | `number`  | 文件大小，单位字节   |
-| `isDirectory`      | `boolean` | 是否为目录           |
-| `modificationTime` | `number`  | 最后修改时间，单位秒 |
-| `md5`              | `string`  | 请求 `md5` 时包含    |
+#### `PickSingleFileOptions`
 
-#### `FileSystemDownloadResult`
+`PickFileGeneralOptions` 的单选选项，`multipleFiles` 只能省略或设为 `false`。
 
-| 属性      | 类型                     | 说明              |
-| --------- | ------------------------ | ----------------- |
-| `uri`     | `string`                 | 本地文件地址      |
-| `status`  | `number`                 | HTTP 状态码       |
-| `headers` | `Record<string, string>` | 响应头            |
-| `md5`     | `string`                 | 请求 `md5` 时包含 |
+#### `PickMultipleFilesOptions`
 
-#### `FileSystemUploadResult`
+`PickFileGeneralOptions` 的多选选项，`multipleFiles` 必须为 `true`。
 
-| 属性      | 类型                     | 说明        |
-| --------- | ------------------------ | ----------- |
-| `body`    | `string`                 | 响应正文    |
-| `status`  | `number`                 | HTTP 状态码 |
-| `headers` | `Record<string, string>` | 响应头      |
+#### `PickSingleFileResult`
 
-#### `FileSystemUploadOptions`
+成功时为 `{ result: File, canceled: false }`；取消时为 `{ result: null, canceled: true }`。
 
-| 属性         | 类型                                 | 说明                            |
-| ------------ | ------------------------------------ | ------------------------------- |
-| `headers`    | `Record<string, string>`             | 请求头                          |
-| `httpMethod` | `FileSystemAcceptedUploadHttpMethod` | 请求方法，默认 `POST`           |
-| `uploadType` | `FileSystemUploadType`               | 上传类型，默认 `BINARY_CONTENT` |
-| `fieldName`  | `string`                             | multipart 中文件字段名          |
-| `mimeType`   | `string`                             | 文件类型                        |
-| `parameters` | `Record<string, string>`             | multipart 中的额外字段          |
+#### `PickMultipleFilesResult`
 
-#### `DownloadOptions`（Legacy）
+成功时为 `{ result: File[], canceled: false }`；取消时为 `{ result: null, canceled: true }`。
 
-| 属性      | 类型                     | 说明               |
-| --------- | ------------------------ | ------------------ |
-| `md5`     | `boolean`                | 结果是否包含 `md5` |
-| `headers` | `Record<string, string>` | 请求头             |
+#### `PickFileCanceledResult`
 
-#### `ReadingOptions`
+`{ result: null, canceled: true }`。
 
-| 属性       | 类型                                  | 说明                              |
-| ---------- | ------------------------------------- | --------------------------------- |
-| `encoding` | `EncodingType \| 'utf8' \| 'base64'`  | 编码，默认 `utf8`                 |
-| `position` | `number`                              | 跳过的字节数，只在 `base64` 下生效 |
-| `length`   | `number`                              | 读取的字节数，只在 `base64` 下生效 |
+#### `PickSingleFileSuccessResult`
 
-#### `WritingOptions`
+`{ result: File, canceled: false }`。
 
-| 属性       | 类型                                  | 说明                  |
-| ---------- | ------------------------------------- | --------------------- |
-| `encoding` | `EncodingType \| 'utf8' \| 'base64'`  | 编码，默认 `utf8`     |
-| `append`   | `boolean`                             | 是否追加，默认 `false` |
+#### `PickMultipleFilesSuccessResult`
 
-#### `DeletingOptions`
+`{ result: File[], canceled: false }`。
 
-| 属性         | 类型      | 说明                             |
-| ------------ | --------- | -------------------------------- |
-| `idempotent` | `boolean` | 路径不存在时不报错，默认 `false` |
+#### `DownloadOptions`
 
-#### `RelocatingOptions`
+现代下载选项，包括 `headers?: Record<string, string>`、`idempotent?: boolean`、`onProgress?: (progress: DownloadProgress) => void` 和 `signal?: AbortSignal`。
 
-| 属性   | 类型     | 说明     |
-| ------ | -------- | -------- |
-| `from` | `string` | 源地址   |
-| `to`   | `string` | 目标地址 |
+#### `DownloadProgress`
 
-#### `MakeDirectoryOptions`
+`{ bytesWritten: number, totalBytes: number }`。未知总量时 `totalBytes` 为 `-1`。
 
-| 属性            | 类型      | 说明                           |
-| --------------- | --------- | ------------------------------ |
-| `intermediates` | `boolean` | 创建缺失的父目录，默认 `false` |
+#### `UploadOptions`
+
+现代上传选项包括 `httpMethod`（`POST`、`PUT`、`PATCH`，默认 `POST`）、`uploadType`（默认 `BINARY_CONTENT`）、`headers`、`fieldName`、`mimeType`、`parameters`、`onProgress`、`signal` 和 `sessionType`。`sessionType` 在 HarmonyOS 上不改变任务行为。
+
+#### `UploadProgress`
+
+`{ bytesSent: number, totalBytes: number }`。未知总量时 `totalBytes` 为 `-1`。
+
+#### `UploadResult`
+
+`{ body: string, status: number, headers: Record<string, string> }`。
+
+#### `DownloadTaskOptions`
+
+包含 `headers`、`onProgress`、`signal` 和 `sessionType`。`sessionType` 在 HarmonyOS 上不改变任务行为。
+
+#### `NetworkTaskSessionType`
+
+现代网络任务会话类型：`'background' | 'foreground'`。
+
+- HarmonyOS 上传入该选项不改变文件传输行为。
 
 #### `DownloadPauseState`
 
-| 属性         | 类型              | 说明                 |
-| ------------ | ----------------- | -------------------- |
-| `url`        | `string`          | 下载地址             |
-| `fileUri`    | `string`          | 本地文件地址         |
-| `options`    | `DownloadOptions` | 下载选项             |
-| `resumeData` | `string`          | 续传数据，暂停后写入 |
+现代下载任务的可保存状态，包含 `url`、`fileUri`、`isDirectory`、可选 `headers` 和 `resumeData`。
+
+#### `UploadTaskState`
+
+`'idle' | 'active' | 'completed' | 'cancelled' | 'error'`。
+
+#### `DownloadTaskState`
+
+`'idle' | 'active' | 'paused' | 'completed' | 'cancelled' | 'error'`。
+
+#### `WatchEventType`
+
+`'created' | 'modified' | 'deleted' | 'renamed'`。
+
+#### `WatchEvent<T>`
+
+变更事件，包含 `type`、`target`、可选 `newTarget` 和可选 `nativeEventFlags`。
+
+#### `WatchOptions`
+
+`{ debounce?: number, events?: WatchEventType[] }`。`debounce` 默认 100 毫秒；`events` 用于筛选事件类型。
+
+#### `WatchSubscription`
+
+订阅对象提供 `remove(): void`，用于停止监听。
+
+#### `Legacy FileInfo`
+
+Legacy 文件信息对象。文件存在时包含 `exists`、`uri`、`size`、`isDirectory` 和 `modificationTime`；`modificationTime` 单位为秒，`options.md5` 为 `true` 时包含 `md5`。
+
+#### `FileSystemHttpResult`
+
+Legacy HTTP 响应字段包含 `headers` 和 `status`。
+
+- HarmonyOS 不返回 `mimeType`。
+
+#### `FileSystemDownloadResult`
+
+包含 `uri`、`status`、`headers`，以及请求 MD5 时的 `md5`。
+
+- HarmonyOS 不返回 `mimeType`。
+
+#### `FileSystemUploadResult`
+
+包含 `body`、`status` 和 `headers`。
+
+- HarmonyOS 不返回 `mimeType`。
+
+#### `FileSystemAcceptedUploadHttpMethod`
+
+`'POST' | 'PUT' | 'PATCH'`。
+
+#### `DownloadResult`
+
+Legacy 下载结果类型别名，与 `FileSystemDownloadResult` 相同。
+
+#### `DownloadProgressCallback`
+
+Legacy 下载进度回调类型别名，参数为 `DownloadProgressData`。
+
+#### `FileSystemNetworkTaskProgressCallback<T>`
+
+Legacy 网络任务进度回调，参数为下载或上传进度数据。
+
+#### `FileSystemCancellableNetworkTask<T>`
+
+Legacy 上传和下载任务的基类，提供 `cancelAsync()`。
+
+#### `UploadOptionsBinary`
+
+Legacy 二进制上传选项；`uploadType` 为 `FileSystemUploadType.BINARY_CONTENT` 时使用。
+
+#### `UploadOptionsMultipart`
+
+Legacy multipart 上传选项；`uploadType` 为 `FileSystemUploadType.MULTIPART` 时可包含 `fieldName`、`mimeType` 和 `parameters`。
+
+#### `Legacy DownloadOptions`
+
+包含 `md5`、`headers`、`sessionType` 和 `cache`。
+
+- `sessionType` 和 `cache` 在 HarmonyOS 上不生效。
+
+#### `FileSystemUploadOptions`
+
+Legacy 上传选项，包括 `headers`、`httpMethod`、`uploadType`、`fieldName`、`mimeType` 和 `parameters`。
+
+- `sessionType` 在 HarmonyOS 上不生效。
 
 #### `DownloadProgressData`
 
-| 属性                        | 类型     | 说明                          |
-| --------------------------- | -------- | ----------------------------- |
-| `totalBytesWritten`         | `number` | 已写入字节数                  |
-| `totalBytesExpectedToWrite` | `number` | 预期写入字节数，未知时为 `-1` |
+Legacy 下载进度对象，包含 `totalBytesWritten` 和 `totalBytesExpectedToWrite`；未知总量时预期字节数为 `-1`。
 
 #### `UploadProgressData`
 
-| 属性                       | 类型     | 说明                          |
-| -------------------------- | -------- | ----------------------------- |
-| `totalBytesSent`           | `number` | 已发送字节数                  |
-| `totalBytesExpectedToSend` | `number` | 预期发送字节数，未知时为 `-1` |
+Legacy 上传进度对象，包含 `totalBytesSent` 和 `totalBytesExpectedToSend`；未知总量时预期字节数为 `-1`。
+
+#### `DownloadPauseState（Legacy）`
+
+包含 `url`、`fileUri`、`options` 和可选 `resumeData`。
+
+#### `DownloadResumable.fileUri`
+
+只读 `string`，下载目标文件地址。
 
 #### `FileSystemRequestDirectoryPermissionsResult`
 
 `{ granted: false }` 或 `{ granted: true, directoryUri: string }`。
 
-#### `ProgressEvent<T>`
+#### `ReadingOptions`
 
-| 属性   | 类型     |
-| ------ | -------- |
-| `uuid` | `string` |
-| `data` | `T`      |
+包含 `encoding`、`position` 和 `length`。`encoding` 默认为 UTF-8，也可指定 Base64；`position` 和 `length` 均按字节计。
 
-> **未实现的内容**
->
-> - `DownloadOptions`（Legacy）的 `sessionType`、`cache` 和 `FileSystemUploadOptions.sessionType`：iOS 或 Android 专属选项，HarmonyOS 上不读取。
-> - `FileSystemDownloadResult.mimeType`、`FileSystemUploadResult.mimeType`：HarmonyOS 上不返回该字段。
+#### `WritingOptions`
+
+包含 `encoding` 和 `append`。`encoding` 默认为 UTF-8，也可指定 Base64；`append` 默认为 `false`。
+
+#### `DeletingOptions`
+
+`{ idempotent?: boolean }`。`idempotent` 默认为 `false`。
+
+#### `RelocatingOptions`
+
+`{ from: string, to: string }`，分别为源地址和目标地址。
+
+#### `MakeDirectoryOptions`
+
+`{ intermediates?: boolean }`。`intermediates` 默认为 `false`。
 
 ### Enums
 
-以下枚举从 `expo-file-system/legacy` 导入。
-
 #### `EncodingType`
 
-| 成员     | 值       |
-| -------- | -------- |
-| `UTF8`   | `'utf8'` |
-| `Base64` | `'base64'` |
+现代和 Legacy 文件读写编码枚举：`UTF8 = 'utf8'`，`Base64 = 'base64'`。
+
+#### `FileMode`
+
+| 成员 | 值 | 行为 |
+| --- | --- | --- |
+| `ReadOnly` | `r` | 只读。 |
+| `ReadWrite` | `rw` | 读写，从文件开头开始。 |
+| `WriteOnly` | `w` | 只写，保留原内容，从文件开头开始。 |
+| `Append` | `wa` | 只写，初始位置在文件末尾。 |
+| `Truncate` | `wt` | 只写，先清空文件。 |
+
+#### `UploadType`
+
+| 成员 | 值 | 行为 |
+| --- | --- | --- |
+| `BINARY_CONTENT` | `0` | 文件作为请求体。 |
+| `MULTIPART` | `1` | multipart 表单上传。 |
 
 #### `FileSystemUploadType`
 
-| 成员             | 值  | 含义                      |
-| ---------------- | --- | ------------------------- |
-| `BINARY_CONTENT` | 0   | 文件作为请求体            |
-| `MULTIPART`      | 1   | 文件编码为 multipart 表单 |
+Legacy 上传类型枚举：`BINARY_CONTENT = 0` 表示文件作为请求体；`MULTIPART = 1` 表示 multipart 表单上传。
 
-> **未实现的内容**
->
-> - `FileSystemSessionType`：iOS 专属枚举，HarmonyOS 上没有对应取值。
+#### `FileSystemSessionType`
+
+- HarmonyOS 不提供前后台会话类型；`BACKGROUND` 和 `FOREGROUND` 不改变文件传输行为。
+
+### Error codes
+
+#### `ERR_DESTINATION_ALREADY_EXISTS`
+
+现代下载目标文件已存在且未设置 `idempotent: true` 时抛出。
+
+#### `ERR_FILE_SYSTEM_DESTINATION_EXISTS`
+
+复制、移动或重命名时目标已存在且未启用覆盖时抛出。
+
+#### `ERR_UNABLE_TO_CREATE`
+
+创建文件或目录时目标已存在且未启用相应覆盖或幂等选项时抛出。
+
+#### `ERR_FILE_SYSTEM_CANNOT_DELETE`
+
+删除的文件或目录不存在时抛出。
+
+#### `ERR_FILE_SYSTEM_DESTINATION`
+
+将目录复制或移动到文件目标时抛出。
+
+#### `ERR_FILE_SYSTEM_OVERLAPPING_PATHS`
+
+复制或移动时源路径与目标路径重叠时抛出。
+
+#### `ERR_FILE_SYSTEM_RECURSIVE_COPY`
+
+将目录复制或移动到自身内部时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_NAME`
+
+目录或文件名称为空、含路径分隔符或不符合名称要求时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_RESOURCE`
+
+打包资源 URI 或路径格式无效时抛出。
+
+#### `ERR_FILE_SYSTEM_OUTSIDE_SCOPE`
+
+访问的路径超出应用沙箱或系统选择器授权范围时抛出。
+
+#### `ERR_FILE_SYSTEM_UNSUPPORTED_SCHEME`
+
+URI 使用不支持的协议，或对只读打包资源执行写入操作时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_URI`
+
+文件 URI 格式无效时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_PATH`
+
+路径不是绝对路径，或经过规范化后超出路径根目录时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_PICKED_URI`
+
+系统选择结果不是可识别的文件 URI 或无法对应到本地文件路径时抛出。
+
+#### `ERR_FILE_SYSTEM_SYMLINK`
+
+访问路径中包含符号链接时抛出。
+
+#### `ERR_FILE_SYSTEM_FILE_NOT_FOUND`
+
+要求文件或目录必须存在的操作找不到目标时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_FILE_TYPE`
+
+文件操作的路径指向目录，或选择的对象不是普通文件时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_DIRECTORY_TYPE`
+
+目录操作的路径指向文件时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_ENCODING`
+
+读写编码不是 UTF-8 或 Base64 时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_BASE64`
+
+Base64 输入格式无效时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_MIME_TYPE`
+
+文件选择器的 MIME 类型格式无效时抛出。
+
+#### `ERR_FILE_SYSTEM_UNSUPPORTED_MIME_TYPE`
+
+系统没有可用于筛选该 MIME 类型的文件扩展名时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_UPLOAD_TYPE`
+
+Legacy 上传的 `uploadType` 不是 `0` 或 `1` 时抛出。
+
+#### `ERR_FILE_SYSTEM_HTTP_METHOD`
+
+上传方法不是 `POST`、`PUT` 或 `PATCH` 时抛出。
+
+#### `ERR_INVALID_ARGUMENT_TYPE`
+
+选项值类型不符合参数要求时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_URL`
+
+下载重定向目标不是 HTTP 或 HTTPS 地址时抛出。
+
+#### `ERR_FILESYSTEM_NETWORK`
+
+网络请求无法完成时抛出。
+
+#### `ERR_FILE_SYSTEM_UPLOAD_FAILED`
+
+上传请求失败时抛出。
+
+#### `ERR_UNABLE_TO_DOWNLOAD`
+
+文件下载失败或响应状态不满足现代下载要求时抛出。
+
+#### `ERR_FILE_SYSTEM_TOO_MANY_REDIRECTS`
+
+下载重定向次数超过上限时抛出。
+
+#### `ERR_FILE_SYSTEM_CANCELLED`
+
+文件下载或上传被取消时抛出。
+
+#### `ERR_FILE_SYSTEM_PICKER_CANCELLED`
+
+用户取消选择文件或目录时抛出；`File.pickFileAsync()` 的选项对象形式会改为返回取消结果。
+
+#### `ERR_FILE_SYSTEM_PICKER_UNAVAILABLE`
+
+当前运行环境没有可用 UIAbility，或设备不支持目录选择能力时抛出。
+
+#### `ERR_PICKING_IN_PROGRESS`
+
+同一 UIAbility 的文件或目录选择器尚未关闭时再次打开选择器，抛出此错误。
+
+#### `ERR_FILE_SYSTEM_INVALID_RESUME_DATA`
+
+下载续传状态与目标路径或已保存数据不匹配时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_RESUME_RESPONSE`
+
+服务器返回的数据范围与续传位置不匹配时抛出。
+
+#### `ERR_FILE_SYSTEM_TASK_ALREADY_RUNNING`
+
+同一任务已启动，或同一任务标识已在使用时抛出。
+
+#### `ERR_FILE_SYSTEM_HANDLE_OPEN_FAILED`
+
+文件句柄无法打开时抛出。
+
+#### `ERR_FILE_SYSTEM_HANDLE_READ_ONLY`
+
+只读句柄执行写入时抛出。
+
+#### `ERR_FILE_SYSTEM_HANDLE_WRITE_ONLY`
+
+只写句柄执行读取时抛出。
+
+#### `ERR_FILE_SYSTEM_HANDLE_CLOSED`
+
+文件句柄关闭后再次读写时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_OFFSET`
+
+文件句柄偏移量或 Legacy 读取位置不是有效的非负安全整数时抛出。
+
+#### `ERR_FILE_SYSTEM_INVALID_LENGTH`
+
+文件句柄或 Legacy 读取长度不是有效的非负安全整数时抛出。
+
+#### `ERR_FILE_SYSTEM_WATCHER_SETUP`
+
+无法开始文件变更监听时抛出。
+
+### Permissions
+
+#### `ohos.permission.INTERNET`
+
+本包已声明此权限，用于文件下载和上传。
+
+#### `ohos.permission.FILE_ACCESS_PERSIST`
+
+可选权限，需由宿主应用声明。HarmonyOS SDK API 12 起该权限级别为 normal；应用市场发布仍需按华为的[受限权限流程](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/restricted-permissions#ohospermissionfile_access_persist)申请。获授权后可在应用重启后继续访问系统选择器授权的文件或目录；未获授权、设备不支持持久授权或文件提供方只允许临时访问时，重启后可能需要用户重新选择。
 
 ## Author
 

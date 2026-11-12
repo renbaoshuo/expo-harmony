@@ -53,16 +53,6 @@ export function normalizeUploadMethod(value?: string): string {
   return method;
 }
 
-export interface UploadMethodPolicy {
-  method: string;
-  standard: boolean;
-}
-
-export function uploadMethodPolicy(value?: string): UploadMethodPolicy {
-  const method = normalizeUploadMethod(value);
-  return { method, standard: method !== 'PATCH' };
-}
-
 export class ProgressCadence {
   private lastEmittedAt?: number;
   private lastTransferred?: number;

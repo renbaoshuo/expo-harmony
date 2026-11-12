@@ -8,6 +8,7 @@
 #include <cstring>
 #include <limits.h>
 #include <stdio.h>
+#include <sys/stat.h>
 
 #include "ExclusiveFileCreate.h"
 #include "napi/native_api.h"
@@ -90,10 +91,30 @@ napi_value PublishNoReplace(napi_env env, napi_callback_info info) {
   return result;
 }
 
+napi_value IsSameFile(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  int32_t first, second;
+  if (napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr) != napi_ok || argc != 2 ||
+      napi_get_value_int32(env, argv[0], &first) != napi_ok ||
+      napi_get_value_int32(env, argv[1], &second) != napi_ok) {
+    napi_throw_type_error(env, "ERR_FILE_SYSTEM_INVALID_URI", "Two file descriptors are required");
+    return nullptr;
+  }
+
+  struct stat firstStat {}, secondStat {};
+  const bool same = fstat(first, &firstStat) == 0 && fstat(second, &secondStat) == 0 &&
+      firstStat.st_dev == secondStat.st_dev && firstStat.st_ino == secondStat.st_ino;
+
+  napi_value result;
+  return napi_get_boolean(env, same, &result) == napi_ok ? result : nullptr;
+}
+
 napi_value Init(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
       {"exclusiveCreate", nullptr, ExclusiveCreate, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"publishNoReplace", nullptr, PublishNoReplace, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"isSameFile", nullptr, IsSameFile, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
   if (napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties) != napi_ok) {
     return nullptr;

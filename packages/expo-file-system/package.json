@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-file-system",
-  "version": "55.0.26-harmony.3",
+  "version": "57.0.7-harmony.0",
   "description": "HarmonyOS port of expo-file-system",
   "keywords": [
     "react-native",
@@ -26,20 +26,19 @@
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo-file-system": "55.0.26"
+    "expo-file-system": "57.0.7"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "@react-native-oh/react-native-harmony": "0.84.1",
-    "expo": "55.0.31",
-    "expo-file-system": "55.0.26",
-    "expo-modules-core": "55.0.26",
+    "expo": "57.0.31",
+    "expo-file-system": "57.0.7",
+    "expo-modules-core": "57.0.24",
     "react": "19.2.3",
-    "react-native": "0.84.1"
+    "react-native": "0.86.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
   },
   "publishConfig": {
     "access": "public"

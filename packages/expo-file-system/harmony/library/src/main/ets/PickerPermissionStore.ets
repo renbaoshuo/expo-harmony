@@ -5,104 +5,151 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ExpoModuleContext } from '@expo-harmony/expo-modules-core';
+import { ExpoModuleContext, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
 import preferences from '@ohos.data.preferences';
 import fileShare from '@ohos.fileshare';
 
 interface SavedPermission {
   uri: string;
   directory: boolean;
+  writable: boolean;
 }
 
 /** Stores system picker URIs, never a caller-supplied path allowlist. */
 export class PickerPermissionStore {
   private static readonly pendingWrites: Map<string, Promise<void>> = new Map();
-  private readonly storage: preferences.Preferences;
   private readonly context: ExpoModuleContext;
-  private readonly storageScope: string;
 
   constructor(context: ExpoModuleContext) {
     this.context = context;
-    const name = context.preferenceName('expo_file_system_permissions');
-    this.storageScope = `${context.uiAbilityContext.preferencesDir}/${name}`;
-    this.storage = preferences.getPreferencesSync(context.uiAbilityContext, { name });
   }
 
-  private readEntries(): SavedPermission[] {
+  private canPersist(): boolean {
+    if (!canIUse('SystemCapability.FileManagement.AppFileService.FolderAuthorization')) return false;
+    try {
+      return this.context.permissionStatus('ohos.permission.FILE_ACCESS_PERSIST') === ExpoPermissionStatus.GRANTED;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  private getStorage(name: string = this.context.preferenceName('expo_file_system_permissions')): preferences.Preferences {
+    return preferences.getPreferencesSync(this.context.uiAbilityContext, { name });
+  }
+
+  private readEntries(storage: preferences.Preferences): SavedPermission[] {
     const entries: SavedPermission[] = [];
-    const serialized = this.storage.getSync('pickerUris', []);
+    const serialized = storage.getSync('pickerUris', []);
     if (!Array.isArray(serialized)) return entries;
+
     for (const value of serialized as string[]) {
       if (typeof value !== 'string') continue;
       try {
         const entry = JSON.parse(value) as SavedPermission;
         if (typeof entry.uri === 'string' && entry.uri.startsWith('file://') && typeof entry.directory === 'boolean') {
-          entries.push({ uri: entry.uri, directory: entry.directory });
+          // Existing stores used read/write policies without a mode field.
+          entries.push({ uri: entry.uri, directory: entry.directory, writable: entry.writable !== false });
         }
       } catch (_) {
         // A malformed preference is not a grant. System permissions remain authoritative.
       }
     }
+
     return entries;
   }
 
-  async remember(uri: string, directory: boolean): Promise<void> {
+  async remember(uri: string, directory: boolean, writable: boolean): Promise<void> {
+    if (!this.canPersist()) return;
+
+    const name = this.context.preferenceName('expo_file_system_permissions');
+    const scope = `${this.context.uiAbilityContext.preferencesDir}/${name}`;
+    const storage = this.getStorage(name);
     // RN Hosts share this ArkTS module but own separate store instances. Merge
     // the latest Preferences value while serializing writes through flush.
-    const previous = PickerPermissionStore.pendingWrites.get(this.storageScope) ?? Promise.resolve();
+    const previous = PickerPermissionStore.pendingWrites.get(scope) ?? Promise.resolve();
     const next = previous
       .catch((_: Object): void => {})
       .then(async (): Promise<void> => {
-        const entries = this.readEntries();
-        if (!entries.some((entry: SavedPermission): boolean => entry.uri === uri && entry.directory === directory)) {
-          entries.push({ uri, directory });
+        if (!this.canPersist()) return;
+
+        const entries = this.readEntries(storage);
+        const policy: fileShare.PolicyInfo = { uri, operationMode: operationMode(writable) };
+        // The picker already granted access for this session. Activation is
+        // only needed when reopening a persisted grant after a restart.
+        try {
+          await fileShare.persistPermission([policy]);
+        } catch (_) {
+          // Some providers allow temporary access only.
+          return;
         }
-        this.storage.putSync(
+
+        const existing = entries.find((entry: SavedPermission): boolean => entry.uri === uri && entry.directory === directory);
+        if (existing === undefined) entries.push({ uri, directory, writable });
+        else existing.writable = existing.writable || writable;
+
+        storage.putSync(
           'pickerUris',
           entries.map((entry: SavedPermission): string => JSON.stringify(entry)),
         );
-        await this.storage.flush();
+        await storage.flush();
       });
-    PickerPermissionStore.pendingWrites.set(this.storageScope, next);
+    PickerPermissionStore.pendingWrites.set(scope, next);
     try {
       await next;
     } finally {
-      if (PickerPermissionStore.pendingWrites.get(this.storageScope) === next) {
-        PickerPermissionStore.pendingWrites.delete(this.storageScope);
+      if (PickerPermissionStore.pendingWrites.get(scope) === next) {
+        PickerPermissionStore.pendingWrites.delete(scope);
       }
     }
   }
 
-  restoreActive(grant: (uri: string, directory: boolean) => void): void {
-    for (const entry of this.readEntries()) {
+  restoreActive(grant: (uri: string, directory: boolean, writable: boolean) => void): void {
+    if (!this.canPersist()) return;
+
+    let entries: SavedPermission[];
+
+    try {
+      entries = this.readEntries(this.getStorage());
+    } catch (_) {
+      // A preference failure must not disable the normal file system APIs.
+      return;
+    }
+
+    for (const entry of entries) {
       try {
         // The callback must successfully open the original URI through the OS.
         // This covers already-active grants before the asynchronous activation pass.
-        grant(entry.uri, entry.directory);
+        grant(entry.uri, entry.directory, entry.writable);
       } catch (_) {
         // Inactive or revoked grants are handled by restore's system policy query.
       }
     }
   }
 
-  async restore(grant: (uri: string, directory: boolean) => void): Promise<void> {
-    for (const entry of this.readEntries()) {
+  async restore(grant: (uri: string, directory: boolean, writable: boolean) => void): Promise<void> {
+    if (!this.canPersist()) return;
+
+    for (const entry of this.readEntries(this.getStorage())) {
+      if (!this.context.isValid) return;
       const policies: fileShare.PolicyInfo[] = [
         {
           uri: entry.uri,
-          operationMode: fileShare.OperationMode.READ_MODE | fileShare.OperationMode.WRITE_MODE,
+          operationMode: operationMode(entry.writable),
         },
       ];
+
       try {
         const allowed = await fileShare.checkPersistentPermission(policies);
-        if (allowed[0] !== true) continue;
+        if (allowed[0] !== true || !this.context.isValid) continue;
         await fileShare.activatePermission(policies);
-        // The caller reopens this original system URI and derives its current path.
-        grant(entry.uri, entry.directory);
+        if (this.context.isValid) grant(entry.uri, entry.directory, entry.writable);
       } catch (error) {
-        // An unavailable document must not prevent restoration of other grants.
-        this.context.logger.warn(`Could not restore a file picker permission: ${String(error)}`);
+        if (this.context.isValid) this.context.logger.warn(`Could not restore a file picker permission: ${String(error)}`);
       }
     }
   }
+}
+
+function operationMode(writable: boolean): number {
+  return writable ? fileShare.OperationMode.READ_MODE | fileShare.OperationMode.WRITE_MODE : fileShare.OperationMode.READ_MODE;
 }
