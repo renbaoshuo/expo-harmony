@@ -22,11 +22,13 @@ class BrightnessPermissionResponse {
 
 export class ExpoBrightnessModule extends ExpoModule {
   private pending: Promise<void> = Promise.resolve();
+  private windowWrite?: Promise<void>;
   private destroyed: boolean = false;
 
   definition(): ExpoModuleDefinition {
     return new ExpoModuleDefinition()
       .name('ExpoBrightness')
+      // SDK 57's addBrightnessListener also registers on platforms that do not emit the event.
       .events([CHANGE_EVENT])
       .asyncFunction('getPermissionsAsync', async (): Promise<BrightnessPermissionResponse> => {
         this.assertActive();
@@ -38,16 +40,8 @@ export class ExpoBrightnessModule extends ExpoModule {
       })
       .asyncFunction('getBrightnessAsync', async (): Promise<number> => {
         return this.serialize(async (): Promise<number> => {
-          const current: window.Window = await this.context.getReactNativeWindow();
-
-          this.assertActive();
-
-          const value: number = current.getWindowProperties().brightness;
-          if (value === FOLLOW_SYSTEM) {
-            return this.readSystemBrightness();
-          }
-
-          return requireBrightness(value);
+          const target: window.Window = await this.context.getReactNativeWindow();
+          return this.readBrightness(target);
         });
       })
       .asyncFunction(
@@ -56,32 +50,49 @@ export class ExpoBrightnessModule extends ExpoModule {
           requireBrightness(value);
 
           await this.serialize(async (): Promise<void> => {
-            const current: window.Window = await this.context.getReactNativeWindow();
-
+            const target: window.Window = await this.context.getReactNativeWindow();
             this.assertActive();
 
-            await current.setWindowBrightness(value);
+            const write: Promise<void> = target.setWindowBrightness(value);
+            this.windowWrite = write;
+
+            try {
+              await write;
+            } finally {
+              this.windowWrite = undefined;
+            }
           });
         }),
       )
       .onPrepareForReload(async (): Promise<void> => {
         this.destroyed = true;
+        // Finish any native write already issued to the window before a new runtime uses it.
+        await this.windowWrite?.catch((): void => {});
       })
       .onDestroy((): void => {
         this.destroyed = true;
       });
   }
 
-  private async readSystemBrightness(): Promise<number> {
-    const value: string = await settings.getValue(this.context.uiAbilityContext, settings.display.SCREEN_BRIGHTNESS_STATUS);
-
+  private async readBrightness(target: window.Window): Promise<number> {
     this.assertActive();
-    if (typeof value !== 'string' || value.trim().length === 0) {
+
+    const initial: number = target.getWindowProperties().brightness;
+    if (initial !== FOLLOW_SYSTEM) return requireBrightness(initial);
+
+    const setting: string = await settings.getValue(this.context.uiAbilityContext, settings.display.SCREEN_BRIGHTNESS_STATUS);
+    this.assertActive();
+
+    // ArkUI or another caller can change the window while the settings query is pending.
+    const latest: number = target.getWindowProperties().brightness;
+    if (latest !== FOLLOW_SYSTEM) return requireBrightness(latest);
+
+    if (typeof setting !== 'string' || setting.trim().length === 0) {
       throw new ExpoModuleError('ERR_BRIGHTNESS_SYSTEM', 'HarmonyOS did not return a system brightness value.');
     }
 
-    const level: number = Number(value);
-    if (!Number.isFinite(level) || level < 0 || level > SYSTEM_MAX) {
+    const level: number = Number(setting);
+    if (!/^\d+$/.test(setting.trim()) || level > SYSTEM_MAX) {
       throw new ExpoModuleError('ERR_BRIGHTNESS_SYSTEM', 'HarmonyOS returned an invalid system brightness value.');
     }
 
