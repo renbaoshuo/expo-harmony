@@ -12,31 +12,31 @@ import { HarmonyAutolinkingError } from '../../errors';
 
 function packageNameParts(packageName) {
   if (packageName.startsWith('@')) {
-    const [scopeName, name] = packageName.slice(1).split('/');
-    return { scopeName, name };
+    const [scope, name] = packageName.slice(1).split('/');
+    return { scope, name };
   }
 
-  return { scopeName: null, name: packageName };
+  return { scope: null, name: packageName };
 }
 
 function defaultPackageClassName(packageName) {
-  const { scopeName, name } = packageNameParts(packageName);
-  return scopeName
-    ? `${Case.pascal(scopeName)}${Case.pascal(name)}Package`
+  const { scope, name } = packageNameParts(packageName);
+  return scope
+    ? `${Case.pascal(scope)}${Case.pascal(name)}Package`
     : `${Case.pascal(name)}Package`;
 }
 
 function defaultCmakeTargetForNpmPackage(packageName) {
-  const { scopeName, name } = packageNameParts(packageName);
-  return scopeName
-    ? `rnoh__${Case.snake(scopeName)}__${Case.snake(name)}`
+  const { scope, name } = packageNameParts(packageName);
+  return scope
+    ? `rnoh__${Case.snake(scope)}__${Case.snake(name)}`
     : `rnoh__${Case.snake(name)}`;
 }
 
 function defaultOhPackageNameForNpmPackage(packageName) {
-  const { scopeName, name } = packageNameParts(packageName);
-  return scopeName
-    ? `@rnoh/${Case.kebab(scopeName)}--${Case.kebab(name)}`
+  const { scope, name } = packageNameParts(packageName);
+  return scope
+    ? `@rnoh/${Case.kebab(scope)}--${Case.kebab(name)}`
     : `@rnoh/${Case.kebab(name)}`;
 }
 
@@ -47,45 +47,61 @@ function ohPackageNameForHar(base, harPath, harCount) {
 }
 
 function resolveHarPackageMappings(descriptor) {
-  const harPaths = descriptor.rnoh.harPaths || [];
-  if (harPaths.length === 0) return [];
+  const paths = descriptor.rnoh.harPaths || [];
+  if (paths.length === 0) return [];
 
   const configured = descriptor.rnoh.ohPackageName;
+
   if (configured === undefined) {
     const base = defaultOhPackageNameForNpmPackage(descriptor.packageName);
-    return harPaths.map(harPath => ({
+    return paths.map(harPath => ({
       harPath,
-      ohPackageName: ohPackageNameForHar(base, harPath, harPaths.length),
+      ohPackageName: ohPackageNameForHar(base, harPath, paths.length),
     }));
   }
 
   if (typeof configured === 'string') {
-    return harPaths.map(harPath => ({
+    return paths.map(harPath => ({
       harPath,
-      ohPackageName: ohPackageNameForHar(configured, harPath, harPaths.length),
+      ohPackageName: ohPackageNameForHar(configured, harPath, paths.length),
     }));
   }
 
-  const defaultName = defaultOhPackageNameForNpmPackage(descriptor.packageName);
-  return harPaths.map((harPath) => {
-    const mapping = configured.find(item => item.harName === path.basename(harPath));
-    if (!mapping) return {
-      harPath,
-      ohPackageName: ohPackageNameForHar(defaultName, harPath, harPaths.length),
-    };
-    return {
+  const fallback = defaultOhPackageNameForNpmPackage(descriptor.packageName);
+  const lookup = new Map(paths.map(harPath => [path.basename(harPath), harPath]));
+  const mapped = new Set();
+  const mappings = [];
+
+  // RNOH selects its primary HAR by mapping order, independent of scan order.
+  for (const mapping of configured) {
+    const harPath = lookup.get(mapping.harName);
+    if (!harPath) continue;
+
+    mapped.add(mapping.harName);
+    mappings.push({
       harPath,
       ohPackageName: mapping.packageName,
       ...(mapping.version ? { version: mapping.version } : {}),
-    };
-  });
+    });
+  }
+
+  for (const harPath of paths) {
+    if (mapped.has(path.basename(harPath))) continue;
+
+    mappings.push({
+      harPath,
+      ohPackageName: ohPackageNameForHar(fallback, harPath, paths.length),
+    });
+  }
+
+  return mappings;
 }
 
 function resolveRnohMetadata(descriptor) {
   const pkg = defaultPackageClassName(descriptor.packageName);
   if ((descriptor.rnoh.etsPackageClassName === undefined
-      || descriptor.rnoh.cppPackageClassName === undefined)
-    && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(pkg)) {
+    || descriptor.rnoh.cppPackageClassName === undefined)
+  && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(pkg)) {
     throw new HarmonyAutolinkingError(
       'INVALID_METADATA',
       'The npm package name cannot produce a valid default RNOH package class; configure the package class names explicitly.',
@@ -98,6 +114,7 @@ function resolveRnohMetadata(descriptor) {
     harMappings: resolveHarPackageMappings(descriptor),
     etsPackageClassName: descriptor.rnoh.etsPackageClassName || pkg,
     etsPackageImport: descriptor.rnoh.etsPackageImport || 'default',
+    etsPackageScope: descriptor.rnoh.etsPackageScope ?? 'shared',
     cppPackageClassName: descriptor.rnoh.cppPackageClassName || pkg,
     cmakeLibraryTargetName: descriptor.rnoh.cmakeLibraryTargetName
       || defaultCmakeTargetForNpmPackage(descriptor.packageName),
@@ -108,5 +125,6 @@ export {
   defaultCmakeTargetForNpmPackage,
   defaultOhPackageNameForNpmPackage,
   ohPackageNameForHar,
+  resolveHarPackageMappings,
   resolveRnohMetadata,
 };

@@ -189,6 +189,14 @@ function normalizeRnohPackageMetadata(
     });
   }
 
+  const etsPackageScope = rnoh.etsPackageScope;
+  if (etsPackageScope !== undefined && etsPackageScope !== 'shared' && etsPackageScope !== 'ui' && etsPackageScope !== 'host') {
+    throw new HarmonyAutolinkingError('INVALID_METADATA', 'package.json#harmony.autolinking.etsPackageScope must be "shared", "ui", or "host".', {
+      packageName: record.packageName,
+      stage: 'metadata-normalize',
+    });
+  }
+
   return {
     ohPackageName: normalizeOhPackageName(rnoh.ohPackageName, record),
     ...(rnoh.mainHarPath === undefined
@@ -206,6 +214,7 @@ function normalizeRnohPackageMetadata(
       record
     ),
     etsPackageImport: etsPackageImport as 'default' | 'named' | undefined,
+    etsPackageScope: etsPackageScope as RnohMetadata['etsPackageScope'],
     cppPackageClassName: optionalIdentifier(
       rnoh.cppPackageClassName,
       'package.json#harmony.autolinking.cppPackageClassName',

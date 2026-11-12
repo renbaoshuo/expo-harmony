@@ -5,12 +5,13 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import spawn from 'cross-spawn';
 import JSON5 from 'json5';
-import { collectOhpmDeps, resolveOhpmSpecifier } from './ohpm/dependencies';
-import { mirrorPackageLinkAsync } from './ohpm/mirror';
+import { resolveBuildOhpmDependencies } from './ohpm/dependencies';
+import { sanitizeHarmonyHar } from './har';
 import { resolveHarmonyCommand } from '../utilities/toolCommand';
 import { terminateProcess } from '../utilities/terminateProcess';
 
@@ -31,6 +32,7 @@ import { publishArtifactsAsync } from './transaction/publish';
 const DefaultBuildTimeoutMs = 10 * 60_000;
 const DefaultOutputLimit = 64 * 1024;
 const HarmonyProjectPath = 'harmony';
+const LocalBuildGeneratedDirectories = new Set(['.git', '.hvigor', '.cxx', 'build', 'node_modules', 'oh_modules']);
 
 interface FixedBuildStep {
   readonly id: 'ohpm-install' | 'hvigor-build';
@@ -65,6 +67,18 @@ function createFixedHvigorBuildDescriptor(
       '--no-daemon',
       'assembleHar',
     ],
+  };
+}
+
+function findHarmonyLibrary(profile, packageName: string, stage: string) {
+  const library = Array.isArray(profile?.modules) && profile.modules.find(entry =>
+    typeof entry?.srcPath === 'string' && path.normalize(entry.srcPath) === 'library');
+  if (typeof library?.name !== 'string' || !/^[A-Za-z][A-Za-z0-9_]*$/u.test(library.name)) {
+    throw new HarmonyAutolinkingError('INVALID_METADATA', 'Harmony source project must declare a library module.', { packageName, stage });
+  }
+  return {
+    name: library.name as string,
+    output: `library/build/default/outputs/default/${library.name}.har`,
   };
 }
 
@@ -165,13 +179,8 @@ async function materializeModuleArtifactAsync(
   });
 
   const profile = JSON5.parse(await fs.promises.readFile(path.join(sourceRoot, 'build-profile.json5'), 'utf8'));
-  const library = profile.modules?.find(entry => path.normalize(entry.srcPath) === 'library');
-  if (!library || !/^[A-Za-z][A-Za-z0-9_]*$/u.test(library.name)) {
-    throw new HarmonyAutolinkingError('INVALID_METADATA', 'Harmony source project must declare a library module.', { packageName: options.packageName });
-  }
-
-  const output = `library/build/default/outputs/default/${library.name}.har`;
-  const outputPath = await resolveInsideAsync(sourceRoot, output, 'Harmony build output', {
+  const library = findHarmonyLibrary(profile, options.packageName, 'artifact-materialize');
+  const outputPath = await resolveInsideAsync(sourceRoot, library.output, 'Harmony build output', {
     packageName: options.packageName,
     mustExist: false,
   });
@@ -364,63 +373,73 @@ async function materializeLocalSourceAsync(
     { packageName: module.packageName, mustExist: false }
   );
 
-  const file = path.join(artifact.build.cwd, 'oh-package.json5');
-  const original = await fs.promises.readFile(file, 'utf8');
-  const config = JSON5.parse(original);
-  const dependencies = (options.dependencies ?? []).filter(value => value.artifact.kind === 'bundled');
-  const overrides: Record<string, string> = {};
-  const mirror = { ...process.env, ...options.env }.EXPO_HARMONY_CHECK_MIRROR_ROOT;
-
-  for (const { descriptor, mapping } of collectOhpmDeps(dependencies)) {
-    const link = await mirrorPackageLinkAsync(descriptor.packageLinkPath, artifact.build.cwd, mirror);
-
-    overrides[mapping.ohPackageName] = resolveOhpmSpecifier(
-      { ...descriptor, packageLinkPath: link }, mapping, { harmonyProjectPath: artifact.build.cwd }
-    );
+  const source = await resolveInsideAsync(root, HarmonyProjectPath, 'Harmony source project', {
+    packageName: module.packageName,
+    type: 'directory',
+  });
+  if (artifact.build.cwd !== source || !isPathInside(source, artifact.outputPath)) {
+    throw new HarmonyAutolinkingError('UNSAFE_SOURCE_ARTIFACT', 'Harmony build paths must stay inside the local source project.', {
+      packageName: module.packageName, stage: 'artifact-materialize',
+    });
   }
+
+  const dependencies = (options.dependencies ?? []).filter(value => value.artifact.kind === 'bundled');
+  const { overrides, versions } = resolveBuildOhpmDependencies(dependencies);
+  // Keep the same parent so OHPM specifiers relative to sibling modules still resolve.
+  const stage = await fs.promises.mkdtemp(path.join(path.dirname(root), '.expo-harmony-build-'));
 
   try {
+    await fs.promises.cp(root, stage, {
+      recursive: true,
+      dereference: true,
+      filter: async (entry) => {
+        if (entry === har || (entry !== root && LocalBuildGeneratedDirectories.has(path.basename(entry)))) return false;
+        if (!isPathInside(root, await fs.promises.realpath(entry))) {
+          throw new HarmonyAutolinkingError('UNSAFE_SOURCE_ARTIFACT', `Harmony source link escapes its local module: ${path.relative(root, entry)}`, {
+            packageName: module.packageName, stage: 'artifact-materialize',
+          });
+        }
+        return true;
+      },
+    });
+    const cwd = path.join(stage, path.relative(root, source));
+    const file = path.join(cwd, 'oh-package.json5');
+    const config = JSON5.parse(await fs.promises.readFile(file, 'utf8'));
+
     await fs.promises.writeFile(file, JSON.stringify({ ...config, overrides: { ...config.overrides, ...overrides } }, null, 2) + '\n');
 
-    for (const step of fixedLocalSourceBuildSteps(artifact.build)) {
+    for (const step of fixedLocalSourceBuildSteps({ ...artifact.build, cwd })) {
       await runFixedBuildStepAsync(step, module.packageName, options);
     }
+
+    const output = path.join(cwd, path.relative(source, artifact.outputPath));
+    if (!await isNonEmptyRegularHarAsync(output, cwd, module.packageName)) {
+      throw new HarmonyAutolinkingError(
+        'SOURCE_BUILD_FAILED',
+        `Hvigor did not produce a non-empty HAR at ${normalizeSlashes(path.relative(root, artifact.outputPath))}.`,
+        { packageName: module.packageName, stage: 'artifact-materialize' }
+      );
+    }
+
+    await sanitizeHarmonyHar(output, {
+      workspaceVersions: versions,
+      moduleRoot: path.join(cwd, 'library'),
+    });
+
+    // Link against immutable bytes even if another invocation refreshes library.har.
+    const hash = createHash('sha256');
+    for await (const chunk of fs.createReadStream(output)) hash.update(chunk);
+    const builtHarPath = path.join(project, '.expo/harmony/module-builds', `local-${hash.digest('hex')}.har`);
+    await publishArtifactsAsync({
+      allowedRoot: project,
+      lockPath: path.join(project, '.expo/harmony/module-materialize.lock'),
+      files: [{ source: output, target: builtHarPath }, { source: output, target: har }],
+    });
+
+    return { packageName: module.packageName, harPath: har, builtHarPath };
   } finally {
-    await fs.promises.writeFile(file, original);
+    await fs.promises.rm(stage, { recursive: true, force: true });
   }
-
-  const ready = await isNonEmptyRegularHarAsync(
-    artifact.outputPath,
-    artifact.build.cwd,
-    module.packageName
-  );
-
-  if (!ready) {
-    throw new HarmonyAutolinkingError(
-      'SOURCE_BUILD_FAILED',
-      `Hvigor did not produce a non-empty HAR at ${normalizeSlashes(path.relative(root, artifact.outputPath))}.`,
-      { packageName: module.packageName, stage: 'artifact-materialize' }
-    );
-  }
-
-  await publishArtifactsAsync({
-    allowedRoot: project,
-    lockPath: path.join(project, '.expo/harmony/module-materialize.lock'),
-    files: [{ source: artifact.outputPath, target: har }],
-  });
-
-  if (!await isNonEmptyRegularHarAsync(har, root, module.packageName)) {
-    throw new HarmonyAutolinkingError(
-      'SOURCE_BUILD_FAILED',
-      'Harmony HAR materialization produced a missing or empty file.',
-      { packageName: module.packageName, stage: 'artifact-materialize' }
-    );
-  }
-
-  return {
-    packageName: module.packageName,
-    harPath: har,
-  };
 }
 
 async function materializeLocalSourcesAsync(
@@ -435,6 +454,8 @@ async function materializeLocalSourcesAsync(
 }
 
 export {
+  createFixedHvigorBuildDescriptor,
+  findHarmonyLibrary,
   materializeLocalSourcesAsync,
   materializeModuleArtifactAsync,
   runFixedBuildStepAsync,

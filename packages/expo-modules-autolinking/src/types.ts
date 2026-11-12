@@ -13,7 +13,23 @@ export type ModuleSource
   = 'dependency'
     | 'searchPath'
     | 'nativeModulesDir'
-    | 'reactNativeProjectConfig';
+    | 'reactNativeProjectConfig'
+    | 'inlineModules';
+
+export interface InlineModulesOptions {
+  readonly watchedDirectories: ReadonlyArray<string>;
+  readonly targets?: ReadonlyArray<string>;
+}
+
+export interface InlineModuleFile {
+  readonly path: string;
+  readonly modules: ReadonlyArray<{ readonly name: string; readonly default: boolean }>;
+}
+
+export interface InlineModulesDescriptor {
+  readonly watchedDirectories: ReadonlyArray<string>;
+  readonly files: ReadonlyArray<InlineModuleFile>;
+}
 
 export interface ArkTsModulePackage {
   readonly harPath: string;
@@ -42,6 +58,7 @@ export interface RnohMetadata {
   readonly harPaths: ReadonlyArray<string>;
   readonly etsPackageClassName?: string;
   readonly etsPackageImport?: 'default' | 'named';
+  readonly etsPackageScope?: 'shared' | 'ui' | 'host';
   readonly cppPackageClassName?: string;
   readonly cmakeLibraryTargetName?: string;
 }
@@ -79,6 +96,7 @@ export interface ModuleDescriptor {
   readonly harmony: HarmonyModuleMetadata;
   readonly arkTs?: ArkTsModulePackage;
   readonly artifact: ModuleArtifactDescriptor;
+  readonly inlineModules?: InlineModulesDescriptor;
 }
 
 export interface SearchRecord {
@@ -89,6 +107,7 @@ export interface SearchRecord {
   readonly supportsHarmony: boolean;
   readonly expoModuleConfig: Readonly<Record<string, unknown>> | null;
   readonly rnohMetadata: unknown;
+  readonly inlineModules?: InlineModulesDescriptor;
   readonly revision: {
     readonly depth: number | null;
     readonly originPath: string;
@@ -174,6 +193,7 @@ export interface SearchOptions {
   include?: ReadonlyArray<string>;
   buildType?: BuildType;
   logger?: Logger;
+  inlineModules?: InlineModulesOptions | null | false;
 }
 
 export interface ResolveOptions extends SearchOptions {
@@ -187,6 +207,8 @@ export interface VerifyOptions extends ResolveOptions {
 export interface LinkOptions extends VerifyOptions {
   projectRoot: string;
   harmonyProjectPath: string;
+  /** Effective Expo experiment supplied by prebuild. Null represents a disabled experiment. */
+  expoInlineModules?: InlineModulesOptions | null;
   moduleBuilds?: Record<string, Record<string, string | number | boolean>>;
   moduleBuildSettings?: { compatibleSdkVersion: string; targetSdkVersion: string; abiFilters: string[] };
   nodeModulesPath?: string;
@@ -209,6 +231,7 @@ export interface MaterializeLocalSourceOptions {
 export interface MaterializedLocalSource {
   readonly packageName: string;
   readonly harPath: string;
+  readonly builtHarPath: string;
 }
 
 export interface LinkResult {

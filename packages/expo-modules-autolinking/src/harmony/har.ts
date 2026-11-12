@@ -15,23 +15,39 @@ import * as tar from 'tar';
 const localDependency = /^(?:file:|link:|workspace:|\.{1,2}[\\/])|^(?:\/|[A-Za-z]:[\\/])/u;
 const absoluteSourcePath = /(?:\/Users\/[^/]+\/|\/home\/[^/]+\/|[A-Za-z]:\\Users\\)/u;
 
-function isBundledNativeTypeDependency(packageRoot, manifest, name, specifier) {
-  if (path.basename(name) !== name || !name.endsWith('.so') || !manifest.nativeComponents?.some(component => component.name === name)) return false;
+export function isNativeTypeDependency(packageRoot, name, specifier) {
+  if (path.basename(name) !== name || !name.endsWith('.so') || typeof specifier !== 'string') return false;
+
   const relative = specifier.replace(/^file:/u, '');
   if (!relative.startsWith('./')) return false;
 
   try {
     const root = fs.realpathSync(packageRoot);
-    const typeRoot = fs.realpathSync(path.resolve(root, relative));
-    const relation = path.relative(root, typeRoot);
+    const directory = fs.realpathSync(path.resolve(root, relative));
+    const relation = path.relative(root, directory);
     if (!relation || relation.startsWith(`..${path.sep}`) || relation === '..' || path.isAbsolute(relation)) return false;
-    const types = JSON5.parse(fs.readFileSync(path.join(typeRoot, 'oh-package.json5'), 'utf8'));
-    if (types.name !== name || typeof types.types !== 'string' || !types.types.endsWith('.d.ts')) return false;
-    const declaration = fs.realpathSync(path.resolve(typeRoot, types.types));
-    const declarationRelation = path.relative(typeRoot, declaration);
-    if (declarationRelation.startsWith(`..${path.sep}`) || declarationRelation === '..' || path.isAbsolute(declarationRelation)) return false;
-    if (!fs.statSync(declaration).isFile()) return false;
-    const libs = path.join(root, 'libs');
+
+    const manifest = JSON5.parse(fs.readFileSync(path.join(directory, 'oh-package.json5'), 'utf8'));
+    if (manifest.name !== name || typeof manifest.types !== 'string' || !manifest.types.endsWith('.d.ts')) return false;
+
+    const declaration = fs.realpathSync(path.resolve(directory, manifest.types));
+    const target = path.relative(directory, declaration);
+    if (target.startsWith(`..${path.sep}`) || target === '..' || path.isAbsolute(target)) return false;
+
+    return fs.statSync(declaration).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isBundledNativeTypeDependency(packageRoot, manifest, name, specifier) {
+  if (!isNativeTypeDependency(packageRoot, name, specifier)
+    || !Array.isArray(manifest.nativeComponents)
+    || !manifest.nativeComponents.some(component => component?.name === name)) return false;
+
+  try {
+    const libs = path.join(fs.realpathSync(packageRoot), 'libs');
+
     return fs.readdirSync(libs, { withFileTypes: true }).some((architecture) => {
       const binary = path.join(libs, architecture.name, name);
       return architecture.isDirectory() && fs.existsSync(binary) && fs.lstatSync(binary).isFile();
@@ -60,7 +76,7 @@ export async function sanitizeHarmonyHar(file, {
       strict: true,
       sync: true,
       filter: (name, entry) => {
-        if (moduleRoot && entry.type === 'SymbolicLink' && ['package/LICENSE', 'package/README.md', 'package/CHANGELOG.md'].includes(name)) {
+        if (moduleRoot && 'type' in entry && entry.type === 'SymbolicLink' && ['package/LICENSE', 'package/README.md', 'package/CHANGELOG.md'].includes(name)) {
           docs.add(path.posix.basename(name));
           return false;
         }
@@ -79,6 +95,7 @@ export async function sanitizeHarmonyHar(file, {
     for (const section of ['dependencies', 'devDependencies', 'dynamicDependencies']) {
       for (const [name, value] of Object.entries(manifest[section] || {})) {
         if (typeof value !== 'string' || !localDependency.test(value)) continue;
+        if (value === './library' || value === 'file:./library') continue;
         if (isBundledNativeTypeDependency(root, manifest, name, value)) continue;
 
         if (Object.hasOwn(versions, name)) {
@@ -97,7 +114,8 @@ export async function sanitizeHarmonyHar(file, {
     await fs.promises.writeFile(target, `${JSON5.stringify(manifest, null, 2)}\n`);
     await fs.promises.rm(path.join(root, 'oh-package-lock.json5'), { force: true });
 
-    await tar.c({ cwd: temp, file: output, gzip: true, portable: true }, ['package']);
+    // Build-time timestamps must not change the content-addressed HAR path.
+    await tar.c({ cwd: temp, file: output, gzip: true, portable: true, noMtime: true }, ['package']);
     await fs.promises.copyFile(output, file);
   } finally {
     await fs.promises.rm(temp, { recursive: true, force: true });
@@ -124,6 +142,7 @@ export function assertPortableHarmonyHarSync(harPath) {
         for (const section of ['dependencies', 'devDependencies', 'dynamicDependencies']) {
           for (const [dependency, version] of Object.entries(manifest[section] || {})) {
             if (typeof version === 'string' && localDependency.test(version)) {
+              if (version === './library' || version === 'file:./library') continue;
               if (isBundledNativeTypeDependency(root, manifest, dependency, version)) continue;
               throw new Error(`${harPath} package/${name} ${section}.${dependency} must use a package version.`);
             }

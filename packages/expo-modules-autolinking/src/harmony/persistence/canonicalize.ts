@@ -6,6 +6,7 @@
  */
 
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import JSON5 from 'json5';
 
@@ -21,8 +22,6 @@ import { isObject, isPathInside, stringifyJson } from '../../utilities/values';
 interface CanonicalizeOhpmManifestOptions {
   previousManagedOhpmPackageNames?: ReadonlyArray<string>;
   requireManagedEntries?: boolean;
-  harmonyProjectPath?: string;
-  nodeModulesPath?: string;
   errorCode?: string;
   stage?: string;
 }
@@ -43,21 +42,23 @@ function canonicalizeAutolinkingManifest(
   manifest: unknown,
   options: { generatedProjectRoot: string; canonicalProjectRoot: string }
 ): { manifest: Manifest; source: string } {
-  const generatedProjectRoot = requireProjectRoot(options.generatedProjectRoot, 'generatedProjectRoot');
-  const canonicalProjectRoot = requireProjectRoot(options.canonicalProjectRoot, 'canonicalProjectRoot');
+  const origin = requireProjectRoot(options.generatedProjectRoot, 'generatedProjectRoot');
+  const target = requireProjectRoot(options.canonicalProjectRoot, 'canonicalProjectRoot');
   const validated = validateManifest(manifest);
   const canonical = {
     ...validated,
     modules: validated.modules.map(module => ({
       ...module,
-      packageRoot: rebaseProjectPath(module.packageRoot, generatedProjectRoot, canonicalProjectRoot),
-      packageLinkPath: rebaseProjectPath(module.packageLinkPath, generatedProjectRoot, canonicalProjectRoot),
-      ...(module.arkTs?.builtHarPath ? {
-        arkTs: {
-          ...module.arkTs,
-          builtHarPath: rebaseProjectPath(module.arkTs.builtHarPath, generatedProjectRoot, canonicalProjectRoot),
-        },
-      } : {}),
+      packageRoot: rebaseProjectPath(module.packageRoot, origin, target),
+      packageLinkPath: rebaseProjectPath(module.packageLinkPath, origin, target),
+      ...(module.arkTs?.builtHarPath
+        ? {
+            arkTs: {
+              ...module.arkTs,
+              builtHarPath: rebaseProjectPath(module.arkTs.builtHarPath, origin, target),
+            },
+          }
+        : {}),
     })),
   } as Manifest;
 
@@ -72,48 +73,47 @@ function canonicalizeOhpmManifest(
   manifest: Manifest,
   options: CanonicalizeOhpmManifestOptions = {}
 ): { manifest: Readonly<Record<string, unknown>>; source: string } {
-  const errorCode = options.errorCode || 'INVALID_OPTIONS';
+  const code = options.errorCode || 'INVALID_OPTIONS';
   const stage = options.stage || 'canonicalization';
   let candidate;
+
   try {
     candidate = JSON5.parse(source);
   } catch (cause) {
-    throw new HarmonyAutolinkingError(errorCode, 'harmony/oh-package.json5 must contain a JSON5 object.', { cause, stage });
+    throw new HarmonyAutolinkingError(code, 'harmony/oh-package.json5 must contain a JSON5 object.', { cause, stage });
   }
 
   if (!isObject(candidate)) {
-    throw new HarmonyAutolinkingError(errorCode, 'harmony/oh-package.json5 must contain a JSON5 object.', { stage });
+    throw new HarmonyAutolinkingError(code, 'harmony/oh-package.json5 must contain a JSON5 object.', { stage });
   }
 
-  for (const field of ['dependencies', 'overrides']) {
+  for (const field of ['dependencies', 'devDependencies', 'dynamicDependencies', 'overrides']) {
     if (candidate[field] !== undefined && !isObject(candidate[field])) {
-      throw new HarmonyAutolinkingError(errorCode, `harmony/oh-package.json5 ${field} must be an object.`, { stage });
+      throw new HarmonyAutolinkingError(code, `harmony/oh-package.json5 ${field} must be an object.`, { stage });
     }
   }
 
-  const specifiers = ohpmDependenciesFromManifest(manifest, {
-    harmonyProjectPath: options.harmonyProjectPath,
-    nodeModulesPath: options.nodeModulesPath,
-  });
-  const currentNames = Object.keys(specifiers).sort((left, right) => left.localeCompare(right, 'en'));
-  const managedNames = new Set([
+  const specifiers = ohpmDependenciesFromManifest(manifest);
+  const names = Object.keys(specifiers).sort((left, right) => left.localeCompare(right, 'en'));
+  const managed = new Set([
     ...(options.previousManagedOhpmPackageNames || []),
-    ...currentNames,
+    ...names,
   ]);
 
   if (options.requireManagedEntries) {
     for (const field of ['dependencies', 'overrides']) {
       if (!isObject(candidate[field])) {
         throw new HarmonyAutolinkingError(
-          errorCode,
+          code,
           `harmony/oh-package.json5 ${field} must be an object.`,
           { stage }
         );
       }
-      for (const packageName of currentNames) {
+
+      for (const packageName of names) {
         if (!Object.hasOwn(candidate[field], packageName)) {
           throw new HarmonyAutolinkingError(
-            errorCode,
+            code,
             `RNOH omitted the managed ${field} entry for ${packageName}.`,
             { stage, details: { packageName, field } }
           );
@@ -122,25 +122,38 @@ function canonicalizeOhpmManifest(
     }
   }
 
+  let changed = false;
   for (const field of ['dependencies', 'overrides']) {
     const values = { ...(candidate[field] || {}) };
-    for (const packageName of managedNames) delete values[packageName];
-    for (const packageName of currentNames) values[packageName] = specifiers[packageName];
-    candidate[field] = values;
+    for (const packageName of managed) delete values[packageName];
+    for (const packageName of names) values[packageName] = specifiers[packageName];
+    if (!isDeepStrictEqual(candidate[field] ?? {}, values)) {
+      candidate[field] = values;
+      changed = true;
+    }
+  }
+
+  for (const field of ['dependencies', 'devDependencies', 'dynamicDependencies', 'overrides']) {
+    for (const [name, value] of Object.entries(candidate[field] || {})) {
+      if (typeof value !== 'string' || !value.trim()) {
+        throw new HarmonyAutolinkingError(code, `harmony/oh-package.json5 ${field}.${name} must declare a version.`, { stage });
+      }
+    }
   }
 
   return {
     manifest: candidate,
-    source: `${JSON5.stringify(candidate, null, 2)}\n`,
+    source: changed ? `${JSON5.stringify(candidate, null, 2)}\n` : source,
   };
 }
 
 function canonicalizeAutolinkingArtifacts(
   options: CanonicalizeAutolinkingArtifactsOptions
 ): CanonicalizedAutolinkingArtifacts {
-  let parsedManifest;
+  let parsed;
+
   try {
-    parsedManifest = JSON.parse(options.manifestSource);
+    parsed = JSON.parse(options.manifestSource);
   } catch (cause) {
     throw new HarmonyAutolinkingError(
       'INVALID_MANIFEST',
@@ -149,17 +162,17 @@ function canonicalizeAutolinkingArtifacts(
     );
   }
 
-  const canonicalManifest = canonicalizeAutolinkingManifest(parsedManifest, options);
-  const canonicalOhpm = canonicalizeOhpmManifest(
+  const manifest = canonicalizeAutolinkingManifest(parsed, options);
+  const ohpm = canonicalizeOhpmManifest(
     options.ohPackageSource,
-    canonicalManifest.manifest,
-    { requireManagedEntries: true, harmonyProjectPath: options.harmonyProjectPath }
+    parsed,
+    { requireManagedEntries: true }
   );
 
   return {
-    manifest: canonicalManifest.manifest,
-    manifestSource: canonicalManifest.source,
-    ohPackageSource: canonicalOhpm.source,
+    manifest: manifest.manifest,
+    manifestSource: manifest.source,
+    ohPackageSource: ohpm.source,
   };
 }
 

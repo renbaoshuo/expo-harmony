@@ -6,7 +6,7 @@
  */
 
 import { linkModulesAsync, linkPreparedModulesAsync } from './src/autolinking/link';
-import { prepareModulesAsync } from './src/autolinking/prepare';
+import { prepareModulesAsync, prepareRuntimeModulesAsync } from './src/autolinking/prepare';
 import { canonicalizeAutolinkingArtifacts } from './src/harmony/persistence/canonicalize';
 import { resolveModulesAsync } from './src/autolinking/resolve';
 import { searchModulesAsync } from './src/autolinking/search';
@@ -18,6 +18,7 @@ export {
   linkModulesAsync,
   linkPreparedModulesAsync,
   prepareModulesAsync,
+  prepareRuntimeModulesAsync,
   normalizeHarmonyModuleMetadata,
   resolveModulesAsync,
   searchModulesAsync,
@@ -33,6 +34,9 @@ export type {
   ExpoMetadata,
   HostMetadata,
   HarmonyModuleMetadata,
+  InlineModulesOptions,
+  InlineModulesDescriptor,
+  InlineModuleFile,
   LinkOptions,
   LinkResult,
   Logger,
@@ -51,4 +55,7 @@ export type {
 } from './src/types';
 
 export { createNativeModuleContracts } from './src/harmony/manifest/runtime';
-export { ohpmDependenciesFromManifest } from './src/harmony/manifest';
+export { GeneratedNativeSources, ManifestArtifact, ModuleBuildOptionsArtifact } from './src/config/constants';
+export { localOhpmDependenciesFromManifest, ohpmDependenciesFromManifest } from './src/harmony/manifest';
+export { resolveBundledRnohRuntime } from './src/harmony/ohpm/dependencies';
+export { resolveRnohCliPackageJsonPath } from './src/harmony/rnoh/cli';

@@ -11,48 +11,23 @@ import path from 'node:path';
 import JSON5 from 'json5';
 
 import type { LinkOptions, ModuleDescriptor } from '../types';
+import { readModuleBuildOptionsAsync } from '../config/options';
 import { HarmonyAutolinkingError } from '../errors';
 import { isPathInside, resolveInsideAsync } from '../utilities/values';
-import { collectOhpmDeps, resolveOhpmSpecifier } from './ohpm/dependencies';
+import { resolveBuildOhpmDependencies } from './ohpm/dependencies';
 import { sanitizeHarmonyHar } from './har';
-import { fixedLocalSourceBuildSteps, isNonEmptyRegularHarAsync, runFixedBuildStepAsync } from './materialize';
+import { createFixedHvigorBuildDescriptor, findHarmonyLibrary, fixedLocalSourceBuildSteps, isNonEmptyRegularHarAsync, runFixedBuildStepAsync } from './materialize';
 import { publishArtifactsAsync } from './transaction/publish';
 
 const Ignored = new Set(['.git', '.hvigor', '.cxx', '.native-build', 'native-deps', 'build', 'node_modules', 'oh_modules', 'local.properties', 'oh-package-lock.json5', 'BuildProfile.ets']);
-const InputsFile = '.expo/harmony/module-build-options.json';
+type ConfiguredBuildOptions = Pick<LinkOptions,
+  'projectRoot' | 'buildType' | 'moduleBuilds' | 'moduleBuildSettings' | 'env' | 'timeoutMs' | 'outputLimit'>;
 
-async function readBuildInputs(options: LinkOptions) {
+async function readBuildInputs(options: ConfiguredBuildOptions) {
   if (options.moduleBuilds !== undefined) return options;
 
-  let content: string;
-  try {
-    content = await fs.readFile(path.join(options.projectRoot, InputsFile), 'utf8');
-  } catch (error) {
-    if (error.code === 'ENOENT') return options;
-
-    throw new HarmonyAutolinkingError('INVALID_OPTIONS', `Cannot read ${InputsFile}.`, {
-      cause: error,
-      stage: 'configured-module-build',
-    });
-  }
-
-  let saved;
-  try {
-    saved = JSON.parse(content);
-  } catch (error) {
-    throw new HarmonyAutolinkingError('INVALID_OPTIONS', `Invalid ${InputsFile}; run Harmony prebuild again.`, {
-      cause: error,
-      stage: 'configured-module-build',
-    });
-  }
-
-  if (!saved || typeof saved !== 'object' || saved.schemaVersion !== 1 || !saved.moduleBuilds) {
-    throw new HarmonyAutolinkingError('INVALID_OPTIONS', `Invalid ${InputsFile}; run Harmony prebuild again.`, {
-      stage: 'configured-module-build',
-    });
-  }
-
-  return { ...options, moduleBuilds: saved.moduleBuilds, moduleBuildSettings: saved.moduleBuildSettings };
+  const saved = await readModuleBuildOptionsAsync(options.projectRoot, 'configured-module-build');
+  return saved ? { ...options, moduleBuilds: saved.moduleBuilds, moduleBuildSettings: saved.moduleBuildSettings } : options;
 }
 
 async function hashTree(
@@ -70,16 +45,16 @@ async function hashTree(
   }
 }
 
-async function buildFingerprint(project: string, modules: ReadonlyArray<ModuleDescriptor>, options: LinkOptions) {
+async function buildFingerprint(project: string, dependencies: ReturnType<typeof resolveBuildOhpmDependencies>, options: ConfiguredBuildOptions) {
   const hash = crypto.createHash('sha256');
 
   hash.update(new Uint8Array(await fs.readFile(__filename)));
   hash.update(JSON.stringify([options.buildType, options.moduleBuildSettings]));
   await hashTree(hash, project);
 
-  for (const { descriptor, mapping } of collectOhpmDeps(modules)) {
-    const file = resolveOhpmSpecifier(descriptor, mapping, { harmonyProjectPath: project });
-    hash.update(mapping.ohPackageName).update(new Uint8Array(await fs.readFile(path.resolve(project, file))));
+  for (const [name, specifier] of Object.entries(dependencies.overrides)) {
+    hash.update(JSON.stringify([name, dependencies.versions[name]]));
+    hash.update(new Uint8Array(await fs.readFile(specifier.slice('file:'.length))));
   }
 
   const env = { ...process.env, ...options.env };
@@ -109,7 +84,7 @@ async function buildFingerprint(project: string, modules: ReadonlyArray<ModuleDe
 }
 
 export async function buildConfiguredModulesAsync(
-  modules: ReadonlyArray<ModuleDescriptor>, raw: LinkOptions
+  modules: ReadonlyArray<ModuleDescriptor>, raw: ConfiguredBuildOptions
 ): Promise<ReadonlyArray<ModuleDescriptor>> {
   const options = await readBuildInputs(raw);
   const builds = options.moduleBuilds ?? {};
@@ -120,6 +95,7 @@ export async function buildConfiguredModulesAsync(
   }
 
   const linked = [...modules];
+
   for (const name of Object.keys(builds).sort()) {
     const index = linked.findIndex(item => item.packageName === name);
     if (index < 0) {
@@ -137,8 +113,9 @@ export async function buildConfiguredModulesAsync(
     }
 
     const source = await resolveInsideAsync(item.packageRoot, 'harmony', 'Harmony source project', { packageName: name, type: 'directory' });
-    const defaultsPath = await resolveInsideAsync(source, file, 'Harmony build options', { packageName: name, type: 'file' });
-    const defaults = JSON.parse(await fs.readFile(defaultsPath, 'utf8'));
+    const defaultsFile = await resolveInsideAsync(source, file, 'Harmony build options', { packageName: name, type: 'file' });
+    const defaults = JSON.parse(await fs.readFile(defaultsFile, 'utf8'));
+
     const selected = builds[name];
     if (!selected || typeof selected !== 'object' || Array.isArray(selected)) {
       throw new HarmonyAutolinkingError('INVALID_OPTIONS', `Build options for ${name} must be an object.`, {
@@ -158,6 +135,7 @@ export async function buildConfiguredModulesAsync(
     const root = await fs.realpath(options.projectRoot);
     const cache = await resolveInsideAsync(root, '.expo/harmony/module-builds', 'Module build directory', { mustExist: false });
     let dir = root;
+
     for (const segment of ['.expo', 'harmony', 'module-builds']) {
       dir = path.join(dir, segment);
       try {
@@ -181,6 +159,7 @@ export async function buildConfiguredModulesAsync(
 
     const temp = await fs.mkdtemp(path.join(cache, 'build-'));
     const project = path.join(temp, 'harmony');
+
     try {
       await fs.cp(source, project, {
         recursive: true,
@@ -198,12 +177,13 @@ export async function buildConfiguredModulesAsync(
       });
 
       await fs.writeFile(path.join(project, file), JSON.stringify({ ...defaults, ...selected }, null, 2) + '\n');
-      const profilePath = path.join(project, 'build-profile.json5');
-      const profile = JSON5.parse(await fs.readFile(profilePath, 'utf8'));
-      const library = profile.modules?.find(entry => path.normalize(entry.srcPath) === 'library');
-      const product = profile.app?.products?.find(entry => entry.name === 'default');
-      if (!library || !product || !/^[A-Za-z][A-Za-z0-9_]*$/u.test(library.name)) {
-        throw new HarmonyAutolinkingError('INVALID_OPTIONS', `${name} must declare a library module and default product in harmony/build-profile.json5.`, {
+
+      const profileFile = path.join(project, 'build-profile.json5');
+      const profile = JSON5.parse(await fs.readFile(profileFile, 'utf8'));
+      const library = findHarmonyLibrary(profile, name, 'configured-module-build');
+      const product = Array.isArray(profile.app?.products) && profile.app.products.find(entry => entry?.name === 'default');
+      if (!product) {
+        throw new HarmonyAutolinkingError('INVALID_OPTIONS', `${name} must declare a default product in harmony/build-profile.json5.`, {
           stage: 'configured-module-build',
         });
       }
@@ -230,10 +210,11 @@ export async function buildConfiguredModulesAsync(
         await fs.writeFile(file, JSON.stringify(build, null, 2) + '\n');
       }
 
-      await fs.writeFile(profilePath, JSON.stringify(profile, null, 2) + '\n');
+      await fs.writeFile(profileFile, JSON.stringify(profile, null, 2) + '\n');
 
       const deps = linked.filter(module => module.packageName !== name);
-      const key = await buildFingerprint(project, deps, options);
+      const dependencies = resolveBuildOhpmDependencies(deps);
+      const key = await buildFingerprint(project, dependencies, options);
       const cached = key ? path.join(cache, `${key}.har`) : null;
       if (cached && await isNonEmptyRegularHarAsync(cached, cache, name)) {
         try {
@@ -255,22 +236,14 @@ export async function buildConfiguredModulesAsync(
 
       const manifestPath = path.join(project, 'oh-package.json5');
       const manifest = JSON5.parse(await fs.readFile(manifestPath, 'utf8'));
-      const overrides = {};
-      const versions: Record<string, string> = {};
-      for (const { descriptor, mapping } of collectOhpmDeps(deps)) {
-        overrides[mapping.ohPackageName] = resolveOhpmSpecifier(descriptor, mapping, { harmonyProjectPath: project });
-        versions[mapping.ohPackageName] = descriptor.packageVersion;
-      }
+      const { overrides, versions } = dependencies;
 
       await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, overrides: { ...manifest.overrides, ...overrides } }, null, 2) + '\n');
 
-      const build = {
-        executable: 'hvigorw' as const, cwd: project,
-        args: ['--mode', 'module', '-p', `module=${library.name}@default`, '-p', 'product=default', '-p', `buildMode=${options.buildType ?? 'debug'}`, '--no-daemon', 'assembleHar'],
-      };
+      const build = createFixedHvigorBuildDescriptor(project, options.buildType ?? 'debug', library.name);
       for (const step of fixedLocalSourceBuildSteps(build)) await runFixedBuildStepAsync(step, name, options);
 
-      const output = path.join(project, 'library/build/default/outputs/default', `${library.name}.har`);
+      const output = path.join(project, library.output);
       if (!await isNonEmptyRegularHarAsync(output, project, name)) {
         throw new HarmonyAutolinkingError('INVALID_OPTIONS', `${name}: Hvigor did not produce a HAR.`, {
           stage: 'configured-module-build',

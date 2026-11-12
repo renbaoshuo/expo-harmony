@@ -15,6 +15,10 @@ function isObject(value) {
   return value != null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function isArkTsIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && /^[$_\p{ID_Start}][$_\u200C\u200D\p{ID_Continue}]*$/u.test(value);
+}
+
 function compareText(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
@@ -88,20 +92,23 @@ async function resolveInsideAsync(root, relative, field, options: Record<string,
   const mustExist = options.mustExist !== false;
   const type = options.type || 'path';
   const packageName = options.packageName;
+  const stage = options.stage || 'metadata';
 
-  if (typeof relative !== 'string' || !relative.trim() || path.isAbsolute(relative)) {
+  if (typeof relative !== 'string' || !relative.trim() || relative.includes('\0')
+    || path.isAbsolute(relative) || path.win32.isAbsolute(relative)) {
     throw new HarmonyAutolinkingError('INVALID_METADATA', `${field} must be a non-empty package-relative path.`, {
       packageName,
-      stage: 'metadata',
+      stage,
     });
   }
+
   const realRoot = await fs.promises.realpath(root);
   const lexical = path.resolve(realRoot, relative);
 
   if (!isPathInside(realRoot, lexical)) {
     throw new HarmonyAutolinkingError('PATH_OUTSIDE_PACKAGE', `${field} escapes package root.`, {
       packageName,
-      stage: 'metadata',
+      stage,
     });
   }
   if (!mustExist) return lexical;
@@ -113,14 +120,14 @@ async function resolveInsideAsync(root, relative, field, options: Record<string,
     throw new HarmonyAutolinkingError('INVALID_METADATA', `${field} does not exist: ${relative}`, {
       cause,
       packageName,
-      stage: 'metadata',
+      stage,
     });
   }
 
   if (!isPathInside(realRoot, resolved)) {
     throw new HarmonyAutolinkingError('PATH_OUTSIDE_PACKAGE', `${field} resolves outside package root.`, {
       packageName,
-      stage: 'metadata',
+      stage,
     });
   }
   const stat = await fs.promises.stat(resolved);
@@ -128,13 +135,13 @@ async function resolveInsideAsync(root, relative, field, options: Record<string,
   if (type === 'file' && !stat.isFile()) {
     throw new HarmonyAutolinkingError('INVALID_METADATA', `${field} must reference a file: ${relative}`, {
       packageName,
-      stage: 'metadata',
+      stage,
     });
   }
   if (type === 'directory' && !stat.isDirectory()) {
     throw new HarmonyAutolinkingError('INVALID_METADATA', `${field} must reference a directory: ${relative}`, {
       packageName,
-      stage: 'metadata',
+      stage,
     });
   }
   return resolved;
@@ -181,6 +188,7 @@ export {
   compareText,
   emitLog,
   isObject,
+  isArkTsIdentifier,
   isPathInside,
   normalizeSlashes,
   pathExistsAsync,

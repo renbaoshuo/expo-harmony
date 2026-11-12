@@ -7,39 +7,31 @@
 
 import * as expoAutolinking from 'expo-modules-autolinking/exports';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
 import type { SearchOptions, SearchResult } from '../types';
 import { Platform } from '../config/constants';
+import { searchInlineModulesAsync } from '../harmony/inlineModules';
 import { HarmonyAutolinkingError } from '../errors';
 import { normalizeModuleOverrides, normalizeOptionsAsync } from '../config/options';
-import { compareText, emitLog, isObject, isPathInside, pathExistsAsync, readJsonAsync } from '../utilities/values';
+import { compareText, emitLog, isObject, isPathInside, pathExistsAsync, readJsonAsync, resolveInsideAsync } from '../utilities/values';
 
-function loadUpstreamAutolinkingApi() {
-  const upstreamApi = expoAutolinking;
-
-  for (const name of ['makeCachedDependenciesLinker']) {
-    if (typeof upstreamApi[name] !== 'function') {
-      throw new HarmonyAutolinkingError('INVALID_OPTIONS', `expo-modules-autolinking public export ${name} is unavailable.`, { stage: 'search' });
-    }
-  }
-  return upstreamApi;
-}
+// SDK 57 exposes DependencyResolutionSource as a type-only const enum.
+const DependencySource = { recursive: 0, searchPath: 1, reactNativeConfig: 2 } as const satisfies
+  Record<string, expoAutolinking.DependencyResolutionSource>;
 
 function supportsHarmony(config) {
   return Array.isArray(config?.platforms) && config.platforms.includes(Platform);
 }
 
-function hasHarmonyExpoMetadata(config) {
-  return supportsHarmony(config);
-}
-
-async function readExpoModuleConfigAsync(packageRoot) {
-  const target = path.join(packageRoot, 'expo-module.config.json');
-  return await pathExistsAsync(target)
-    ? readJsonAsync(target, 'INVALID_METADATA', 'search')
-    : null;
+async function readExpoModuleConfigAsync(root) {
+  for (const filename of ['expo-module.config.json', 'unimodule.json']) {
+    const target = path.join(root, filename);
+    if (await pathExistsAsync(target)) return readJsonAsync(target, 'INVALID_METADATA', 'search');
+  }
+  return null;
 }
 
 function nodeModulesDepth(originPath) {
@@ -60,10 +52,10 @@ function isPreferredRevision(left, right) {
   return compareText(left.originPath, right.originPath) < 0;
 }
 
-function mergeRevisions(resultSets) {
+function mergeRevisions(sets) {
   const merged = Object.create(null);
 
-  for (const results of resultSets) {
+  for (const results of sets) {
     for (const packageName of Object.keys(results)) {
       const incoming = results[packageName];
       if (!incoming) continue;
@@ -78,6 +70,9 @@ function mergeRevisions(resultSets) {
       }
 
       if (current.path === incoming.path) {
+        if (isPreferredRevision(incoming, current)) {
+          Object.assign(current, { depth: incoming.depth, originPath: incoming.originPath, source: incoming.source });
+        }
         if (!current.version && incoming.version) current.version = incoming.version;
         for (const candidate of incoming.duplicates || []) {
           if (candidate.path !== current.path
@@ -108,147 +103,200 @@ function mergeRevisions(resultSets) {
       }
     }
   }
+
   return merged;
 }
 
-function classifySource(revision, packageRoot, options) {
-  if (revision.source === 2) {
+function classifySource(revision, root, options) {
+  if (revision.source === DependencySource.reactNativeConfig) {
     return 'reactNativeProjectConfig';
   }
   if (options.nativeModulesDir
-    && isPathInside(options.nativeModulesDir, packageRoot)) {
+    && (isPathInside(options.nativeModulesDir, root) || isPathInside(options.nativeModulesDir, revision.originPath))) {
     return 'nativeModulesDir';
   }
-  // A package symlink can resolve outside searchPaths (e.g. prebuild --check).
-  // The upstream scanner retains its entry path in originPath.
+  // A search-path symlink may have a canonical root outside that search path.
   if (options.searchPaths.some(searchPath =>
-    isPathInside(searchPath, packageRoot) || isPathInside(searchPath, revision.originPath))) {
+    isPathInside(searchPath, root) || isPathInside(searchPath, revision.originPath))) {
     return 'searchPath';
   }
   return 'dependency';
 }
 
-async function resolveDependencyRevisionsAsync(upstreamApi, options) {
-  const linker = upstreamApi.makeCachedDependenciesLinker({ projectRoot: options.projectRoot });
-  const resultSets = [];
+async function resolveDependencyRevisionsAsync(options) {
+  const linker = expoAutolinking.makeCachedDependenciesLinker({ projectRoot: options.projectRoot });
+  const paths = [...new Set([options.nativeModulesDir, ...options.searchPaths].filter(Boolean))];
+  const [projectConfig, ...sets] = await Promise.all([
+    linker.loadReactNativeProjectConfig(),
+    linker.scanDependenciesFromRNProjectConfig(),
+    ...paths.map(searchPath => linker.scanDependenciesInSearchPath(searchPath)),
+    linker.scanDependenciesRecursively(),
+  ]);
 
-  if (options.includeReactNativeProjectConfig) {
-    resultSets.push(await linker.scanDependenciesFromRNProjectConfig());
-  }
-  if (options.nativeModulesDir && await pathExistsAsync(options.nativeModulesDir)) {
-    resultSets.push(await linker.scanDependenciesInSearchPath(options.nativeModulesDir));
-  }
-
-  for (const searchPath of options.searchPaths) {
-    if (await pathExistsAsync(searchPath)) {
-      resultSets.push(await linker.scanDependenciesInSearchPath(searchPath));
-    }
-  }
-
-  resultSets.push(await linker.scanDependenciesRecursively());
-  return mergeRevisions(resultSets);
+  return {
+    revisions: mergeRevisions(sets),
+    projectConfig,
+  };
 }
 
-async function loadOverridesAsync(deps) {
-  const overrides = Object.create(null);
-  const owners = Object.create(null);
-  const required = new Set();
+async function resolveSidecarTargetAsync(requireFromOwner: NodeRequire, name: string) {
+  // Resolve the npm revision even when the library does not export package.json.
+  for (const directory of requireFromOwner.resolve.paths(name) ?? []) {
+    const originPath = path.join(directory, name);
+    try {
+      const root = await fs.promises.realpath(originPath);
+      const version = JSON.parse(await fs.promises.readFile(path.join(root, 'package.json'), 'utf8')).version;
+      return { name, version, path: root, originPath };
+    } catch (cause) {
+      if (cause.code !== 'ENOENT' && cause.code !== 'ENOTDIR') throw cause;
+    }
+  }
+  return null;
+}
+
+async function loadOverridesAsync(deps: expoAutolinking.ResolutionResult, options) {
+  const overrides = new Map<string, { metadata: Readonly<Record<string, unknown>>; owner: string; root: string }>();
+  const resolved: expoAutolinking.ResolutionResult[] = [];
+  const visited = new Set<string>();
 
   for (const name of Object.keys(deps).sort(compareText)) {
     const revision = deps[name];
     if (!revision) continue;
-    let packageRoot;
-    let packageJson;
+
+    let root;
+    let pkg;
+
     try {
-      packageRoot = await fs.promises.realpath(revision.path);
-      packageJson = await readJsonAsync(path.join(packageRoot, 'package.json'), 'INVALID_METADATA', 'search');
+      root = await fs.promises.realpath(revision.path);
+      if (visited.has(root)) continue;
+      visited.add(root);
+      pkg = await readJsonAsync(path.join(root, 'package.json'), 'INVALID_METADATA', 'search');
     } catch (_cause) {
       continue;
     }
 
-    const packageName = typeof packageJson.name === 'string' && packageJson.name ? packageJson.name : name;
-    const harmony = isObject(packageJson.harmony) ? packageJson.harmony : {};
+    const packageName = typeof pkg.name === 'string' && pkg.name ? pkg.name : name;
+    const harmony = isObject(pkg.harmony) ? pkg.harmony : {};
     const declared = normalizeModuleOverrides(harmony.modules, {
       code: 'INVALID_METADATA',
       field: `${packageName} package.json#harmony.modules`,
       stage: 'search',
+      allowPackageRoot: true,
     });
 
-    const dependencies = isObject(packageJson.dependencies) ? packageJson.dependencies : {};
-    const optional = isObject(packageJson.optionalDependencies) ? packageJson.optionalDependencies : {};
-    const peers = isObject(packageJson.peerDependencies) ? packageJson.peerDependencies : {};
-    const peerMeta = isObject(packageJson.peerDependenciesMeta) ? packageJson.peerDependenciesMeta : {};
+    const dependencies = isObject(pkg.dependencies) ? pkg.dependencies : {};
+    const optional = isObject(pkg.optionalDependencies) ? pkg.optionalDependencies : {};
+    const peers = isObject(pkg.peerDependencies) ? pkg.peerDependencies : {};
+    const peerMeta = isObject(pkg.peerDependenciesMeta) ? pkg.peerDependenciesMeta : {};
+    const requireFromOwner = createRequire(path.join(root, 'package.json'));
 
     for (const [target, metadata] of Object.entries(declared)) {
+      if (options.exclude.includes(target) || Object.hasOwn(options.moduleOverrides, target)) continue;
       if (![dependencies, optional, peers].some(group => Object.hasOwn(group, target))) {
         throw new HarmonyAutolinkingError('INVALID_METADATA', `${packageName} declares Harmony module ${target} but does not list it in a production dependency field.`, { packageName, stage: 'search' });
       }
-      if (Object.hasOwn(dependencies, target)
-        || (Object.hasOwn(peers, target) && peerMeta[target]?.optional !== true)) {
-        required.add(target);
+      const dependency = await resolveSidecarTargetAsync(requireFromOwner, target);
+      if (!dependency) {
+        if (Object.hasOwn(dependencies, target)
+          || (Object.hasOwn(peers, target) && peerMeta[target]?.optional !== true)) {
+          throw new HarmonyAutolinkingError('INVALID_METADATA', `${packageName} declares Harmony module ${target}, but that dependency is not installed.`, { packageName: target, stage: 'search' });
+        }
+        continue;
       }
-      if (overrides[target] !== undefined && !isDeepStrictEqual(overrides[target], metadata)) {
-        throw new HarmonyAutolinkingError('INVALID_METADATA', `${packageName} and ${owners[target]} declare conflicting Harmony metadata for ${target}.`, { packageName: target, stage: 'search' });
+      if (metadata.version !== undefined && metadata.version !== dependency.version) {
+        throw new HarmonyAutolinkingError('INVALID_METADATA', `Harmony sidecar module ${target} declared by ${packageName} targets ${metadata.version}, but ${dependency.version} is installed at ${dependency.path}.`, { packageName: target, stage: 'search' });
       }
-      overrides[target] = metadata;
-      owners[target] = packageName;
+
+      const previous = overrides.get(dependency.path);
+      if (previous && (!isDeepStrictEqual(previous.metadata, metadata)
+        || (metadata.packageRoot !== undefined && previous.root !== root))) {
+        throw new HarmonyAutolinkingError('INVALID_METADATA', `${packageName} and ${previous.owner} declare conflicting Harmony metadata for ${target} at ${dependency.path}.`, { packageName: target, stage: 'search' });
+      }
+      overrides.set(dependency.path, { metadata, owner: packageName, root });
+
+      // The upstream recursive scan skips optional-only dependencies.
+      if (![deps[target], ...(deps[target]?.duplicates ?? [])].some(candidate => candidate?.path === dependency.path)) {
+        resolved.push({
+          [target]: { ...dependency, source: DependencySource.recursive, depth: revision.depth + 1, duplicates: null },
+        });
+      }
     }
   }
 
-  return {
-    requiredTargets: required,
-    overrides: Object.freeze(overrides),
-    owners: Object.freeze(owners),
-  };
+  return { overrides, resolved };
 }
 
-async function createSearchRecordAsync(revision, options) {
-  let packageRoot;
+async function createSearchRecordAsync(revision, options, appOverrideAllowed) {
+  let root;
+
   try {
-    packageRoot = await fs.promises.realpath(revision.path);
+    root = await fs.promises.realpath(revision.path);
   } catch (_cause) {
     return null;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let packageJson: Record<string, any> = {};
-  try {
-    packageJson = await readJsonAsync(path.join(packageRoot, 'package.json'), 'INVALID_METADATA', 'search');
-  } catch (_cause) {
-    // Expo's search-path scanner tolerates roots without a readable
-    // package.json and falls back to the dependency revision name.
-  }
+  let pkg: Record<string, any> = {};
 
-  const packageName = typeof packageJson.name === 'string' && packageJson.name
-    ? packageJson.name
+  try {
+    pkg = await readJsonAsync(path.join(root, 'package.json'), 'INVALID_METADATA', 'search');
+  } catch (_cause) {
+    // Upstream traversal can report a leftover dependency directory without a manifest.
+    return null;
+  }
+  if (!isObject(pkg)) return null;
+
+  const packageName = typeof pkg.name === 'string' && pkg.name
+    ? pkg.name
     : revision.name;
-  if (options.exclude.includes(revision.name || packageName)) return null;
-  const expo = await readExpoModuleConfigAsync(packageRoot);
-  const harmony = hasHarmonyExpoMetadata(expo);
-  const metadata = isObject(packageJson.harmony) ? packageJson.harmony : null;
-  const sidecar = options.moduleOverrides[packageName];
+  if (options.exclude.includes(revision.name) || options.exclude.includes(packageName)) return null;
+
+  const expo = await readExpoModuleConfigAsync(root);
+  const harmony = supportsHarmony(expo);
+  const metadata = isObject(pkg.harmony) ? pkg.harmony : null;
+  const producer = options.sidecars.get(root);
+  const appOverride = appOverrideAllowed
+    && (options.moduleOverrides[revision.name] ?? options.moduleOverrides[packageName]);
+  const sidecar = appOverride || producer?.metadata;
 
   let rnohMetadata = metadata?.autolinking === undefined ? null : metadata.autolinking;
   if (sidecar !== undefined) {
-    const { version: _version, ...metadata } = sidecar;
+    const { version: _version, packageRoot: _packageRoot, ...metadata } = sidecar;
     rnohMetadata = metadata;
   }
 
-  const included = options.include.includes(revision.name || packageName);
+  const dependencyConfig = options.projectConfig?.dependencies?.[revision.name || packageName];
+  const override = dependencyConfig?.platforms?.harmony;
+  if (override === null) rnohMetadata = null;
+  else if (isObject(override)) rnohMetadata = { ...(rnohMetadata || {}), ...override };
+
+  const included = options.include.includes(revision.name) || options.include.includes(packageName);
+  if (appOverride && rnohMetadata !== null
+    && appOverride.version !== undefined && appOverride.version !== pkg.version) {
+    throw new HarmonyAutolinkingError('INVALID_METADATA', `Harmony sidecar module ${packageName} targets ${appOverride.version}, but ${pkg.version} is installed at ${root}.`, { packageName, stage: 'search' });
+  }
+
+  const packageRoot = !appOverride && producer?.metadata.packageRoot !== undefined && rnohMetadata !== null
+    ? await resolveInsideAsync(producer.root, producer.metadata.packageRoot, 'sidecar packageRoot', {
+        packageName, stage: 'search', type: 'directory',
+      })
+    : root;
 
   return {
     packageName,
-    packageVersion: typeof packageJson.version === 'string' ? packageJson.version : String(revision.version || ''),
+    packageVersion: typeof pkg.version === 'string' ? pkg.version : String(revision.version || ''),
     packageRoot,
-    source: classifySource(revision, packageRoot, options),
+    source: classifySource(revision, root, options),
     supportsHarmony: harmony,
     expoModuleConfig: expo,
     rnohMetadata,
+    npmRoot: root,
+    producerSidecar: !appOverride && !!producer && rnohMetadata !== null,
     nativeCandidate: harmony || rnohMetadata != null,
     includedForVerification: included,
     revision: {
       depth: Number.isInteger(revision.depth) ? revision.depth : null,
-      originPath: typeof revision.originPath === 'string' ? revision.originPath : packageRoot,
+      originPath: typeof revision.originPath === 'string' ? revision.originPath : root,
     },
   };
 }
@@ -264,7 +312,7 @@ function findDuplicates(records) {
 
   for (const record of records) {
     const revisions = byName.get(record.packageName) || [];
-    revisions.push({ version: record.packageVersion, path: record.packageRoot });
+    revisions.push({ version: record.packageVersion, path: record.npmRoot });
     byName.set(record.packageName, revisions);
   }
 
@@ -278,26 +326,12 @@ function findDuplicates(records) {
     .sort((left, right) => compareText(left.packageName, right.packageName));
 }
 
-type SearchImplementationOptions = SearchOptions & {
-  includeReactNativeProjectConfig?: boolean;
-};
-
 async function searchModulesAsync(rawOptions: SearchOptions = {}): Promise<SearchResult> {
-  const input = rawOptions as SearchImplementationOptions;
-  const options = {
-    ...await normalizeOptionsAsync(rawOptions),
-    includeReactNativeProjectConfig: input.includeReactNativeProjectConfig === true,
-  };
-
-  const upstreamApi = loadUpstreamAutolinkingApi();
-  const deps = await resolveDependencyRevisionsAsync(upstreamApi, options);
-  const overrides = await loadOverridesAsync(deps);
-
-  const modules = Object.freeze({
-    ...overrides.overrides,
-    ...options.moduleOverrides,
-  });
-  const search = { ...options, moduleOverrides: modules };
+  const options = await normalizeOptionsAsync(rawOptions);
+  const { revisions, projectConfig } = await resolveDependencyRevisionsAsync(options);
+  const { overrides, resolved } = await loadOverridesAsync(revisions, options);
+  const deps = mergeRevisions([revisions, ...resolved]);
+  const search = { ...options, sidecars: overrides, projectConfig };
   const selected = new Map();
   const unique = new Map();
 
@@ -314,51 +348,54 @@ async function searchModulesAsync(rawOptions: SearchOptions = {}): Promise<Searc
       })),
     ];
 
-    const records = (await Promise.all(revisions.map(revision => createSearchRecordAsync(revision, search))))
-      .filter(Boolean);
+    const records = (await Promise.all(
+      revisions.map((revision, index) => createSearchRecordAsync(revision, search, index === 0))
+    )).filter(Boolean);
+
     const winner = records[0];
-    let chosen = winner?.nativeCandidate || winner?.includedForVerification ? winner : null;
-
-    if (!chosen && resolution.source === 1) {
-      chosen = records.slice(1).find(record => record.nativeCandidate || record.includedForVerification) || null;
+    const sidecars = records.filter(record => record.producerSidecar);
+    if (sidecars.length > 0 && resolution.source !== DependencySource.reactNativeConfig) {
+      const competing = records.filter(
+        record => record.nativeCandidate && record.packageName === sidecars[0].packageName
+      );
+      if (new Set(competing.map(record => record.npmRoot)).size > 1) {
+        throw new HarmonyAutolinkingError('INVALID_METADATA', `Competing native revisions of ${sidecars[0].packageName}: ${competing.map(record => record.npmRoot).join(', ')}. Use a single native revision or configure an explicit app override.`, { packageName: sidecars[0].packageName, stage: 'search' });
+      }
     }
-    if (!chosen) continue;
+    const chosen = winner?.nativeCandidate
+      ? winner
+      : sidecars[0] ?? (resolution.source === DependencySource.searchPath
+        ? records.slice(1).find(record => record.nativeCandidate)
+        : null);
+    if (chosen) selected.set(chosen.packageName, chosen);
+    if (!chosen && !records.some(record => record.includedForVerification)) continue;
 
-    if (chosen.nativeCandidate) selected.set(chosen.packageName, chosen);
     for (const record of records) {
-      const key = `${record.packageName}\0${record.packageVersion}\0${record.packageRoot}`;
+      const key = `${record.packageName}\0${record.packageVersion}\0${record.npmRoot}`;
       if (!unique.has(key)) unique.set(key, record);
-    }
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const [packageName, sidecar] of Object.entries(modules) as Array<[string, Record<string, any>]>) {
-    const record = selected.get(packageName);
-    if (record && sidecar.version !== undefined && sidecar.version !== record.packageVersion) {
-      throw new HarmonyAutolinkingError('INVALID_METADATA', `Harmony sidecar module ${packageName} targets ${sidecar.version}, but ${record.packageVersion} is installed.`, { packageName, stage: 'search' });
     }
   }
 
   const all = [...unique.values()];
   const found = new Set(all.map(record => record.packageName));
-  for (const [packageName, owner] of Object.entries(overrides.owners)) {
-    if (!found.has(packageName) && overrides.requiredTargets.has(packageName)) {
-      throw new HarmonyAutolinkingError('INVALID_METADATA', `${owner} declares Harmony module ${packageName}, but that dependency is not installed.`, { packageName, stage: 'search' });
-    }
-  }
-
-  const verified = all.filter(record =>
-    modules[record.packageName] === undefined || selected.get(record.packageName)?.packageRoot === record.packageRoot);
   const records = [...selected.values()].map(({
     includedForVerification: _includedForVerification,
     nativeCandidate: _nativeCandidate,
+    npmRoot: _npmRoot,
+    producerSidecar: _producerSidecar,
     ...record
   }) => record).sort(compareSearchRecords);
+
+  const inline = await searchInlineModulesAsync(options.projectRoot, options.inlineModules);
+  if (inline) {
+    records.push(inline);
+    records.sort(compareSearchRecords);
+  }
 
   const result: SearchResult = {
     platform: Platform,
     modules: records,
-    duplicates: findDuplicates(verified),
+    duplicates: findDuplicates(all),
     missingIncludes: options.include.filter(name => !found.has(name)).sort(compareText),
     options: {
       projectRoot: options.projectRoot,
@@ -371,6 +408,7 @@ async function searchModulesAsync(rawOptions: SearchOptions = {}): Promise<Searc
   };
 
   emitLog(rawOptions.logger, 'debug', 'Harmony module search completed.', { moduleCount: records.length, duplicateCount: result.duplicates.length });
+
   return result;
 }
 

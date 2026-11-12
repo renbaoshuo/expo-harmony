@@ -27,6 +27,8 @@ function addCommonOptions(command) {
     .option('--include <include...>', 'package names to verify for duplicate revisions', (value, previous = []) => previous.concat(value))
     .option('--build-type <type>', 'debug or release');
 
+  command.option('--watched-directories <paths...>', 'project directories containing inline ArkTS sources');
+
   return command;
 }
 
@@ -39,6 +41,9 @@ function toApiOptions(options, searchPaths = undefined) {
     ...(options.exclude !== undefined ? { exclude: options.exclude } : {}),
     ...(options.include !== undefined ? { include: options.include } : {}),
     ...(options.buildType !== undefined ? { buildType: options.buildType } : {}),
+    ...(options.watchedDirectories !== undefined
+      ? { inlineModules: { watchedDirectories: options.watchedDirectories } }
+      : {}),
   };
 }
 

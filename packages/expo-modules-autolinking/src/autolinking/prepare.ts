@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import type { LinkOptions, VerifyOptions } from '../types';
+import type { LinkOptions, VerificationResult } from '../types';
 import { HarmonyAutolinkingError } from '../errors';
 import { normalizeOptionsAsync } from '../config/options';
 import { materializeLocalSourcesAsync } from '../harmony/materialize';
@@ -18,12 +18,17 @@ export async function prepareModulesAsync(raw: LinkOptions) {
     throw new HarmonyAutolinkingError('INVALID_OPTIONS', 'link requires harmonyProjectPath.', { stage: 'link' });
   }
 
-  const verify = await verifyModulesAsync((raw.modules !== undefined
-    ? { modules: raw.modules }
-    : { ...options, searchResult: raw.searchResult }) as VerifyOptions);
+  const verify = await verifyModulesAsync({
+    ...raw,
+    projectRoot: options.projectRoot,
+    buildType: options.buildType,
+    inlineModules: options.inlineModules,
+    searchResult: raw.modules === undefined ? raw.searchResult : undefined,
+  });
+
   assertVerificationSucceeded(verify, 'link');
 
-  const modules = verify.modules;
+  let modules = verify.modules;
   const pending = modules.filter(module => module.artifact.kind === 'local-source');
   if (pending.length > 0) {
     if (pending.some(module => module.source !== 'nativeModulesDir')) {
@@ -34,12 +39,18 @@ export async function prepareModulesAsync(raw: LinkOptions) {
       );
     }
 
-    await materializeLocalSourcesAsync(pending, {
+    const built = await materializeLocalSourcesAsync(pending, {
       dependencies: modules,
       projectRoot: options.projectRoot,
       timeoutMs: raw.timeoutMs,
       outputLimit: raw.outputLimit,
       env: raw.env,
+    });
+
+    const artifacts = new Map(built.map(module => [module.packageName, module.builtHarPath]));
+    modules = modules.map((module) => {
+      const builtHarPath = artifacts.get(module.packageName);
+      return builtHarPath ? { ...module, arkTs: { ...module.arkTs, builtHarPath } } : module;
     });
   }
 
@@ -47,6 +58,27 @@ export async function prepareModulesAsync(raw: LinkOptions) {
     options,
     diagnostics: verify.diagnostics,
     modules: await buildConfiguredModulesAsync(modules, {
+      ...raw, projectRoot: options.projectRoot, buildType: options.buildType,
+    }),
+  };
+}
+
+export async function prepareRuntimeModulesAsync(
+  raw: Omit<LinkOptions, 'harmonyProjectPath'>
+): Promise<VerificationResult> {
+  const options = await normalizeOptionsAsync(raw);
+  const result = await verifyModulesAsync({
+    ...raw,
+    projectRoot: options.projectRoot,
+    buildType: options.buildType,
+    inlineModules: options.inlineModules,
+  });
+
+  if (!result.valid) return result;
+
+  return {
+    ...result,
+    modules: await buildConfiguredModulesAsync(result.modules, {
       ...raw, projectRoot: options.projectRoot, buildType: options.buildType,
     }),
   };

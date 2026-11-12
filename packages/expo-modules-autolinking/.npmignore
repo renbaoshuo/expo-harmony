@@ -1,1 +1,3 @@
 # Keep the gitignored build output in npm packages.
+scripts/
+tsconfig.json

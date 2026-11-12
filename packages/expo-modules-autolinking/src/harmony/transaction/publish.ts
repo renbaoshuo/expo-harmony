@@ -234,6 +234,7 @@ async function publishArtifactsAsync(options) {
     }
 
     lockHandle = await acquirePublishLockAsync(lockPath);
+    await options.validateSnapshot?.();
     for (let index = 0; index < prepared.length; index += 1) {
       const file = prepared[index];
       if (await filesEqualAsync(file.staged, file.target)) {
@@ -262,6 +263,8 @@ async function publishArtifactsAsync(options) {
 
     return { changed, unchanged, warnings: [] };
   } catch (cause) {
+    if (touched.length === 0 && cause instanceof HarmonyAutolinkingError) throw cause;
+
     const failures = [];
 
     for (const entry of [...touched].reverse()) {

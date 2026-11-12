@@ -10,6 +10,7 @@ import * as path from 'node:path';
 
 import JSON5 from 'json5';
 
+import { ArkTsLibraryHarPath, ArkTsLibraryManifestPath } from '../config/constants';
 import { HarmonyAutolinkingError } from '../errors';
 import { HostMetadataFields } from './host';
 import type { BuildType, RnohMetadata } from '../types';
@@ -19,9 +20,9 @@ import {
   normalizeRnohPackageMetadata,
 } from './schema';
 import { materializeModuleArtifactAsync } from '../harmony/materialize';
+import { resolveInlineModuleDescriptorAsync } from '../harmony/inlineModules';
 import {
-  defaultCmakeTargetForNpmPackage, defaultOhPackageNameForNpmPackage,
-  ohPackageNameForHar,
+  defaultCmakeTargetForNpmPackage, resolveHarPackageMappings,
 } from '../harmony/rnoh/packageMetadata';
 import {
   compareText, isPathInside, isObject, normalizeSlashes, requireNonEmptyString,
@@ -29,11 +30,9 @@ import {
 } from '../utilities/values';
 
 const HarScanIgnoredDirectories = new Set(['.git', 'build', 'node_modules', 'oh_modules']);
-const ArkTsLibraryManifestPath = 'harmony/library/oh-package.json5';
-const ArkTsLibraryHarPath = 'harmony/library.har';
 
-async function findHarPathsAsync(packageRoot, scanRoot, record): Promise<string[]> {
-  const harPaths: string[] = [];
+async function findHarPathsAsync(packageRoot, directory, record): Promise<string[]> {
+  const paths: string[] = [];
   const visited = new Set();
 
   async function visit(directory) {
@@ -95,53 +94,27 @@ async function findHarPathsAsync(packageRoot, scanRoot, record): Promise<string[
           throw new HarmonyAutolinkingError('PATH_OUTSIDE_PACKAGE', 'A HAR scan path resolves outside package root.', { packageName: record.packageName, stage: 'metadata' });
         }
 
-        harPaths.push(normalizeSlashes(path.relative(packageRoot, target)));
+        paths.push(normalizeSlashes(path.relative(packageRoot, target)));
       }
     }
   }
 
-  await visit(scanRoot);
+  await visit(directory);
 
-  return sortedUniqueStrings(harPaths);
+  return sortedUniqueStrings(paths);
 }
 
-function resolveOhpmPackageName(raw, harPaths, record) {
-  const base = defaultOhPackageNameForNpmPackage(record.packageName);
-  const fallback = harPath => ({
-    harName: path.basename(harPath),
-    packageName: ohPackageNameForHar(base, harPath, harPaths.length),
+function resolveOhpmPackageName(raw, paths, record) {
+  const mappings = resolveHarPackageMappings({
+    packageName: record.packageName,
+    rnoh: { ohPackageName: raw, harPaths: paths },
   });
-
-  if (raw === undefined) {
-    return harPaths.length === 1 ? base : harPaths.map(fallback);
-  }
-
-  if (typeof raw === 'string') {
-    return harPaths.length === 1
-      ? raw
-      : harPaths.map(harPath => ({
-          harName: path.basename(harPath),
-          packageName: ohPackageNameForHar(raw, harPath, harPaths.length),
-        }));
-  }
-
-  const harNames = new Set(harPaths.map(harPath => path.basename(harPath)));
-  const mappings = raw.map((mapping) => {
-    if (!harNames.has(mapping.harName)) {
-      throw new HarmonyAutolinkingError('INVALID_METADATA', `package.json#harmony.autolinking.ohPackageName mapping ${mapping.harName} does not match a discovered HAR.`, {
-        packageName: record.packageName,
-        stage: 'metadata',
-      });
-    }
-    return mapping;
-  });
-  const mapped = new Set(mappings.map(mapping => mapping.harName));
-
-  for (const harPath of harPaths) {
-    if (!mapped.has(path.basename(harPath))) mappings.push(fallback(harPath));
-  }
-
-  return mappings;
+  if (!Array.isArray(raw) && paths.length === 1) return mappings[0].ohPackageName;
+  return mappings.map(mapping => ({
+    harName: path.basename(mapping.harPath),
+    packageName: mapping.ohPackageName,
+    ...(mapping.version ? { version: mapping.version } : {}),
+  }));
 }
 
 async function resolveArkTsModulePackageAsync(record, harmony) {
@@ -149,7 +122,7 @@ async function resolveArkTsModulePackageAsync(record, harmony) {
   if (harmony.modules.length === 0 && harmony.services.length === 0 && !hasHostExtensions
     && !isObject(record.expoModuleConfig?.harmony)) return undefined;
 
-  const manifestPath = await resolveInsideAsync(
+  const file = await resolveInsideAsync(
     record.packageRoot,
     ArkTsLibraryManifestPath,
     'Harmony library OHPM manifest',
@@ -158,7 +131,7 @@ async function resolveArkTsModulePackageAsync(record, harmony) {
   let manifest;
 
   try {
-    manifest = JSON5.parse(await fs.promises.readFile(manifestPath, 'utf8'));
+    manifest = JSON5.parse(await fs.promises.readFile(file, 'utf8'));
   } catch (cause) {
     throw new HarmonyAutolinkingError(
       'INVALID_METADATA',
@@ -214,35 +187,35 @@ async function normalizeRnohMetadataAsync(record) {
     }
   }
 
-  const scanRoot = await resolveInsideAsync(
+  const directory = await resolveInsideAsync(
     record.packageRoot,
     main,
     'harmony.autolinking.mainHarPath',
     { packageName: record.packageName, type: 'directory' }
   );
 
-  main = normalizeSlashes(path.relative(record.packageRoot, scanRoot)) || '.';
+  main = normalizeSlashes(path.relative(record.packageRoot, directory)) || '.';
 
-  const harPaths = await findHarPathsAsync(record.packageRoot, scanRoot, record);
-  if (harPaths.length === 0) {
+  const paths = await findHarPathsAsync(record.packageRoot, directory, record);
+  if (paths.length === 0) {
     throw new HarmonyAutolinkingError('INVALID_METADATA', 'harmony.autolinking.mainHarPath does not contain a HAR file.', {
       packageName: record.packageName,
       stage: 'metadata',
     });
   }
 
-  const harBasenames = harPaths.map(harPath => path.basename(harPath));
-  if (new Set(harBasenames).size !== harBasenames.length) {
+  const names = paths.map(harPath => path.basename(harPath));
+  if (new Set(names).size !== names.length) {
     throw new HarmonyAutolinkingError('INVALID_METADATA', 'harmony.autolinking.mainHarPath contains duplicate HAR filenames.', {
       packageName: record.packageName,
       stage: 'metadata',
     });
   }
 
-  const name = resolveOhpmPackageName(metadata.ohPackageName, harPaths, record);
+  const name = resolveOhpmPackageName(metadata.ohPackageName, paths, record);
   if (Array.isArray(name)) {
     const order = new Map(name.map((mapping, index) => [mapping.harName, index]));
-    harPaths.sort((left, right) => {
+    paths.sort((left, right) => {
       return order.get(path.basename(left)) - order.get(path.basename(right));
     });
   }
@@ -250,9 +223,10 @@ async function normalizeRnohMetadataAsync(record) {
   const rnoh: RnohMetadata = {
     ohPackageName: name,
     mainHarPath: main,
-    harPaths,
+    harPaths: paths,
     etsPackageClassName: metadata.etsPackageClassName,
     etsPackageImport: metadata.etsPackageImport,
+    etsPackageScope: metadata.etsPackageScope,
     cppPackageClassName: metadata.cppPackageClassName,
     cmakeLibraryTargetName: metadata.cmakeLibraryTargetName
       || defaultCmakeTargetForNpmPackage(record.packageName),
@@ -276,6 +250,10 @@ function assertSearchRecord(record) {
 async function createDescriptorFromSearchRecordAsync(record, buildType: BuildType = 'debug') {
   assertSearchRecord(record);
 
+  if (record.source === 'inlineModules') {
+    return resolveInlineModuleDescriptorAsync(record);
+  }
+
   let packageRoot;
 
   try {
@@ -296,7 +274,7 @@ async function createDescriptorFromSearchRecordAsync(record, buildType: BuildTyp
     try {
       if (await fs.promises.realpath(candidate) === packageRoot) link = candidate;
     } catch (_cause) {
-      // The canonical package root remains the safe fallback for direct callers.
+      link = packageRoot;
     }
   }
 

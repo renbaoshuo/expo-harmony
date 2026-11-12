@@ -217,6 +217,24 @@ export interface HarmonyDevelopmentManifest {
   };
 }
 
+function parseDevelopmentURL(value: string): URL | undefined {
+  const authority = /^https?:\/\/([^/?#\\]+)/i.exec(value)?.[1];
+  if (!authority || authority.includes('@') || value.includes('#') || value.includes('\\')) return undefined;
+
+  try {
+    decodeURIComponent(value);
+    const url = new URL(value);
+    if (url.hostname && !url.username && !url.password) return url;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasQueryParameter(url: URL, name: string, value: string): boolean {
+  const values = url.searchParams.getAll(name);
+  return values.length === 1 && values[0] === value;
+}
+
 export function assertHarmonyDevelopmentManifest(
   client: unknown,
   value: unknown
@@ -239,15 +257,16 @@ export function assertHarmonyDevelopmentManifest(
   const harmony = value.extra.harmony;
   assertHarmonyCompatibility(client, harmony.requirements);
 
-  const origin = /^(https?:\/\/(?:[A-Za-z0-9.-]+|\[[A-Fa-f0-9:.]+\])(?::[0-9]{1,5})?)\/(?:manifest|index\.exp)?\?platform=harmony$/.exec(harmony.manifestUrl as string)?.[1];
-  const bundle = value.launchAsset.url;
-  const query = bundle.split('?')[1]?.split('&') || [];
-  if (value.runtimeVersion !== harmony.requirements.runtimeVersion || !origin
-    || !bundle.startsWith(`${origin}/`) || !bundle.split('?')[0].endsWith('.bundle')
-    || bundle.includes('#') || query.filter(item => item.startsWith('platform=')).join() !== 'platform=harmony'
-    || query.filter(item => item.startsWith('transform.bytecode=')).join() !== 'transform.bytecode=0'
-    || query.filter(item => item.startsWith('dev=')).join() !== 'dev=true'
-    || query.filter(item => item.startsWith('transform.engine=')).join() !== 'transform.engine=hermes') {
+  const manifest = parseDevelopmentURL(harmony.manifestUrl as string);
+  const bundle = parseDevelopmentURL(value.launchAsset.url);
+  if (value.runtimeVersion !== harmony.requirements.runtimeVersion || !manifest
+    || !['/', '/manifest', '/index.exp'].includes(manifest.pathname)
+    || !hasQueryParameter(manifest, 'platform', 'harmony')
+    || !bundle || bundle.origin !== manifest.origin || !bundle.pathname.endsWith('.bundle')
+    || !hasQueryParameter(bundle, 'platform', 'harmony')
+    || !hasQueryParameter(bundle, 'transform.bytecode', '0')
+    || !hasQueryParameter(bundle, 'dev', 'true')
+    || !hasQueryParameter(bundle, 'transform.engine', 'hermes')) {
     throw new HarmonyCompatibilityError(
       [{ code: 'INVALID_MANIFEST', field: 'launchAsset', message: 'Manifest and bundle must use the same HTTP(S) origin, runtime, Harmony platform, and development JS source format.' }]
     );

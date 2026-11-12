@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { RnohCliPackage } from '../../config/constants';
+import { ReactNativeCommunityCliPackage, RnohCliPackage } from '../../config/constants';
 import { HarmonyAutolinkingError } from '../../errors';
 import { readJsonAsync, realpathExistingAsync, resolvePackageFromProject } from '../../utilities/values';
 
@@ -23,6 +23,39 @@ function findPackageJson(root, packageName) {
   }
 }
 
+function resolveRnohCliPackageJsonPath(): string {
+  // App-local CLI versions may differ from this package's SDK toolchain.
+  try {
+    return require.resolve(`${RnohCliPackage}/package.json`);
+  } catch (cause) {
+    throw new HarmonyAutolinkingError('RNOH_CLI_NOT_FOUND', `The declared ${RnohCliPackage} dependency is missing. Reinstall the autolinking package.`, {
+      cause,
+      stage: 'rnoh-preflight',
+    });
+  }
+}
+
+async function resolveCliBinAsync(file: string, name: string, stage: string) {
+  const pkg = await readJsonAsync(file, 'RNOH_CLI_NOT_FOUND', stage);
+  const bin = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.[name];
+  if (typeof bin !== 'string' || !bin.trim()) {
+    throw new HarmonyAutolinkingError('RNOH_CLI_NOT_FOUND', `${pkg.name} does not declare a ${name} bin entry.`, { stage });
+  }
+
+  return realpathExistingAsync(path.resolve(path.dirname(file), bin), {
+    type: 'file', code: 'RNOH_CLI_NOT_FOUND', field: `${name} executable`, stage,
+  });
+}
+
+function resolveAppCommunityCliPackage(root: string): string | undefined {
+  try {
+    return resolvePackageFromProject(root, `${ReactNativeCommunityCliPackage}/package.json`);
+  } catch (cause) {
+    if (cause.code !== 'MODULE_NOT_FOUND') throw cause;
+    return undefined;
+  }
+}
+
 async function resolveCliAsync(options) {
   const root = await realpathExistingAsync(options.projectRoot, {
     type: 'directory',
@@ -31,7 +64,7 @@ async function resolveCliAsync(options) {
   });
 
   const raw = options.rnohCliPackageJsonPath
-    || findPackageJson(root, RnohCliPackage);
+    || resolveRnohCliPackageJsonPath();
   const manifest = await realpathExistingAsync(raw, {
     type: 'file',
     code: 'RNOH_CLI_NOT_FOUND',
@@ -60,8 +93,14 @@ async function resolveCliAsync(options) {
     return { executable, args: [] as string[] };
   }
 
-  // Resolve the package itself, not a package-manager-generated .bin shell shim.
-  // The real manifest path also handles symlinked packages (for example pnpm).
+  if (!resolveAppCommunityCliPackage(root)) {
+    // React Native's bin delegates to a project-installed community CLI.
+    // Fresh Expo projects can run the pinned community CLI directly instead.
+    const file = require.resolve(`${ReactNativeCommunityCliPackage}/package.json`);
+    const entry = await resolveCliBinAsync(file, 'rnc-cli', 'rnoh-preflight');
+    return { executable: process.execPath, args: [entry] };
+  }
+
   const file = await realpathExistingAsync(
     options.nodeModulesPath
       ? path.join(options.nodeModulesPath, 'react-native', 'package.json')
@@ -73,24 +112,14 @@ async function resolveCliAsync(options) {
       stage: 'rnoh-preflight',
     }
   );
-  const pkg = await readJsonAsync(file, 'RNOH_CLI_NOT_FOUND', 'rnoh-preflight');
-  const bin = typeof pkg.bin === 'string'
-    ? pkg.bin
-    : pkg.bin?.['react-native'];
-  if (typeof bin !== 'string' || !bin.trim()) {
-    throw new HarmonyAutolinkingError('RNOH_CLI_NOT_FOUND', 'The project-local react-native package does not declare a react-native bin entry.', { stage: 'rnoh-preflight' });
-  }
+  const entry = await resolveCliBinAsync(file, 'react-native', 'rnoh-preflight');
 
-  const entry = await realpathExistingAsync(path.resolve(path.dirname(file), bin), {
-    type: 'file',
-    code: 'RNOH_CLI_NOT_FOUND',
-    field: 'project-local react-native executable',
-    stage: 'rnoh-preflight',
-  });
 
   return { executable: process.execPath, args: [entry] };
 }
 
 export {
+  resolveAppCommunityCliPackage,
   resolveCliAsync,
+  resolveRnohCliPackageJsonPath,
 };

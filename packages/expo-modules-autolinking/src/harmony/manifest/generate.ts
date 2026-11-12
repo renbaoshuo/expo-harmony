@@ -26,6 +26,7 @@ function createManifestEntry(descriptor) {
     packageRoot: descriptor.packageRoot,
     packageLinkPath: descriptor.packageLinkPath,
     source: descriptor.source,
+    ...(descriptor.inlineModules ? { inlineModules: structuredClone(descriptor.inlineModules) } : {}),
     harmony: {
       modules: [...descriptor.harmony.modules],
       services: [...descriptor.harmony.services],
@@ -40,6 +41,7 @@ function createManifestEntry(descriptor) {
       harPaths: [...descriptor.rnoh.harPaths],
       ...(descriptor.rnoh.etsPackageClassName ? { etsPackageClassName: descriptor.rnoh.etsPackageClassName } : {}),
       ...(descriptor.rnoh.etsPackageImport ? { etsPackageImport: descriptor.rnoh.etsPackageImport } : {}),
+      ...(descriptor.rnoh.etsPackageScope ? { etsPackageScope: descriptor.rnoh.etsPackageScope } : {}),
       ...(descriptor.rnoh.cppPackageClassName ? { cppPackageClassName: descriptor.rnoh.cppPackageClassName } : {}),
       ...(descriptor.rnoh.cmakeLibraryTargetName
         ? { cmakeLibraryTargetName: descriptor.rnoh.cmakeLibraryTargetName }

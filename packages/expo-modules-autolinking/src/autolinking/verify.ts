@@ -5,11 +5,11 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import fs from 'node:fs';
 import path from 'node:path';
 
 import type { VerificationResult, VerifyOptions } from '../types';
 import { HarmonyAutolinkingError } from '../errors';
+import { resolveInlineModuleDescriptorAsync } from '../harmony/inlineModules';
 import { HostMetadataFields } from '../metadata/host';
 import { createDescriptorFromSearchRecordAsync } from '../metadata/descriptor';
 import { searchModulesAsync } from './search';
@@ -233,6 +233,9 @@ function searchRecordFromDescriptor(descriptor, declared) {
   if (descriptor.rnoh.etsPackageImport !== undefined) {
     rnoh.etsPackageImport = descriptor.rnoh.etsPackageImport;
   }
+  if (descriptor.rnoh.etsPackageScope !== undefined) {
+    rnoh.etsPackageScope = descriptor.rnoh.etsPackageScope;
+  }
   if (descriptor.rnoh.etsPackageClassName !== undefined) {
     rnoh.etsPackageClassName = descriptor.rnoh.etsPackageClassName;
   }
@@ -271,6 +274,9 @@ function searchRecordFromDescriptor(descriptor, declared) {
 }
 
 async function validateDescriptorAsync(descriptor, buildType) {
+  if (descriptor?.source === 'inlineModules') {
+    return resolveInlineModuleDescriptorAsync(descriptor);
+  }
   if (!isObject(descriptor) || !isObject(descriptor.rnoh)) {
     return createDescriptorFromSearchRecordAsync(searchRecordFromDescriptor(descriptor, []), buildType);
   }
@@ -281,8 +287,9 @@ async function validateDescriptorAsync(descriptor, buildType) {
     buildType
   );
 
-  if (normalized.rnoh.harPaths.length !== declared.length
-    || normalized.rnoh.harPaths.some((harPath, index) => harPath !== declared[index])) {
+  const discovered = sortedUniqueStrings(normalized.rnoh.harPaths);
+  if (discovered.length !== declared.length
+    || discovered.some((harPath, index) => harPath !== declared[index])) {
     throw new HarmonyAutolinkingError('INVALID_METADATA', 'descriptor.rnoh.harPaths must exactly list the HAR files selected by descriptor.rnoh.mainHarPath.', {
       packageName: descriptor.packageName,
       stage: 'verify',
@@ -290,10 +297,6 @@ async function validateDescriptorAsync(descriptor, buildType) {
     });
   }
 
-  const packageRoot = await fs.promises.realpath(descriptor.packageRoot);
-  if (packageRoot !== descriptor.packageRoot) {
-    normalized.packageRoot = packageRoot;
-  }
   return normalized;
 }
 
@@ -312,7 +315,7 @@ async function verifyModulesAsync(options: VerifyOptions = {}): Promise<Verifica
     ].filter((packageName) => {
       try {
         resolvePackageFromProject(
-          options.projectRoot || process.cwd(),
+          path.resolve(options.projectRoot || process.cwd()),
           `${packageName}/package.json`
         );
         return true;
@@ -323,8 +326,7 @@ async function verifyModulesAsync(options: VerifyOptions = {}): Promise<Verifica
     searchResult = await searchModulesAsync({
       ...options,
       include: [...(options.include || []), ...runtime],
-      includeReactNativeProjectConfig: true,
-    } as VerifyOptions & { includeReactNativeProjectConfig: true });
+    });
   }
 
   const descriptors = [];
@@ -365,17 +367,6 @@ async function verifyModulesAsync(options: VerifyOptions = {}): Promise<Verifica
 
   descriptors.sort(compareModuleDescriptors);
   diagnostics.push(...collectDescriptorConflicts(descriptors));
-  if (descriptors.some(module => module.packageName === '@expo-harmony/expo-modules-core')
-    && !descriptors.some(module => module.packageName === '@expo-harmony/expo')) {
-    diagnostics.push({
-      severity: 'error',
-      code: 'ERR_EXPO_HARMONY_HOST_NOT_FOUND',
-      message: 'Install @expo-harmony/expo to provide the native Expo host and module registration entry.',
-      packageName: '@expo-harmony/expo',
-      stage: 'verify',
-    });
-  }
-
   if (searchResult) {
     const seen = new Map();
     for (const descriptor of descriptors) {
