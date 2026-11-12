@@ -3,6 +3,10 @@
     {
       "name": "expo_location_permission_reason",
       "value": "用于获取当前位置及提供与位置相关的服务"
+    },
+    {
+      "name": "expo_location_background_permission_reason",
+      "value": "用于在后台记录位置或接收地理围栏事件"
     }
   ]
 }

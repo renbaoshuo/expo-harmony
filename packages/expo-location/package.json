@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-location",
-  "version": "55.1.14-harmony.3",
+  "version": "57.0.22-harmony.0",
   "description": "HarmonyOS port of expo-location",
   "keywords": [
     "react-native",
@@ -22,24 +22,37 @@
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
     "harmony:build": "expo-harmony-module prepare",
-    "prepack": "expo-harmony-module prepack"
+    "prepack": "expo-harmony-module prepack",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@expo-harmony/config-plugins": "workspace:*",
+    "@expo-harmony/expo-task-manager": "workspace:*",
+    "@expo/config-plugins": "57.0.11"
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo-location": "55.1.14"
+    "expo-location": "57.0.22",
+    "expo-task-manager": "57.0.21"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "@react-native-oh/react-native-harmony": "0.84.1",
-    "expo": "55.0.31",
-    "expo-location": "55.1.14",
-    "expo-modules-core": "55.0.26",
+    "@types/react": "19.2.2",
+    "expo": "57.0.31",
+    "expo-location": "57.0.22",
+    "expo-modules-core": "57.0.24",
     "react": "19.2.3",
-    "react-native": "0.84.1"
+    "react-native": "0.86.3",
+    "typescript": "6.0.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
+  },
+  "react-native": "src/index.ts",
+  "harmony": {
+    "alias": "expo-location",
+    "redirectInternalImports": true
   },
   "publishConfig": {
     "access": "public"

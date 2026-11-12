@@ -6,3 +6,8 @@
  */
 
 export { ExpoLocationModule } from './src/main/ets/ExpoLocationModule';
+export {
+  ExpoLocationLifecycleSubscriber,
+  ExpoLocationAbilityLifecycleSubscriber,
+} from './src/main/ets/LocationTaskConsumers';
+export { deliverExpoGeofenceEvent } from './src/main/ets/LocationFenceIngress';

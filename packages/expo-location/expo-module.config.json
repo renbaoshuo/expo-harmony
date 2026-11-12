@@ -1,6 +1,8 @@
 {
   "platforms": ["harmony"],
   "harmony": {
-    "modules": ["ExpoLocationModule"]
+    "modules": ["ExpoLocationModule"],
+    "appLifecycleSubscribers": ["ExpoLocationLifecycleSubscriber"],
+    "abilityLifecycleSubscribers": ["ExpoLocationAbilityLifecycleSubscriber"]
   }
 }

@@ -8,10 +8,11 @@
 import { ExpoRuntimePermissionsKey, ExpoModuleContext, ExpoModuleError, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
 import { abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
-import { deviceInfo } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 
 const APPROXIMATE_PERMISSION: Permissions = 'ohos.permission.APPROXIMATELY_LOCATION';
 const PRECISE_PERMISSION: Permissions = 'ohos.permission.LOCATION';
+const BACKGROUND_PERMISSION: Permissions = 'ohos.permission.LOCATION_IN_BACKGROUND';
 const SELF_PERMISSION_STATUS_API: number = 20;
 const REQUEST_ERROR_REASONS_API: number = 18;
 const PERMISSION_CHANGE_API: number = 18;
@@ -42,6 +43,7 @@ export class PermissionResponse {
 export class LocationPermissions {
   private context: ExpoModuleContext;
   private pending?: Promise<PermissionResponse>;
+  private backgroundPending?: Promise<PermissionResponse>;
   private denied?: boolean;
   private observer?: abilityAccessCtrl.AtManager;
   private callback?: (info: abilityAccessCtrl.PermissionStateChangeInfo) => void;
@@ -136,45 +138,78 @@ export class LocationPermissions {
     }
   }
 
+  getBackground(): PermissionResponse {
+    const granted = this.hasForeground() && this.context.permissionStatus(BACKGROUND_PERMISSION) === ExpoPermissionStatus.GRANTED;
+    return new PermissionResponse(granted ? 'granted' : 'denied', granted);
+  }
+
+  async requestBackground(): Promise<PermissionResponse> {
+    if (this.backgroundPending !== undefined) return await this.backgroundPending;
+
+    const pending = this.openBackgroundSettings();
+    this.backgroundPending = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.backgroundPending === pending) this.backgroundPending = undefined;
+    }
+  }
+
+  private async openBackgroundSettings(): Promise<PermissionResponse> {
+    const permission = this.getBackground();
+    if (permission.granted || !this.hasForeground() || deviceInfo.sdkApiVersion < 22 ||
+      this.context.services.get(ExpoRuntimePermissionsKey) !== undefined) return permission;
+
+    try {
+      await abilityAccessCtrl.createAtManager().openPermissionOnSetting(this.context.uiAbilityContext, BACKGROUND_PERMISSION);
+    } catch (error) {
+      // Some releases classify this permission as user_grant despite requiring manual Settings.
+      if (Number((error as BusinessError).code) !== 12100014) {
+        throw new ExpoModuleError('ERR_LOCATION_PERMISSION_REQUEST', 'Unable to open the HarmonyOS background location settings.', error);
+      }
+    }
+
+    return this.getBackground();
+  }
+
   private async requestOnce(): Promise<PermissionResponse> {
-    const request = await this.context.requestPermissions([APPROXIMATE_PERMISSION, PRECISE_PERMISSION]);
+    const permissions = [APPROXIMATE_PERMISSION, PRECISE_PERMISSION];
+    const request = await this.context.requestPermissions(permissions);
     let cannotAsk = false;
 
     for (const result of request.systemResults) {
-      const index = result.permissions.indexOf(APPROXIMATE_PERMISSION);
       const reasons = deviceInfo.sdkApiVersion >= REQUEST_ERROR_REASONS_API ? result.errorReasons : undefined;
-      const reason = reasons?.[index] ?? RequestReason.Success;
 
-      if (
-        index < 0 ||
-        (reason === RequestReason.Success &&
-          result.authResults[index] !== ExpoPermissionStatus.GRANTED &&
-          result.authResults[index] !== ExpoPermissionStatus.DENIED)
-      ) {
-        throw new ExpoModuleError(
-          'ERR_LOCATION_PERMISSION_REQUEST',
-          'HarmonyOS returned an invalid location permission result. Check the permission declarations in module.json5.',
-        );
-      }
-
-      for (let i = 0; i < result.permissions.length; i += 1) {
-        if (reasons?.[i] === RequestReason.InvalidPermission || reasons?.[i] === RequestReason.NotDeclared) {
-          throw new ExpoModuleError('ERR_LOCATION_PERMISSION_REQUEST', `Invalid or undeclared permission in module.json5: ${result.permissions[i]}.`);
+      for (const permission of permissions) {
+        const index = result.permissions.indexOf(permission);
+        const reason = reasons?.[index] ?? RequestReason.Success;
+        const status = result.authResults[index];
+        if (
+          index < 0 ||
+          reason === RequestReason.InvalidPermission ||
+          reason === RequestReason.NotDeclared ||
+          (reason === RequestReason.Success && status !== ExpoPermissionStatus.GRANTED && status !== ExpoPermissionStatus.DENIED)
+        ) {
+          throw new ExpoModuleError(
+            'ERR_LOCATION_PERMISSION_REQUEST',
+            `HarmonyOS returned an invalid result for ${permission}. Check the permission declarations in module.json5.`,
+          );
         }
       }
 
+      const index = result.permissions.indexOf(APPROXIMATE_PERMISSION);
+      const reason = reasons?.[index] ?? RequestReason.Success;
+      const blocked = reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings;
       // A completed API call without a dialog is not proof of a user decision.
       if (
         deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API &&
-        ((reason === RequestReason.Success &&
-          (result.authResults[index] === ExpoPermissionStatus.GRANTED || result.dialogShownResults?.[index] === true)) ||
-          reason === RequestReason.CannotRequest ||
-          reason === RequestReason.ManualSettings)
+        (blocked || (reason === RequestReason.Success &&
+          (result.authResults[index] === ExpoPermissionStatus.GRANTED || result.dialogShownResults?.[index] === true)))
       ) {
-        await this.setDenied(result.authResults[index] === ExpoPermissionStatus.DENIED);
+        await this.setDenied(blocked || result.authResults[index] === ExpoPermissionStatus.DENIED);
       }
 
-      cannotAsk = cannotAsk || reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings;
+      cannotAsk = cannotAsk || blocked;
     }
 
     const response = await this.getForeground();

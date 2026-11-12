@@ -12,6 +12,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 export const LOCATION_EVENT: string = 'Expo.locationChanged';
 export const HEADING_EVENT: string = 'Expo.headingChanged';
 export const ERROR_EVENT: string = 'Expo.locationError';
+export const MOTION_ACTIVITY_EVENT: string = 'Expo.motionActivityChanged';
 export const LOCATION_TIMEOUT_MS: number = 10_000;
 
 export enum Accuracy {
@@ -249,11 +250,12 @@ export class LocationErrorEvent {
 }
 
 export class ProviderStatus {
-  backgroundModeEnabled: boolean = false;
+  backgroundModeEnabled: boolean;
   locationServicesEnabled: boolean;
 
-  constructor(enabled: boolean) {
+  constructor(enabled: boolean, backgroundEnabled: boolean) {
     this.locationServicesEnabled = enabled;
+    this.backgroundModeEnabled = backgroundEnabled;
   }
 }
 
@@ -333,7 +335,7 @@ export class ExpoLocationError extends ExpoModuleError {
     if (error instanceof ExpoModuleError) {
       code = error.code;
     } else {
-      // Synchronous N-API exceptions use string codes; async rejections use numbers.
+      // Location Kit uses string codes for synchronous errors and numbers for async rejections.
       switch (Number((error as BusinessError).code)) {
         case LocationErrorCode.PermissionDenied:
           code = 'ERR_LOCATION_UNAUTHORIZED';

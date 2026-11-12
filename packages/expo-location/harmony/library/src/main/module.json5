@@ -14,12 +14,12 @@
       {
         "name": "ohos.permission.APPROXIMATELY_LOCATION",
         "reason": "$string:expo_location_permission_reason",
-        "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" }
+        "usedScene": { "when": "inuse" }
       },
       {
         "name": "ohos.permission.LOCATION",
         "reason": "$string:expo_location_permission_reason",
-        "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" }
+        "usedScene": { "when": "inuse" }
       }
     ]
   }

@@ -17,7 +17,20 @@ import {
 import { BusinessError } from '@kit.BasicServicesKit';
 import { geoLocationManager } from '@kit.LocationKit';
 import { sensor } from '@kit.SensorServiceKit';
+import { ExpoTaskManagerRegistry } from '@expo-harmony/expo-task-manager';
+import { validateBackgroundOptions } from './LocationBackgroundConsumer';
+import { geofenceOptions } from './LocationGeofencingConsumer';
 import { LocationPermissions, PermissionResponse } from './LocationPermissions';
+import { backgroundLocationConsumer, geofencingConsumer } from './LocationTaskConsumers';
+import {
+  BACKGROUND_TASK_TYPE,
+  GEOFENCE_TASK_TYPE,
+  hasBackgroundConfiguration,
+  hasGeofenceConfiguration,
+  isContinuousLocationSupported,
+  isLocationTaskRegistered,
+  requireLocationTaskPermission,
+} from './LocationTaskSupport';
 import {
   Accuracy,
   COORDINATE,
@@ -32,6 +45,7 @@ import {
   LOCATION_EVENT,
   LOCATION_OPTIONS,
   LOCATION_TIMEOUT_MS,
+  MOTION_ACTIVITY_EVENT,
   LocationErrorCode,
   LocationErrorEvent,
   LocationEvent,
@@ -92,14 +106,27 @@ export class ExpoLocationModule extends ExpoModule {
   definition(): ExpoModuleDefinition {
     return new ExpoModuleDefinition()
       .name('ExpoLocation')
-      .events([LOCATION_EVENT, HEADING_EVENT, ERROR_EVENT])
+      .events([LOCATION_EVENT, HEADING_EVENT, ERROR_EVENT, MOTION_ACTIVITY_EVENT])
       .asyncFunction('getForegroundPermissionsAsync', async (): Promise<PermissionResponse> => await this.foregroundPermission(false))
       .asyncFunction('requestForegroundPermissionsAsync', async (): Promise<PermissionResponse> => await this.foregroundPermission(true))
       .asyncFunction('getPermissionsAsync', async (): Promise<PermissionResponse> => await this.foregroundPermission(false))
       .asyncFunction('requestPermissionsAsync', async (): Promise<PermissionResponse> => await this.foregroundPermission(true))
-      .asyncFunction('getBackgroundPermissionsAsync', async (): Promise<PermissionResponse> => new PermissionResponse('denied', false))
-      .asyncFunction('requestBackgroundPermissionsAsync', async (): Promise<PermissionResponse> => new PermissionResponse('denied', false))
-      .asyncFunction('getProviderStatusAsync', async (): Promise<ProviderStatus> => new ProviderStatus(this.servicesEnabled()))
+      .asyncFunction('getBackgroundPermissionsAsync', async (): Promise<PermissionResponse> => this.backgroundPermission(false))
+      .asyncFunction('requestBackgroundPermissionsAsync', async (): Promise<PermissionResponse> => this.backgroundPermission(true))
+      .asyncFunction('getMotionActivityPermissionsAsync', async (): Promise<PermissionResponse> => this.motionActivityPermission())
+      .asyncFunction('requestMotionActivityPermissionsAsync', async (): Promise<PermissionResponse> => this.motionActivityPermission())
+      .asyncFunction(
+        'watchMotionActivityImplAsync',
+        ExpoFunction.typed1(WATCH_ID, async (_id: number): Promise<void> => {
+          this.ensureActive();
+          // Public HarmonyOS APIs do not provide Expo's six activity classes.
+          throw new ExpoModuleError('ERR_MOTION_ACTIVITY_UNAVAILABLE', 'Motion activity recognition is not available on HarmonyOS.');
+        }),
+      )
+      .asyncFunction('getProviderStatusAsync', async (): Promise<ProviderStatus> => {
+        const enabled = this.servicesEnabled();
+        return new ProviderStatus(enabled, enabled && this.taskAvailable(BACKGROUND_TASK_TYPE));
+      })
       .asyncFunction('hasServicesEnabledAsync', async (): Promise<boolean> => this.servicesEnabled())
       .asyncFunction(
         'getCurrentPositionAsync',
@@ -119,7 +146,7 @@ export class ExpoLocationModule extends ExpoModule {
         'watchPositionImplAsync',
         ExpoFunction.typed2(
           WATCH_ID,
-          LOCATION_OPTIONS,
+          LOCATION_OPTIONS.defaulted(new LocationOptions()),
           async (id: number, options: LocationOptions): Promise<void> => this.watchPosition(id, options),
         ),
       )
@@ -144,7 +171,7 @@ export class ExpoLocationModule extends ExpoModule {
         ExpoFunction.typed2(
           ExpoValueTypes.string(),
           TASK_OPTIONS,
-          async (name: string, _options: Record<string, ESObject>): Promise<void> => this.backgroundUnavailable(name, false),
+          async (name: string, options: Record<string, ESObject>): Promise<void> => this.startTask(name, BACKGROUND_TASK_TYPE, options),
         ),
       )
       .asyncFunction(
@@ -152,39 +179,43 @@ export class ExpoLocationModule extends ExpoModule {
         ExpoFunction.typed2(
           ExpoValueTypes.string(),
           TASK_OPTIONS,
-          async (name: string, _options: Record<string, ESObject>): Promise<void> => this.backgroundUnavailable(name, true),
+          async (name: string, options: Record<string, ESObject>): Promise<void> => this.startTask(name, GEOFENCE_TASK_TYPE, options),
         ),
       )
       .asyncFunction(
         'stopLocationUpdatesAsync',
-        ExpoFunction.typed1(ExpoValueTypes.string(), async (name: string): Promise<void> => this.taskNotFound(name)),
+        ExpoFunction.typed1(ExpoValueTypes.string(), async (name: string): Promise<void> => this.stopTask(name, BACKGROUND_TASK_TYPE)),
       )
       .asyncFunction(
         'stopGeofencingAsync',
-        ExpoFunction.typed1(ExpoValueTypes.string(), async (name: string): Promise<void> => this.taskNotFound(name)),
+        ExpoFunction.typed1(ExpoValueTypes.string(), async (name: string): Promise<void> => this.stopTask(name, GEOFENCE_TASK_TYPE)),
       )
       .asyncFunction(
         'hasStartedLocationUpdatesAsync',
-        ExpoFunction.typed1(ExpoValueTypes.string(), async (name: string): Promise<boolean> => {
-          this.checkTaskName(name);
-          return false;
-        }),
+        ExpoFunction.typed1(ExpoValueTypes.string(), async (name: string): Promise<boolean> => this.hasTask(name, BACKGROUND_TASK_TYPE)),
       )
       .asyncFunction(
         'hasStartedGeofencingAsync',
-        ExpoFunction.typed1(ExpoValueTypes.string(), async (name: string): Promise<boolean> => {
-          this.checkTaskName(name);
-          return false;
-        }),
+        ExpoFunction.typed1(ExpoValueTypes.string(), async (name: string): Promise<boolean> => this.hasTask(name, GEOFENCE_TASK_TYPE)),
       )
-      .onForeground((): void => this.setForeground(true))
+      .onForeground((): void => {
+        this.setForeground(true);
+        backgroundLocationConsumer.refresh(this.context);
+        geofencingConsumer.refresh(this.context);
+      })
       .onBackground((): void => this.setForeground(false))
+      .onPrepareForReload(async (): Promise<void> => this.destroy())
       .onAbilityDestroy((): void => this.destroy())
       .onDestroy((): void => this.destroy());
   }
 
   private ensureActive(): void {
     if (this.destroyed) throw new ExpoModuleError('ERR_LOCATION_DESTROYED', 'The Expo Location module has been destroyed.');
+  }
+
+  private motionActivityPermission(): PermissionResponse {
+    this.ensureActive();
+    return new PermissionResponse('denied', false);
   }
 
   private async foregroundPermission(request: boolean): Promise<PermissionResponse> {
@@ -198,21 +229,44 @@ export class ExpoLocationModule extends ExpoModule {
     return permission;
   }
 
-  private servicesEnabled(): boolean {
+  private async backgroundPermission(request: boolean): Promise<PermissionResponse> {
+    this.ensureActive();
+    if (!this.taskAvailable(BACKGROUND_TASK_TYPE) && !this.taskAvailable(GEOFENCE_TASK_TYPE)) {
+      return new PermissionResponse('denied', false);
+    }
+
+    if (request && this.foreground && !this.context.isHeadless) {
+      const permission = await this.permissions.requestBackground();
+      this.ensureActive();
+      if (permission.granted) {
+        backgroundLocationConsumer.refresh(this.context);
+        geofencingConsumer.refresh(this.context);
+      }
+
+      return permission;
+    }
+    return this.permissions.getBackground();
+  }
+
+  private servicesEnabled(logFailure: boolean = true): boolean {
     this.ensureActive();
     if (!canIUse('SystemCapability.Location.Location.Core')) return false;
 
     try {
       return geoLocationManager.isLocationEnabled();
     } catch (error) {
-      this.warn(`Unable to query location services: ${message(error)}`);
+      if (logFailure) this.warn(`Unable to query location services: ${message(error)}`);
       return false;
     }
   }
 
-  private ensureLocation(): void {
+  private ensureForegroundPermission(): void {
     this.ensureActive();
     this.permissions.ensureForeground();
+  }
+
+  private ensureLocation(): void {
+    this.ensureForegroundPermission();
 
     if (!this.servicesEnabled()) {
       throw new ExpoModuleError('ERR_LOCATION_SETTINGS_UNSATISFIED', 'Location services are disabled or unavailable.');
@@ -309,9 +363,9 @@ export class ExpoLocationModule extends ExpoModule {
 
     const callback = (location: geoLocationManager.Location): void => {
       if (!this.foreground || this.destroyed || !watch.active || watch.removed || watch.callback !== callback) return;
+      if (!this.checkWatchPermission()) return;
 
       try {
-        this.permissions.ensureForeground();
         this.sendEvent(LOCATION_EVENT, new LocationEvent(watch.id, new LocationRecord(location)));
       } catch (error) {
         this.emitError(watch.id, message(error));
@@ -349,7 +403,7 @@ export class ExpoLocationModule extends ExpoModule {
   }
 
   private watchHeading(id: number): void {
-    this.ensureLocation();
+    this.ensureForegroundPermission();
 
     this.removeWatch(id);
     this.headings.add(id);
@@ -370,7 +424,8 @@ export class ExpoLocationModule extends ExpoModule {
 
   private startHeading(): void {
     if (this.headings.size === 0 || this.destroyed || !this.foreground) return;
-    this.ensureLocation();
+
+    this.ensureForegroundPermission();
 
     if (this.headingActive) {
       this.startHeadingLocation();
@@ -384,12 +439,11 @@ export class ExpoLocationModule extends ExpoModule {
 
     const callback = (response: sensor.OrientationResponse): void => {
       if (!this.foreground || this.destroyed || !this.headingActive || this.headingCallback !== callback || !Number.isFinite(response.alpha)) return;
+      if (!this.checkWatchPermission()) return;
 
       try {
-        this.permissions.ensureForeground();
-
         const magnetic = normalizeHeading(response.alpha);
-        const north = this.declination !== undefined && this.permissions.hasForeground() ? normalizeHeading(magnetic + this.declination) : -1;
+        const north = this.declination !== undefined && this.servicesEnabled(false) ? normalizeHeading(magnetic + this.declination) : -1;
         const heading = new HeadingRecord(magnetic, north, headingAccuracy(response.accuracy));
 
         this.headings.forEach((id: number): void => this.sendEvent(HEADING_EVENT, new HeadingEvent(id, heading)));
@@ -445,7 +499,10 @@ export class ExpoLocationModule extends ExpoModule {
     const generation = ++this.generation;
 
     try {
-      if (!validCoordinate(location.latitude, location.longitude) || finiteOrNull(location.altitude) === null) return;
+      if (!validCoordinate(location.latitude, location.longitude) || finiteOrNull(location.altitude) === null) {
+        this.declination = undefined;
+        return;
+      }
 
       const coordinate: sensor.LocationOptions = { latitude: location.latitude, longitude: location.longitude, altitude: location.altitude };
       const info = await sensor.getGeomagneticInfo(coordinate, Date.now());
@@ -498,18 +555,20 @@ export class ExpoLocationModule extends ExpoModule {
         this.watches.forEach((watch: LocationWatch): void => {
           if (!watch.removed && watch.active) this.emitError(watch.id, reason);
         });
-        this.headings.forEach((id: number): void => this.emitError(id, reason));
+        // Positioning failures only affect true north. Losing authorization also gates the compass.
+        if (error === geoLocationManager.LocationError.LOCATING_FAILED_LOCATION_PERMISSION_DENIED) {
+          this.headings.forEach((id: number): void => this.emitError(id, reason));
+        }
       } catch (failure) {
         this.warn(`Unable to report a location service error: ${message(failure)}`);
       } finally {
         this.declination = undefined;
         this.generation += 1;
 
-        if (
-          error === geoLocationManager.LocationError.LOCATING_FAILED_LOCATION_PERMISSION_DENIED ||
-          error === geoLocationManager.LocationError.LOCATING_FAILED_LOCATION_SWITCH_OFF
-        ) {
+        if (error === geoLocationManager.LocationError.LOCATING_FAILED_LOCATION_PERMISSION_DENIED) {
           this.pauseLocationSources();
+        } else if (error === geoLocationManager.LocationError.LOCATING_FAILED_LOCATION_SWITCH_OFF) {
+          this.pausePositionSources();
         }
       }
     };
@@ -536,6 +595,7 @@ export class ExpoLocationModule extends ExpoModule {
 
   private stopErrorObserverIfIdle(): void {
     if (this.locationCallback !== undefined) return;
+
     for (const watch of this.watches.values()) {
       if (watch.callback !== undefined) return;
     }
@@ -553,10 +613,13 @@ export class ExpoLocationModule extends ExpoModule {
     }
   }
 
-  private ensureGeocoder(): void {
-    this.ensureActive();
-    this.permissions.ensureForeground();
+  private ensureForegroundGeocoding(): void {
+    this.ensureForegroundPermission();
     if (!this.foreground) throw new ExpoModuleError('ERR_LOCATION_GEOCODING', 'Geocoder is not running while the app is in the background.');
+  }
+
+  private ensureGeocoder(): void {
+    this.ensureForegroundGeocoding();
     if (!canIUse('SystemCapability.Location.Location.Geocoder') || !geoLocationManager.isGeocoderAvailable()) {
       throw new ExpoModuleError('ERR_LOCATION_GEOCODER_UNAVAILABLE', 'HarmonyOS geocoding is unavailable on this device.');
     }
@@ -568,7 +631,7 @@ export class ExpoLocationModule extends ExpoModule {
 
       const results = await geoLocationManager.getAddressesFromLocationName({ description: address, maxItems: 1 });
 
-      this.ensureActive();
+      this.ensureForegroundGeocoding();
 
       return (results ?? []).map((result: geoLocationManager.GeoAddress): Coordinate => {
         if (result.latitude === undefined || result.longitude === undefined || !validCoordinate(result.latitude, result.longitude)) {
@@ -592,7 +655,7 @@ export class ExpoLocationModule extends ExpoModule {
         maxItems: 1,
       });
 
-      this.ensureActive();
+      this.ensureForegroundGeocoding();
 
       return (results ?? []).map((result: geoLocationManager.GeoAddress): GeocodedAddress => new GeocodedAddress(result));
     } catch (error) {
@@ -605,7 +668,7 @@ export class ExpoLocationModule extends ExpoModule {
   }
 
   private startAvailabilityObservers(): void {
-    if (this.destroyed || !this.hasSubscriptions()) return;
+    if (this.destroyed || !this.foreground || !this.hasSubscriptions()) return;
 
     // Suspended subscriptions still need observers to detect permission/service recovery.
     try {
@@ -633,7 +696,7 @@ export class ExpoLocationModule extends ExpoModule {
   }
 
   private stopAvailabilityObserversIfIdle(): void {
-    if (!this.destroyed && this.hasSubscriptions()) return;
+    if (!this.destroyed && this.foreground && this.hasSubscriptions()) return;
 
     try {
       if (this.enabledCallback !== undefined) {
@@ -647,30 +710,55 @@ export class ExpoLocationModule extends ExpoModule {
 
   private availabilityChanged(): void {
     if (this.destroyed || !this.foreground || !this.hasSubscriptions()) return;
+    if (!this.checkWatchPermission()) return;
 
-    try {
-      this.ensureLocation();
-    } catch (error) {
-      this.pauseLocationSources(message(error));
+    if (!this.servicesEnabled()) {
+      this.pausePositionSources('Location services are disabled or unavailable.');
+      this.resumeHeading();
       return;
     }
 
     this.setForeground(true);
   }
 
-  private pauseLocationSources(reason?: string): void {
+  private checkWatchPermission(): boolean {
+    try {
+      this.ensureForegroundPermission();
+      return true;
+    } catch (error) {
+      this.pauseLocationSources(message(error));
+      return false;
+    }
+  }
+
+  private pausePositionSources(reason?: string): void {
     this.watches.forEach((watch: LocationWatch): void => {
       const active = watch.active;
       this.cleanup((): void => this.stopWatch(watch));
       if (active && !watch.removed && reason !== undefined) this.emitError(watch.id, reason);
     });
 
+    this.cleanup((): void => this.stopHeadingLocation());
+    this.cleanup((): void => this.stopErrorObserverIfIdle());
+    this.cleanup((): void => this.stopAvailabilityObserversIfIdle());
+  }
+
+  private pauseLocationSources(reason?: string): void {
+    this.pausePositionSources(reason);
+
     const active = this.headingActive;
     this.cleanup((): void => this.stopHeading());
     if (active && reason !== undefined) this.headings.forEach((id: number): void => this.emitError(id, reason));
+  }
 
-    this.cleanup((): void => this.stopErrorObserverIfIdle());
-    this.cleanup((): void => this.stopAvailabilityObserversIfIdle());
+  private resumeHeading(): void {
+    try {
+      this.startHeading();
+    } catch (error) {
+      this.failed = true;
+      this.headings.forEach((id: number): void => this.emitError(id, message(error)));
+      this.scheduleRetry();
+    }
   }
 
   private setForeground(foreground: boolean): void {
@@ -692,13 +780,7 @@ export class ExpoLocationModule extends ExpoModule {
     });
 
     if (foreground) {
-      try {
-        this.startHeading();
-      } catch (error) {
-        this.failed = true;
-        this.headings.forEach((id: number): void => this.emitError(id, message(error)));
-        this.scheduleRetry();
-      }
+      this.resumeHeading();
     } else {
       this.cleanup((): void => this.stopHeading());
       this.cleanup((): void => this.stopErrorObserver());
@@ -792,19 +874,56 @@ export class ExpoLocationModule extends ExpoModule {
     if (name.trim().length === 0) throw new ExpoModuleError('ERR_LOCATION_INVALID_ARGUMENT', 'taskName must be a nonempty string.');
   }
 
-  private backgroundUnavailable(name: string, geofencing: boolean): void {
-    this.checkTaskName(name);
-
-    throw new ExpoModuleError(
-      geofencing ? 'ERR_LOCATION_GEOFENCING_UNAVAILABLE' : 'ERR_LOCATION_BACKGROUND_UNAVAILABLE',
-      'This HarmonyOS port does not yet provide persistent location task consumers and background runtime delivery.',
-    );
+  private taskAvailable(taskType: string): boolean {
+    const ability = this.context.uiAbilityContext;
+    return taskType === GEOFENCE_TASK_TYPE
+      ? hasGeofenceConfiguration(ability)
+      : hasBackgroundConfiguration(ability) && isContinuousLocationSupported();
   }
 
-  private taskNotFound(name: string): void {
+  private async startTask(name: string, taskType: string, options: ESObject): Promise<void> {
     this.checkTaskName(name);
+    const geofencing = taskType === GEOFENCE_TASK_TYPE;
+    if (!this.taskAvailable(taskType)) {
+      throw new ExpoModuleError(
+        geofencing ? 'ERR_LOCATION_GEOFENCING_UNAVAILABLE' : 'ERR_LOCATION_BACKGROUND_UNAVAILABLE',
+        geofencing
+          ? 'Harmony geofencing requires the opt-in config plugin, API 23 or later, and GNSS geofencing support.'
+          : 'Harmony background location requires the opt-in config plugin, API 21 or later, and continuous location task support.',
+      );
+    }
 
-    throw new ExpoModuleError('ERR_TASK_NOT_FOUND', `Task '${name}' is not registered by Expo Location.`);
+    if (!this.foreground || this.context.isHeadless) {
+      throw new ExpoModuleError('ERR_LOCATION_BACKGROUND_NOT_FOREGROUND', 'Start location tasks from a foreground UIAbility.');
+    }
+    requireLocationTaskPermission(this.context, geofencing);
+
+    this.ensureLocation();
+
+    if (geofencing) {
+      options = geofenceOptions(options);
+    } else {
+      validateBackgroundOptions(options);
+    }
+    await ExpoTaskManagerRegistry.registerTask(this.context, name, taskType, options);
+  }
+
+  private async stopTask(name: string, taskType: string): Promise<void> {
+    this.checkTaskName(name);
+    try {
+      await ExpoTaskManagerRegistry.unregisterTaskForConsumer(this.context, name, taskType);
+    } catch (error) {
+      const code = (error as ExpoModuleError).code;
+      if (code !== 'ERR_TASK_MANAGER_TASK_NOT_FOUND' && code !== 'ERR_TASK_MANAGER_TASK_CONFLICT') {
+        throw new ExpoLocationError(error);
+      }
+      throw new ExpoModuleError('ERR_TASK_NOT_FOUND', `Task '${name}' is not registered by Expo Location.`);
+    }
+  }
+
+  private async hasTask(name: string, taskType: string): Promise<boolean> {
+    this.checkTaskName(name);
+    return await isLocationTaskRegistered(this.context, name, taskType);
   }
 }
 
