@@ -7,7 +7,7 @@
 
 {
   "name": "@expo-harmony/expo-eas-client",
-  "version": "55.0.5-harmony.6",
+  "version": "57.0.5-harmony.0",
   "description": "HarmonyOS port of expo-eas-client",
   "keywords": [
     "react-native",
@@ -25,7 +25,6 @@
   "license": "MIT",
   "main": "Index.ets",
   "dependencies": {
-    "@expo-harmony/expo-modules-core": "55.0.26-harmony.3",
-    "@rnoh/react-native-openharmony": "0.84.1"
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0"
   }
 }

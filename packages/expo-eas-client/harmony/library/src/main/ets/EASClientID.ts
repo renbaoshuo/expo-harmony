@@ -16,7 +16,6 @@ const name = 'expo-eas-client';
 const key = 'clientID';
 const filename = 'expo-eas-client.id';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const maximum = Number(BigInt('0xffffffffffffffff'));
 
 type Migration = (context: common.ApplicationContext) => string | undefined;
 
@@ -30,6 +29,24 @@ export class EASClientID {
 
   static registerMigration(migration: Migration): void {
     EASClientID.migration = migration;
+  }
+
+  /** Matches the SDK 57 SplitMix64 finalizer over the UUID's two big-endian halves. */
+  static deterministicUniformValue(clientID: string): number {
+    if (!uuid.test(clientID)) throw new Error('The EAS client ID must be a valid UUID.');
+
+    const hex = clientID.replace(/-/g, '');
+    const high = BigInt('0x' + hex.slice(0, 16));
+    const low = BigInt('0x' + hex.slice(16));
+
+    let z = high ^ low;
+    // BigInt multiplication does not wrap; truncate each product like UInt64/ULong.
+    z = BigInt.asUintN(64, (z ^ (z >> BigInt(30))) * BigInt('0xbf58476d1ce4e5b9'));
+    z = BigInt.asUintN(64, (z ^ (z >> BigInt(27))) * BigInt('0x94d049bb133111eb'));
+    z = z ^ (z >> BigInt(31));
+
+    // The top 53 bits are exactly representable, and dividing by 2^53 excludes 1.
+    return Number(z >> BigInt(11)) / 2 ** 53;
   }
 
   get clientID(): string {
@@ -57,8 +74,6 @@ export class EASClientID {
   }
 
   get deterministicUniformValue(): number {
-    // Match upstream's unsigned, big-endian interpretation of UUID bytes 8–15.
-    const hex = this.clientID.replace(/-/g, '').slice(16);
-    return Number(BigInt('0x' + hex)) / maximum;
+    return EASClientID.deterministicUniformValue(this.clientID);
   }
 }

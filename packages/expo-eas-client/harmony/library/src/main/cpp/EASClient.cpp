@@ -166,6 +166,7 @@ napi_value ClientID(napi_env env, napi_callback_info info) {
     napi_throw_error(env, "ERR_EAS_CLIENT_ID_ARGUMENT", "Expected path and optional UUID candidate");
     return nullptr;
   }
+
   char path[PATH_MAX];
   if (!StringArg(env, argv[0], path)) {
     napi_throw_error(env, "ERR_EAS_CLIENT_ID_PATH", "An absolute canonical path is required");
@@ -185,6 +186,7 @@ napi_value ClientID(napi_env env, napi_callback_info info) {
     napi_throw_error(env, "ERR_EAS_CLIENT_ID_LOCK", std::strerror(errno));
     return nullptr;
   }
+
   int locked;
   do {
     locked = flock(lock, LOCK_EX);
@@ -222,6 +224,7 @@ napi_value ClientID(napi_env env, napi_callback_info info) {
       napi_throw_error(env, "ERR_EAS_CLIENT_ID_PATH", "The canonical path is too long");
       return nullptr;
     }
+
     int temp;
     do {
       temp = open(temporary, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
@@ -229,11 +232,11 @@ napi_value ClientID(napi_env env, napi_callback_info info) {
     const bool tempOwned = temp >= 0;
     const bool written = temp >= 0 && WriteAll(temp, candidate, length);
     const int error = errno;
-    const int writeClose = temp >= 0 ? close(temp) : -1;
+    const int closed = temp >= 0 ? close(temp) : -1;
     if (!written) {
       errno = error;
     }
-    const bool published = written && writeClose == 0 && rename(temporary, path) == 0;
+    const bool published = written && closed == 0 && rename(temporary, path) == 0;
     if (!published) {
       const int error = errno;
       if (tempOwned) {
@@ -245,16 +248,18 @@ napi_value ClientID(napi_env env, napi_callback_info info) {
       return nullptr;
     }
 
-    if (!SyncDirectory(path)) {
-      const int error = errno;
-      flock(lock, LOCK_UN);
-      close(lock);
-      napi_throw_error(env, "ERR_EAS_CLIENT_ID_PERSIST", std::strerror(error));
-      return nullptr;
-    }
     std::memcpy(winner, candidate, length);
     winner[length] = '\0';
     exists = true;
+  }
+
+  // An earlier writer may have renamed the file before its directory sync failed.
+  if (exists && !SyncDirectory(path)) {
+    const int error = errno;
+    flock(lock, LOCK_UN);
+    close(lock);
+    napi_throw_error(env, "ERR_EAS_CLIENT_ID_PERSIST", std::strerror(error));
+    return nullptr;
   }
 
   flock(lock, LOCK_UN);
@@ -277,6 +282,7 @@ napi_value Init(napi_env env, napi_value exports) {
     napi_throw_error(env, "ERR_EAS_CLIENT_ID_INIT", "Unable to initialize the client ID store");
     return nullptr;
   }
+
   return exports;
 }
 
