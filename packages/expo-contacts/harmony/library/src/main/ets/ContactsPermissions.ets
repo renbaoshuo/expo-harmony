@@ -6,14 +6,13 @@
  */
 
 import { ExpoRuntimePermissionsKey, ExpoModuleContext, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
-import { Permissions } from '@kit.AbilityKit';
+import { bundleManager, Permissions } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { ExpoContactsError } from './ContactsError';
 
 const READ_CONTACTS: Permissions = 'ohos.permission.READ_CONTACTS';
 const WRITE_CONTACTS: Permissions = 'ohos.permission.WRITE_CONTACTS';
-const PERMISSIONS: Permissions[] = [READ_CONTACTS, WRITE_CONTACTS];
 const SELF_PERMISSION_STATUS_API: number = 20;
 const REQUEST_ERROR_REASONS_API: number = 18;
 const PREFERENCES_NAME: string = 'ExpoContactsPermissions';
@@ -22,6 +21,7 @@ enum RequestReason {
   Success = 0,
   InvalidPermission = 1,
   NotDeclared = 2,
+  ConditionsNotMet = 3,
   CannotRequest = 5,
   ManualSettings = 6,
 }
@@ -65,11 +65,26 @@ export class ContactsPermissions {
     }
   }
 
+  private declaredPermissions(): Permissions[] {
+    this.context.assertActive();
+
+    const flags = bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_REQUESTED_PERMISSION;
+    const details = bundleManager.getBundleInfoForSelfSync(flags).reqPermissionDetails;
+    if (!details?.some((permission: bundleManager.ReqPermissionDetail): boolean => permission.name === READ_CONTACTS)) return [];
+
+    return details.some((permission: bundleManager.ReqPermissionDetail): boolean => permission.name === WRITE_CONTACTS)
+      ? [READ_CONTACTS, WRITE_CONTACTS]
+      : [READ_CONTACTS];
+  }
+
   async get(): Promise<ContactsPermissionResponse> {
+    const permissions = this.declaredPermissions();
+    if (permissions.length === 0) return new ContactsPermissionResponse(false, true, false);
+
     let granted = true;
     let denied = false;
 
-    for (const permission of PERMISSIONS) {
+    for (const permission of permissions) {
       const system = this.context.systemPermissionStatus(permission) === ExpoPermissionStatus.GRANTED;
       if (system && deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) await this.setDenied(permission, false);
 
@@ -98,11 +113,14 @@ export class ContactsPermissions {
   }
 
   private async requestOnce(): Promise<ContactsPermissionResponse> {
-    const request = await this.context.requestPermissions(PERMISSIONS);
+    const permissions = this.declaredPermissions();
+    if (permissions.length === 0) throw new ExpoContactsError('ERR_CONTACTS_PERMISSION_REQUEST', `Check the module.json5 declaration for ${READ_CONTACTS}.`);
+
+    const request = await this.context.requestPermissions(permissions);
 
     let restricted = false;
     for (const result of request.systemResults) {
-      for (const permission of PERMISSIONS) {
+      for (const permission of permissions) {
         const index = result.permissions.indexOf(permission);
         const reason = deviceInfo.sdkApiVersion >= REQUEST_ERROR_REASONS_API ? result.errorReasons?.[index] : undefined;
 
@@ -117,7 +135,7 @@ export class ContactsPermissions {
           throw new ExpoContactsError('ERR_CONTACTS_PERMISSION_REQUEST', `Check the module.json5 declaration for ${permission}.`);
         }
 
-        const blocked = reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings;
+        const blocked = reason === RequestReason.ConditionsNotMet || reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings;
         restricted = restricted || blocked;
 
         if (
@@ -147,7 +165,7 @@ export class ContactsPermissions {
     if (known !== undefined) return known;
 
     try {
-      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: PREFERENCES_NAME });
+      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: this.context.preferenceName(PREFERENCES_NAME) });
       const value = (await store.get(permission, false)) === true;
       if (!this.denials.has(permission)) this.denials.set(permission, value);
     } catch (_) {
@@ -163,7 +181,7 @@ export class ContactsPermissions {
     this.denials.set(permission, denied);
 
     try {
-      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: PREFERENCES_NAME });
+      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: this.context.preferenceName(PREFERENCES_NAME) });
       await store.put(permission, denied);
       await store.flush();
     } catch (_) {

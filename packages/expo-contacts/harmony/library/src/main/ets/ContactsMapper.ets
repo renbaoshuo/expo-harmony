@@ -421,7 +421,7 @@ function optionalDateYear(value: ESObject): number | undefined {
   return value;
 }
 
-function parseContactDate(value: string): ExpoDateRecord | undefined {
+export function parseContactDate(value: string): ExpoDateRecord | undefined {
   const match = /^(?:(\d{4})-|--)?(\d{1,2})-(\d{1,2})$/.exec(value);
   if (match === null) return undefined;
 
@@ -477,7 +477,6 @@ export function holderIdentifier(holder: contact.Holder): string {
   if (holder.holderId !== undefined) {
     if (Number.isSafeInteger(holder.holderId) && holder.holderId >= 0) return String(holder.holderId);
   } else if (nonEmpty(holder.bundleName) !== undefined) {
-    // A bundle can contain multiple accounts.
     return JSON.stringify([holder.bundleName, holder.displayName ?? '']);
   }
 
@@ -515,7 +514,7 @@ export function nativeDisplayName(value: contact.Contact): string {
 }
 
 function normalizedLabel(value?: string): string | undefined {
-  return nonEmpty(value)?.toLowerCase();
+  return nonEmpty(value?.trim())?.toLowerCase();
 }
 
 function emailLabelId(label?: string): number {
@@ -590,7 +589,7 @@ function imLabelId(label?: string): number {
   return contact.ImAddress.CUSTOM_LABEL;
 }
 
-function dateEventLabelId(label?: string): number {
+export function dateEventLabelId(label?: string): number {
   const normalized = normalizedLabel(label);
   if (normalized === 'birthday') return contact.Event.EVENT_BIRTHDAY;
   if (normalized === 'anniversary') return contact.Event.EVENT_ANNIVERSARY;
@@ -598,8 +597,8 @@ function dateEventLabelId(label?: string): number {
   return contact.Event.CUSTOM_LABEL;
 }
 
-function emailLabel(value: contact.Email): string {
-  return value.labelId === contact.Email.CUSTOM_LABEL ? (nonEmpty(value.labelName) ?? 'other') : emailLabelName(value.labelId);
+export function emailLabel(value: contact.Email): string {
+  return value.labelId === contact.Email.CUSTOM_LABEL ? (nonEmpty(value.labelName?.trim()) ?? 'other') : emailLabelName(value.labelId);
 }
 
 function emailLabelName(value?: number): string {
@@ -608,8 +607,8 @@ function emailLabelName(value?: number): string {
   return 'other';
 }
 
-function phoneLabel(value: contact.PhoneNumber): string {
-  return value.labelId === contact.PhoneNumber.CUSTOM_LABEL ? (nonEmpty(value.labelName) ?? 'other') : phoneLabelName(value.labelId);
+export function phoneLabel(value: contact.PhoneNumber): string {
+  return value.labelId === contact.PhoneNumber.CUSTOM_LABEL ? (nonEmpty(value.labelName?.trim()) ?? 'other') : phoneLabelName(value.labelId);
 }
 
 function phoneLabelName(value?: number): string {
@@ -635,15 +634,15 @@ function phoneLabelName(value?: number): string {
   return 'other';
 }
 
-function addressLabel(value: contact.PostalAddress): string {
-  if (value.labelId === contact.PostalAddress.CUSTOM_LABEL && nonEmpty(value.labelName) !== undefined) return value.labelName as string;
+export function addressLabel(value: contact.PostalAddress): string {
+  if (value.labelId === contact.PostalAddress.CUSTOM_LABEL && nonEmpty(value.labelName?.trim()) !== undefined) return value.labelName!.trim();
   if (value.labelId === contact.PostalAddress.ADDR_HOME) return 'home';
   if (value.labelId === contact.PostalAddress.ADDR_WORK) return 'work';
   return 'other';
 }
 
-function relationLabel(value: contact.Relation): string {
-  if (value.labelId === contact.Relation.CUSTOM_LABEL && nonEmpty(value.labelName) !== undefined) return value.labelName as string;
+export function relationLabel(value: contact.Relation): string {
+  if (value.labelId === contact.Relation.CUSTOM_LABEL && nonEmpty(value.labelName?.trim()) !== undefined) return value.labelName!.trim();
   if (value.labelId === contact.Relation.RELATION_ASSISTANT) return 'assistant';
   if (value.labelId === contact.Relation.RELATION_BROTHER) return 'brother';
   if (value.labelId === contact.Relation.RELATION_CHILD) return 'child';
@@ -661,8 +660,8 @@ function relationLabel(value: contact.Relation): string {
   return 'other';
 }
 
-function imLabel(value: contact.ImAddress): string {
-  if (value.labelId === contact.ImAddress.CUSTOM_LABEL && nonEmpty(value.labelName) !== undefined) return value.labelName as string;
+export function imLabel(value: contact.ImAddress): string {
+  if (value.labelId === contact.ImAddress.CUSTOM_LABEL && nonEmpty(value.labelName?.trim()) !== undefined) return value.labelName!.trim();
   if (value.labelId === contact.ImAddress.IM_AIM) return 'aim';
   if (value.labelId === contact.ImAddress.IM_MSN) return 'msn';
   if (value.labelId === contact.ImAddress.IM_YAHOO) return 'yahoo';
@@ -673,14 +672,14 @@ function imLabel(value: contact.ImAddress): string {
   return 'im';
 }
 
-function eventLabel(value: contact.Event): string {
-  if (value.labelId === contact.Event.CUSTOM_LABEL && nonEmpty(value.labelName) !== undefined) return value.labelName as string;
+export function eventLabel(value: contact.Event): string {
+  if (value.labelId === contact.Event.CUSTOM_LABEL && nonEmpty(value.labelName?.trim()) !== undefined) return value.labelName!.trim();
   if (value.labelId === contact.Event.EVENT_BIRTHDAY) return 'birthday';
   if (value.labelId === contact.Event.EVENT_ANNIVERSARY) return 'anniversary';
   return 'other';
 }
 
-function isBirthdayEvent(value: contact.Event): boolean {
+export function isBirthdayEvent(value: contact.Event): boolean {
   return value.labelId === contact.Event.EVENT_BIRTHDAY || normalizedLabel(value.labelName) === 'birthday';
 }
 

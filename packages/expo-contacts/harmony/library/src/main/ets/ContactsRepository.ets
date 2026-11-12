@@ -7,7 +7,7 @@
 
 import { ExpoModuleContext } from '@expo-harmony/expo-modules-core';
 import { contact } from '@kit.ContactsKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
 import { ContactsPermissions } from './ContactsPermissions';
 import { ExpoContactsError } from './ContactsError';
@@ -29,7 +29,14 @@ import {
 import { optionalInputString, optionalStringOrStringList, requireString } from './ContactsValidation';
 
 export const CONTACT_PORTRAIT_API: number = 22;
+export const CONTACTS_DATA_CAPABILITY: string = 'SystemCapability.Applications.ContactsData';
 const CONTACT_COUNT_API: number = 22;
+const CONTACT_QUERY_PARAMETER_ERROR: number = 401;
+
+export function pageNextContacts(values: contact.Contact[], query: ContactQuery): contact.Contact[] {
+  if (query.emptyPage) return [];
+  return values.slice(query.pageOffset, query.pageSize === 0 ? undefined : query.pageOffset + query.pageSize);
+}
 
 export class ContactsRepository {
   private readonly context: ExpoModuleContext;
@@ -42,10 +49,15 @@ export class ContactsRepository {
   }
 
   async mutate<Result>(operation: () => Promise<Result>): Promise<Result> {
+    this.context.assertActive();
+
     const result = this.writes.then(async (): Promise<Result> => {
+      this.context.assertActive();
       this.permissions.ensureWrite();
 
-      return await operation();
+      const value = await operation();
+      this.context.assertActive();
+      return value;
     });
     this.writes = result.then(
       (): void => {},
@@ -56,17 +68,36 @@ export class ContactsRepository {
   }
 
   async hasContacts(): Promise<boolean> {
-    this.permissions.ensureRead();
-
-    if (deviceInfo.sdkApiVersion >= CONTACT_COUNT_API) return (await contact.queryContactsCount(this.context.uiAbilityContext)) > 0;
-    return (await contact.queryContacts(this.context.uiAbilityContext)).length > 0;
+    return await this.count() > 0;
   }
 
-  private async select(query: ContactQuery): Promise<contact.Contact[]> {
+  ensureReadable(): void {
+    this.context.assertActive();
     this.permissions.ensureRead();
+  }
+
+  async count(): Promise<number> {
+    this.ensureReadable();
+
+    const count = deviceInfo.sdkApiVersion >= CONTACT_COUNT_API
+      ? await contact.queryContactsCount(this.context.uiAbilityContext)
+      : (await contact.queryContacts(this.context.uiAbilityContext)).length;
+    this.ensureReadable();
+    return count;
+  }
+
+  async select(query: ContactQuery): Promise<contact.Contact[]> {
+    this.ensureReadable();
+
+    if (query.emptyPage || query.ids?.length === 0) return [];
+
+    if (query.ids?.length === 1) {
+      const entry = await this.findContact(query.ids[0]);
+      return entry === undefined ? [] : [entry];
+    }
 
     let holder: contact.Holder | undefined;
-    if (query.ids === undefined && query.name === undefined && query.containerId !== undefined && query.groupId === undefined) {
+    if (query.ids === undefined && (query.name === undefined || query.matchPhoneticName) && query.containerId !== undefined && query.groupId === undefined) {
       holder = await this.findHolder(query.containerId);
       if (holder === undefined) return [];
     }
@@ -77,11 +108,12 @@ export class ContactsRepository {
       holder === undefined
         ? await contact.queryContacts(this.context.uiAbilityContext)
         : await contact.queryContacts(this.context.uiAbilityContext, holder);
+    this.ensureReadable();
 
     if (query.ids !== undefined) {
       const ids = query.ids;
       values = values.filter((entry: contact.Contact): boolean => ids.includes(contactIdentifier(entry)));
-    } else if (query.name !== undefined) {
+    } else if (query.name !== undefined && !query.matchPhoneticName) {
       const needle = query.name.toLocaleLowerCase();
       values = values.filter((entry: contact.Contact): boolean => nativeDisplayName(entry).toLocaleLowerCase().includes(needle));
     } else if (query.groupId !== undefined) {
@@ -89,8 +121,17 @@ export class ContactsRepository {
       values = values.filter((entry: contact.Contact): boolean => hasGroup(entry, group));
     }
 
-    sortNativeContacts(values, query.sort);
+    if (query.name !== undefined && query.matchPhoneticName) {
+      const needle = query.name.toLocaleLowerCase();
+      values = values.filter((entry: contact.Contact): boolean => {
+        const phonetic = [entry.name?.givenNamePhonetic, entry.name?.middleNamePhonetic, entry.name?.familyNamePhonetic]
+          .filter((part: string | undefined): boolean => part !== undefined && part.length > 0)
+          .join(' ');
+        return nativeDisplayName(entry).toLocaleLowerCase().includes(needle) || phonetic.toLocaleLowerCase().includes(needle);
+      });
+    }
 
+    sortNativeContacts(values, query.sort);
     return values;
   }
 
@@ -101,7 +142,12 @@ export class ContactsRepository {
     const page = values.slice(query.pageOffset, end);
 
     const data: ExpoContactRecord[] = [];
-    for (const entry of page) data.push(await this.serialize(entry, new RequestedFields(query.fields)));
+    this.ensureReadable();
+
+    for (const entry of page) {
+      data.push(await this.serialize(entry, new RequestedFields(query.fields)));
+      this.ensureReadable();
+    }
 
     return new ContactResponse(data, end < values.length, query.pageOffset > 0);
   }
@@ -115,17 +161,40 @@ export class ContactsRepository {
     return result;
   }
 
-  private async findContact(id: string): Promise<contact.Contact | undefined> {
-    this.permissions.ensureRead();
+  async findContact(id: string): Promise<contact.Contact | undefined> {
+    this.ensureReadable();
 
-    // queryKey reports missing contacts as generic 401 errors; scan numeric IDs instead.
-    const entries = await contact.queryContacts(this.context.uiAbilityContext);
+    const numericId = Number(id);
+    if (!Number.isSafeInteger(numericId) || numericId < 0 || String(numericId) !== id) return undefined;
 
-    return entries.find((entry: contact.Contact): boolean => contactIdentifier(entry) === id);
+    const context = this.context.uiAbilityContext;
+
+    try {
+      const key = await contact.queryKey(context, numericId);
+      this.ensureReadable();
+
+      if (key) {
+        const entry = await contact.queryContact(context, key);
+        this.ensureReadable();
+        if (entry?.id === numericId) return entry;
+      }
+    } catch (error) {
+      // Contacts Kit can report missing or stale IDs as a generic parameter error.
+      if ((error as BusinessError).code !== CONTACT_QUERY_PARAMETER_ERROR) throw error as Error;
+    }
+
+    this.ensureReadable();
+
+    const entries = await contact.queryContacts(context);
+    this.ensureReadable();
+    return entries.find((entry: contact.Contact): boolean => entry.id === numericId);
   }
 
-  private async requireContact(id: string): Promise<contact.Contact> {
+  async requireContact(id: string): Promise<contact.Contact> {
+    this.context.assertActive();
+
     const entry = await this.findContact(id);
+    this.context.assertActive();
     if (entry === undefined) throw new ExpoContactsError('ERR_CONTACTS_NOT_FOUND', `No contact exists for identifier '${id}'.`);
 
     return entry;
@@ -139,7 +208,7 @@ export class ContactsRepository {
 
     return await this.mutate(async (): Promise<string> => {
       const entry = nativeContactFromExpo(record);
-      if (entry.portrait?.uri) this.context.filePathForRead(entry.portrait.uri);
+      if (entry.portrait?.uri) this.context.fileSourceForRead(entry.portrait.uri);
 
       const id = await contact.addContact(this.context.uiAbilityContext, entry);
       if (!Number.isSafeInteger(id) || id < 0) throw new ExpoContactsError('ERR_CONTACTS_ADD', 'HarmonyOS did not return a valid contact ID.');
@@ -159,19 +228,31 @@ export class ContactsRepository {
       if (attributes.attributes.length === 0) return id;
 
       mergeExpoContact(entry, record);
-      if (hasConcreteField(record, 'image') && entry.portrait?.uri) this.context.filePathForRead(entry.portrait.uri);
 
-      this.permissions.ensureWrite();
-      if (attributes.attributes.includes(contact.Attribute.ATTR_CONTACT_EVENT)) {
-        // ContactsData drops ATTR_CONTACT_EVENT (0); update the complete native record
-        // to retain fields Expo cannot represent, including SIP and groups.
-        await contact.updateContact(this.context.uiAbilityContext, entry);
-      } else {
-        await contact.updateContact(this.context.uiAbilityContext, entry, attributes);
-      }
+      await this.save(entry, attributes);
 
       return id;
     });
+  }
+
+  async save(entry: contact.Contact, attributes: contact.ContactAttributes): Promise<void> {
+    this.context.assertActive();
+    if (attributes.attributes.length === 0) return;
+
+    this.permissions.ensureWrite();
+
+    if (attributes.attributes.includes(contact.Attribute.ATTR_PORTRAIT) && entry.portrait?.uri) {
+      this.context.fileSourceForRead(entry.portrait.uri);
+    }
+
+    if (attributes.attributes.includes(contact.Attribute.ATTR_CONTACT_EVENT)) {
+      // ContactsData drops ATTR_CONTACT_EVENT (0); keep the rest of the native
+      // record intact when the full contact has to be written.
+      await contact.updateContact(this.context.uiAbilityContext, entry);
+    } else {
+      await contact.updateContact(this.context.uiAbilityContext, entry, attributes);
+    }
+    this.context.assertActive();
   }
 
   async remove(id: string): Promise<void> {
@@ -180,12 +261,14 @@ export class ContactsRepository {
       if (entry === undefined) return;
 
       this.permissions.ensureWrite();
+
       await contact.deleteContact(this.context.uiAbilityContext, requireString(entry.key, 'contact.key'));
     });
   }
 
   async writeVCard(query: ContactQuery): Promise<string | undefined> {
     const values = await this.select(query);
+    this.ensureReadable();
 
     const end = query.pageSize === 0 ? values.length : query.pageOffset + query.pageSize;
     const page = values.slice(query.pageOffset, end);
@@ -197,20 +280,22 @@ export class ContactsRepository {
       const record = await this.serialize(entry, new RequestedFields());
       records.push(record);
       photos.push(record.image?.uri ? await readBase64(this.context, record.image.uri) : '');
+      this.ensureReadable();
     }
 
     const bytes = new util.TextEncoder().encodeInto(serializeVCard(records, photos));
 
-    return await writeCacheFile(this.context, 'vcf', bytes.buffer as ArrayBuffer);
+    return await writeCacheFile(this.context, 'vcf', bytes.buffer as ArrayBuffer, (): void => this.ensureReadable());
   }
 
   private async findHolder(id: string): Promise<contact.Holder | undefined> {
     const holders = await contact.queryHolders(this.context.uiAbilityContext);
+    this.ensureReadable();
     return holders.find((holder: contact.Holder): boolean => holderIdentifier(holder) === id);
   }
 
   async getGroups(query?: Record<string, ESObject> | null): Promise<ExpoGroupRecord[]> {
-    this.permissions.ensureRead();
+    this.ensureReadable();
 
     const container = optionalInputString(query?.['containerId'], 'groupQuery.containerId');
     const id = optionalInputString(query?.['groupId'], 'groupQuery.groupId');
@@ -226,6 +311,7 @@ export class ContactsRepository {
       holder === undefined
         ? await contact.queryGroups(this.context.uiAbilityContext)
         : await contact.queryGroups(this.context.uiAbilityContext, holder);
+    this.ensureReadable();
 
     return groups
       .filter((entry: contact.Group): boolean => {
@@ -242,21 +328,24 @@ export class ContactsRepository {
   }
 
   async getContainers(query?: Record<string, ESObject> | null): Promise<ExpoContainerRecord[]> {
-    this.permissions.ensureRead();
+    this.ensureReadable();
 
     const ids = optionalStringOrStringList(query?.['containerId'], 'containerQuery.containerId');
     const contactId = optionalInputString(query?.['contactId'], 'containerQuery.contactId');
     const groupId = optionalInputString(query?.['groupId'], 'containerQuery.groupId');
 
     const holders = await contact.queryHolders(this.context.uiAbilityContext);
+    this.ensureReadable();
 
     const result: ExpoContainerRecord[] = [];
     for (const holder of holders) {
       if (contactId !== undefined) {
         const entries = await contact.queryContacts(this.context.uiAbilityContext, holder);
+        this.ensureReadable();
         if (!entries.some((entry: contact.Contact): boolean => contactIdentifier(entry) === contactId)) continue;
       } else if (groupId !== undefined) {
         const groups = await contact.queryGroups(this.context.uiAbilityContext, holder);
+        this.ensureReadable();
         if (!groups.some((group: contact.Group): boolean => groupIdentifier(group) === groupId)) continue;
       } else if (ids !== undefined && !ids.includes(holderIdentifier(holder))) continue;
 
@@ -270,6 +359,8 @@ export class ContactsRepository {
     await this.mutate(async (): Promise<void> => {
       const entry = await this.requireContact(id);
       const groups = await contact.queryGroups(this.context.uiAbilityContext);
+      this.ensureReadable();
+
       const group = groups.find((item: contact.Group): boolean => groupIdentifier(item) === groupId);
       if (group === undefined) throw new ExpoContactsError('ERR_CONTACTS_GROUP_NOT_FOUND', `No contact group exists for identifier '${groupId}'.`);
 
@@ -286,8 +377,7 @@ export class ContactsRepository {
       if (add) members.push(group);
       entry.groups = add ? members : members.filter((item: contact.Group): boolean => groupIdentifier(item) !== groupId);
 
-      this.permissions.ensureWrite();
-      await contact.updateContact(this.context.uiAbilityContext, entry, { attributes: [contact.Attribute.ATTR_GROUP_MEMBERSHIP] });
+      await this.save(entry, { attributes: [contact.Attribute.ATTR_GROUP_MEMBERSHIP] });
     });
   }
 }
@@ -310,7 +400,7 @@ export function validateWritableContact(record: Record<string, ESObject>): void 
   }
 }
 
-function updateAttributes(record: Record<string, ESObject>): contact.ContactAttributes {
+export function updateAttributes(record: Record<string, ESObject>): contact.ContactAttributes {
   const mapping: Record<string, contact.Attribute> = {
     'firstName': contact.Attribute.ATTR_NAME,
     'middleName': contact.Attribute.ATTR_NAME,

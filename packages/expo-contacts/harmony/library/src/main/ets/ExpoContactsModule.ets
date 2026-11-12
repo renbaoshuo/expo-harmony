@@ -13,16 +13,16 @@ import { systemShare } from '@kit.ShareKit';
 import { fileUri } from '@kit.CoreFileKit';
 import { ExpoContactsError } from './ContactsError';
 import { ContactsPermissions, ContactsPermissionResponse } from './ContactsPermissions';
-import { ContactsRepository, validateWritableContact } from './ContactsRepository';
+import { CONTACTS_DATA_CAPABILITY, ContactsRepository, validateWritableContact } from './ContactsRepository';
 import { ContactQuery, ContactResponse, ExpoContactRecord, ExpoContainerRecord, ExpoGroupRecord, RequestedFields } from './ContactsRecords';
 import { nativeContactFromExpo } from './ContactsMapper';
 import { readContactQuery, requireRecord } from './ContactsValidation';
+import { ExpoContactsService } from './ExpoContactsService';
 
 const CONTACT_FORM_API: number = 15;
 const USER_CANCELLED: number = 16700103;
 const PERMISSION_DENIED: number = 201;
 const CONTACTS_UI_CAPABILITY: string = 'SystemCapability.Applications.Contacts';
-const CONTACTS_DATA_CAPABILITY: string = 'SystemCapability.Applications.ContactsData';
 const SHARE_CAPABILITY: string = 'SystemCapability.Collaboration.SystemShare';
 const CHANGE_EVENT: string = 'onContactsChange';
 
@@ -42,12 +42,14 @@ const OPTIONAL_STRING = ExpoValueTypes.string().nullable().optional();
 export class ExpoContactsModule extends ExpoModule {
   private readonly permissions: ContactsPermissions;
   private readonly repository: ContactsRepository;
-  private static presenter?: ExpoContactsModule;
+  private readonly service: ExpoContactsService;
 
   constructor(context: ExpoModuleContext) {
     super(context);
-    this.permissions = new ContactsPermissions(context);
-    this.repository = new ContactsRepository(context, this.permissions);
+    const service = context.services.require(ExpoContactsService.key);
+    this.service = service;
+    this.permissions = service.getPermissions(context);
+    this.repository = service.getRepository(context);
   }
 
   definition(): ExpoModuleDefinition {
@@ -58,7 +60,7 @@ export class ExpoContactsModule extends ExpoModule {
         throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', 'Contacts Kit does not expose contact-store change notifications.');
       })
       .onDestroy((): void => {
-        if (ExpoContactsModule.presenter === this) ExpoContactsModule.presenter = undefined;
+        this.releaseUi();
       })
       .asyncFunction('getPermissionsAsync', async (): Promise<ContactsPermissionResponse> => await this.permissions.get())
       .asyncFunction('requestPermissionsAsync', async (): Promise<ContactsPermissionResponse> => await this.permissions.request())
@@ -83,7 +85,7 @@ export class ExpoContactsModule extends ExpoModule {
             record: Record<string, ESObject> | null | undefined,
             options: Record<string, ESObject> | null | undefined,
           ): Promise<void> => {
-            await this.run(async (): Promise<void> => await this.presentForm(id, record, options));
+            await this.run(async (): Promise<void> => { await this.presentForm(id, record, options); });
           },
         ),
       );
@@ -210,18 +212,23 @@ export class ExpoContactsModule extends ExpoModule {
 
   private beginUi(): void {
     this.ensureActive();
-    if (ExpoContactsModule.presenter !== undefined) {
-      throw new ExpoContactsError('ERR_CONTACTS_UI_IN_PROGRESS', 'A contacts picker, form, or share operation is already in progress.');
-    }
-
-    ExpoContactsModule.presenter = this;
+    this.service.beginUi(this);
   }
 
   private endUi(): void {
-    if (ExpoContactsModule.presenter === this) ExpoContactsModule.presenter = undefined;
+    this.service.endUi(this);
+  }
+
+  releaseUi(): void {
+    this.endUi();
   }
 
   private async presentPicker(): Promise<ExpoContactRecord | null> {
+    const selected = await this.presentNativePicker();
+    return selected === null ? null : await this.repository.serialize(selected, new RequestedFields());
+  }
+
+  async presentNativePicker(): Promise<contact.Contact | null> {
     if (!canIUse(CONTACTS_UI_CAPABILITY))
       throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', 'The contact picker is unavailable on this device.');
 
@@ -235,19 +242,22 @@ export class ExpoContactsModule extends ExpoModule {
       this.ensureActive();
       if (selected.length === 0) return null;
 
-      // Picker results are authorized without READ_CONTACTS.
-      return await this.repository.serialize(selected[0], new RequestedFields());
+      return selected[0];
     } catch (error) {
-      if ((error as BusinessError).code === USER_CANCELLED) return null;
+      if ((error as BusinessError).code === USER_CANCELLED) {
+        this.ensureActive();
+        return null;
+      }
 
       if (error instanceof ExpoModuleError) throw new ExpoContactsError(error.code, error.message, error);
+
       throw new ExpoContactsError('ERR_CONTACTS_PICKER', 'Unable to present the HarmonyOS contact picker.', error as Object);
     } finally {
       this.endUi();
     }
   }
 
-  private async presentForm(id?: string | null, record?: Record<string, ESObject> | null, options?: Record<string, ESObject> | null): Promise<void> {
+  async presentForm(id?: string | null, record?: Record<string, ESObject> | null, options?: Record<string, ESObject> | null): Promise<boolean> {
     if (!canIUse(CONTACTS_UI_CAPABILITY) || deviceInfo.sdkApiVersion < CONTACT_FORM_API) {
       throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', 'The contact form requires HarmonyOS API 15 or later.');
     }
@@ -270,12 +280,19 @@ export class ExpoContactsModule extends ExpoModule {
       // An empty Name opens a blank form; Contacts Kit rejects an empty Contact.
       if (Object.keys(value).length === 0) value.name = { fullName: '' };
 
-      await contact.addContactViaUI(this.context.uiAbilityContext, value);
+      const createdId = await contact.addContactViaUI(this.context.uiAbilityContext, value);
+      this.ensureActive();
+      if (!Number.isSafeInteger(createdId) || createdId < 0) {
+        throw new ExpoContactsError('ERR_CONTACTS_FORM', 'HarmonyOS did not return a valid contact ID from the contact form.');
+      }
+      return true;
     } catch (error) {
       if ((error as BusinessError).code !== USER_CANCELLED) {
         if (error instanceof ExpoModuleError) throw new ExpoContactsError(error.code, error.message, error);
         throw new ExpoContactsError('ERR_CONTACTS_FORM', 'Unable to present the HarmonyOS contact form.', error as Object);
       }
+      this.ensureActive();
+      return false;
     } finally {
       this.endUi();
     }
@@ -291,6 +308,7 @@ export class ExpoContactsModule extends ExpoModule {
       if (uri === undefined) throw new ExpoContactsError('ERR_CONTACTS_NOT_FOUND', `No contact exists for identifier '${id}'.`);
 
       this.ensureActive();
+      this.repository.ensureReadable();
 
       // JS consumes standard file URLs; system sharing needs an app-scoped URI.
       const path = this.context.filePathForRead(uri);

@@ -1,403 +1,360 @@
 # @expo-harmony/expo-contacts
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-contacts) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/contacts/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-contacts) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/contacts/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Contacts 的原生实现，与官方同版本的 `expo-contacts` 配套使用。支持联系人权限、查询、增删改查、系统选择器、新建表单、vCard 导出与分享，以及已有群组和容器的查询。
+为 HarmonyOS 上的 React Native 应用提供 Expo Contacts 的原生实现，与官方同版本的 `expo-contacts` 配套使用。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
 ```bash
-npm install @expo-harmony/expo-contacts expo-contacts@55.0.18
+npm install @expo-harmony/expo-contacts expo-contacts
 ```
-
-鸿蒙适配会通过 Autolinking 自动接入。最低支持 HarmonyOS 5.0.1（API 13），宿主的 `compatibleSdkVersion` 也需满足此要求。
-
-系统联系人选择器 `presentContactPickerAsync()` 和新建联系人表单 `presentFormAsync()` 不需要通讯录读写权限。读取联系人、群组和容器需要 `ohos.permission.READ_CONTACTS`，新增、修改、删除联系人和变更群组成员还需要 `ohos.permission.WRITE_CONTACTS`。本包默认不声明这两项权限，使用前需按下文申请并配置。
-
-业务代码依旧使用官方包：
-
-```ts
-import * as Contacts from 'expo-contacts';
-
-// 读取前需完成下方的权限配置。
-const permission = await Contacts.requestPermissionsAsync();
-if (permission.granted) {
-  const result = await Contacts.getContactsAsync({
-    fields: [Contacts.Fields.PhoneNumbers, Contacts.Fields.Emails],
-    pageSize: 20,
-  });
-  console.log(result.data);
-}
-```
-
-## 读写权限
-
-`ohos.permission.READ_CONTACTS` 和 `ohos.permission.WRITE_CONTACTS` 属于受限权限（ACL），需按华为的 [受限权限说明](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/restricted-permissions#ohospermissionread_contacts) 申请。申请范围限于通讯录克隆、备份、同步等场景。
-
-取得授权后，在 `app.json` 的 `expo.harmony.permissions` 数组中添加以下声明：
-
-```json
-[
-  {
-    "name": "ohos.permission.READ_CONTACTS",
-    "reason": "$string:expo_contacts_read_permission_reason",
-    "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" }
-  },
-  {
-    "name": "ohos.permission.WRITE_CONTACTS",
-    "reason": "$string:expo_contacts_write_permission_reason",
-    "usedScene": { "abilities": ["EntryAbility"], "when": "inuse" }
-  }
-]
-```
-
-`reason` 引用本包提供的默认用途说明。若入口 Ability 的名称不是 `EntryAbility`，请替换为实际名称。
-
-修改 `app.json` 后，需要重新 prebuild 并构建应用。bare 工程可将上述声明加入入口模块 `module.json5` 的 `requestPermissions` 数组。应用签名需使用包含获批权限的 Profile 文件。
-
-读写联系人前，需调用 `requestPermissionsAsync()` 向用户申请读写两项权限。两项都获准时，返回结果中的 `granted` 才为 `true`。缺少所需权限时，读写接口会抛出 `ERR_CONTACTS_MISSING_PERMISSION`。`canAskAgain` 为 `false` 时，需引导用户到系统设置中授权。
-
-## Config Plugin
-
-`readContactsPermission`、`writeContactsPermission` 和 `contactsPermission` 是 HarmonyOS 的构建期配置扩展，需要自定义读写权限的用途说明时，在应用配置中添加：
-
-```json
-{
-  "expo": {
-    "plugins": [
-      [
-        "@expo-harmony/expo-contacts",
-        {
-          "readContactsPermission": "用于查找您选择的联系人",
-          "writeContactsPermission": "用于保存您编辑的联系人"
-        }
-      ]
-    ]
-  }
-}
-```
-
-`contactsPermission` 可以一次设置读写的用途说明，`readContactsPermission` 和 `writeContactsPermission` 分别优先于它。这些选项只接受非空字符串，用于修改权限用途说明，不会声明通讯录读写权限。未配置时沿用默认文案「用于读取和选择您的联系人信息」和「用于添加、更新和删除您的联系人」。修改配置后需要重新 prebuild 并构建应用。
 
 ## API 对照表
 
-### Component
+### Hooks
 
-> **未实现的内容**
->
-> - `ContactAccessButton`：只在 iOS 上提供的系统控件，HarmonyOS 上没有对应实现，渲染结果为空，`ContactAccessButton.isAvailable()` 返回 `false`。
+本包没有提供 Hook。
 
 ### Constants
 
-#### `Contacts.onContactsChangeEventName`
+#### `onContactsChangeEventName`
 
-类型：`'onContactsChange'`，联系人变化事件的名称。
+字符串常量 `'onContactsChange'`，用于标识 legacy 联系人变化事件。
 
 ### Methods
 
 #### `Contacts.isAvailableAsync()`
 
-返回 `Promise<boolean>`，设备是否具备通讯录数据能力。不检查权限，与官方语义一致。返回 `false` 时，读写联系人、查询群组和容器、导出 vCard 这些接口都没有注册，调用会抛出 `UnavailabilityError`。
+返回 `Promise<boolean>`。当设备提供 Contacts Data 系统能力时返回 `true`；否则返回 `false`。
 
 #### `Contacts.hasContactsAsync()`
 
-返回 `Promise<boolean>`，设备上是否存在联系人。需要读权限。API 22 起直接查询数量，更低版本要先读出联系人再判断，通讯录较大时更慢。
-
-#### `Contacts.shareContactAsync(contactId, message, shareOptions?)`
-
-返回 `Promise<void>`，把联系人写成 vCard 后打开系统分享界面，界面呈现后 Promise 结束。需要 SystemShare 系统能力和读权限，联系人不存在时拒绝。`message` 作为分享标题，`shareOptions` 在 HarmonyOS 上忽略。
+返回 `Promise<boolean>`，查询设备是否有联系人。需要通讯录读权限。
 
 #### `Contacts.getContactsAsync(contactQuery?)`
 
-返回 `Promise<ContactResponse>`。不传条件时返回全部联系人。
+返回 `Promise<ContactResponse>`。`contactQuery` 支持 `pageSize`、`pageOffset`、`fields`、`sort`、`name`、`id`、`groupId` 和 `containerId`。`pageSize`、`pageOffset` 必须是非负整数；`pageSize` 为 `0` 表示不限制数量。`rawContacts: true` 会抛出 `ERR_CONTACTS_UNSUPPORTED`。
 
-查询支持按 `name`（不区分大小写的包含匹配）、`id`（单个或数组）、`groupId`、`containerId` 过滤，按 `sort` 排序，用 `pageSize` 和 `pageOffset` 分页。同时提供多个条件时按 `id`、`name`、`groupId` 的顺序取第一个生效，`containerId` 只在没有这些条件时用于限定账户。`sort` 取 `firstName` 或 `lastName` 时按姓名排序，取 `userDefault` 或 `none` 时保持系统顺序。`rawContacts` 为 `true` 时抛出 `ERR_CONTACTS_UNSUPPORTED`。
+`name` 使用不区分大小写的包含匹配。只提供多个筛选条件时，`id`、`name`、`groupId` 按此顺序生效；`containerId` 在没有这些条件时限定账户。`sort` 支持 `firstName`、`lastName`、`userDefault` 和 `none`；后两者保留系统顺序。查询需要读权限。
 
-`fields` 只控制邮箱、电话、地址、备注、生日、日期、即时通讯、网址、关系和头像这些字段；`id`、`contactType`、`name`、姓名分量、昵称、公司、职位和 `imageAvailable` 始终返回。`fields` 为空数组时仍会返回联系人。
-
-先读出系统联系人，再在本地做投影、筛选、排序和分页，通讯录条目很多时存在扫描开销。
+`fields` 控制邮箱、电话、地址、备注、生日、日期、即时通讯地址、网址、关系和头像字段。`id`、`contactType`、`name`、姓名分量、昵称、公司、职位和 `imageAvailable` 始终返回。`fields` 为空数组时仍返回这些基础字段。
 
 #### `Contacts.getPagedContactsAsync(contactQuery?)`
 
-返回 `Promise<ContactResponse>`，分页查询，行为与 `getContactsAsync()` 相同。`pageSize` 为负数时拒绝。
+返回 `Promise<ContactResponse>`，按 `pageSize` 和 `pageOffset` 分页，其他查询参数与 `getContactsAsync()` 相同。`pageSize` 为负数时拒绝；`0` 表示不限制数量。
 
 #### `Contacts.getContactByIdAsync(id, fields?)`
 
-返回 `Promise<ExistingContact | undefined>`，按 ID 查询单个联系人，没有匹配时返回 `undefined`。需要读权限。
+返回 `Promise<ExistingContact | undefined>`。未找到对应联系人时返回 `undefined`。需要读权限。
 
 #### `Contacts.addContactAsync(contact, containerId?)`
 
-返回 `Promise<string>`，新建联系人并返回其 ID。需要读写权限。
+返回 `Promise<string>`，成功时返回新联系人的 ID。需要读写权限。`containerId` 不受支持，传入后抛出 `ERR_CONTACTS_UNSUPPORTED`。`contactType` 只支持 `person`；公司名称请写入 `company`。HarmonyOS SDK API 22 起支持头像，头像只接受 `image.uri`。
 
-`containerId` 不支持，传入时抛出 `ERR_CONTACTS_UNSUPPORTED`。`contactType` 只接受 `person`，写入 `company` 时拒绝。写入 `department`、`nonGregorianBirthday`、`socialProfiles`、`isFavorite`、`rawImage`、`extraNames` 时抛出 `ERR_CONTACTS_UNSUPPORTED`；`image` 需要 API 22，且只使用 `uri`。
+写入 `department`、`nonGregorianBirthday`、`socialProfiles`、`isFavorite`、`rawImage` 或 `extraNames` 会抛出 `ERR_CONTACTS_UNSUPPORTED`。
 
 #### `Contacts.updateContactAsync(contact)`
 
-返回 `Promise<string>`，更新已有联系人并返回其 ID。`id` 必填，需要读写权限。
-
-只更新明确提供的字段，未提供的字段保持原值。不支持的字段与 `addContactAsync()` 相同。`name` 是读取结果，写入时忽略，请使用 `firstName`、`lastName` 等姓名分量。
-
-`birthday` 和 `dates` 一起构成联系人的全部日期，更新其中一个会重写整组日期，并以整条联系人写回，可能覆盖其他应用在此期间做的修改。只改其他字段时写入范围限定在提供的字段内。
+返回 `Promise<string>`，成功时返回联系人 ID。`id` 必填，需要读写权限。只更新传入且值不是 `null` 或 `undefined` 的字段；未传入字段保持原值。`name` 是读取字段，写入时忽略，请使用姓名分量。`birthday` 与 `dates` 共用系统日期数据；更新生日时保留其他日期，更新 `dates` 时保留生日并替换非生日日期。
 
 #### `Contacts.removeContactAsync(contactId)`
 
-返回 `Promise<void>`，删除联系人。官方标记为 iOS 专属，HarmonyOS 上可用。需要读写权限，ID 不存在时不报错。
+返回 `Promise<void>`，删除联系人。需要读写权限；ID 不存在时不报错。
 
 #### `Contacts.writeContactToFileAsync(contactQuery?)`
 
-返回 `Promise<string | undefined>`，把符合条件的联系人写成 vCard 3.0 文件，返回文件 URI，没有匹配时返回 `undefined`。文件保存在应用缓存目录。需要读权限。
+返回 `Promise<string | undefined>`，将符合条件的联系人导出为 vCard 3.0 文件 URI；没有匹配项时返回 `undefined`。文件保存在应用缓存目录，需要读权限。导出包含姓名、昵称、电话、邮箱、地址、公司、职位、备注、生日、网址和可读取的头像；不包含群组、即时通讯地址、关系、其他日期和自定义标签扩展。
 
-内容包含姓名、昵称、电话、邮箱、地址、公司、职位、备注、生日、网址和可读取的头像，头像以 JPEG 内嵌；不包含群组、即时通讯、关系、其他纪念日以及自定义标签扩展。
+#### `Contacts.shareContactAsync(contactId, message, shareOptions?)`
+
+返回 `Promise<void>`。将联系人导出为 vCard 并打开系统分享界面。需要读权限和 SystemShare 系统能力。联系人不存在时抛出 `ERR_CONTACTS_NOT_FOUND`；`shareOptions` 在 HarmonyOS 上无效。
 
 #### `Contacts.presentFormAsync(contactId?, contact?, formOptions?)`
 
-返回 `Promise<void>`，打开系统新建联系人表单。需要 API 15 和 Contacts 系统能力，否则抛出 `ERR_CONTACTS_UNSUPPORTED`。
-
-只支持新建，`contactId` 不支持。`contact` 可以预填字段，但 `image` 不能预填。`formOptions` 传入非空对象时抛出 `ERR_CONTACTS_UNSUPPORTED`。用户在系统表单中保存后记录写入通讯录，取消时 Promise 正常结束，不报错。
+返回 `Promise<void>`，打开系统新建联系人表单。需要 Contacts 系统能力及 HarmonyOS SDK API 15 或更高版本。仅支持新建：传入 `contactId`、非空 `formOptions` 或头像预填时抛出 `ERR_CONTACTS_UNSUPPORTED`。保存或取消后 Promise 均正常完成。
 
 #### `Contacts.addExistingContactToGroupAsync(contactId, groupId)`
 
-返回 `Promise<void>`，把联系人加入群组。官方标记为 iOS 专属，HarmonyOS 上可用。需要读写权限。联系人和群组必须属于同一个账户，否则抛出 `ERR_CONTACTS_GROUP_CONTAINER_MISMATCH`；已经在群组中时不重复操作。
+返回 `Promise<void>`，将联系人加入群组。需要读写权限；联系人与群组必须属于同一账户，否则抛出 `ERR_CONTACTS_GROUP_CONTAINER_MISMATCH`。已在群组中的联系人不会重复添加。
 
 #### `Contacts.removeContactFromGroupAsync(contactId, groupId)`
 
-返回 `Promise<void>`，把联系人移出群组，不删除联系人。官方标记为 iOS 专属，HarmonyOS 上可用。需要读写权限，约束与 `addExistingContactToGroupAsync()` 相同。
+返回 `Promise<void>`，将联系人移出群组，不会删除联系人。需要读写权限；联系人与群组必须属于同一账户。
 
-#### `Contacts.getGroupsAsync(groupQuery)`
+#### `Contacts.getGroupsAsync(groupQuery?)`
 
-返回 `Promise<Group[]>`，查询联系人群组。官方标记为 iOS 专属，HarmonyOS 上可用。支持按 `groupId`、`groupName`（精确匹配）、`containerId` 过滤，需要读权限。
+返回 `Promise<Group[]>`。支持按 `groupId`、`groupName`（精确匹配）或 `containerId` 查询，需要读权限。同传多个条件时，`groupName` 优先；没有 `groupName` 时，`containerId` 优先于 `groupId`。
 
 #### `Contacts.presentContactPickerAsync()`
 
-返回 `Promise<ExistingContact | null>`，打开系统联系人选择器，返回选中的联系人，取消时返回 `null`。选择结果本身就是授权范围，不需要读取权限。需要 Contacts 系统能力。
+返回 `Promise<ExistingContact | null>`。打开系统单选联系人界面，取消时返回 `null`。选中的联系人可直接读取，无需通讯录读权限；查询或修改其他联系人仍需相应权限。需要 Contacts 系统能力。HarmonyOS SDK API 13 和 14 按电话号码展示联系人；API 15 起按姓名展示。
 
-API 13 和 14 的选择器按电话号码展示，没有号码的联系人可能无法选择；API 15 起按姓名展示。
+#### `Contacts.getContainersAsync(containerQuery?)`
 
-#### `Contacts.getContainersAsync(containerQuery)`
+返回 `Promise<Container[]>`，查询联系人账户容器。支持按 `contactId`、`groupId` 或 `containerId` 筛选，需要读权限。同传多个条件时，`contactId` 优先于 `groupId`，`groupId` 优先于 `containerId`。legacy 结果的 `type` 为 `unassigned`。
 
-返回 `Promise<Container[]>`，查询联系人账户容器。官方标记为 iOS 专属，HarmonyOS 上可用。支持按 `contactId`、`groupId`、`containerId` 过滤，需要读权限。`type` 恒为 `unassigned`。
+#### `Contacts.addExistingGroupToContainerAsync(groupId, containerId)`
 
-#### `Contacts.getPermissionsAsync()`
+- HarmonyOS Contacts Kit 不提供将群组移动到账户容器的操作；调用会抛出 `UnavailabilityError`。
 
-返回 `Promise<ContactsPermissionResponse>`，查询通讯录权限。
+#### `Contacts.createGroupAsync(name?, containerId?)`
 
-`status` 为 `granted`、`denied` 或 `undetermined`，读写权限都授予时 `granted` 为 `true`。`accessPrivileges` 在授予读权限时为 `all`，否则为 `none`，不会出现 `limited`。`expires` 恒为 `never`。
+- HarmonyOS Contacts Kit 不提供创建群组的操作；调用会抛出 `UnavailabilityError`。
 
-API 20 起系统保留拒绝状态，可以直接据此判断 `denied`；更低版本在用户拒绝后系统仍报告未决定，本模块会记住这次拒绝，`canAskAgain` 因此返回 `false`。
+#### `Contacts.updateGroupNameAsync(groupName, groupId)`
 
-#### `Contacts.requestPermissionsAsync()`
+- HarmonyOS Contacts Kit 不提供重命名群组的操作；调用会抛出 `UnavailabilityError`。
 
-返回 `Promise<ContactsPermissionResponse>`，同时申请读权限和写权限，结果与 `getPermissionsAsync()` 一致。并发调用复用同一次申请，不会重复弹窗。
+#### `Contacts.removeGroupAsync(groupId)`
 
-权限未在 `module.json5` 中声明时抛出 `ERR_CONTACTS_PERMISSION_REQUEST`。系统不再允许申请时，`canAskAgain` 为 `false`，需要引导用户到系统设置中授权。
+- HarmonyOS Contacts Kit 不提供删除群组的操作；调用会抛出 `UnavailabilityError`。
 
-> **未实现的内容**
->
-> - `addExistingGroupToContainerAsync()`、`createGroupAsync()`、`updateGroupNameAsync()`、`removeGroupAsync()`、`getDefaultContainerIdAsync()`：群组的写操作和默认容器查询在 HarmonyOS 上没有对应接口，调用抛出 `UnavailabilityError`。
-> - `presentAccessPickerAsync()`：有限的通讯录授权只在 iOS 上提供，调用抛出 `ERR_CONTACTS_UNSUPPORTED`。
+#### `Contacts.getDefaultContainerIdAsync()`
 
-### Event Subscriptions
+- HarmonyOS Contacts Kit 不提供默认容器；调用会抛出 `UnavailabilityError`。
 
-> **未实现的内容**
->
-> - `addContactsChangeListener()`：HarmonyOS 没有联系人变化通知接口，添加订阅时抛出 `ERR_CONTACTS_UNSUPPORTED`。
+#### `Contacts.presentAccessPickerAsync()`
+
+- HarmonyOS 不提供有限联系人访问选择器；调用会抛出 `ERR_CONTACTS_UNSUPPORTED`。
+
+#### `Contact.getAll(options?)`
+
+返回 `Promise<Contact[]>`。`options` 支持 `limit`、`offset`、`sortOrder`、`name` 和 `rawContacts`。`limit` 为 `0` 时返回空数组；`name` 匹配姓名或拼音姓名；`sortOrder` 支持 `givenName`、`familyName`、`userDefault` 和 `none`，后两者保留系统顺序。`rawContacts: true` 会抛出 `ERR_CONTACTS_UNSUPPORTED`。需要读权限。
+
+#### `Contact.getAllDetails(fields, options?)`
+
+返回 `Promise<PartialContactDetails[]>`，按字段批量查询联系人。筛选和排序选项与 `Contact.getAll()` 相同。请求的 HarmonyOS 不支持字段会从结果中略去；未知字段抛出 `ERR_CONTACTS_INVALID_ARGUMENT`。需要读权限。
+
+#### `Contact.create(contact)`
+
+返回 `Promise<Contact>`，创建联系人并返回对象。需要读写权限；不支持指定容器。字段限制与 `Contacts.addContactAsync()` 相同。
+
+#### `Contact.getCount()` 和 `Contact.hasAny()`
+
+分别返回 `Promise<number>` 和 `Promise<boolean>`，查询联系人数量以及是否存在联系人。均需要读权限。
+
+#### `Contact.presentCreateForm(contact?, options?)`
+
+返回 `Promise<boolean>`。打开系统新建联系人表单；保存时返回 `true`，取消时返回 `false`。需要 Contacts 系统能力及 HarmonyOS SDK API 15 或更高版本。可预填联系人字段，但不能预填头像；非空 `options` 会抛出 `ERR_CONTACTS_UNSUPPORTED`。
+
+#### `Contact.presentPicker()`
+
+返回 `Promise<Contact | null>`。行为和权限要求与 `Contacts.presentContactPickerAsync()` 相同。通过此方法选中的联系人可在未获读权限时读取所选联系人详情。
+
+#### `Contact.presentAccessPicker()`
+
+- HarmonyOS 不提供有限联系人访问选择器；调用会抛出 `ERR_CONTACTS_UNSUPPORTED`。
+
+#### `Contact.getDetails(fields?)`
+
+返回 `Promise<PartialContactDetails>`，读取指定字段；省略 `fields` 时读取 HarmonyOS 支持的全部字段。结果始终包含 `id`。不支持的字段会被略去，未知字段抛出 `ERR_CONTACTS_INVALID_ARGUMENT`。
+
+#### `Contact.patch(contact)`
+
+返回 `Promise<void>`，只修改传入字段；未传入字段不变。传入列表字段时，该列表整体替换。`image` 需要 HarmonyOS SDK API 22 或更高版本；不支持清除已有头像。
+
+#### `Contact.update(contact)`
+
+返回 `Promise<void>`，用传入信息覆盖联系人。省略的字符串和列表字段会清空；生日和其他日期共用日期列表，省略 `dates` 会清空整组日期，传入空列表也会清空。`image` 需要 HarmonyOS SDK API 22 或更高版本；不支持清除已有头像。
+
+#### `Contact.delete()`
+
+返回 `Promise<void>`，删除联系人。需要读写权限。
+
+#### `Contact.editWithForm(options?)`
+
+- HarmonyOS Contacts Kit 不提供编辑指定联系人的系统表单；调用会抛出 `ERR_CONTACTS_UNSUPPORTED`。
+
+#### `Contact.getFullName()`
+
+返回 `Promise<string>`。`Contact.getDetails()` 的 `fullName` 字段也提供同一姓名值。
+
+#### `Contact` 姓名、文本与头像方法
+
+以下读取和写入方法返回的值遵循 HarmonyOS 联系人字段映射：
+
+- `getGivenName()` / `setGivenName(value)`、`getMiddleName()` / `setMiddleName(value)`、`getFamilyName()` / `setFamilyName(value)`
+- `getNickname()` / `setNickname(value)`、`getPrefix()` / `setPrefix(value)`、`getSuffix()` / `setSuffix(value)`
+- `getPhoneticGivenName()` / `setPhoneticGivenName(value)`、`getPhoneticMiddleName()` / `setPhoneticMiddleName(value)`、`getPhoneticFamilyName()` / `setPhoneticFamilyName(value)`
+- `getCompany()` / `setCompany(value)`、`getJobTitle()` / `setJobTitle(value)`、`getNote()` / `setNote(value)`
+
+字符串 getter 返回 `Promise<string | null>`，setter 返回 `Promise<boolean>`。公司名称存入联系人公司字段。
+
+`getImage()`、`getThumbnail()` 返回 `Promise<string | null>`，值为图片 URI；`setImage(uri)` 返回 `Promise<boolean>`。图片读写需要 HarmonyOS SDK API 22 或更高版本，不能清除已有头像；`thumbnail` 只能读取。
+
+#### `Contact.getBirthday()` / `Contact.setBirthday(value)`
+
+读取或设置生日。读取返回 `Promise<ContactDate | null>`，写入返回 `Promise<boolean>`。该 API 的月份从 `1` 开始；日期仅支持 Gregorian 日历，写入其他日历格式或无效日期会拒绝。
+
+#### `Contact` 列表字段方法
+
+以下列表均提供 `getX()`、`addX(value)`、`updateX(value)` 和 `deleteX(value)` 方法。读取返回列表；新增返回列表项 ID；修改和删除返回 `Promise<void>`。
+
+- `getEmails()`、`addEmail()`、`updateEmail()`、`deleteEmail()`：邮箱项使用 `address`、`label`。
+- `getPhones()`、`addPhone()`、`updatePhone()`、`deletePhone()`：电话项使用 `number`、`label`。
+- `getDates()`、`addDate()`、`updateDate()`、`deleteDate()`：日期项使用 `date`、`label`；日期月份从 `1` 开始。
+- `getAddresses()`、`addAddress()`、`updateAddress()`、`deleteAddress()`：支持 `street`、`city`、`region`、`postcode`、`country` 和 `label`；单独的地址 `state` 不支持。
+- `getRelations()`、`addRelation()`、`updateRelation()`、`deleteRelation()`：支持 `name`、`label`。
+- `getUrlAddresses()`、`addUrlAddress()`、`updateUrlAddress()`、`deleteUrlAddress()`：支持 `url`，返回的 `label` 固定为 `other`。
+- `getImAddresses()`、`addImAddress()`、`updateImAddress()`、`deleteImAddress()`：支持 `username`、`service`；返回的 `label` 固定为 `other`。
+
+列表项的 `id` 用于更新和删除；联系人列表发生变化后，旧 ID 可能失效，届时会抛出 `ERR_CONTACTS_STALE_FIELD`。网址和即时通讯条目只支持 `other` 标签。
+
+#### `Contact` 不支持的字段方法
+
+- HarmonyOS 联系人服务不提供收藏状态、曾用名、部门、公司拼音名、非公历生日、额外姓名和社交账号字段。对应的 `get`、`set`、`add`、`update` 或 `delete` 方法会抛出 `ERR_CONTACTS_UNSUPPORTED`。
+
+#### `Group` 方法
+
+`Group.getAll(containerId?)` 返回 `Promise<Group[]>`；`getName()` 返回 `Promise<string | null>`；`getContacts(options?)` 返回群组联系人；`addContact(contact)` 和 `removeContact(contact)` 返回 `Promise<void>`。群组成员变更需要读写权限，联系人和群组必须属于同一账户。
+
+#### `Group.create(name, containerId?)`、`Group.setName(name)` 和 `Group.delete()`
+
+- HarmonyOS Contacts Kit 不提供创建、重命名或删除联系人群组的操作；这些方法会抛出 `ERR_CONTACTS_UNSUPPORTED`。
+
+#### `Container` 方法
+
+`Container.getAll()` 返回 `Promise<Container[]>`。实例的 `getName()` 返回 `Promise<string | null>`，`getGroups()` 返回 `Promise<Group[]>`，`getContacts(options?)` 返回 `Promise<Contact[]>`；这些查询均需要读权限。`getType()` 返回 `'unknown'`。legacy `getContainersAsync()` 的 `type` 则返回 `'unassigned'`。
+
+#### `Container.getDefault()`
+
+- HarmonyOS Contacts Kit 不提供默认联系人容器；调用会抛出 `ERR_CONTACTS_UNSUPPORTED`。
+
+#### `ContactAccessButton.isAvailable()`
+
+返回 `false`。HarmonyOS 没有对应的系统控件，渲染 `ContactAccessButton` 时不显示内容。
+
+### Event subscriptions
+
+#### `Contacts.addContactsChangeListener(listener)` 和 `Contacts.removeAllContactsChangeListeners()`
+
+- HarmonyOS Contacts Kit 不提供联系人变化通知；添加监听器会抛出 `ERR_CONTACTS_UNSUPPORTED`。
 
 ### Types
 
-#### `Contact`
+#### `Contact` 和 `ExistingContact`
 
-联系人记录。`id`、`contactType`、`name` 始终存在。`name` 优先取系统的完整姓名，没有时由姓名分量拼接，再退回公司名。`firstName`、`middleName`、`lastName`、`namePrefix`、`nameSuffix`、`nickname`、`phoneticFirstName`、`phoneticMiddleName`、`phoneticLastName`、`company`、`jobTitle`、`note`、`birthday`、`dates`、`emails`、`phoneNumbers`、`addresses`、`instantMessageAddresses`、`urlAddresses`、`relationships` 和 `imageAvailable` 可读写。`image` 需要 API 22，读写都只使用 `uri`、`width` 和 `height`。
+联系人查询结果始终包含 `id`、`contactType` 和 `name`。`contactType` 始终为 `person`；姓名优先使用系统完整姓名，其次由姓名分量组成，再退回公司名。姓名分量、昵称、拼音姓名、公司、职位和 `imageAvailable` 始终可读；`note`、`emails`、`phoneNumbers`、`addresses`、`instantMessageAddresses`、`urlAddresses`、`relationships`、`birthday`、`dates` 和 `image` 按请求字段返回。
 
-`contactType` 只支持 `person`。`department`、`nonGregorianBirthday`、`socialProfiles`、`isFavorite`、`rawImage`、`extraNames` 没有数据来源，读取时省略，写入时拒绝；`maidenName` 读取时省略，写入时忽略。
+`birthday` 与 `dates` 表示同一组联系人日期。legacy `Date.month` 从 `0` 开始，`Date.format` 为 `gregorian`；设置生日或日期只支持 Gregorian 格式。头像使用 `Image.uri`，读写需要 HarmonyOS SDK API 22 或更高版本；图片内容不以内嵌 Base64 返回。
 
-#### `ContactQuery`
+#### `ContactQuery` 和 `ContactResponse`
 
-`pageSize`、`pageOffset`、`fields`、`sort`、`name`、`id`、`groupId`、`containerId` 在 HarmonyOS 上生效。`rawContacts` 为 `true` 时抛出 `ERR_CONTACTS_UNSUPPORTED`。
+legacy `ContactQuery` 支持 `pageSize`、`pageOffset`、`fields`、`sort`、`name`、`id`、`groupId`、`containerId` 和 `rawContacts`。`ContactResponse` 包含 `data`、`hasNextPage`、`hasPreviousPage`。
 
-#### `ContactResponse`
+#### `Email`、`PhoneNumber`、`Address`、`Date`、`Image`、`Relationship`、`InstantMessageAddress` 和 `UrlAddress`
 
-`data` 是查询结果，`hasNextPage` 表示后面还有数据，`hasPreviousPage` 在 `pageOffset` 大于 `0` 时为 `true`。
+- `Email` 返回 `email`、`label`，不返回 `id`、`isPrimary`。
+- `PhoneNumber` 返回 `number`、`digits`、`label`，不返回 `id`、`isPrimary`、`countryCode`；`digits` 去除号码分隔符。标签按 HarmonyOS 系统标签映射。
+- `Address` 返回 `street`、`city`、`country`、`region`、`neighborhood`、`postalCode`、`poBox`、`label`，不返回 `id`、`isoCountryCode`。`street` 可映射系统的邮政地址文本。
+- `Date` 返回 `day`、`month`、`year`、`label`，不返回 `id`；省略 `year` 表示每年重复。legacy 的 `month` 从 `0` 开始。
+- `Image` 返回 `uri`、`width`、`height`，不返回 `base64`。
+- `Relationship` 返回 `label`、`name`，不返回 `id`。
+- `InstantMessageAddress` 返回 `service`、`username`、`label`，不返回 `id`、`localizedService`；写入时 `label` 不保存。
+- `UrlAddress` 返回 `url`、`label`，不返回 `id`；`label` 固定为 `url`。
+
+#### `Group`、`GroupQuery`、`Container` 和 `ContainerQuery`
+
+`Group` 查询结果包含 `id`、`name`。`GroupQuery` 支持 `groupId`、`groupName`、`containerId`。`Container` legacy 查询结果包含 `id`、`name`、`type`，其中 `type` 为 `unassigned`；`ContainerQuery` 支持 `contactId`、`groupId`、`containerId`。
+
+#### 其他 legacy 类型
+
+`ContactSort`、`FieldType`、`ContactType`、`ContainerType` 和 `CalendarFormatType` 分别表示联系人排序、字段、联系人类型、账户容器类型和日期格式。`PermissionExpiration` 在 HarmonyOS 上为 `'never'`。`SocialProfile`、`NewSocialProfile`、`ExistingSocialProfile`、`NonGregorianBirthday`、`NewExtraName` 和 `ExistingExtraName` 类型没有对应的 HarmonyOS 联系人数据。
+
+#### `ContactQueryOptions`
+
+对象 API 支持 `limit`、`offset`、`sortOrder`、`name` 和 `rawContacts`。`name` 还会匹配拼音姓名。`rawContacts` 只能为 `false` 或省略。
+
+#### `ContactPatch`、`CreateContactRecord` 和 `ContactDetails`
+
+对象 API 使用 `givenName`、`middleName`、`familyName`、`nickname`、`prefix`、`suffix`、拼音姓名、`company`、`jobTitle`、`note`、`birthday`、`image`、`emails`、`phones`、`dates`、`addresses`、`relations`、`urlAddresses` 和 `imAddresses`。`ContactDetails` 包含请求的字段和 `id`；不支持的字段会被省略。
+
+对象 API 日期的 `month` 从 `1` 开始；列表项使用 `address`、`number`、`date`、`name` 等字段，具体见对应列表方法。地址的单独 `state`、非 `other` 的网址/即时通讯标签以及没有日期值的日期项不受支持。
 
 #### `ContactsPermissionResponse`
 
-`status`、`granted`、`canAskAgain`、`expires`、`accessPrivileges`。`expires` 恒为 `never`，`accessPrivileges` 为 `all` 或 `none`。
+包含 `status`、`granted`、`canAskAgain`、`expires` 和 `accessPrivileges`。`expires` 始终为 `'never'`；`accessPrivileges` 为 `'all'` 或 `'none'`。
 
-#### `FormOptions`
+#### `FormOptions` 和 `CreateFormOptions`
 
-HarmonyOS 上不支持自定义表单，传入非空对象时抛出 `ERR_CONTACTS_UNSUPPORTED`。
+HarmonyOS 不支持自定义系统联系人表单；传入非空选项对象时抛出 `ERR_CONTACTS_UNSUPPORTED`。
 
-#### `GroupQuery`
+#### `ContactAccessButtonProps`
 
-`groupId`、`groupName`、`containerId` 生效。
-
-#### `ContainerQuery`
-
-`contactId`、`groupId`、`containerId` 生效。
-
-#### `Container`
-
-`id`、`name`、`type`，`type` 恒为 `unassigned`。
-
-#### `Group`
-
-`id` 和 `name`。
-
-#### `Date`
-
-`day`、`month`、`year`、`label` 可读写，`month` 从 `0` 开始。`format` 只支持 `gregorian`，写入其他值时拒绝。`id` 不返回。省略 `year` 表示每年重复的日期。
-
-#### `PhoneNumber`
-
-`number`、`label`、`digits` 返回，`id`、`isPrimary`、`countryCode` 不返回。`digits` 由号码去掉分隔符等格式字符得到。`label` 按系统标签映射为 `home`、`work`、`mobile` 等。
-
-#### `Email`
-
-`email` 和 `label`，`id`、`isPrimary` 不返回。
-
-#### `Address`
-
-`street`、`city`、`country`、`region`、`neighborhood`、`postalCode`、`poBox`、`label` 返回，`id`、`isoCountryCode` 不返回。
-
-#### `Image`
-
-`uri`、`width`、`height`。`base64` 不返回，需要图片内容时自行读取 URI。
-
-#### `Relationship`
-
-`label` 和 `name`，`id` 不返回。
-
-#### `InstantMessageAddress`
-
-`service`、`username`、`label` 返回，`id`、`localizedService` 不返回。`service` 是 IM 服务名，`label` 固定为 `other`；写入时 `service` 用于映射系统 IM 服务，`label` 不保存。
-
-#### `UrlAddress`
-
-`url` 和 `label`，`id` 不返回。`label` 固定为 `url`。
-
-#### `ExistingContact`
-
-`Contact` 加上必有的 `id`。
-
-#### `ContactSort`
-
-取值来自 `SortTypes`。
-
-#### `FieldType`
-
-取值来自 `Fields`。
-
-#### `ContactType`
-
-取值来自 `ContactTypes`，HarmonyOS 上只会是 `person`。
-
-#### `ContainerType`
-
-取值来自 `ContainerTypes`，HarmonyOS 上只会是 `unassigned`。
-
-#### `CalendarFormatType`
-
-取值来自 `CalendarFormats`，HarmonyOS 上只会是 `gregorian`。
-
-#### `PermissionResponse`
-
-`status`、`granted`、`canAskAgain`、`expires`，与系统权限模型一致。
-
-#### `PermissionExpiration`
-
-`'never' | number`，HarmonyOS 上恒为 `never`。
-
-> **未实现的内容**
->
-> - `SocialProfile`：社交账号信息在 HarmonyOS 上没有数据来源。
-
-### Interfaces
-
-> **未实现的内容**
->
-> - `ContactAccessButtonProps`：只在 `ContactAccessButton` 上使用，该组件在 HarmonyOS 上不可用。
+组件不显示内容，属性不会改变 HarmonyOS 上的行为。
 
 ### Enums
 
+#### `Fields`
+
+可读取和写入的字段值：`id`、`contactType`、`name`、`firstName`、`middleName`、`lastName`、`namePrefix`、`nameSuffix`、`nickname`、`phoneticFirstName`、`phoneticMiddleName`、`phoneticLastName`、`birthday`、`dates`、`emails`、`phoneNumbers`、`addresses`、`instantMessageAddresses`、`urlAddresses`、`company`、`jobTitle`、`imageAvailable`、`image`、`note`、`relationships`。
+
+- HarmonyOS 联系人服务不提供 `MaidenName`、`NonGregorianBirthday`、`SocialProfiles`、`Department`、`RawImage`、`ExtraNames` 和 `IsFavorite` 字段；读取时省略，写入时抛出 `ERR_CONTACTS_UNSUPPORTED`。
+
+#### `ContactField`
+
+对象 API 支持 `FULL_NAME`、`GIVEN_NAME`、`MIDDLE_NAME`、`FAMILY_NAME`、`NICKNAME`、`PREFIX`、`SUFFIX`、`PHONETIC_GIVEN_NAME`、`PHONETIC_MIDDLE_NAME`、`PHONETIC_FAMILY_NAME`、`COMPANY`、`JOB_TITLE`、`NOTE`、`IMAGE`、`THUMBNAIL`、`BIRTHDAY`、`EMAILS`、`PHONES`、`ADDRESSES`、`DATES`、`RELATIONS`、`URL_ADDRESSES` 和 `IM_ADDRESSES`。
+
+- HarmonyOS 不支持 `IS_FAVOURITE`、`MAIDEN_NAME`、`PHONETIC_COMPANY_NAME`、`DEPARTMENT`、`NON_GREGORIAN_BIRTHDAY`、`EXTRA_NAMES` 和 `SOCIAL_PROFILES`。
+
+#### `SortTypes` 和 `ContactsSortOrder`
+
+支持 `userDefault`、`firstName`、`lastName`、`none`；对象 API 对应 `UserDefault`、`GivenName`、`FamilyName`、`None`。`userDefault` / `UserDefault` 和 `none` / `None` 保持系统顺序。
+
 #### `ContactTypes`
 
-| 成员      | 值          |
-| --------- | ----------- |
-| `Person`  | `'person'`  |
-| `Company` | `'company'` |
-
-HarmonyOS 只支持 `person`，写入 `company` 时拒绝。
-
-#### `SortTypes`
-
-| 成员          | 值              |
-| ------------- | --------------- |
-| `UserDefault` | `'userDefault'` |
-| `FirstName`   | `'firstName'`   |
-| `LastName`    | `'lastName'`    |
-| `None`        | `'none'`        |
-
-`UserDefault` 和 `None` 在 HarmonyOS 上都保持系统顺序。
+取值为 `Person: 'person'`、`Company: 'company'`。HarmonyOS 联系人类型只支持 `person`；公司名称通过 `company` 字段保存。
 
 #### `CalendarFormats`
 
-| 成员        | 值            |
-| ----------- | ------------- |
-| `Gregorian` | `'gregorian'` |
-
-其他日历格式只在 iOS 上使用，HarmonyOS 上写入时拒绝。
+HarmonyOS 只支持 `Gregorian: 'gregorian'`；写入其他格式会抛出 `ERR_CONTACTS_UNSUPPORTED`。
 
 #### `ContainerTypes`
 
-| 成员         | 值             |
-| ------------ | -------------- |
-| `Local`      | `'local'`      |
-| `Exchange`   | `'exchange'`   |
-| `CardDAV`    | `'cardDAV'`    |
-| `Unassigned` | `'unassigned'` |
-
-查询容器时只返回 `Unassigned`。
-
-#### `Fields`
-
-| 成员                      | 值                          |
-| ------------------------- | --------------------------- |
-| `ID`                      | `'id'`                      |
-| `ContactType`             | `'contactType'`             |
-| `Name`                    | `'name'`                    |
-| `FirstName`               | `'firstName'`               |
-| `MiddleName`              | `'middleName'`              |
-| `LastName`                | `'lastName'`                |
-| `NamePrefix`              | `'namePrefix'`              |
-| `NameSuffix`              | `'nameSuffix'`              |
-| `Nickname`                | `'nickname'`                |
-| `PhoneticFirstName`       | `'phoneticFirstName'`       |
-| `PhoneticMiddleName`      | `'phoneticMiddleName'`      |
-| `PhoneticLastName`        | `'phoneticLastName'`        |
-| `Birthday`                | `'birthday'`                |
-| `Dates`                   | `'dates'`                   |
-| `Emails`                  | `'emails'`                  |
-| `PhoneNumbers`            | `'phoneNumbers'`            |
-| `Addresses`               | `'addresses'`               |
-| `InstantMessageAddresses` | `'instantMessageAddresses'` |
-| `UrlAddresses`            | `'urlAddresses'`            |
-| `Company`                 | `'company'`                 |
-| `JobTitle`                | `'jobTitle'`                |
-| `ImageAvailable`          | `'imageAvailable'`          |
-| `Image`                   | `'image'`                   |
-| `Note`                    | `'note'`                    |
-| `Relationships`           | `'relationships'`           |
-
-> **未实现的内容**
->
-> - `MaidenName`、`NonGregorianBirthday`、`SocialProfiles`、`Department`、`RawImage`、`ExtraNames`、`IsFavorite`：HarmonyOS 上没有对应的联系人字段。
+枚举值包括 `local`、`exchange`、`cardDAV` 和 `unassigned`。legacy 容器查询只返回 `unassigned`；对象 API `Container.getType()` 返回 `'unknown'`。
 
 #### `PermissionStatus`
 
-| 成员           | 值               |
-| -------------- | ---------------- |
-| `DENIED`       | `'denied'`       |
-| `GRANTED`      | `'granted'`      |
-| `UNDETERMINED` | `'undetermined'` |
+`GRANTED: 'granted'`、`DENIED: 'denied'`、`UNDETERMINED: 'undetermined'`，对应 `ContactsPermissionResponse.status` 的取值。
+
+### Error codes
+
+| 错误码 | HarmonyOS 触发条件 |
+| --- | --- |
+| `ERR_CONTACTS_UNSUPPORTED` | 系统能力、字段或操作不受支持，或功能要求更高的 HarmonyOS SDK 版本。 |
+| `ERR_CONTACTS_INVALID_ARGUMENT` | 参数类型、值或字段名无效。 |
+| `ERR_CONTACTS_INVALID_DATE` | 日期值无效。 |
+| `ERR_CONTACTS_MISSING_PERMISSION` | 操作所需的通讯录权限未获授权。 |
+| `ERR_CONTACTS_PERMISSION_REQUEST` | 未声明读权限，或系统无法申请声明的权限。 |
+| `ERR_CONTACTS_NOT_FOUND` | 联系人不存在或已删除。 |
+| `ERR_CONTACTS_GROUP_NOT_FOUND` | 群组不存在。 |
+| `ERR_CONTACTS_GROUP_CONTAINER_MISMATCH` | 联系人与群组不属于同一账户。 |
+| `ERR_CONTACTS_INVALID_IDENTIFIER` / `ERR_CONTACTS_INVALID_GROUP` / `ERR_CONTACTS_INVALID_CONTAINER` | 系统返回的联系人、群组或容器标识无效。 |
+| `ERR_CONTACTS_ADD` | 新建联系人后未取得有效 ID。 |
+| `ERR_CONTACTS_STALE_FIELD` | 列表项 ID 已失效或不属于该联系人。 |
+| `ERR_CONTACTS_FIELD_NOT_FOUND` | 新增列表项已保存，但无法返回其 ID。 |
+| `ERR_CONTACTS_PICKER` / `ERR_CONTACTS_FORM` | 系统联系人选择器或表单无法打开或返回有效结果。 |
+| `ERR_CONTACTS_FILE` / `ERR_CONTACTS_FILE_WRITE` / `ERR_CONTACTS_FILE_READ` / `ERR_CONTACTS_FILE_CLEANUP` | vCard 或头像文件操作失败。 |
+| `ERR_CONTACTS_OPERATION` | 联系人操作失败。 |
+| `ERR_CONTACTS_DESTROYED` | 通讯录模块已销毁。 |
+| `ERR_CONTACTS_UI_IN_PROGRESS` | 已有联系人选择器、表单或分享界面正在显示。 |
+
+### Permissions
+
+#### `Contacts.getPermissionsAsync()` / `Contacts.requestPermissionsAsync()`
+
+均返回 `Promise<ContactsPermissionResponse>`。需要声明 `ohos.permission.READ_CONTACTS`；调用申请权限时，如应用也声明 `ohos.permission.WRITE_CONTACTS`，会同时申请读写权限。未声明读权限时，`requestPermissionsAsync()` 抛出 `ERR_CONTACTS_PERMISSION_REQUEST`。
+
+`status` 为 `granted`、`denied` 或 `undetermined`。`granted` 仅在所需权限均获准时为 `true`；读权限获准时 `accessPrivileges` 为 `all`，否则为 `none`。HarmonyOS 不提供 `limited` 状态，`expires` 始终为 `never`。HarmonyOS SDK API 20 起可查询系统记录的拒绝状态；更低版本可能无法准确区分 `denied` 和 `undetermined`。
+
+#### 权限要求
+
+联系人查询、联系人数量、群组和容器查询需要读权限；创建、更新、删除联系人及群组成员变更需要读写权限。系统联系人选择器返回的所选联系人可直接读取，不要求通讯录读权限；系统联系人选择器和新建表单不要求通讯录访问权限。
 
 ## Author
 

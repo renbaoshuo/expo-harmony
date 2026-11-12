@@ -8,6 +8,20 @@
 import { ContactQuery } from './ContactsRecords';
 import { ExpoContactsError } from './ContactsError';
 
+export function nextQuery(input?: Record<string, ESObject> | null): ContactQuery {
+  const source = input ?? {};
+  const sort: ESObject = source['sortOrder'];
+  const query = readContactQuery({
+    'pageSize': source['limit'], 'pageOffset': source['offset'],
+    'sort': sort === 'givenName' ? 'firstName' : sort === 'familyName' ? 'lastName' : sort,
+    'name': source['name'], 'rawContacts': source['rawContacts'],
+  });
+  query.emptyPage = source['limit'] === 0;
+  query.matchPhoneticName = true;
+
+  return query;
+}
+
 export function readContactQuery(value: ESObject): ContactQuery {
   const input = optionalInputRecord(value, 'contactQuery');
   const raw: ESObject = input?.['rawContacts'];
@@ -95,8 +109,8 @@ export function optionalInputString(value: ESObject, name: string, allowEmpty: b
   if (value === undefined || value === null) return undefined;
 
   if (typeof value !== 'string' || (!allowEmpty && value.length === 0)) {
-    const requirement = allowEmpty ? 'a string' : 'a non-empty string';
-    throw new ExpoContactsError('ERR_CONTACTS_INVALID_ARGUMENT', `'${name}' must be ${requirement}.`);
+    const expected = allowEmpty ? 'a string' : 'a non-empty string';
+    throw new ExpoContactsError('ERR_CONTACTS_INVALID_ARGUMENT', `'${name}' must be ${expected}.`);
   }
 
   return value;

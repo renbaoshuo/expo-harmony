@@ -1,6 +1,7 @@
 {
   "platforms": ["harmony"],
   "harmony": {
-    "modules": ["ExpoContactsModule"]
+    "modules": ["ExpoContactsModule", "ExpoContactsNextModule"],
+    "services": ["ExpoContactsService"]
   }
 }

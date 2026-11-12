@@ -8,11 +8,13 @@
 export type ContactType = 'person' | 'company';
 
 export interface ContactQuery {
+  emptyPage?: boolean;
   pageSize: number;
   pageOffset: number;
   fields?: string[];
   sort?: string;
   name?: string;
+  matchPhoneticName?: boolean;
   ids?: string[];
   groupId?: string;
   containerId?: string;

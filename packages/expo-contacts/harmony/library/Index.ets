@@ -6,3 +6,5 @@
  */
 
 export { ExpoContactsModule } from './src/main/ets/ExpoContactsModule';
+export { ExpoContactsNextModule } from './src/main/ets/ExpoContactsNextModule';
+export { ExpoContactsService } from './src/main/ets/ExpoContactsService';
