@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-checkbox",
-  "version": "55.0.4-harmony.3",
+  "version": "57.0.0-harmony.0",
   "description": "HarmonyOS port of expo-checkbox",
   "keywords": [
     "react-native",
@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "expo-checkbox": "55.0.4",
+    "expo-checkbox": "57.0.0",
     "react": "*",
     "react-native": "*",
     "react-native-web": "*"
@@ -31,5 +31,22 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependenciesMeta": {
+    "react-native-web": {
+      "optional": true
+    }
+  },
+  "harmony": {
+    "metro": {
+      "redirects": [
+        {
+          "upstream": "expo-checkbox",
+          "origin": "build/Checkbox.js",
+          "request": "./ExpoCheckbox",
+          "target": "src/Checkbox.harmony.tsx"
+        }
+      ]
+    }
   }
 }

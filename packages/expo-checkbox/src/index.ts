@@ -5,5 +5,5 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-export { default } from 'expo-checkbox';
-export * from 'expo-checkbox';
+export type { CheckboxEvent, CheckboxProps } from 'expo-checkbox';
+export { default, default as Checkbox } from './Checkbox';
