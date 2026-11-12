@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-screen-capture",
-  "version": "55.0.18-harmony.3",
+  "version": "57.0.4-harmony.0",
   "description": "HarmonyOS port of expo-screen-capture",
   "keywords": [
     "react-native",
@@ -26,22 +26,33 @@
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo-screen-capture": "55.0.18"
+    "expo-modules-core": "~57.0.23",
+    "expo-screen-capture": "57.0.4",
+    "react": "*"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "@react-native-oh/react-native-harmony": "0.84.1",
-    "expo": "55.0.31",
-    "expo-modules-core": "55.0.26",
-    "expo-screen-capture": "55.0.18",
+    "expo": "57.0.31",
+    "expo-modules-core": "57.0.24",
+    "expo-screen-capture": "57.0.4",
     "react": "19.2.3",
-    "react-native": "0.84.1"
+    "react-native": "0.86.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "harmony": {
+    "metro": {
+      "entrypoints": [
+        {
+          "upstream": "expo-screen-capture",
+          "target": "src/index.ts"
+        }
+      ]
+    }
   }
 }

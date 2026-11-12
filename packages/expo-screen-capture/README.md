@@ -1,110 +1,119 @@
 # @expo-harmony/expo-screen-capture
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-screen-capture) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/screen-capture/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-screen-capture) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/screen-capture/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo ScreenCapture 的原生实现，与官方同版本的 `expo-screen-capture` 配套使用。支持阻止和恢复截屏、录屏，以及监听截图。
+为 HarmonyOS 上的 React Native 应用提供 Expo ScreenCapture 的原生实现，与官方同版本的 `expo-screen-capture` 配套使用。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
 ```bash
-npm install @expo-harmony/expo-screen-capture expo-screen-capture@55.0.18
-```
-
-本包适配 Expo SDK 55 的 `expo-screen-capture`，原生模块通过 Expo Harmony 自动链接。最低支持 HarmonyOS 5.0.1（API 13），宿主的 `compatibleSdkVersion` 也要满足这一要求。
-
-HAR 声明 `ohos.permission.PRIVACY_WINDOW`，构建时合并到宿主。该权限从 API 11 起为 `normal` 等级、`system_grant` 授权，安装后由系统自动授予，不弹出授权对话框。截图监听不需要相册、存储或 `CAPTURE_SCREEN` 权限。
-
-业务代码从官方包导入：
-
-```ts
-import * as ScreenCapture from 'expo-screen-capture';
-
-await ScreenCapture.preventScreenCaptureAsync();
-const subscription = ScreenCapture.addScreenshotListener(() => {
-  console.log('用户截图了');
-});
+npm install @expo-harmony/expo-screen-capture expo-screen-capture
 ```
 
 ## API 对照表
 
 ### Hooks
 
-#### `usePermissions(options)`
+#### `usePermissions(options?)`
 
-返回 `[PermissionResponse | null, request, get]`。HarmonyOS 上截图监听不需要权限，两者都返回已授权。
+返回 `[PermissionResponse | null, requestPermission, getPermission]`。HarmonyOS 上截图监听不需要运行时授权，权限状态始终为已授权。
 
-#### `usePreventScreenCapture(key)`
+#### `usePreventScreenCapture(key?)`
 
-在组件挂载期间阻止截屏，卸载后恢复。`key` 用于区分多个调用方，见 `preventScreenCaptureAsync()`。
+组件挂载期间阻止当前应用窗口被截屏或录屏，卸载时解除保护。`key` 默认为 `'default'`，用于区分多个保护调用；只有对应的保护都解除后，窗口才恢复可截屏和录屏。
 
 #### `useScreenshotListener(listener)`
 
-在组件挂载期间监听截图，卸载后取消监听。
+组件挂载期间监听截图，卸载时移除监听。回调不接收参数。
 
 ### Methods
 
-#### `ScreenCapture.preventScreenCaptureAsync(key)`
+#### `isAvailableAsync()`
 
-返回 `Promise<void>`，通过 React Native 窗口的隐私模式阻止截屏和录屏。
+返回 `Promise<boolean>`，HarmonyOS 上始终为 `true`。
 
-`key` 用于区分多个调用方，不同的 `key` 相互独立，全部恢复前保护一直有效。启用后保护在后台继续生效，多任务界面由系统遮罩，其他独立窗口不受影响。应用重载或 runtime 释放时，已设置的隐私模式会被解除。
+#### `preventScreenCaptureAsync(key?)`
 
-没有 UI 窗口的后台运行时无法调用，抛出 `ERR_SCREEN_CAPTURE_WINDOW`。运行时已销毁后调用抛出 `ERR_SCREEN_CAPTURE_DESTROYED`。
+启用当前应用窗口的隐私模式，返回 `Promise<void>`。默认 `key` 为 `'default'`；每个 `key` 对应一项保护。保护期间，窗口内容不能被截屏或录屏，应用退到后台时多任务预览由系统遮罩或模糊处理。最后一项保护解除前，窗口保持受保护状态。若宿主已启用隐私模式，本包不会在解除保护时关闭该模式。
 
-#### `ScreenCapture.allowScreenCaptureAsync(key)`
+#### `allowScreenCaptureAsync(key?)`
 
-返回 `Promise<void>`，恢复截屏和录屏。要放开全部保护，需要把所有用过的 `key` 都恢复一次。遗留的隐私窗口释放失败时抛出 `ERR_SCREEN_CAPTURE_RELEASE`。
+释放对应 `key` 的保护，返回 `Promise<void>`。默认 `key` 为 `'default'`；释放最后一项保护后，窗口恢复可截屏和录屏。释放失败时 Promise 以 `ERR_SCREEN_CAPTURE_RELEASE` 拒绝，可以再次调用重试。
 
-#### `ScreenCapture.getPermissionsAsync()`
+#### `enableAppSwitcherProtectionAsync(blurIntensity?)`
 
-返回 `Promise<PermissionResponse>`，恒为已授权。
+- HarmonyOS 不提供应用切换器模糊保护，调用会抛出 `UnavailabilityError`。
 
-#### `ScreenCapture.requestPermissionsAsync()`
+#### `disableAppSwitcherProtectionAsync()`
 
-返回 `Promise<PermissionResponse>`，恒为已授权，不弹出对话框。
-
-#### `ScreenCapture.isAvailableAsync()`
-
-返回 `Promise<boolean>`，恒为 `true`。
-
-> **未实现的内容**
->
-> - `enableAppSwitcherProtectionAsync()`、`disableAppSwitcherProtectionAsync()`：iOS 专属接口，HarmonyOS 上没有对应能力，调用抛出 `UnavailabilityError`。
+- HarmonyOS 不提供应用切换器模糊保护，调用会抛出 `UnavailabilityError`。
 
 ### Event subscriptions
 
-#### `ScreenCapture.addScreenshotListener(listener)`
+#### `addScreenshotListener(listener)`
 
-返回 `Subscription`，监听用户截图。只在应用处于前台且存在订阅时触发。
+返回 `Subscription`。应用处于前台且存在监听时，检测到截图会调用 `listener`；回调不接收参数。HarmonyOS API 20 及以上会在系统完成控制中心或快捷键截屏，以及滚动截屏结束时触发。API 13–19 会在控制中心或整屏截屏后触发。回调表示系统检测到截图，不表示图片已成功保存，也不提供图片或文件路径。没有录屏开始或结束事件。
 
-通知只表示系统检测到截图操作，不代表截图文件已经保存成功。
+#### `removeScreenshotListener(subscription)`
 
-事件对控制中心截屏、hdc 命令截屏和整屏截屏接口生效。回调不携带截图的图片或文件路径，也没有录屏开始、结束事件。
-
-#### `ScreenCapture.removeScreenshotListener(subscription)`
-
-取消监听。官方已标记废弃，改调 `subscription.remove()`。
+移除指定的截图监听。此方法已弃用，请改用 `subscription.remove()`。
 
 ### Types
 
 #### `PermissionHookOptions`
 
-`PermissionHookBehavior | Options`。
+作为 `usePermissions(options)` 的选项，可设置 `get` 和 `request`，分别控制是否在组件挂载时查询或请求权限。
 
 #### `PermissionResponse`
 
-| 属性          | 类型                   | 说明             |
-| ------------- | ---------------------- | ---------------- |
-| `status`      | `PermissionStatus`     | 恒为 `'granted'` |
-| `granted`     | `boolean`              | 恒为 `true`      |
-| `canAskAgain` | `boolean`              | 恒为 `true`      |
-| `expires`     | `PermissionExpiration` | 恒为 `'never'`   |
+| 属性 | 类型 | HarmonyOS 返回值 |
+| --- | --- | --- |
+| `status` | `PermissionStatus` | `'granted'` |
+| `granted` | `boolean` | `true` |
+| `canAskAgain` | `boolean` | `true` |
+| `expires` | `PermissionExpiration` | `'never'` |
+
+#### `Subscription`
+
+`addScreenshotListener(listener)` 返回的监听订阅对象。调用 `subscription.remove()` 可移除监听。
 
 ### Enums
 
 #### `PermissionStatus`
 
-`'granted' | 'denied' | 'undetermined'`。HarmonyOS 上只出现 `'granted'`。
+`GRANTED`、`DENIED` 和 `UNDETERMINED` 分别表示已授权、已拒绝和未确定。HarmonyOS 上权限状态始终为 `GRANTED`。
+
+### Error codes
+
+#### `ERR_SCREEN_CAPTURE_WINDOW`
+
+没有可用的应用窗口时，启用截屏保护会失败。
+
+#### `ERR_SCREEN_CAPTURE_DESTROYED`
+
+应用运行环境已销毁后调用截屏保护方法时失败。
+
+#### `ERR_SCREEN_CAPTURE_RELEASE`
+
+解除窗口隐私模式失败时抛出；可以重试 `allowScreenCaptureAsync()`。
+
+### Permissions
+
+#### `getPermissionsAsync()`
+
+返回 `Promise<PermissionResponse>`，结果始终表示已授权。
+
+#### `requestPermissionsAsync()`
+
+返回 `Promise<PermissionResponse>`，结果始终表示已授权，不会弹出授权对话框。
+
+#### `ohos.permission.PRIVACY_WINDOW`
+
+用于开启窗口隐私模式。系统在应用安装时授予此权限，不会弹出授权对话框。截图监听不需要相册、存储或其他运行时权限。[HarmonyOS 权限说明](https://developer.huawei.com/consumer/cn/doc/HarmonyOS-Guides/permissions-for-all/)
 
 ## Author
 
