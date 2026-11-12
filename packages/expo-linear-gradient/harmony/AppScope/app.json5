@@ -9,7 +9,7 @@
   "app": {
     "bundleName": "dev.expo.lineargradient.build",
     "vendor": "expo-harmony",
-    "versionCode": 550018,
-    "versionName": "55.0.18-harmony.0"
+    "versionCode": 570002,
+    "versionName": "57.0.2-harmony.0"
   }
 }

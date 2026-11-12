@@ -8,7 +8,7 @@
 {
   "modelVersion": "5.0.0",
   "name": "@expo-harmony-internal/expo-linear-gradient",
-  "version": "55.0.18-harmony.3",
+  "version": "57.0.2-harmony.0",
   "description": "HarmonyOS port of expo-linear-gradient",
   "keywords": [
     "react-native",
@@ -25,12 +25,10 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@expo-harmony/expo-linear-gradient": "./library",
-    "@expo-harmony/expo-modules-core": "55.0.26-harmony.3",
-    "@rnoh/react-native-openharmony": "0.84.1"
+    "@expo-harmony/expo-linear-gradient": "./library"
   },
   "overrides": {
-    "@expo-harmony/expo-modules-core": "55.0.26-harmony.3",
-    "@rnoh/react-native-openharmony": "0.84.1"
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
+    "@rnoh/react-native-openharmony": "0.86.1"
   }
 }

@@ -5,6 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+import { ColorMetrics } from '@kit.ArkUI';
 import {
   ExpoEither,
   ExpoModule,
@@ -17,25 +18,33 @@ import {
 } from '@expo-harmony/expo-modules-core';
 import type { ExpoViewContentContext } from '@expo-harmony/expo-modules-core';
 
-type GradientColor = ExpoEither<number, string>;
+type GradientColor = ExpoEither<number, string> | null | undefined;
+type GradientNumber = number | null | undefined;
 type GradientRadius = ExpoEither<number, string>;
 type CanvasRadius = number | string;
 type GradientStop = [string, number];
 
-const COLOR_TYPE = ExpoValueTypes.either(ExpoValueTypes.number(), ExpoValueTypes.string());
+// Invalid colors and incomplete points can arrive as null array entries from upstream JS.
+const COLOR_TYPE = ExpoValueTypes.either(ExpoValueTypes.number(), ExpoValueTypes.string()).nullable().optional();
 const COLORS_TYPE = ExpoValueTypes.array(COLOR_TYPE);
-const LOCATIONS_TYPE = ExpoValueTypes.array(ExpoValueTypes.number()).nullable();
-const POINT_TYPE = ExpoValueTypes.array(ExpoValueTypes.number()).nullable();
+const NUMBERS_TYPE = ExpoValueTypes.array(ExpoValueTypes.number().nullable().optional()).nullable();
 const RADIUS_TYPE = ExpoValueTypes.either(ExpoValueTypes.number(), ExpoValueTypes.string());
 const BORDER_RADII_TYPE = ExpoValueTypes.array(RADIUS_TYPE).nullable();
+
+interface Gradient {
+  readonly stops: GradientStop[];
+  readonly startPoint: number[];
+  readonly endPoint: number[];
+}
 
 @Observed
 class ExpoLinearGradientView extends ExpoView {
   colors: GradientColor[] = [];
-  locations: number[] | null = null;
+  locations: GradientNumber[] | null = null;
   startPoint: number[] = [0.5, 0];
   endPoint: number[] = [0.5, 1];
   borderRadii: CanvasRadius[] = [0, 0, 0, 0];
+  gradient?: Gradient;
   private redraw?: () => void;
 
   constructor(context: ExpoViewContext) {
@@ -46,16 +55,25 @@ class ExpoLinearGradientView extends ExpoView {
     this.redraw = callback;
   }
 
-  detachRedraw(): void {
-    this.redraw = undefined;
+  detachRedraw(callback: () => void): void {
+    if (this.redraw === callback) this.redraw = undefined;
   }
 
-  requestRedraw(): void {
+  updateGradient(): void {
+    const stops: GradientStop[] | undefined = gradientStops(this.colors, this.locations);
+    if (stops === undefined) {
+      console.warn('ExpoLinearGradient ignored an invalid colors or locations update.');
+      return;
+    }
+
+    // A resized or recreated canvas needs to repaint even after an invalid prop update.
+    this.gradient = { stops, startPoint: this.startPoint, endPoint: this.endPoint };
     this.redraw?.();
   }
 }
 
 function colorToString(color: GradientColor): string | undefined {
+  if (color === undefined || color === null) return undefined;
   if (color.isFirst) {
     const value: number | undefined = color.first;
     if (value === undefined || !Number.isFinite(value) || !Number.isInteger(value) || value < -2147483648 || value > 4294967295) {
@@ -67,11 +85,19 @@ function colorToString(color: GradientColor): string | undefined {
     return `#${argb.toString(16).padStart(8, '0')}`;
   }
 
-  const value: string | undefined = color.second;
-  return value !== undefined && value.length > 0 ? value : undefined;
+  const value: string | undefined = color.second?.trim();
+  if (value === undefined || value.length === 0) return undefined;
+
+  try {
+    // Canvas can silently ignore invalid color strings instead of throwing.
+    ColorMetrics.resourceColor(value);
+    return value;
+  } catch {
+    return undefined;
+  }
 }
 
-function gradientStops(colors: GradientColor[], locations: number[] | null): GradientStop[] | undefined {
+function gradientStops(colors: GradientColor[], locations: GradientNumber[] | null): GradientStop[] | undefined {
   if (colors.length < 2) return undefined;
   if (locations !== null && locations.length !== colors.length) return undefined;
 
@@ -82,8 +108,8 @@ function gradientStops(colors: GradientColor[], locations: number[] | null): Gra
     const color: string | undefined = colorToString(colors[index]);
     if (color === undefined) return undefined;
 
-    const offset: number = locations === null ? index / (colors.length - 1) : locations[index];
-    if (!Number.isFinite(offset) || offset < 0 || offset > 1 || offset < previous) {
+    const offset: GradientNumber = locations === null ? index / (colors.length - 1) : locations[index];
+    if (typeof offset !== 'number' || !Number.isFinite(offset) || offset < 0 || offset > 1 || offset < previous) {
       return undefined;
     }
 
@@ -94,13 +120,16 @@ function gradientStops(colors: GradientColor[], locations: number[] | null): Gra
   return stops;
 }
 
-function normalizePoint(point: number[] | null, x: number, y: number): number[] | undefined {
+function normalizePoint(point: GradientNumber[] | null, x: number, y: number): number[] | undefined {
   if (point === null) return [x, y];
-  if (point.length !== 2 || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) {
+
+  const pointX: GradientNumber = point[0];
+  const pointY: GradientNumber = point[1];
+  if (point.length !== 2 || typeof pointX !== 'number' || typeof pointY !== 'number' || !Number.isFinite(pointX) || !Number.isFinite(pointY)) {
     return undefined;
   }
 
-  return [point[0], point[1]];
+  return [pointX, pointY];
 }
 
 function normalizeRadius(radius: GradientRadius): CanvasRadius | undefined {
@@ -109,11 +138,11 @@ function normalizeRadius(radius: GradientRadius): CanvasRadius | undefined {
     return value !== undefined && Number.isFinite(value) && value >= 0 ? value : undefined;
   }
 
-  const value: string | undefined = radius.second;
-  if (value === undefined || !value.endsWith('%')) return undefined;
+  const value: string | undefined = radius.second?.trim();
+  if (value === undefined || !/^\+?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%$/i.test(value)) return undefined;
 
   const percentage: number = Number(value.slice(0, -1));
-  return Number.isFinite(percentage) && percentage >= 0 ? value : undefined;
+  return Number.isFinite(percentage) ? `${percentage}%` : undefined;
 }
 
 function normalizeBorderRadii(radii: GradientRadius[] | null): CanvasRadius[] | undefined {
@@ -137,40 +166,37 @@ struct ExpoLinearGradientViewContent {
   @ObjectLink view: ExpoLinearGradientView;
   private context: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true));
   private ready: boolean = false;
+  private readonly redraw = (): void => {
+    if (this.ready) this.drawGradient();
+  };
 
   aboutToAppear(): void {
-    this.view.attachRedraw((): void => {
-      if (this.ready) this.drawGradient();
-    });
+    this.view.attachRedraw(this.redraw);
   }
 
   aboutToDisappear(): void {
-    this.view.detachRedraw();
+    this.ready = false;
+    this.view.detachRedraw(this.redraw);
   }
 
   private drawGradient(): void {
     const width: number = this.context.width;
     const height: number = this.context.height;
-    if (width <= 0 || height <= 0) return;
+    const gradient: Gradient | undefined = this.view.gradient;
+    if (!(width > 0 && height > 0) || gradient === undefined) return;
 
-    const stops: GradientStop[] | undefined = gradientStops(this.view.colors, this.view.locations);
-    if (stops === undefined) {
-      console.warn('ExpoLinearGradient ignored an invalid colors or locations update.');
-      return;
-    }
-
-    const startX: number = this.view.startPoint[0] * width;
-    const startY: number = this.view.startPoint[1] * height;
-    const endX: number = this.view.endPoint[0] * width;
-    const endY: number = this.view.endPoint[1] * height;
+    const startX: number = gradient.startPoint[0] * width;
+    const startY: number = gradient.startPoint[1] * height;
+    const endX: number = gradient.endPoint[0] * width;
+    const endY: number = gradient.endPoint[1] * height;
 
     try {
-      const gradient = this.context.createLinearGradient(startX, startY, endX, endY);
-      stops.forEach((stop: GradientStop): void => gradient.addColorStop(stop[1], stop[0]));
+      const fill: CanvasGradient = this.context.createLinearGradient(startX, startY, endX, endY);
+      gradient.stops.forEach((stop: GradientStop): void => fill.addColorStop(stop[1], stop[0]));
 
       this.context.clearRect(0, 0, width, height);
 
-      this.context.fillStyle = gradient;
+      this.context.fillStyle = fill;
       this.context.fillRect(0, 0, width, height);
     } catch (error) {
       console.warn(`ExpoLinearGradient ignored a gradient rejected by ArkUI Canvas: ${String(error)}`);
@@ -193,9 +219,7 @@ struct ExpoLinearGradientViewContent {
         this.ready = true;
         this.drawGradient();
       })
-      .onAreaChange((): void => {
-        if (this.ready) this.drawGradient();
-      });
+      .onAreaChange(this.redraw);
   }
 }
 
@@ -225,16 +249,16 @@ export class ExpoLinearGradientModule extends ExpoModule {
       )
       .prop(
         'locations',
-        LOCATIONS_TYPE,
-        (view: ExpoLinearGradientView, locations: number[] | null): void => {
+        NUMBERS_TYPE,
+        (view: ExpoLinearGradientView, locations: GradientNumber[] | null): void => {
           view.locations = locations;
         },
         null,
       )
       .prop(
         'startPoint',
-        POINT_TYPE,
-        (view: ExpoLinearGradientView, point: number[] | null): void => {
+        NUMBERS_TYPE,
+        (view: ExpoLinearGradientView, point: GradientNumber[] | null): void => {
           const normalized: number[] | undefined = normalizePoint(point, 0.5, 0);
           if (normalized !== undefined) view.startPoint = normalized;
         },
@@ -242,8 +266,8 @@ export class ExpoLinearGradientModule extends ExpoModule {
       )
       .prop(
         'endPoint',
-        POINT_TYPE,
-        (view: ExpoLinearGradientView, point: number[] | null): void => {
+        NUMBERS_TYPE,
+        (view: ExpoLinearGradientView, point: GradientNumber[] | null): void => {
           const normalized: number[] | undefined = normalizePoint(point, 0.5, 1);
           if (normalized !== undefined) view.endPoint = normalized;
         },
@@ -258,8 +282,7 @@ export class ExpoLinearGradientModule extends ExpoModule {
         },
         null,
       )
-      .prop('dither', ExpoValueTypes.boolean().nullable(), (_view: ExpoLinearGradientView, _dither: boolean | null): void => {}, true)
-      .onDidUpdateProps((view: ExpoLinearGradientView): void => view.requestRedraw());
+      .onDidUpdateProps((view: ExpoLinearGradientView): void => view.updateGradient());
 
     return new ExpoModuleDefinition().name('ExpoLinearGradient').view(view);
   }
