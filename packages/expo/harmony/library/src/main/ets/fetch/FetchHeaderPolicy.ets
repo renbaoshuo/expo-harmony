@@ -8,10 +8,13 @@
 import { ExpoFetchError } from './ExpoFetchError';
 import url from '@ohos.url';
 
-const NON_COMBINABLE_REQUEST_HEADERS: Set<string> = new Set<string>(['authorization', 'content-length', 'host', 'proxy-authorization']);
+const INVALID_TOKEN_CHAR = /[^A-Za-z0-9!#$%&'*+.^_`|~-]/;
+const SINGLE_VALUE_REQUEST_HEADERS: Set<string> = new Set<string>([
+  'authorization', 'content-length', 'content-type', 'host', 'proxy-authorization',
+]);
 
-export function collectRequestHeaders(pairs: string[][]): Map<string, string> {
-  const values: Map<string, string> = new Map<string, string>();
+export function collectRequestHeaders(pairs: string[][]): Map<string, string | string[]> {
+  const values: Map<string, string | string[]> = new Map<string, string | string[]>();
   const names: Map<string, string> = new Map<string, string>();
 
   pairs.forEach((pair: string[]): void => {
@@ -19,17 +22,34 @@ export function collectRequestHeaders(pairs: string[][]): Map<string, string> {
       throw new ExpoFetchError('ERR_FETCH_HEADERS', 'Each request header must contain exactly a name and a value');
     }
 
-    const normalized = pair[0].toLowerCase();
-    const name = names.get(normalized) ?? pair[0];
+    const originalName = pair[0];
+    const value = pair[1];
+    if (originalName.length === 0 || INVALID_TOKEN_CHAR.test(originalName)) {
+      throw new ExpoFetchError('ERR_FETCH_HEADERS', 'Invalid request header name');
+    }
+    if (/[\u0000-\u0008\u000a-\u001f\u007f]/.test(value)) {
+      throw new ExpoFetchError('ERR_FETCH_HEADERS', `Invalid value for request header ${originalName}`);
+    }
+
+    const normalized = originalName.toLowerCase();
+    const name = names.get(normalized) ?? originalName;
     names.set(normalized, name);
     const prior = values.get(name);
 
-    if (prior !== undefined && NON_COMBINABLE_REQUEST_HEADERS.has(normalized)) {
-      throw new ExpoFetchError('ERR_FETCH_HEADERS', `HarmonyOS NetStack cannot preserve duplicate ${pair[0]} request headers`);
+    if (prior === undefined) {
+      values.set(name, value);
+    } else if (SINGLE_VALUE_REQUEST_HEADERS.has(normalized)) {
+      throw new ExpoFetchError('ERR_FETCH_HEADERS', `Duplicate ${name} request header`);
+    } else if (Array.isArray(prior)) {
+      prior.push(value);
+    } else {
+      // Cookies use one semicolon-delimited field. RCP accepts repeated values as arrays.
+      values.set(name, normalized === 'cookie' ? `${prior}; ${value}` : [prior, value]);
     }
-
-    values.set(name, prior === undefined ? pair[1] : `${prior}${normalized === 'cookie' ? '; ' : ', '}${pair[1]}`);
   });
+
+  // RCP error 1007900061 documents gzip as its only supported content coding.
+  if (!names.has('accept-encoding')) values.set('accept-encoding', 'gzip');
 
   return values;
 }
@@ -51,14 +71,24 @@ export function filePathFromUrl(value: string): string {
   }
 }
 
-export function headersForDecodedResponse(pairs: string[][]): string[][] {
-  const encoding = pairs.find((pair: string[]): boolean => {
-    return pair.length >= 2 && pair[0].toLowerCase() === 'content-encoding';
-  });
+export function headersForDecodedResponse(pairs: string[][], method: string, status: number): string[][] {
+  // A bodyless response may describe the selected representation's encoding
+  // and length, even though no bytes were decompressed for this request.
+  if (method === 'HEAD' || status === 204 || status === 205 || status === 304) return pairs;
 
-  if (encoding === undefined || encoding[1].trim().toLowerCase() === 'identity') {
-    return pairs;
+  const encodings = pairs.filter((pair: string[]): boolean => {
+    return pair.length >= 2 && pair[0].toLowerCase() === 'content-encoding';
+  }).map((pair: string[]): string => pair[1]).join(',').toLowerCase().split(',').map((value: string): string => value.trim());
+
+  if (encodings.every((value: string): boolean => value.length === 0 || value === 'identity')) return pairs;
+  if (encodings.length !== 1 || encodings[0] !== 'gzip') {
+    throw new ExpoFetchError(
+      'ERR_FETCH_UNSUPPORTED_ENCODING',
+      `HarmonyOS RCP supports gzip response encoding; received '${encodings.join(', ')}'.`,
+    );
   }
+
+  // The system decoder owns gzip, including responses to explicit request headers.
 
   return pairs.filter((pair: string[]): boolean => {
     const name = pair[0].toLowerCase();
@@ -84,7 +114,7 @@ export function mergeCookieHeaders(explicit: string | null, stored: string): str
 }
 
 export function requestMethodPolicy(method: string): string {
-  if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(method)) {
+  if (method.length === 0 || INVALID_TOKEN_CHAR.test(method)) {
     throw new ExpoFetchError('ERR_FETCH_METHOD', method);
   }
 

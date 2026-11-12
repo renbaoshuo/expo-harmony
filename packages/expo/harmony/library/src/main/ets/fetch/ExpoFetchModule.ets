@@ -19,6 +19,7 @@ import { FetchInit } from './FetchTypes';
 import { NativeRequest } from './NativeRequest';
 import { NativeResponse } from './NativeResponse';
 import { FETCH_INIT_TYPE, HEADER_PAIRS_TYPE } from './FetchUtils';
+import { createBlobData } from './FetchBlob';
 
 export class ExpoFetchModule extends ExpoModule {
   private readonly runtime: ExpoFetchRuntime;
@@ -83,6 +84,12 @@ export class ExpoFetchModule extends ExpoModule {
 
     return new ExpoModuleDefinition()
       .name('ExpoFetchModule')
+      .asyncFunction(
+        'unstable_createBlobData',
+        ExpoFunction.typed1(ExpoValueTypes.uint8Array(), async (data: Uint8Array): Promise<string> => {
+          return createBlobData(this.context, data);
+        }).returns(ExpoValueTypes.string()),
+      )
       .sharedObjectClass(responseClass)
       .sharedObjectClass(requestClass)
       .onDestroy((): void => this.runtime.destroy());

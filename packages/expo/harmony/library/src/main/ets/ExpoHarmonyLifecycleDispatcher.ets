@@ -30,6 +30,8 @@ class AbilitySubscriberEntry {
 class AbilitySubscribers {
   readonly entries: AbilitySubscriberEntry[] = [];
   stage?: window.WindowStage;
+  destroyingStage?: window.WindowStage;
+  windowSetup?: Promise<void>;
   ready: boolean = false;
   page?: (info: observer.RouterPageInfo) => void;
 }
@@ -150,6 +152,7 @@ export class ExpoHarmonyLifecycleDispatcher {
     if (scope === undefined) return;
 
     scope.stage = stage;
+    scope.windowSetup = undefined;
     scope.ready = false;
     this.dispatch(context, 'onWindowStageCreate', (subscriber: ExpoAbilityLifecycleSubscriber): void => subscriber.onWindowStageCreate(stage));
   }
@@ -159,8 +162,39 @@ export class ExpoHarmonyLifecycleDispatcher {
     if (scope === undefined) return;
 
     scope.stage = stage;
+    scope.windowSetup = undefined;
     scope.ready = false;
     this.dispatch(context, 'onWindowStageRestore', (subscriber: ExpoAbilityLifecycleSubscriber): void => subscriber.onWindowStageRestore(stage));
+  }
+
+  async onWindowSetup(context: common.UIAbilityContext, target: window.Window): Promise<void> {
+    const scope = this.scopes.get(context);
+    const stage = scope?.stage;
+    if (scope === undefined || stage === undefined || scope.entries.length === 0) return;
+
+    try {
+      // RNOH's asynchronous setup for a previous stage can finish after a new stage arrives.
+      const mainWindow = stage.getMainWindowSync();
+      if (mainWindow.getWindowProperties().id !== target.getWindowProperties().id) return;
+    } catch (error) {
+      reportSubscriberFailure('ability', 'onWindowSetup', error);
+      return;
+    }
+
+    if (scope.windowSetup === undefined) {
+      const setup = Promise.resolve().then(async (): Promise<void> => {
+        for (const entry of scope.entries) {
+          if (this.scopes.get(context) !== scope || scope.windowSetup !== setup) return;
+          try {
+            await entry.subscriber.onWindowSetup(target);
+          } catch (error) {
+            reportSubscriberFailure(entry.id, 'onWindowSetup', error);
+          }
+        }
+      });
+      scope.windowSetup = setup;
+    }
+    await scope.windowSetup;
   }
 
   async onWindowStageSetup(context: common.UIAbilityContext, stage: window.WindowStage): Promise<void> {
@@ -199,24 +233,34 @@ export class ExpoHarmonyLifecycleDispatcher {
     }
   }
 
-  onWindowStageWillDestroy(context: common.UIAbilityContext, stage?: window.WindowStage): void {
+  onWindowStageWillDestroy(context: common.UIAbilityContext, stage?: window.WindowStage): boolean {
     const scope = this.scopes.get(context);
-    if (scope === undefined) return;
+    if (scope === undefined) return true;
 
     const current = stage ?? scope.stage;
+    scope.destroyingStage = current;
+    if (stage !== undefined && scope.stage !== stage) return false;
 
     scope.stage = undefined;
+    scope.windowSetup = undefined;
     this.dispatch(context, 'onWindowStageWillDestroy', (subscriber: ExpoAbilityLifecycleSubscriber): void =>
       subscriber.onWindowStageWillDestroy(current),
     );
+    return true;
   }
 
-  onWindowStageDestroy(context: common.UIAbilityContext): void {
+  onWindowStageDestroy(context: common.UIAbilityContext): boolean {
     const scope = this.scopes.get(context);
-    if (scope === undefined) return;
+    if (scope === undefined) return true;
+
+    const destroying = scope.destroyingStage;
+    scope.destroyingStage = undefined;
+    if (destroying !== undefined && scope.stage !== undefined && destroying !== scope.stage) return false;
 
     scope.stage = undefined;
+    scope.windowSetup = undefined;
     this.dispatch(context, 'onWindowStageDestroy', (subscriber: ExpoAbilityLifecycleSubscriber): void => subscriber.onWindowStageDestroy());
+    return true;
   }
 
   onBackPressed(context: common.UIAbilityContext): boolean {

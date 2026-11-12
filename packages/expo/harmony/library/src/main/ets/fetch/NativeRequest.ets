@@ -17,6 +17,7 @@ export class NativeRequest extends ExpoSharedObject {
   private readonly response: NativeResponse;
   private readonly id: string;
   private cancelled: boolean = false;
+  private started: boolean = false;
 
   constructor(context: ExpoModuleContext, runtime: ExpoFetchRuntime, response: NativeResponse) {
     super(context);
@@ -27,8 +28,18 @@ export class NativeRequest extends ExpoSharedObject {
   }
 
   async start(inputUrl: string, init: FetchInit, body: Uint8Array | null): Promise<void> {
+    if (this.started) throw new ExpoFetchError('ERR_FETCH_REQUEST', 'The fetch request has already been started.');
+
+    this.started = true;
     try {
+      if (this.cancelled) throw new ExpoFetchError('ERR_FETCH_REQUEST_CANCELED', 'Fetch request has been canceled');
+
       const result = await this.runtime.start(this.id, inputUrl, init, body);
+      if (this.cancelled) {
+        this.runtime.discard(this.id);
+        throw new ExpoFetchError('ERR_FETCH_REQUEST_CANCELED', 'Fetch request has been canceled');
+      }
+
       this.response.complete(result);
       this.response.watchCompletion();
     } catch (error) {

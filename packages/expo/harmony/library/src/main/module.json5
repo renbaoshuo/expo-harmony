@@ -10,6 +10,12 @@
     "name": "expo",
     "type": "har",
     "deviceTypes": ["default", "tablet", "2in1"],
+    "metadata": [
+      {
+        "name": "UseTsHar",
+        "value": "true"
+      }
+    ],
     "requestPermissions": [
       {
         "name": "ohos.permission.INTERNET"

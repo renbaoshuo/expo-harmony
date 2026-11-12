@@ -1,0 +1,7 @@
+.hvigor/
+oh_modules/
+library/.cxx/
+.native-build/
+library/BuildProfile.ets
+library/build/
+library/oh_modules/

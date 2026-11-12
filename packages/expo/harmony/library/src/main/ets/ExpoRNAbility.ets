@@ -17,6 +17,7 @@ import {
   EXPO_LIFECYCLE_NEW_INTENT,
   EXPO_LIFECYCLE_WINDOW_STAGE_SETUP,
   EXPO_LIFECYCLE_WINDOW_STAGE_WILL_DESTROY,
+  copyWant,
 } from '@expo-harmony/expo-modules-core';
 
 export abstract class ExpoRNAbility extends RnohAbility {
@@ -35,14 +36,21 @@ export abstract class ExpoRNAbility extends RnohAbility {
 
   override onCreate(want: Want, launch?: AbilityConstant.LaunchParam): void {
     const provider = this.getExpoHarmonyHostProvider();
+    const routedWant = copyWant(want);
 
-    provider.hostState.beginAbility(this.context, want);
+    provider.hostState.beginAbility(this.context, routedWant);
     try {
-      provider.lifecycle.onCreate(this.context, want, launch);
-      super.onCreate(want, launch);
+      provider.lifecycle.onCreate(this.context, routedWant, launch);
+      super.onCreate(routedWant, launch);
       ExpoReactHost.attachAbility(this.context);
     } catch (error) {
-      provider.hostState.finishAbility(this.context);
+      provider.lifecycle.onDestroy(this.context);
+      try {
+        provider.hostState.finishAbility(this.context);
+      } finally {
+        super.onDestroy();
+      }
+
       throw new Error(`Unable to create the Expo ability: ${String(error)}`);
     }
   }
@@ -54,11 +62,18 @@ export abstract class ExpoRNAbility extends RnohAbility {
   override onNewWant(want: Want, launch: AbilityConstant.LaunchParam): void {
     if (!this.activate()) return;
 
-    this.getExpoHarmonyHostProvider().lifecycle.onNewWant(this.context, want, launch);
+    const provider = this.getExpoHarmonyHostProvider();
+    const routedWant = copyWant(want);
+    provider.lifecycle.onNewWant(this.context, routedWant, launch);
 
-    super.onNewWant(want, launch);
+    super.onNewWant(routedWant, launch);
 
-    this.getExpoHarmonyHostProvider().hostState.dispatch(this.context, EXPO_LIFECYCLE_NEW_INTENT, want);
+    provider.hostState.dispatch(this.context, EXPO_LIFECYCLE_NEW_INTENT, routedWant);
+  }
+
+  protected override async onWindowSetup(target: window.Window): Promise<void> {
+    await super.onWindowSetup(target);
+    await this.getExpoHarmonyHostProvider().lifecycle.onWindowSetup(this.context, target);
   }
 
   protected override async onWindowStageSetup(stage: window.WindowStage): Promise<void> {
@@ -86,15 +101,14 @@ export abstract class ExpoRNAbility extends RnohAbility {
   override onWindowStageWillDestroy(stage?: window.WindowStage): void {
     const provider = this.getExpoHarmonyHostProvider();
 
-    provider.hostState.dispatch(this.context, EXPO_LIFECYCLE_WINDOW_STAGE_WILL_DESTROY);
-    provider.lifecycle.onWindowStageWillDestroy(this.context, stage);
-
-    super.onWindowStageWillDestroy();
+    if (stage === undefined || provider.lifecycle.isWindowStageActive(this.context, stage)) {
+      provider.hostState.dispatch(this.context, EXPO_LIFECYCLE_WINDOW_STAGE_WILL_DESTROY);
+    }
+    if (provider.lifecycle.onWindowStageWillDestroy(this.context, stage)) super.onWindowStageWillDestroy();
   }
 
   override onWindowStageDestroy(): void {
-    this.getExpoHarmonyHostProvider().lifecycle.onWindowStageDestroy(this.context);
-    super.onWindowStageDestroy();
+    if (this.getExpoHarmonyHostProvider().lifecycle.onWindowStageDestroy(this.context)) super.onWindowStageDestroy();
   }
 
   override onWillForeground(): void {

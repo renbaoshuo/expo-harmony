@@ -1,7 +1,7 @@
 {
   "name": "@expo-harmony/expo",
-  "version": "55.0.31-harmony.3",
-  "description": "HarmonyOS native integration for Expo",
+  "version": "57.0.30-harmony.0",
+  "description": "HarmonyOS port of expo",
   "keywords": [
     "react-native",
     "expo",
@@ -25,19 +25,18 @@
     "prepack": "expo-harmony-module prepack"
   },
   "peerDependencies": {
-    "expo": "55.0.31"
+    "expo": "^57.0.30"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "@react-native-oh/react-native-harmony": "0.84.1",
-    "expo": "55.0.31",
-    "expo-modules-core": "55.0.26",
+    "expo": "57.0.30",
+    "expo-modules-core": "57.0.23",
     "react": "19.2.3",
-    "react-native": "0.84.1"
+    "react-native": "0.86.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
   },
   "publishConfig": {
     "access": "public"
@@ -46,11 +45,22 @@
     "@expo-harmony/expo-modules-core": "workspace:*"
   },
   "harmony": {
+    "metro": {
+      "redirects": [
+        {
+          "upstream": "expo",
+          "origin": "src/dom/webview-wrapper.tsx",
+          "request": "./base",
+          "target": "dom/base.js"
+        }
+      ]
+    },
     "autolinking": {
       "mainHarPath": "harmony",
       "ohPackageName": "@expo-harmony/expo",
       "etsPackageClassName": "ExpoPackage",
       "etsPackageImport": "named",
+      "etsPackageScope": "ui",
       "cppPackageClassName": "ExpoPackage",
       "cmakeLibraryTargetName": "expo_harmony__expo"
     }

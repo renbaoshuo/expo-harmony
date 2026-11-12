@@ -69,6 +69,7 @@ export class NativeResponse extends ExpoSharedObject {
         this.finalize();
         return packet.data;
       }
+
       if (packet.data.byteLength > 0) {
         this.sendEvent('didReceiveResponseData', packet.data);
       }
@@ -177,6 +178,7 @@ export class NativeResponse extends ExpoSharedObject {
         this.finalize();
         return;
       }
+
       if (packet.data.byteLength > 0) {
         this.sendEvent('didReceiveResponseData', packet.data);
       }
@@ -189,7 +191,7 @@ export class NativeResponse extends ExpoSharedObject {
   }
 
   private emitStreamFailure(error: ExpoFetchError): void {
-    if (this.released) return;
+    if (this.streamingCancelled || this.released) return;
     this.sendEvent('didFailWithError', formatError(error));
     this.finalize();
   }

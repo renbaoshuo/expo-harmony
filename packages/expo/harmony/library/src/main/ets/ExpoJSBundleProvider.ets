@@ -7,6 +7,7 @@
 
 import type { common } from '@kit.AbilityKit';
 import {
+  AssetRoot,
   FileJSBundleProvider,
   HotReloadConfig,
   JSBundleProvider,
@@ -21,8 +22,8 @@ export class ExpoResourceBundle extends ResourceJSBundleProvider {
   private readonly context: common.Context;
   private readonly asset: string;
 
-  constructor(context: common.Context, path: string) {
-    super(context.resourceManager, path);
+  constructor(context: common.Context, path: string, appKeys: string[] = []) {
+    super(context.resourceManager, path, appKeys);
     this.context = context;
     this.asset = path;
   }
@@ -34,7 +35,7 @@ export class ExpoResourceBundle extends ResourceJSBundleProvider {
         const fd = this.context.resourceManager.getRawFdSync(this.asset);
         if (fd) {
           this.context.resourceManager.closeRawFdSync(this.asset);
-          // RNOH 0.84.1 mmaps the raw offset; Hermes requires uint32 bytecode alignment.
+          // RNOH mmaps the raw offset; Hermes requires uint32 bytecode alignment.
           if (fd.offset % Uint32Array.BYTES_PER_ELEMENT === 0) return { rawFilePath: this.asset };
         }
       } catch (_error) {}
@@ -66,27 +67,35 @@ export class ExpoJSBundleProvider extends JSBundleProvider {
     return (this.selected ?? this.fallback).getURL();
   }
   getAppKeys(): string[] {
-    return this.fallback.getAppKeys();
+    return (this.selected ?? this.fallback).getAppKeys();
+  }
+  getAssetRoot(): AssetRoot | undefined {
+    return (this.selected ?? this.fallback).getAssetRoot();
   }
   getHotReloadConfig(): HotReloadConfig | null {
     return (this.selected ?? this.fallback).getHotReloadConfig();
   }
+  getHumanFriendlyURL(): string {
+    return (this.selected ?? this.fallback).getHumanFriendlyURL();
+  }
 
   async getBundle(progress?: (value: number) => void, switched?: (provider: JSBundleProvider) => void): Promise<JsBundle> {
+    const previous = this.selected ?? this.fallback;
     this.selected = await this.delegate.getJSBundleProvider(this.debug);
     if (this.selected === undefined) {
+      const appKeys = this.fallback.getAppKeys();
       const path = await this.delegate.getJSBundleFile(this.debug);
       if (path !== undefined) {
         this.selected = path.startsWith('assets://')
-          ? new ExpoResourceBundle(this.context, path.slice('assets://'.length))
-          : new FileJSBundleProvider(path, this.getAppKeys());
+          ? new ExpoResourceBundle(this.context, path.slice('assets://'.length), appKeys)
+          : new FileJSBundleProvider(path, appKeys);
       } else {
         const asset = await this.delegate.getBundleAssetName(this.debug);
-        this.selected = asset === undefined ? this.fallback : new ExpoResourceBundle(this.context, asset);
+        this.selected = asset === undefined ? this.fallback : new ExpoResourceBundle(this.context, asset, appKeys);
       }
     }
 
-    if (this.selected !== this.fallback) switched?.(this.selected);
+    if (this.selected !== this.fallback || this.selected !== previous) switched?.(this.selected);
 
     return await this.selected.getBundle(progress, switched);
   }

@@ -6,14 +6,15 @@
  */
 
 import { ExpoModuleError, ExpoValueType, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
-import fs from '@ohos.file.fs';
 import util from '@ohos.util';
 import url from '@ohos.url';
 import webview from '@ohos.web.webview';
 import uniformTypeDescriptor from '@ohos.data.uniformTypeDescriptor';
+import type { rcp } from '@kit.RemoteCommunicationKit';
 import { ExpoFetchError } from './ExpoFetchError';
 import { FetchInit } from './FetchTypes';
 import { collectRequestHeaders, mergeCookieHeaders } from './FetchHeaderPolicy';
+import { createHeaderRecord } from './FetchHeaderRecord';
 
 export const HEADER_PAIRS_TYPE: ExpoValueType<string[][]> = ExpoValueTypes.array(ExpoValueTypes.array(ExpoValueTypes.string()));
 
@@ -68,6 +69,7 @@ export function optionalString(value: ESObject, path: string): string | undefine
   if (typeof value !== 'string') {
     throw new ExpoModuleError('ERR_INVALID_ARGUMENT_TYPE', `${path} expected a string.`);
   }
+
   return value;
 }
 
@@ -84,30 +86,30 @@ export function optionalHeaderPairs(value: ESObject, path: string): string[][] |
   return pairs;
 }
 
-export function makeHeaders(init: FetchInit): Object {
+export function makeHeaders(init: FetchInit): rcp.RequestHeaders {
   const values = collectRequestHeaders(init.headers ?? []);
-  const headers = new Object();
-  values.forEach((value: string, name: string): void => {
-    Reflect.set(headers, name, value);
+  const headers = createHeaderRecord();
+  values.forEach((value: string | string[], name: string): void => {
+    headers[name] = value;
   });
 
   return headers;
 }
 
-export function headerPairs(headers: Object): string[][] {
+export function headerPairs(headers: rcp.ResponseHeaders): string[][] {
   const result: string[][] = [];
   Object.keys(headers).forEach((name: string): void => {
-    const value: ESObject = Reflect.get(headers, name);
+    const value = headers[name];
+    if (value === undefined) return;
+
     if (Array.isArray(value)) {
-      (value as ESObject[]).forEach((item: ESObject): void => {
-        result.push([name, String(item)]);
+      value.forEach((item: string): void => {
+        result.push([name, item]);
       });
     } else {
-      String(value)
-        .split(/\r?\n/)
-        .forEach((item: string): void => {
-          result.push([name, item]);
-        });
+      value.split(/\r?\n/).forEach((item: string): void => {
+        result.push([name, item]);
+      });
     }
   });
   return result;
@@ -145,11 +147,11 @@ export function sameOrigin(left: string, right: string): boolean {
   }
 }
 
-export function withoutHeaders(headers: Object, names: string[]): Object {
-  const result = new Object();
+export function withoutHeaders(headers: rcp.RequestHeaders, names: string[]): rcp.RequestHeaders {
+  const result = createHeaderRecord();
   Object.keys(headers).forEach((name: string): void => {
     if (!names.includes(name.toLowerCase())) {
-      Reflect.set(result, name, Reflect.get(headers, name));
+      result[name] = headers[name];
     }
   });
   return result;
@@ -157,12 +159,14 @@ export function withoutHeaders(headers: Object, names: string[]): Object {
 
 export function mimeType(path: string): string {
   const dot = path.lastIndexOf('.');
-  if (dot < 0 || dot === path.length - 1) return 'application/octet-stream';
+  if (dot <= path.lastIndexOf('/') || dot === path.length - 1) return 'application/octet-stream';
 
   try {
-    const typeId = uniformTypeDescriptor.getUniformDataTypeByFilenameExtension(path.slice(dot));
-    const mimeTypes = uniformTypeDescriptor.getTypeDescriptor(typeId).mimeTypes;
-    if (mimeTypes.length > 0) return mimeTypes[0];
+    const typeIds = uniformTypeDescriptor.getUniformDataTypesByFilenameExtension(path.slice(dot).toLowerCase());
+    for (const typeId of typeIds) {
+      const mimeTypes = uniformTypeDescriptor.getTypeDescriptor(typeId).mimeTypes;
+      if (mimeTypes.length > 0) return mimeTypes[0];
+    }
   } catch (_error) {}
 
   return 'application/octet-stream';
@@ -191,32 +195,7 @@ export function chunksToBuffer(chunks: ArrayBuffer[]): ArrayBuffer {
   return buffer;
 }
 
-export async function readFileBuffer(path: string, size: number): Promise<ArrayBuffer> {
-  const output = new ArrayBuffer(size);
-  if (size === 0) return output;
-
-  const outputBytes = new Uint8Array(output);
-  const chunk = new ArrayBuffer(Math.min(64 * 1024, size));
-  const file = await fs.open(path, fs.OpenMode.READ_ONLY);
-
-  try {
-    let consumed = 0;
-    while (consumed < size) {
-      const count = await fs.read(file.fd, chunk, {
-        length: Math.min(chunk.byteLength, size - consumed),
-      });
-      if (count <= 0) throw new ExpoFetchError('ERR_FETCH_FILE_READ', path);
-
-      outputBytes.set(new Uint8Array(chunk, 0, count), consumed);
-      consumed += count;
-    }
-    return output;
-  } finally {
-    await fs.close(file.fd);
-  }
-}
-
-export async function withStoredCookies(headers: Object, target: string, credentials?: string): Promise<Object> {
+export async function withStoredCookies(headers: rcp.RequestHeaders, target: string, credentials?: string): Promise<rcp.RequestHeaders> {
   if (credentials !== 'include') return headers;
 
   let stored = '';
@@ -229,8 +208,9 @@ export async function withStoredCookies(headers: Object, target: string, credent
   if (stored.length === 0) return headers;
 
   const result = withoutHeaders(headers, ['cookie']);
-  const explicit = headerValue(headers, 'cookie');
-  Reflect.set(result, 'cookie', mergeCookieHeaders(explicit, stored));
+  const name = Object.keys(headers).find((key: string): boolean => key.toLowerCase() === 'cookie');
+  const explicit = name === undefined ? undefined : headers[name];
+  result['cookie'] = mergeCookieHeaders(typeof explicit === 'string' ? explicit : null, stored);
 
   return result;
 }
@@ -256,13 +236,6 @@ export async function storeResponseCookies(target: string, headers: string[][]):
   } catch (error) {
     console.warn(`[expo-fetch] Unable to persist cookies for ${target}: ${errorMessage(error as Object)}`);
   }
-}
-
-export function headerValue(headers: Object, name: string): string | null {
-  const key = Object.keys(headers).find((candidate: string): boolean => {
-    return candidate.toLowerCase() === name;
-  });
-  return key === undefined ? null : String(Reflect.get(headers, key));
 }
 
 export function formatError(error: ExpoFetchError): string {

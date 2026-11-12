@@ -53,7 +53,6 @@ export class ExpoReactHost {
   private static readonly abilities: Set<common.UIAbilityContext> = new Set();
   private readonly options: ExpoReactHostOptions;
   private readonly delegate: ExpoReactHostDelegate;
-  private resources?: common.Context;
   private owner?: string;
   private readonly runtimes = new Set<RNInstance>();
   private readonly managed = new WeakMap<RNOHCoreContext, ReactNativeRuntime>();
@@ -99,7 +98,6 @@ export class ExpoReactHost {
     }
     if (existing === this) return;
 
-    this.resources = context;
     this.debug = info.appInfo.debug;
     this.delegate.initialize(context, this, this.debug);
     this.debug = this.delegate.useDeveloperSupport(this.debug);
@@ -132,32 +130,35 @@ export class ExpoReactHost {
   }
 
   isAvailable(): boolean {
-    if (this.resources === undefined) return false;
-    if (this.debug) return true;
-
-    try {
-      const path = this.options.bundlePath;
-      const separator = path.lastIndexOf('/');
-      const directory = separator < 0 ? '' : path.slice(0, separator);
-
-      return this.resources.resourceManager.getRawFileListSync(directory).includes(path.slice(separator + 1));
-    } catch (_error) {
-      return false;
-    }
+    return this.owner !== undefined;
   }
 
   createRNInstanceOptions(headless: boolean = false): RNInstanceOptions {
     const options = this.options.createRNInstanceOptions(headless);
-    options.enableDebugger = this.delegate.useDeveloperSupport(options.enableDebugger ?? this.debug);
-    return options;
+    return withDeveloperSupport(options, this.delegate.useDeveloperSupport(options.enableDebugger ?? this.debug));
   }
 
   createJSBundleProvider(context: common.Context, debug: boolean = false): JSBundleProvider {
-    const embedded = new ExpoResourceBundle(context, this.options.bundlePath);
+    const embedded = this.createEmbeddedJSBundleProvider(context);
     const development = this.delegate.useDeveloperSupport(debug);
     const fallback: JSBundleProvider = development ? new MetroJSBundleProvider() : embedded;
 
     return new ExpoJSBundleProvider(context, fallback, this.delegate, development);
+  }
+
+  createEmbeddedJSBundleProvider(context: common.Context): JSBundleProvider {
+    return new ExpoResourceBundle(context, this.options.bundlePath);
+  }
+
+  hasEmbeddedJSBundle(context: common.Context): boolean {
+    try {
+      const path = this.options.bundlePath;
+      const separator = path.lastIndexOf('/');
+      const directory = separator < 0 ? '' : path.slice(0, separator);
+      return context.resourceManager.getRawFileListSync(directory).includes(path.slice(separator + 1));
+    } catch (_error) {
+      return false;
+    }
   }
 
   createRuntime(
@@ -175,6 +176,7 @@ export class ExpoReactHost {
         if (existing.core !== core) throw new ExpoModuleError('ERR_REACT_HOST_CONTEXT', 'A root cannot bind an instance from another coordinator.');
         return existing;
       }
+
       return this.runtime(core, supplied.rnInstance, bundle === undefined ? undefined : (): JSBundleProvider => bundle, true, replace);
     }
     if (replace !== undefined)
@@ -190,6 +192,7 @@ export class ExpoReactHost {
       );
       this.managed.set(core, runtime);
     }
+
     return runtime;
   }
 
@@ -221,6 +224,7 @@ export class ExpoReactHost {
       ),
     );
     if (external) this.owners.set(source as RNInstance, runtime);
+
     return runtime;
   }
 
@@ -229,6 +233,7 @@ export class ExpoReactHost {
     if (record !== undefined && (record.core !== core || record.destroyed)) {
       throw new ExpoModuleError('ERR_REACT_HOST_CONTEXT', 'The React instance belongs to another or destroyed RNOH context.');
     }
+
     if (record === undefined) record = this.prepareInstance(instance, core, owner, ui);
     else this.families.set(owner, record.family);
     if (ui) record.ui = true;
@@ -250,6 +255,7 @@ export class ExpoReactHost {
     }
     const record: HostRuntime = { core, family, ready: Promise.resolve(), destroyed: false, released: false, ui };
     const lifetime = RnohContextLifecycle.install(core);
+    const runtime = this.owners.get(instance);
     const context: ReactRuntimeContext = {
       instance,
       host: this,
@@ -257,17 +263,17 @@ export class ExpoReactHost {
       owner: family,
       isHeadless: !ui,
       getJSBundleProvider: (): JSBundleProvider | undefined => {
-        const runtime = this.owners.get(instance);
-        return !record.destroyed && runtime?.instance === instance ? runtime.sourceBundle : undefined;
+        const currentOwner = this.owners.get(instance);
+        return !record.destroyed && currentOwner?.instance === instance ? currentOwner.sourceBundle : undefined;
       },
       reload: (reason: string): Promise<void> => {
+        if (runtime !== undefined) return runtime.reload(reason);
         if (record.destroyed) throw new ExpoModuleError('ERR_RELOAD_UNAVAILABLE', 'The React instance was destroyed.');
         return ExpoReloadRegistry.require(instance.getId())(reason);
       },
       suspend: (): Promise<void> => {
-        const runtime = this.owners.get(instance);
-        if (record.destroyed || runtime === undefined || runtime.instance !== instance) {
-          throw new ExpoModuleError('ERR_REACT_HOST_OWNER', 'The active React runtime does not own this instance.');
+        if (runtime === undefined) {
+          throw new ExpoModuleError('ERR_REACT_HOST_OWNER', 'No React runtime owns this instance.');
         }
         return runtime.suspend();
       },
@@ -306,7 +312,6 @@ export class ExpoReactHost {
   }
 
   async load(context: common.Context): Promise<void> {
-    if (!this.isAvailable()) throw new ExpoModuleError('ERR_REACT_HOST_BUNDLE', 'The application bundle is not available for background execution.');
     if (this.owner === undefined) throw new ExpoModuleError('ERR_REACT_HOST_CONFIG', 'Initialize the Expo React host before loading an application.');
 
     this.loader.loadApp(context, { appScopeKey: this.owner });

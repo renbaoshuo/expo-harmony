@@ -9,8 +9,9 @@ import type { Want } from '@kit.AbilityKit';
 import { AbilityConstant } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { adaptRnohWindow } from './RnohWindow';
-import { RNAbility, RNOHCoreContext } from '@rnoh/react-native-openharmony';
+import { RNAbility, RNOHCoreContext, RNOHLogger } from '@rnoh/react-native-openharmony';
 import { RnohPackagerClient, RnohContextLifecycle } from '@expo-harmony/expo-modules-core';
+import { redactRnohWantLogs } from './RnohWantLogs';
 
 export abstract class RnohAbility extends RNAbility {
   private core?: RNOHCoreContext;
@@ -18,6 +19,10 @@ export abstract class RnohAbility extends RNAbility {
   private lifetime?: RnohContextLifecycle;
   private destruction?: Promise<void>;
   private readonly windows = new Map<window.Window, () => void>();
+
+  protected override createLogger(): RNOHLogger {
+    return redactRnohWantLogs(super.createLogger());
+  }
 
   override onCreate(want: Want, launch?: AbilityConstant.LaunchParam): void {
     if (this.core !== undefined || this.destruction !== undefined) throw new Error('The RNOH ability has already been created or destroyed.');
@@ -28,7 +33,7 @@ export abstract class RnohAbility extends RNAbility {
     try {
       super.onCreate(want, launch);
       const core = AppStorage.get<RNOHCoreContext>('RNOHCoreContext');
-      // A cached coordinator does not publish a new client in RNOH 0.84.1.
+      // A cached coordinator does not publish a new client.
       if (core === undefined || core.uiAbilityContext !== this.context || client.isCurrent()) {
         throw new Error('The RNOH coordinator is already owned by another ability.');
       }
@@ -59,15 +64,23 @@ export abstract class RnohAbility extends RNAbility {
     try {
       await this.lifetime?.destroy();
     } finally {
-      for (const restore of this.windows.values()) restore();
+      for (const restore of this.windows.values()) {
+        try {
+          restore();
+        } catch (error) {
+          console.error(`Unable to restore an RNOH window listener: ${String(error)}`);
+        }
+      }
       this.windows.clear();
+      try {
+        this.client?.destroy((): void => super.onDestroy());
+      } finally {
+        if (AppStorage.get<RNOHCoreContext>('RNOHCoreContext') === core) AppStorage.delete('RNOHCoreContext');
+        this.client = undefined;
+        this.core = undefined;
+        this.onRNOHDestroyed();
+      }
     }
-
-    this.client?.destroy((): void => super.onDestroy());
-    if (AppStorage.get<RNOHCoreContext>('RNOHCoreContext') === core) AppStorage.delete('RNOHCoreContext');
-    this.client = undefined;
-    this.core = undefined;
-    this.onRNOHDestroyed();
   }
 
   protected activate(): boolean {
@@ -101,23 +114,21 @@ export abstract class RnohAbility extends RNAbility {
   override onNewWant(want: Want, launch: AbilityConstant.LaunchParam): void {
     if (!this.activate()) return;
 
-    // RNOH 0.84.1 emits a Linking event even when the Want has no URI.
+    // RNOH emits a Linking event even when the Want has no URI.
     if (want.uri !== undefined && want.uri.length > 0) super.onNewWant(want, launch);
   }
 
   protected override async onPrepareRNInstance(context: RNOHCoreContext): Promise<void> {
     if (context !== this.core) throw new Error('The RNOH context belongs to another ability.');
 
-    // RNInstancesCoordinator 0.84.1 omits the registry constructor's launchUri argument.
-    const registry: ESObject = context._rnohCoreContextDeps.rnInstanceRegistry;
-    if (registry.launchUri === undefined) registry.launchUri = context.launchUri;
+    // RNOH 0.86.1 forwards the initial Want URI to RNInstanceRegistry itself.
     await super.onPrepareRNInstance(context);
   }
 
   override onWindowStageRestore(stage: window.WindowStage): void {
     if (!this.activate()) return;
     super.onWindowStageRestore(stage);
-    // RNAbility 0.84.1 only sets up a window on onWindowStageCreate.
+    // RNAbility only sets up a window on onWindowStageCreate.
     super.onWindowStageCreate(stage);
   }
 

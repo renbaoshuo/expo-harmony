@@ -130,6 +130,7 @@ export class ExpoReactHostDelegate {
     let destroyed = false;
     const cleanup = (): void => {
       if (!active) return;
+
       active = false;
       for (const unsubscribe of subscriptions.splice(0).reverse()) {
         try {
@@ -146,6 +147,8 @@ export class ExpoReactHostDelegate {
           destroyed = true;
         }),
       );
+      if (destroyed) throw new ExpoModuleError('ERR_REACT_HOST_CONTEXT', 'Cannot bind a destroyed React instance.');
+
       const manager = context.core.devToolsController;
       if (!this.managers.has(manager)) {
         for (const handler of this.handlers) handler.onDidCreateDevSupportManager?.(manager);
@@ -154,10 +157,12 @@ export class ExpoReactHostDelegate {
       for (const binding of this.bindings) {
         const detach = await binding.bind(context);
         if (typeof detach === 'function') subscriptions.push(detach);
+        if (destroyed) throw new ExpoModuleError('ERR_REACT_HOST_CONTEXT', 'The React instance was destroyed while binding its host.');
       }
 
       const initialized = (): void => {
         if (!active || destroyed || this.notified.has(instance)) return;
+
         this.notified.add(instance);
         for (const handler of this.handlers) {
           try {
@@ -167,7 +172,7 @@ export class ExpoReactHostDelegate {
           }
         }
       };
-      // ReactHostImpl notifies ReactContext initialization after submitting bundle loading, independently of JS execution success.
+      // RNOH publishes the first bundle's lifecycle event after evaluation succeeds.
       waitForRnohInitialization(instance).then(initialized, (): void => {});
 
       const handlers = this.handlers.filter((handler: ReactNativeHostHandler): boolean => handler.onReactInstanceException !== undefined);
