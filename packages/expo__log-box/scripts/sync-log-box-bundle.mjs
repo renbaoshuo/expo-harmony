@@ -15,32 +15,26 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.join(root, 'harmony/library/src/main/resources/rawfile/expo_log_box');
 const require = createRequire(import.meta.url);
 const manifest = require.resolve('@expo/log-box/package.json');
+const { version } = require(manifest);
+const expectedVersion = require('../package.json').peerDependencies['@expo/log-box'];
+if (version !== expectedVersion) {
+  throw new Error(`Expected @expo/log-box ${expectedVersion}, found ${version} at ${manifest}.`);
+}
 const official = path.dirname(manifest);
 const source = path.join(official, 'dist/ExpoLogBox.bundle');
 
-await assertOfficialBundle(source, manifest);
+await assertOfficialBundle(source);
+const parser = require.resolve('stacktrace-parser');
 await rm(output, { recursive: true, force: true });
 await mkdir(path.dirname(output), { recursive: true });
 await cp(source, output, { recursive: true, force: true });
-// Native errors may carry string stacks. Use upstream's parser in the WebView;
-// do not duplicate its stack grammar in ArkTS or parse RNOH diagnostic headers.
-const parser = require.resolve('stacktrace-parser');
 const generated = path.join(root, 'harmony/library/src/main/ets/generated');
 await mkdir(generated, { recursive: true });
 await writeFile(path.join(generated, 'ExpoLogBoxScripts.ets'),
   `// Generated from stacktrace-parser; see rawfile/expo_log_box/stacktrace-parser.LICENSE.\nexport const STACK_PARSER_SCRIPT: string = ${JSON.stringify(await readFile(parser, 'utf8'))};\n`);
 await cp(path.resolve(path.dirname(parser), '../LICENSE'), path.join(output, 'stacktrace-parser.LICENSE'));
 
-async function assertOfficialBundle(directory, metadata) {
-  const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-  const upstream = JSON.parse(await readFile(metadata, 'utf8'));
-  const version = pkg.peerDependencies?.['@expo/log-box'];
-  if (typeof version !== 'string' || upstream.version !== version) {
-    throw new Error(
-      `Expected @expo/log-box ${String(version)}, but resolved ${String(upstream.version)} at ${official}.`
-    );
-  }
-
+async function assertOfficialBundle(directory) {
   const entry = path.join(directory, 'index.html');
   let index;
 

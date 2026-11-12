@@ -10,6 +10,7 @@ import {
   ExpoModule,
   ExpoModuleContext,
   ExpoModuleDefinition,
+  ExpoModuleError,
   ExpoValueTypes,
   ExpoView,
   ExpoViewContext,
@@ -135,6 +136,7 @@ export class ExpoLogBoxModule extends ExpoModule {
       .asyncFunction(
         'copyTextAsync',
         ExpoFunction.typed1(ExpoValueTypes.string(), async (text: string): Promise<void> => {
+          if (!expoLogBoxController.isEnabled()) throw new ExpoModuleError('ERR_LOG_BOX_DISABLED', 'Expo LogBox is disabled.');
           await pasteboard.getSystemPasteboard().setData(pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text));
         }),
       )

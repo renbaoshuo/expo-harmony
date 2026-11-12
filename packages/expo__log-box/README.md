@@ -2,19 +2,25 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__log-box)
 
-为 HarmonyOS 开发构建提供 Expo LogBox 的日志检查器和原生错误页面，与官方 `@expo/log-box` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo LogBox 的原生实现，与官方同版本的 `@expo/log-box` 配套使用。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
 ```bash
-npm install @expo-harmony/expo__log-box @expo/log-box@55.0.12
+npm install @expo-harmony/expo__log-box @expo/log-box
 ```
 
-本包适配 Expo SDK 55 的 `@expo/log-box`，提供鸿蒙端的原生视图和错误页。原生模块和视图通过 Expo Harmony 自动链接。最低支持 HarmonyOS 5.0.1（API 13），宿主的 `compatibleSdkVersion` 也要满足这一要求。Expo LogBox 是实验功能，安装后还需要注册配置插件并组合 Metro 配置，两者都要求设置 `EXPO_UNSTABLE_LOG_BOX=1`，见下文。
+## 接入
 
-## Config Plugin
+LogBox 是实验功能。配置插件、Metro 和应用构建时都需要将 `EXPO_UNSTABLE_LOG_BOX` 设为 `1` 或 `true`。
 
-在 `app.json` 的 `plugins` 中注册插件。
+### 配置插件
+
+在 `app.json` 的 `plugins` 中注册插件：
 
 ```json
 {
@@ -25,7 +31,9 @@ npm install @expo-harmony/expo__log-box @expo/log-box@55.0.12
 }
 ```
 
-再在 `metro.config.js` 中组合配置。
+### Metro 配置
+
+在 `metro.config.js` 中组合 HarmonyOS 配置和 LogBox 配置：
 
 ```js
 const { getDefaultConfig } = require('expo/metro-config');
@@ -35,9 +43,7 @@ const { withLogBox } = require('@expo-harmony/expo__log-box/metro');
 module.exports = withLogBox(withHarmonyConfig(getDefaultConfig(__dirname)));
 ```
 
-prebuild、原生构建和 Metro 启动均需设置 `EXPO_UNSTABLE_LOG_BOX=1`（也接受 `true`）。插件把开关写入原生工程配置，原生端只在 debug 构建中启用。变更开关后需重新生成并构建应用，只启用 Metro 时会报告原生配置不匹配。
-
-`@expo-harmony/expo__log-box` 的 `withLogBox` 只改写 HarmonyOS 平台上的模块解析，其他平台和其他包不受影响。
+运行 prebuild、原生构建和 Metro 时都要设置 `EXPO_UNSTABLE_LOG_BOX=1`，也可以设为 `true`。LogBox 只在 debug 构建中显示。修改开关后，需要重新生成并构建应用。
 
 ## Author
 

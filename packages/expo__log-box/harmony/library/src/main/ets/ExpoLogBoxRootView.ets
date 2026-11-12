@@ -16,7 +16,9 @@ struct ExpoLogBoxOverlay {
   private unsubscribe?: () => void;
 
   aboutToAppear(): void {
-    this.unsubscribe = expoLogBoxController.subscribe((presentation?: ExpoLogBoxPresentation): void => {
+    const windowName = this.getUIContext().getWindowName();
+    if (windowName === undefined) return;
+    this.unsubscribe = expoLogBoxController.subscribe(windowName, (presentation?: ExpoLogBoxPresentation): void => {
       this.session?.dispose();
       this.session =
         presentation === undefined

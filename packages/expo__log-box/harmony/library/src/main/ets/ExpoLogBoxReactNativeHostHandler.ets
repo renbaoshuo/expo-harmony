@@ -7,7 +7,6 @@
 
 import type { common } from '@kit.AbilityKit';
 import { bundleManager } from '@kit.AbilityKit';
-import type { DevToolsController } from '@rnoh/react-native-openharmony/src/main/ets/RNOH/DevToolsController';
 import type { ReactNativeHostHandler } from '@expo-harmony/expo-modules-core';
 
 import { expoLogBoxController } from './ExpoLogBoxController';
@@ -30,9 +29,5 @@ export class ExpoLogBoxReactNativeHostHandler implements ReactNativeHostHandler 
 
   onWillCreateReactInstance(debug: boolean): void {
     expoLogBoxController.setEnabled(debug && this.enabled);
-  }
-
-  onDidCreateDevSupportManager(manager: DevToolsController): void {
-    expoLogBoxController.attachDevTools(manager);
   }
 }

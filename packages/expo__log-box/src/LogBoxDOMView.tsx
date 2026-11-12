@@ -30,7 +30,7 @@ export default function LogBoxDOMView({ dom, ...props }: Props) {
 
   const actions: Record<string, unknown> = {
     ...Object.fromEntries(Object.entries(props).filter(([, value]) => typeof value === 'function')),
-    // RNOH 0.84 has neither the public Clipboard export nor its native module.
+    // RNOH does not expose the Clipboard API used by upstream LogBox.
     onCopyText: (text: string) => native.copyTextAsync(text),
   };
   const payload = JSON.stringify({
@@ -52,6 +52,7 @@ export default function LogBoxDOMView({ dom, ...props }: Props) {
       if (!Object.hasOwn(actions, actionId) || typeof action !== 'function' || !Array.isArray(args)) {
         throw new Error(`Invalid LogBox action: ${actionId}`);
       }
+
       result = await (action as (...args: unknown[]) => unknown)(...args);
     } catch (cause) {
       error = cause instanceof Error ? { message: cause.message, stack: cause.stack } : { message: String(cause) };

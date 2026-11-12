@@ -8,7 +8,7 @@
 {
   "modelVersion": "5.0.0",
   "name": "@expo-harmony-internal/expo__log-box",
-  "version": "55.0.13-harmony.4",
+  "version": "57.0.4-harmony.0",
   "description": "HarmonyOS port of @expo/log-box",
   "keywords": [
     "react-native",
@@ -28,7 +28,7 @@
     "@expo-harmony/expo__log-box": "./library"
   },
   "overrides": {
-    "@expo-harmony/expo-modules-core": "55.0.26-harmony.3",
-    "@rnoh/react-native-openharmony": "0.84.1"
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
+    "@rnoh/react-native-openharmony": "0.86.1"
   }
 }

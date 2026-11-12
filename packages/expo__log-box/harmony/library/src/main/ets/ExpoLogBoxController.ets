@@ -44,7 +44,6 @@ interface NativeLog {
 }
 
 interface LogBoxProps {
-  platform: string;
   nativeLogs: NativeLog[];
 }
 
@@ -94,21 +93,22 @@ export interface ExpoLogBoxPresentation {
   readonly id: number;
   readonly initialProps: string;
   readonly devServerOrigin: string;
-  readonly runtimeId?: number;
-  readonly owner?: Object;
+  readonly runtimeId: number;
+  readonly owner: Object;
+  readonly windowName: string;
+  readonly reload: (reason: string) => Promise<void>;
 }
 
 type PresentationListener = (presentation: ExpoLogBoxPresentation | undefined) => void;
 
 class ExpoLogBoxController {
   private enabled: boolean = false;
-  private manager?: DevToolsController;
-  private managerCleanup: (() => void)[] = [];
+  private readonly managerCleanups: Map<DevToolsController, () => void> = new Map();
   private readonly runtimes: Map<number, ReactRuntimeContext> = new Map();
   private readonly adapters: Map<number, RnohLogBoxAdapter> = new Map();
-  private latestRuntimeId?: number;
   private readonly listeners: Set<PresentationListener> = new Set();
   private presentation?: ExpoLogBoxPresentation;
+  private presentedManager?: DevToolsController;
   private presentedError?: RNOHError;
   private customDialogReady: boolean = false;
   private nextPresentationId: number = 0;
@@ -123,58 +123,68 @@ class ExpoLogBoxController {
     if (!enabled) this.clear();
   }
 
-  attachDevTools(manager: DevToolsController): void {
-    if (this.manager === manager) return;
+  private attachDevTools(manager: DevToolsController): void {
+    if (this.managerCleanups.has(manager)) return;
 
-    this.detachDevTools();
-    this.manager = manager;
-    this.managerCleanup.push(
-      manager.eventEmitter.subscribe('NEW_ERROR', (error: RNOHError): void => this.present(error)),
-      manager.eventEmitter.subscribe('RELOAD', (): void => this.clear()),
-    );
+    const removeError = manager.eventEmitter.subscribe('NEW_ERROR', (error: RNOHError): void => this.present(error, manager));
+    const removeReload = manager.eventEmitter.subscribe('RELOAD', (): void => {
+      if (this.presentedManager === manager) this.clear();
+    });
+    this.managerCleanups.set(manager, (): void => {
+      removeError();
+      removeReload();
+    });
   }
 
   bindRuntime(context: ReactRuntimeContext): () => void {
     if (!this.enabled || context.isHeadless) return (): void => {};
 
     const id = context.instance.getId();
-    const adapter = new RnohLogBoxAdapter(context.instance);
+    const adapter = new RnohLogBoxAdapter(context.instance, (): string | undefined => context.getJSBundleProvider?.()?.getURL());
+    const manager = context.core.devToolsController;
+    this.attachDevTools(manager);
     this.runtimes.set(id, context);
     this.adapters.set(id, adapter);
-    this.latestRuntimeId = id;
 
     return (): void => {
       if (this.runtimes.get(id) !== context) return;
+
       adapter.dispose();
       this.adapters.delete(id);
       this.runtimes.delete(id);
-      if (this.latestRuntimeId === id) this.latestRuntimeId = this.lastRuntimeId();
       if (this.presentation?.runtimeId === id && !this.reloading) this.clear();
+      this.detachUnusedDevTools(manager);
     };
   }
 
-  subscribe(listener: PresentationListener): () => void {
-    this.listeners.add(listener);
-    listener(this.presentation);
+  subscribe(windowName: string, listener: PresentationListener): () => void {
+    const notify = (presentation?: ExpoLogBoxPresentation): void => {
+      listener(presentation?.windowName === windowName ? presentation : undefined);
+    };
+    this.listeners.add(notify);
+    notify(this.presentation);
 
     return (): void => {
-      this.listeners.delete(listener);
+      this.listeners.delete(notify);
     };
   }
 
   ready(id: number): void {
     if (this.presentation?.id !== id) return;
-    const manager = this.manager;
+
+    const manager = this.presentedManager;
     if (manager === undefined) return;
+
     manager.dismissRNOHErrorDialog();
     this.customDialogReady = true;
   }
 
   fail(id: number, error: Object): void {
     if (this.presentation?.id !== id) return;
+
     console.error(`Expo LogBox could not display the error: ${errorMessage(error)}`);
 
-    const manager = this.manager;
+    const manager = this.presentedManager;
     const presentedError = this.presentedError;
     if (manager !== undefined && presentedError !== undefined) {
       // Restore RNOH's dialog before removing the failed custom view. The active presentation
@@ -221,9 +231,10 @@ class ExpoLogBoxController {
         await sendActionResult(web, uid, actionId, '');
       } else if (actionId === ACTION_MINIMIZE || actionId === ACTION_DISMISS) {
         if (actionId === ACTION_DISMISS && args[0] !== 0) throw new Error('Invalid native LogBox log index.');
+
         await sendActionResult(web, uid, actionId, '');
         if (this.presentation?.id === presentationId) {
-          this.manager?.dismissRNOHErrorDialog();
+          this.presentedManager?.dismissRNOHErrorDialog();
           this.clear();
         }
       } else if (actionId === ACTION_COPY_TEXT) {
@@ -234,6 +245,7 @@ class ExpoLogBoxController {
       } else if (actionId === ACTION_FETCH_TEXT) {
         const input = args[0];
         if (typeof input !== 'string') throw new Error('fetchTextAsync requires a URL.');
+
         const options = fetchOptions(args[1]);
         const result = await this.fetchText(input, options);
         await sendActionResult(web, uid, actionId, result);
@@ -245,33 +257,38 @@ class ExpoLogBoxController {
     }
   }
 
-  private present(error: RNOHError): void {
+  private present(error: RNOHError, manager: DevToolsController): void {
     if (!this.enabled) return;
 
     const runtimeId = error instanceof RNInstanceError ? error.getRNInstanceId() : undefined;
-    const runtime = runtimeId === undefined ? this.runtime() : this.runtimes.get(runtimeId);
-    // Do not present background errors or associate a destroyed instance with another runtime.
-    if (runtimeId !== undefined && runtime === undefined) return;
+    const runtime = runtimeId === undefined ? this.latestRuntime(manager) : this.runtimes.get(runtimeId);
+    if (runtime === undefined || runtime.core.devToolsController !== manager) return;
+
+    const windowName = runtimeWindowName(runtime);
+    if (windowName === undefined) return;
+
+    const id = runtime.instance.getId();
     if (this.presentation !== undefined) {
-      if (this.reloading && runtimeId !== this.presentation.runtimeId && runtime?.owner === this.presentation.owner) {
+      if (this.presentedManager !== manager) return;
+      if (this.reloading && id !== this.presentation.runtimeId && runtime.owner === this.presentation.owner) {
         // A replacement runtime can fail while fetching/evaluating its bundle.
         // That failure must replace the old RedBox rather than being ignored.
         this.clear();
       } else {
         // RNOH also observes NEW_ERROR and may reopen its dialog for later errors. Once the
         // custom page is ready, close that duplicate after the current event dispatch finishes.
-        this.dismissDefaultDialogAfterErrorEvent(this.presentation.id);
+        if (windowName === this.presentation.windowName) this.dismissDefaultDialogAfterErrorEvent(this.presentation.id);
         return;
       }
     }
 
-    const adapter = runtime === undefined ? undefined : this.adapters.get(runtime.instance.getId());
+    const adapter = this.adapters.get(id);
     const sourceError = adapter?.originalError(error) ?? error;
     const nativeLog: NativeLog = {
       message: normalizedMessage(sourceError),
       stack: normalizedStack(sourceError),
     };
-    const props: LogBoxProps = { platform: LOG_BOX_DOM_HOST_OS, nativeLogs: [nativeLog] };
+    const props: LogBoxProps = { nativeLogs: [nativeLog] };
     const payload: InitialProps = {
       names: [ACTION_RELOAD, ACTION_FETCH_TEXT, ACTION_COPY_TEXT, ACTION_MINIMIZE, ACTION_DISMISS],
       props,
@@ -279,13 +296,16 @@ class ExpoLogBoxController {
     const initialProps = JSON.stringify(payload);
 
     this.presentedError = error;
+    this.presentedManager = manager;
     this.customDialogReady = false;
     this.presentation = {
       id: ++this.nextPresentationId,
       initialProps,
       devServerOrigin: devServerOrigin(adapter?.bundleUrl()),
-      runtimeId: runtime?.instance.getId(),
-      owner: runtime?.owner,
+      runtimeId: id,
+      owner: runtime.owner,
+      windowName,
+      reload: runtime.reload,
     };
     this.notify();
   }
@@ -293,17 +313,15 @@ class ExpoLogBoxController {
   private async reload(presentationId: number): Promise<void> {
     if (this.reloading) return;
 
-    const runtime = this.runtimeForPresentation();
-    if (runtime === undefined) {
-      this.manager?.reload('ExpoLogBox:Reload');
-      return;
-    }
+    const presentation = this.presentation;
+    if (presentation?.id !== presentationId) return;
+    // The host owns reload for this family even while no replacement instance is bound.
+    const reload = this.runtimeForPresentation()?.reload ?? presentation.reload;
     this.reloading = true;
     try {
-      await runtime.reload('ExpoLogBox:Reload');
+      await reload('ExpoLogBox:Reload');
       if (this.presentation?.id === presentationId) this.clear();
     } catch (error) {
-      // Keep the current LogBox visible so a failed reload never leaves a blank application.
       console.error(`Expo LogBox could not reload the React Native runtime: ${errorMessage(error as Object)}`);
       throw new Error(errorMessage(error as Object));
     } finally {
@@ -330,43 +348,37 @@ class ExpoLogBoxController {
     });
     const response = await request.promise;
     if (typeof response.body === 'string') return response.body;
+
     return util.TextDecoder.create('utf-8').decodeToString(new Uint8Array(response.body));
   }
 
   private runtimeForPresentation(): ReactRuntimeContext | undefined {
-    const runtimeId = this.presentation?.runtimeId;
-    const runtime = runtimeId === undefined ? undefined : this.runtimes.get(runtimeId);
-    if (runtime !== undefined) return runtime;
+    const presentation = this.presentation;
+    if (presentation === undefined) return undefined;
 
-    const owner = this.presentation?.owner;
-    if (owner !== undefined) {
-      for (const candidate of this.runtimes.values()) {
-        if (candidate.owner === owner) return candidate;
-      }
+    const runtime = this.runtimes.get(presentation.runtimeId);
+    if (runtime !== undefined && runtime.core.devToolsController === this.presentedManager) return runtime;
+
+    for (const candidate of this.runtimes.values()) {
+      if (candidate.owner === presentation.owner && candidate.core.devToolsController === this.presentedManager) return candidate;
     }
     return undefined;
   }
 
-  private runtime(id?: number): ReactRuntimeContext | undefined {
-    if (id !== undefined) {
-      const exact = this.runtimes.get(id);
-      if (exact !== undefined) return exact;
+  private latestRuntime(manager: DevToolsController): ReactRuntimeContext | undefined {
+    let result: ReactRuntimeContext | undefined;
+    for (const context of this.runtimes.values()) {
+      if (context.core.devToolsController === manager) result = context;
     }
-    return this.latestRuntimeId === undefined ? undefined : this.runtimes.get(this.latestRuntimeId);
-  }
-
-  private lastRuntimeId(): number | undefined {
-    let result: number | undefined;
-    for (const id of this.runtimes.keys()) result = id;
     return result;
   }
 
   private dismissDefaultDialogAfterErrorEvent(presentationId: number): void {
-    const manager = this.manager;
+    const manager = this.presentedManager;
     if (!this.customDialogReady || manager === undefined) return;
 
     Promise.resolve().then((): void => {
-      if (this.presentation?.id === presentationId && this.customDialogReady && this.manager === manager) {
+      if (this.presentation?.id === presentationId && this.customDialogReady && this.presentedManager === manager) {
         manager.dismissRNOHErrorDialog();
       }
     });
@@ -374,9 +386,12 @@ class ExpoLogBoxController {
 
   private clear(): void {
     const hadPresentation = this.presentation !== undefined;
+    const manager = this.presentedManager;
     this.presentation = undefined;
     this.presentedError = undefined;
+    this.presentedManager = undefined;
     this.customDialogReady = false;
+    if (manager !== undefined) this.detachUnusedDevTools(manager);
     if (hadPresentation) this.notify();
   }
 
@@ -384,9 +399,10 @@ class ExpoLogBoxController {
     for (const listener of this.listeners) listener(this.presentation);
   }
 
-  private detachDevTools(): void {
-    for (const cleanup of this.managerCleanup.splice(0)) cleanup();
-    this.manager = undefined;
+  private detachUnusedDevTools(manager: DevToolsController): void {
+    if (this.presentedManager === manager || this.latestRuntime(manager) !== undefined) return;
+    this.managerCleanups.get(manager)?.();
+    this.managerCleanups.delete(manager);
   }
 }
 
@@ -437,6 +453,15 @@ function devServerOrigin(bundleUrl?: string): string {
     } catch (_error) {}
   }
   return '';
+}
+
+function runtimeWindowName(runtime: ReactRuntimeContext): string | undefined {
+  try {
+    return runtime.instance.getUIContext()?.getWindowName()
+      ?? runtime.core.uiAbilityContext.windowStage.getMainWindowSync().getUIContext().getWindowName();
+  } catch (_error) {
+    return undefined;
+  }
 }
 
 function fetchOptions(value?: Object): FetchOptions | undefined {

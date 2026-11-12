@@ -10,10 +10,13 @@ import { STACK_PARSER_SCRIPT } from './generated/ExpoLogBoxScripts';
 
 import { LOG_BOX_DOM_HOST_OS, LOG_BOX_ERROR_MESSAGE, LOG_BOX_READY_MESSAGE } from './ExpoLogBoxController';
 
-const WEB_BRIDGE_NAME: string = 'ReactNativeWebView';
+const WEB_BRIDGE_NAME: string = 'ExpoLogBoxNative';
 const WEB_BRIDGE_METHODS: string[] = ['postMessage'];
 const DOCUMENT_START_SCRIPT_RULES: string[] = ['*'];
 const LOG_BOX_READY_SELECTOR: string = '[data-expo-log-backdrop="true"]';
+const DOM_READY: string = '$$dom_ready';
+const DOM_EVENT: string = '$$dom_event';
+const DOM_PROPS: string = '$$props';
 
 interface LogBoxScriptItem {
   script: string;
@@ -39,6 +42,7 @@ export class ExpoLogBoxWebSession {
   private disposed: boolean = false;
   private failed: boolean = false;
   private ready: boolean = false;
+  private domReady: boolean = false;
   private controllerAttached: boolean = false;
   private startupTimeout?: number;
   private payload: string;
@@ -70,10 +74,13 @@ export class ExpoLogBoxWebSession {
     if (this.disposed || this.failed) return;
     try {
       const event = JSON.parse(message) as PageMessage;
-      if (event.type === LOG_BOX_READY_MESSAGE) {
+      if (event.type === DOM_READY) {
+        // SDK 57 emits readiness after installing its props listener, including on reload.
+        this.domReady = true;
+        this.updateProps(this.payload);
+      } else if (event.type === LOG_BOX_READY_MESSAGE) {
         this.ready = true;
         this.clearStartupTimeout();
-        this.updateProps(this.payload);
         this.onReady();
       } else if (event.type === LOG_BOX_ERROR_MESSAGE) {
         this.fail(new Error(event.data?.message ?? 'The Expo LogBox page failed.'));
@@ -87,9 +94,10 @@ export class ExpoLogBoxWebSession {
 
   updateProps(payload: string): void {
     this.payload = payload;
-    if (!this.ready || this.disposed) return;
-    this.inject(`window.dispatchEvent(new CustomEvent('$$dom_event', { detail: {
-      type: '$$props', data: window.$$EXPO_LOG_BOX_NORMALIZE_PROPS(${payload})
+    if (!this.domReady || this.disposed || this.failed) return;
+
+    this.inject(`window.dispatchEvent(new CustomEvent(${JSON.stringify(DOM_EVENT)}, { detail: {
+      type: ${JSON.stringify(DOM_PROPS)}, data: window.$$EXPO_LOG_BOX_NORMALIZE_PROPS(${payload})
     } }));true;`).catch((error: Object): void => this.fail(error));
   }
 
@@ -110,6 +118,7 @@ export class ExpoLogBoxWebSession {
 
   appear(): void {
     if (this.disposed || this.failed || this.ready || this.startupTimeout !== undefined) return;
+
     this.startupTimeout = setTimeout((): void => {
       this.startupTimeout = undefined;
       this.fail(new Error('The Expo LogBox page did not initialize within 15 seconds.'));
@@ -124,16 +133,20 @@ export class ExpoLogBoxWebSession {
 
   fail(error: Object): void {
     if (this.disposed || this.failed) return;
+
     this.failed = true;
     this.clearStartupTimeout();
+
     console.error(`Expo LogBox Web failed: ${error instanceof Error ? error.message : String(error)}`);
     this.onError(error);
   }
 
   dispose(): void {
     if (this.disposed) return;
+
     this.disposed = true;
     this.clearStartupTimeout();
+
     if (!this.controllerAttached) return;
     try {
       this.web.stop();
@@ -143,6 +156,7 @@ export class ExpoLogBoxWebSession {
     } catch (_error) {}
   }
 }
+
 @Component
 export struct ExpoLogBoxWebView {
   @Require session?: ExpoLogBoxWebSession;
@@ -193,6 +207,7 @@ interface PageError {
 function bootstrapScript(initialProps: string, devServerOrigin: string): string {
   const origin = JSON.stringify(devServerOrigin);
   const hostOS = JSON.stringify(LOG_BOX_DOM_HOST_OS);
+  const nativeBridge = JSON.stringify(WEB_BRIDGE_NAME);
   const readyMessage = JSON.stringify(LOG_BOX_READY_MESSAGE);
   const errorMessage = JSON.stringify(LOG_BOX_ERROR_MESSAGE);
   const readySelector = JSON.stringify(LOG_BOX_READY_SELECTOR);
@@ -217,12 +232,19 @@ function bootstrapScript(initialProps: string, devServerOrigin: string): string 
       globalThis.process = process;
       process.env = process.env || {};
       if (${origin}) process.env.EXPO_DEV_SERVER_ORIGIN = ${origin};
-      window.$$EXPO_DOM_HOST_OS = ${hostOS};
-      window.$$EXPO_INITIAL_PROPS = window.$$EXPO_LOG_BOX_NORMALIZE_PROPS(${initialProps});
+
+      // The shipped HTML reads this object synchronously before running the DOM bundle.
+      window.ReactNativeWebView = {
+        injectedObjectJson: () => JSON.stringify({
+          EXPO_DOM_HOST_OS: ${hostOS},
+          initialProps: window.$$EXPO_LOG_BOX_NORMALIZE_PROPS(${initialProps}),
+        }),
+        postMessage: (message) => window[${nativeBridge}].postMessage(message),
+      };
 
       let settled = false;
       let observer;
-      let readyCheckScheduled = false;
+      let scheduled = false;
       const postNative = (type, message) => {
         try {
           window.ReactNativeWebView.postMessage(JSON.stringify({
@@ -238,10 +260,10 @@ function bootstrapScript(initialProps: string, devServerOrigin: string): string 
         postNative(type, message);
       };
       const checkReady = () => {
-        if (settled || readyCheckScheduled || !document.querySelector(${readySelector})) return;
-        readyCheckScheduled = true;
+        if (settled || scheduled || !document.querySelector(${readySelector})) return;
+        scheduled = true;
         requestAnimationFrame(() => requestAnimationFrame(() => {
-          readyCheckScheduled = false;
+          scheduled = false;
           if (!settled && document.querySelector(${readySelector})) finish(${readyMessage});
         }));
       };
@@ -251,13 +273,15 @@ function bootstrapScript(initialProps: string, devServerOrigin: string): string 
         else finish(${errorMessage}, message);
       });
       window.addEventListener('unhandledrejection', (event) => {
+        // The inspector does not await actions such as Reload or Open in Editor.
+        // A rejected action after startup should leave the error and controls visible.
+        if (settled) return;
         const reason = event.reason;
         const message = reason instanceof Error ? reason.message : String(reason);
-        if (settled) postNative(${errorMessage}, message);
-        else finish(${errorMessage}, message);
+        finish(${errorMessage}, message);
       });
       window.addEventListener('DOMContentLoaded', () => {
-        // Upstream 55 only positions ios/android overlays on narrow viewports.
+        // Upstream positions only ios/android overlays on narrow viewports.
         // Keep the real host OS for symbolication and add only the missing layout.
         const style = document.createElement('style');
         style.textContent = '@media (max-width: 575px) { #root > :has(> ' + ${readySelector} +
