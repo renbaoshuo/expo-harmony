@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <napi/native_api.h>
@@ -24,6 +25,7 @@ napi_value NumberSymbol(napi_env env, const UNumberFormat *format, UNumberFormat
 
   if (format == nullptr) {
     napi_get_null(env, &result);
+
     return result;
   }
 
@@ -32,12 +34,14 @@ napi_value NumberSymbol(napi_env env, const UNumberFormat *format, UNumberFormat
 
   if (status != U_BUFFER_OVERFLOW_ERROR && U_FAILURE(status)) {
     napi_get_null(env, &result);
+
     return result;
   }
 
   std::vector<UChar> buffer(static_cast<size_t>(size) + 1);
   status = U_ZERO_ERROR;
   size = unum_getSymbol(format, symbol, buffer.data(), static_cast<int32_t>(buffer.size()), &status);
+
   if (U_FAILURE(status) || size == 0) {
     napi_get_null(env, &result);
   } else {
@@ -50,6 +54,7 @@ napi_value NumberSymbol(napi_env env, const UNumberFormat *format, UNumberFormat
 NumberFormat OpenFormat(UNumberFormatStyle style, const char *locale) {
   UErrorCode status = U_ZERO_ERROR;
   NumberFormat format(unum_open(style, nullptr, 0, locale, nullptr, &status), unum_close);
+
   if (U_FAILURE(status)) {
     format.reset();
   }
@@ -57,7 +62,7 @@ NumberFormat OpenFormat(UNumberFormatStyle style, const char *locale) {
   return format;
 }
 
-bool ReadLocale(napi_env env, napi_callback_info info, std::string &identifier) {
+bool ReadLocale(napi_env env, napi_callback_info info, std::string &result) {
   size_t argc = 1;
   napi_value argument = nullptr;
   if (napi_get_cb_info(env, info, &argc, &argument, nullptr, nullptr) != napi_ok) {
@@ -74,6 +79,7 @@ bool ReadLocale(napi_env env, napi_callback_info info, std::string &identifier) 
   if (napi_get_value_string_utf8(env, argument, nullptr, 0, &size) != napi_ok) {
     return false;
   }
+
   std::vector<char> tag(size + 1);
   if (napi_get_value_string_utf8(env, argument, tag.data(), tag.size(), &size) != napi_ok) {
     return false;
@@ -96,7 +102,7 @@ bool ReadLocale(napi_env env, napi_callback_info info, std::string &identifier) 
     return false;
   }
 
-  identifier.assign(locale.data(), length);
+  result.assign(locale.data(), length);
 
   return true;
 }
@@ -170,9 +176,18 @@ napi_value GetCalendarType(napi_env env, napi_callback_info info) {
 
   if (U_SUCCESS(status) && calendar) {
     type = ucal_getType(calendar.get(), &status);
-    // ICU names differ from Expo's Unicode identifiers, e.g. gregorian/gregory.
+
+    // ICU uses "gregorian" where Expo expects the Unicode identifier "gregory".
     if (U_SUCCESS(status) && type != nullptr) {
       type = uloc_toUnicodeLocaleType("calendar", type);
+
+      // ICU 72 implements ISO week rules on a Gregorian calendar instance.
+      char requested[sizeof("iso8601")];
+      UErrorCode keyword = U_ZERO_ERROR;
+      int32_t length = uloc_getKeywordValue(locale.c_str(), "calendar", requested, sizeof(requested), &keyword);
+      if (U_SUCCESS(keyword) && length == 7 && std::string_view(requested, length) == "iso8601") {
+        type = "iso8601";
+      }
     }
   }
 

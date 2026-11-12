@@ -14,13 +14,14 @@ const LOCALE_EVENT = 'onLocaleSettingsChanged';
 const CALENDAR_EVENT = 'onCalendarSettingsChanged';
 const USER_PREFERENCES_API = 18;
 const LOCALE_INSTANCE_API = 20;
-const FALLBACK_LOCALE = 'en-US';
+const UNDETERMINED_LANGUAGE = 'und';
 const UNSUBSCRIBE_ATTEMPTS = 3;
 const SUBSCRIPTION_RETRY_LIMIT = 3;
 const SUBSCRIPTION_RETRY_DELAY_MS = 1000;
 
-// ICU measurement data is not exported; these region fallbacks match Expo Android.
-const US_MEASUREMENT_REGIONS: string[] = ['US', 'LR', 'MM'];
+// Harmony's public ICU does not expose the CLDR measurement lookup.
+const US_MEASUREMENT_REGIONS: string[] = ['US', 'LR'];
+const UK_MEASUREMENT_REGIONS: string[] = ['GB', 'MM'];
 const FAHRENHEIT_REGIONS: string[] = ['AG', 'BZ', 'VG', 'FM', 'MH', 'MS', 'KN', 'BS', 'CY', 'TC', 'US', 'LR', 'PW', 'KY'];
 
 interface Locale {
@@ -80,25 +81,37 @@ export class ExpoLocalizationModule extends ExpoModule {
       });
   }
 
-  private systemLocale(): string {
-    const tag = deviceInfo.sdkApiVersion >= LOCALE_INSTANCE_API ? i18n.System.getSystemLocaleInstance().toString() : i18n.System.getSystemLocale();
+  private systemRegion(): string | null {
+    try {
+      const region = i18n.System.getSystemRegion();
+      return region ? new Intl.Locale(UNDETERMINED_LANGUAGE, { region }).region || null : null;
+    } catch {
+      return null;
+    }
+  }
 
-    return new Intl.Locale(tag || FALLBACK_LOCALE, {
-      region: i18n.System.getSystemRegion() || undefined,
-    }).toString();
+  private systemLocale(region: string | null): string {
+    try {
+      const tag = deviceInfo.sdkApiVersion >= LOCALE_INSTANCE_API ? i18n.System.getSystemLocaleInstance().toString() : i18n.System.getSystemLocale();
+      return new Intl.Locale(tag, { region: region ?? undefined }).toString();
+    } catch {
+      try {
+        return new Intl.Locale(i18n.System.getSystemLanguage(), { region: region ?? undefined }).toString();
+      } catch {
+        return region ? `${UNDETERMINED_LANGUAGE}-${region}` : UNDETERMINED_LANGUAGE;
+      }
+    }
   }
 
   private getLocales(): Locale[] {
-    const fallback = this.systemLocale();
-    const region = i18n.System.getSystemRegion() || null;
+    const region = this.systemRegion();
+    const fallback = this.systemLocale(region);
     const system = localization.getNumericInfo(fallback);
     const temperature = this.temperatureUnit(region);
     const languages = i18n.System.getPreferredLanguageList();
 
-    const tags = languages.length > 0 ? languages : [fallback];
     const locales: Locale[] = [];
-
-    tags.forEach((tag: string): void => {
+    languages.forEach((tag: string): void => {
       try {
         locales.push(this.locale(tag, region, system, temperature));
       } catch (error) {
@@ -115,16 +128,16 @@ export class ExpoLocalizationModule extends ExpoModule {
 
   private locale(tag: string, region: string | null, system: NumericInfo, temperature: string | null): Locale {
     const preferred = new Intl.Locale(tag);
-
     const language = new Intl.Locale(preferred, {
       region: preferred.region || region || undefined,
     });
 
     const numeric = localization.getNumericInfo(language.toString());
+    const languageCode = language.language;
 
     return {
       languageTag: language.toString(),
-      languageCode: language.language || null,
+      languageCode: languageCode && languageCode !== UNDETERMINED_LANGUAGE ? languageCode : null,
       languageScriptCode: language.script || null,
       languageRegionCode: language.region || null,
       regionCode: region,
@@ -135,7 +148,7 @@ export class ExpoLocalizationModule extends ExpoModule {
       currencySymbol: region === null ? null : system.currencySymbol,
       languageCurrencyCode: numeric.currencyCode,
       languageCurrencySymbol: numeric.currencySymbol,
-      measurementSystem: region === null ? null : region === 'GB' ? 'uk' : US_MEASUREMENT_REGIONS.includes(region) ? 'us' : 'metric',
+      measurementSystem: region === null ? null : UK_MEASUREMENT_REGIONS.includes(region) ? 'uk' : US_MEASUREMENT_REGIONS.includes(region) ? 'us' : 'metric',
       temperatureUnit: temperature,
     };
   }
@@ -155,11 +168,15 @@ export class ExpoLocalizationModule extends ExpoModule {
   }
 
   private getCalendars(): Calendar[] {
-    const tag = this.systemLocale();
-    const calendar = i18n.getCalendar(tag);
+    const tag = this.systemLocale(this.systemRegion());
 
     // i18n.Calendar and Expo both use Sunday=1. System.WeekDay uses Monday=1.
-    const weekday = deviceInfo.sdkApiVersion >= USER_PREFERENCES_API ? (i18n.System.getFirstDayOfWeek() % 7) + 1 : calendar.getFirstDayOfWeek();
+    let weekday: number;
+    if (deviceInfo.sdkApiVersion >= USER_PREFERENCES_API) {
+      weekday = (i18n.System.getFirstDayOfWeek() % 7) + 1;
+    } else {
+      weekday = i18n.getCalendar(tag).getFirstDayOfWeek();
+    }
 
     return [
       {
@@ -182,9 +199,6 @@ export class ExpoLocalizationModule extends ExpoModule {
           commonEventManager.Support.COMMON_EVENT_TIMEZONE_CHANGED,
         ],
       });
-
-      this.subscriber = subscriber;
-      this.failed = false;
 
       commonEventManager.subscribe(subscriber, (error: BusinessError, data: commonEventManager.CommonEventData): void => {
         if (this.destroyed || this.release !== undefined || this.failed || this.subscriber !== subscriber) return;
@@ -209,10 +223,12 @@ export class ExpoLocalizationModule extends ExpoModule {
           this.publish(CALENDAR_EVENT);
         }
       });
+
+      this.subscriber = subscriber;
+      this.failed = false;
     } catch (error) {
       console.warn(`ExpoLocalization: unable to subscribe to changes: ${String(error)}`);
       this.failed = true;
-      this.stopObserving();
       this.scheduleRecovery();
     }
   }
@@ -221,6 +237,7 @@ export class ExpoLocalizationModule extends ExpoModule {
     if (this.destroyed || this.timer !== undefined || this.retries >= SUBSCRIPTION_RETRY_LIMIT) return;
 
     this.retries++;
+
     this.timer = setTimeout((): void => {
       this.timer = undefined;
       this.recoverSubscription();
@@ -254,8 +271,8 @@ export class ExpoLocalizationModule extends ExpoModule {
     const subscriber = this.subscriber;
     if (subscriber === undefined) return Promise.resolve();
 
-    this.release = this.unsubscribe(subscriber).then((released: boolean): void => {
-      if (released) this.subscriber = undefined;
+    this.release = this.unsubscribe(subscriber).then((success: boolean): void => {
+      if (success) this.subscriber = undefined;
       this.release = undefined;
     });
 

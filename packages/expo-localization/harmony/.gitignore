@@ -1,0 +1,2 @@
+# Compiler outputs are kept outside the library packaged in the HAR.
+.native-build/

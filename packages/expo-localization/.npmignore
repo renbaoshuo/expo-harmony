@@ -1,3 +1,4 @@
+/scripts/
 harmony/*
 !harmony/library.har
 !harmony/library/
