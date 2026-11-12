@@ -54,72 +54,74 @@ export class ExpoVideoThumbnailsModule extends ExpoModule {
     let packer: image.ImagePacker | undefined;
     let output: fileIo.File | undefined;
     let destination: string | undefined;
-    let complete = false;
 
     try {
-      extractor = await media.createAVMetadataExtractor();
-      this.context.assertActive();
-
-      if (remote) {
-        extractor.setUrlSource(uri, options.headers);
-      } else {
-        const path = this.context.filePathForRead(uri);
-        input = await fileIo.open(path, fileIo.OpenMode.READ_ONLY);
-        this.context.assertFileAccess(input.path);
-
-        const stat = await fileIo.stat(input.fd);
-        this.context.assertActive();
-        if (!stat.isFile() || stat.size <= 0) {
-          throw new ExpoModuleError('ERR_THUMBNAIL_FILE', "Can't read file: the video must be a nonempty regular file.");
-        }
-
-        extractor.fdSrc = { fd: input.fd, offset: 0, length: stat.size };
-      }
-
-      pixel = await extractor.fetchFrameByTime(timeInMicroseconds(options), media.AVImageQueryOptions.AV_IMAGE_QUERY_CLOSEST_SYNC, {});
-      this.context.assertActive();
-
-      const size = (await pixel.getImageInfo()).size;
-
-      const directory = `${this.context.cachePath}/${CACHE_DIRECTORY}`;
+      let result: VideoThumbnailsResult;
       try {
-        await fileIo.mkdir(directory, true);
-      } catch (error) {
-        if (!(await fileIo.stat(directory)).isDirectory()) {
-          throw new ExpoModuleError(ERROR_CODE, 'Could not create the thumbnail cache directory.', error as Object);
+        extractor = await media.createAVMetadataExtractor();
+        this.context.assertActive();
+
+        if (remote) {
+          extractor.setUrlSource(uri, options.headers);
+        } else {
+          const target = this.context.fileSourceForRead(uri);
+          // Open without blocking so a FIFO cannot stall the regular-file check.
+          input = await fileIo.open(target, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
+
+          const stat = await fileIo.stat(input.fd);
+          this.context.assertActive();
+          if (!stat.isFile() || stat.size <= 0) {
+            throw new ExpoModuleError('ERR_THUMBNAIL_FILE', "Can't read file: the video must be a nonempty regular file.");
+          }
+          this.context.readPathForDescriptor(target, input);
+
+          extractor.fdSrc = { fd: input.fd, offset: 0, length: stat.size };
         }
+
+        pixel = await extractor.fetchFrameByTime(timeInMicroseconds(options), media.AVImageQueryOptions.AV_IMAGE_QUERY_CLOSEST_SYNC, {});
+        this.context.assertActive();
+
+        const size = (await pixel.getImageInfo()).size;
+
+        const dir = `${this.context.cachePath}/${CACHE_DIRECTORY}`;
+        try {
+          await fileIo.mkdir(dir, true);
+        } catch (error) {
+          if (!(await fileIo.stat(dir)).isDirectory()) {
+            throw new ExpoModuleError(ERROR_CODE, 'Could not create the thumbnail cache directory.', error as Object);
+          }
+        }
+
+        this.context.assertActive();
+        const path = `${dir}/${util.generateRandomUUID(true)}.jpg`;
+        output = await fileIo.open(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
+        destination = path;
+        this.context.assertActive();
+
+        packer = image.createImagePacker();
+        await packer.packToFile(pixel, output.fd, { format: JPEG_MIME_TYPE, quality: Math.trunc(options.quality * 100) });
+        await fileIo.close(output);
+        output = undefined;
+
+        result = { uri: fileUriFromPath(path), width: size.width, height: size.height };
+      } finally {
+        if (packer !== undefined) await cleanup((): Promise<void> => packer!.release());
+        if (output !== undefined) await cleanup((): Promise<void> => fileIo.close(output!));
+        if (pixel !== undefined) await cleanup((): Promise<void> => pixel!.release());
+        if (extractor !== undefined) await cleanup((): Promise<void> => extractor!.release());
+        if (input !== undefined) await cleanup((): Promise<void> => fileIo.close(input!));
       }
 
       this.context.assertActive();
-      const path = `${directory}/${util.generateRandomUUID(true)}.jpg`;
-      output = await fileIo.open(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
-      destination = path;
-      this.context.assertActive();
-
-      packer = image.createImagePacker();
-      await packer.packToFile(pixel, output.fd, { format: JPEG_MIME_TYPE, quality: Math.trunc(options.quality * 100) });
-      await fileIo.close(output);
-      output = undefined;
-
-      this.context.assertActive();
-      const result: VideoThumbnailsResult = { uri: fileUriFromPath(path), width: size.width, height: size.height };
-      complete = true;
-
       return result;
     } catch (error) {
+      if (destination !== undefined) await cleanup((): Promise<void> => fileIo.unlink(destination!));
+
       if (error instanceof ExpoModuleError) {
         throw new ExpoModuleError(error.code, error.message, error, error.path);
       }
 
       throw new ExpoModuleError(ERROR_CODE, 'Could not generate or save the video thumbnail.', error as Object);
-    } finally {
-      if (packer !== undefined) await cleanup((): Promise<void> => packer!.release());
-      if (output !== undefined) await cleanup((): Promise<void> => fileIo.close(output!));
-      if (pixel !== undefined) await cleanup((): Promise<void> => pixel!.release());
-      if (extractor !== undefined) await cleanup((): Promise<void> => extractor!.release());
-      if (input !== undefined) await cleanup((): Promise<void> => fileIo.close(input!));
-
-      if (!complete && destination !== undefined) await cleanup((): Promise<void> => fileIo.unlink(destination!));
     }
   }
 }
