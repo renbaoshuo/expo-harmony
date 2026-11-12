@@ -6,16 +6,18 @@
  */
 
 import { ExpoModule, ExpoModuleDefinition } from '@expo-harmony/expo-modules-core';
-import webview from '@ohos.web.webview';
+import { webview } from '@kit.ArkWeb';
 import { ExpoConstantsKey } from './ExpoConstantsService';
 
 export class ExpoConstantsModule extends ExpoModule {
   private static initialized: boolean = false;
 
   definition(): ExpoModuleDefinition {
+    const constants = this.context.services.get(ExpoConstantsKey)?.constants(this.context) ?? {};
+
     return new ExpoModuleDefinition()
       .name('ExponentConstants')
-      .constants(this.context.services.require(ExpoConstantsKey).constants(this.context))
+      .constants(constants)
       .asyncFunction('getWebViewUserAgentAsync', async (): Promise<string | null> => {
         try {
           if (!ExpoConstantsModule.initialized) {

@@ -5,7 +5,9 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import type { ConfigPlugin } from '@expo/config-plugins';
+import type { ConfigPlugin } from 'expo/config-plugins';
 
-declare const withConstants: ConfigPlugin;
+declare const withConstants: ConfigPlugin & {
+  refreshExpoConstantsResourceAsync(projectRoot: string, harmonyDirectory: string): Promise<string>;
+};
 export = withConstants;

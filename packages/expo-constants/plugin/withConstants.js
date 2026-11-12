@@ -7,21 +7,22 @@
 
 'use strict';
 
-const { getConfig } = require('@expo/config');
-const { load } = require('@expo/env');
+const { fork } = require('node:child_process');
+const { once } = require('node:events');
+const { readFile } = require('node:fs/promises');
 const path = require('node:path');
-const { createRunOncePlugin } = require('@expo/config-plugins');
+const { createRunOncePlugin } = require('expo/config-plugins');
 const { mergeContents } = require('@expo/config-plugins/build/utils/generateCode');
 const {
   atomicWrite,
   HarmonyConfigPluginError,
   HarmonyPaths,
-  normalizeHarmonyConfig,
   recordManagedFile,
   registerHarmonyConfigPlugin,
   withHarmonyDangerousMod,
   withRootHvigor,
 } = require('@expo-harmony/config-plugins');
+const { getHarmonyProjectConfig } = require('@expo-harmony/expo__config/internal/project-config');
 
 const pkg = require('../package.json');
 
@@ -32,29 +33,20 @@ class ExpoConstantsPluginError extends HarmonyConfigPluginError {
   }
 }
 
-async function writeResourceAsync(root, harmony, config) {
+async function writeResourceAsync(root, config) {
   const file = await HarmonyPaths.resolveHarmonyPath(
     root,
     'entry/src/main/resources/rawfile/app.config'
   );
-
-  const app = {
-    ...config,
-    version: config.version ?? harmony.versionName,
-    harmony: {
-      ...config.harmony,
-      bundleName: harmony.bundleName,
-      versionCode: harmony.versionCode,
-      versionName: harmony.versionName,
-      targetApiVersion: harmony.targetApiVersion,
-    },
-  };
-  delete app.harmony.signingConfigFile;
-
-  const content = JSON.stringify(app);
+  const content = JSON.stringify(config);
 
   try {
-    await atomicWrite(file, content);
+    const previous = await readFile(file, 'utf8').catch((cause) => {
+      if (cause.code === 'ENOENT') return undefined;
+      throw cause;
+    });
+
+    if (previous !== content) await atomicWrite(file, content);
   } catch (cause) {
     throw new ExpoConstantsPluginError(
       'ERR_HARMONY_CONSTANTS_WRITE_FAILED',
@@ -70,26 +62,25 @@ async function refreshExpoConstantsResourceAsync(root, directory) {
   root = path.resolve(root);
   directory = path.resolve(directory);
 
-  load(root);
-
-  const cwd = process.cwd();
+  // Hvigor can reuse a process across builds, while Expo's config loader caches
+  // app.config.js and its imports. Evaluate in a fresh process rooted at the app.
   let config;
-
   try {
-    process.chdir(root);
-
-    config = getConfig(root, {
-      isPublicConfig: true,
-      skipSDKVersionRequirement: true,
-      skipPlugins: false,
-    }).exp;
-  } finally {
-    process.chdir(cwd);
+    const child = fork(__filename, [], { cwd: root, execArgv: [] });
+    child.once('message', (value) => {
+      config = value;
+    });
+    const [code, signal] = await once(child, 'close');
+    if (code !== 0 || !config) throw new Error(signal ?? `exit ${code}`);
+  } catch (cause) {
+    throw new ExpoConstantsPluginError(
+      'ERR_HARMONY_CONSTANTS_CONFIG_FAILED',
+      `Unable to evaluate the public Expo config in ${root}.`,
+      { cause, file: root }
+    );
   }
 
-  const harmony = normalizeHarmonyConfig(config);
-
-  return writeResourceAsync(directory, harmony, config);
+  return writeResourceAsync(directory, config);
 }
 
 function withConstants(config) {
@@ -101,13 +92,14 @@ function withConstants(config) {
   config = withRootHvigor(config, (mod) => {
     mod.modResults = mergeContents({
       src: mod.modResults,
-      newSrc: `require('@ohos/hvigor').hvigor.nodesEvaluated(async () => {
+      newSrc: `require('@ohos/hvigor').hvigor.nodesEvaluated(async (hvigor) => {
   const path = require('node:path');
-  const root = path.resolve('..');
+  const harmony = hvigor.getRootNode().getNodePath();
+  const root = path.dirname(harmony);
   const load = require('node:module').createRequire(path.join(root, 'package.json'));
 
   await load('@expo-harmony/expo-constants/plugin/withConstants')
-    .refreshExpoConstantsResourceAsync(root, path.join(root, 'harmony'));
+    .refreshExpoConstantsResourceAsync(root, harmony);
 });`,
       tag: 'expo-harmony-constants',
       anchor: /^export default\b/m,
@@ -132,3 +124,10 @@ function withConstants(config) {
 
 module.exports = createRunOncePlugin(withConstants, pkg.name, pkg.version);
 module.exports.refreshExpoConstantsResourceAsync = refreshExpoConstantsResourceAsync;
+
+if (require.main === module && process.send) {
+  process.send(getHarmonyProjectConfig(process.cwd(), {
+    isPublicConfig: true,
+    skipSDKVersionRequirement: true,
+  }).exp);
+}

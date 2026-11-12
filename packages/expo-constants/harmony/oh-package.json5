@@ -8,7 +8,7 @@
 {
   "modelVersion": "5.0.0",
   "name": "@expo-harmony-internal/expo-constants",
-  "version": "55.0.17-harmony.11",
+  "version": "57.0.22-harmony.0",
   "description": "HarmonyOS port of expo-constants",
   "keywords": [
     "react-native",
@@ -28,6 +28,6 @@
     "@expo-harmony/expo-constants": "./library"
   },
   "overrides": {
-    "@rnoh/react-native-openharmony": "0.84.1"
+    "@rnoh/react-native-openharmony": "0.86.1"
   }
 }

@@ -6,13 +6,14 @@
  */
 
 import { ExpoConstantsConfig } from './ExpoConstantsConfig';
-import { ExpoModuleContext, ExpoModuleError, ExpoService, ExpoServiceContext, ExpoServiceKey } from '@expo-harmony/expo-modules-core';
-import bundleManager from '@ohos.bundle.bundleManager';
-import deviceInfo from '@ohos.deviceInfo';
-import util from '@ohos.util';
-import window from '@ohos.window';
+import { ExpoModuleContext, ExpoService, ExpoServiceContext, ExpoServiceKey, ExpoServicesRegistry } from '@expo-harmony/expo-modules-core';
+import { bundleManager } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
+import { window } from '@kit.ArkUI';
 
 const APP_CONFIG_RAW_FILE: string = 'app.config';
+const INVALID_RAW_FILE_PATH: number = 9001005;
 
 class HarmonyPlatformConstants {
   bundleName: string;
@@ -46,12 +47,17 @@ export interface ExpoConstantsProvider {
 
 export const ExpoConstantsKey = new ExpoServiceKey<ExpoConstantsProvider>('ExpoConstants');
 
+class ExpoConstantsRuntime {
+  readonly sessionId: string = util.generateRandomUUID();
+  embeddedManifest?: string | null;
+}
+
 export class ExpoConstantsService extends ExpoService implements ExpoConstantsProvider {
   static readonly key = new ExpoServiceKey<ExpoConstantsService>('ExpoConstantsService');
   readonly identity = ExpoConstantsService.key.bind(this);
   readonly interfaces = [ExpoConstantsKey.bind(this)];
-  private readonly sessionId: string = util.generateRandomUUID();
   private readonly config: ExpoConstantsConfig;
+  private readonly runtimes = new WeakMap<ExpoServicesRegistry, ExpoConstantsRuntime>();
 
   constructor(context?: ExpoServiceContext, config: ExpoConstantsConfig = new ExpoConstantsConfig()) {
     super(context);
@@ -59,52 +65,64 @@ export class ExpoConstantsService extends ExpoService implements ExpoConstantsPr
   }
 
   constants(context: ExpoModuleContext): Record<string, ESObject> {
+    const isHeadless = context.isHeadless || this.config.isHeadless;
+    const services = context.services;
+    const cached = this.runtimes.get(services);
+    const runtime = cached ?? new ExpoConstantsRuntime();
+    if (cached === undefined) this.runtimes.set(services, runtime);
+
     return {
       'appOwnership': this.config.appOwnership,
       'debugMode': (): boolean => context.isDebug,
       'deviceName': deviceName(),
       'deviceYearClass': null,
       'executionEnvironment': this.config.executionEnvironment,
-      'isHeadless': context.isHeadless || this.config.isHeadless,
-      'manifest': (): string | null => this.config.manifest ?? this.readAppConfig(context),
+      'isHeadless': isHeadless,
+      'manifest': (): string | null => this.manifest(context, runtime),
       'linkingUri': this.config.linkingUri ?? null,
       'experienceUrl': this.config.experienceUrl ?? null,
       'manifest2': null,
-      'sessionId': this.sessionId,
-      'statusBarHeight': (): number => this.readStatusBarHeight(context),
-      'systemFonts': (): string[] => this.readSystemFonts(context),
+      'sessionId': runtime.sessionId,
+      'statusBarHeight': (): number => isHeadless ? 0 : this.readStatusBarHeight(context),
+      'systemFonts': (): string[] => isHeadless ? [] : this.readSystemFonts(context),
       'systemVersion': systemVersion(),
-      'platform': (): PlatformConstants => this.readPlatformConstants(),
+      'platform': (): PlatformConstants | undefined => this.readPlatformConstants(context),
     };
+  }
+
+  private manifest(context: ExpoModuleContext, runtime: ExpoConstantsRuntime): string | null {
+    if (this.config.manifest !== undefined) return this.config.manifest;
+    if (runtime.embeddedManifest === undefined) runtime.embeddedManifest = this.readAppConfig(context);
+    return runtime.embeddedManifest;
   }
 
   private readAppConfig(context: ExpoModuleContext): string | null {
     try {
       const resources = context.uiAbilityContext.resourceManager;
-      if (!resources.getRawFileListSync('').includes(APP_CONFIG_RAW_FILE)) return null;
-
       const bytes = resources.getRawFileContentSync(APP_CONFIG_RAW_FILE);
 
-      const value: ESObject = JSON.parse(util.TextDecoder.create('utf-8').decodeToString(bytes));
+      const text = util.TextDecoder.create('utf-8', { fatal: true, ignoreBOM: true }).decodeToString(bytes);
+      const value: ESObject = JSON.parse(text);
       if (value === null || typeof value !== 'object' || Array.isArray(value)) {
         throw new Error('The embedded Expo app config must be a JSON object.');
       }
 
-      return JSON.stringify(value);
+      return text;
     } catch (error) {
-      context.logger.warn(`Unable to read the embedded Expo app config; returning null: ${String(error)}`);
+      if ((error as BusinessError).code !== INVALID_RAW_FILE_PATH) {
+        context.logger.warn(`Unable to read the embedded Expo app config; returning null: ${String(error)}`);
+      }
       return null;
     }
   }
 
   private readStatusBarHeight(context: ExpoModuleContext): number {
-    if (context.isHeadless) return 0;
-
     try {
       const stage = context.uiAbilityContext.windowStage;
       const mainWindow = stage.getMainWindowSync();
       const area = mainWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
       const height = mainWindow.getUIContext().px2vp(area.topRect.height);
+
       return Number.isFinite(height) && height >= 0 ? height : 0;
     } catch (error) {
       context.logger.warn(`Unable to read the HarmonyOS status bar height; using 0: ${String(error)}`);
@@ -113,14 +131,13 @@ export class ExpoConstantsService extends ExpoService implements ExpoConstantsPr
   }
 
   private readSystemFonts(context: ExpoModuleContext): string[] {
-    if (context.isHeadless) return [];
-
     try {
       const names = context.uiAbilityContext.windowStage.getMainWindowSync().getUIContext().getFont().getSystemFontList();
       const unique = new Set<string>();
       names.forEach((name: string): void => {
         if (name.length > 0) unique.add(name);
       });
+
       return Array.from(unique).sort();
     } catch (error) {
       context.logger.warn(`Unable to enumerate HarmonyOS system fonts; returning an empty list: ${String(error)}`);
@@ -128,26 +145,20 @@ export class ExpoConstantsService extends ExpoService implements ExpoConstantsPr
     }
   }
 
-  private readPlatformConstants(): PlatformConstants {
-    let bundleName: string;
-    let versionName: string;
-    let versionCode: number;
+  private readPlatformConstants(context: ExpoModuleContext): PlatformConstants | undefined {
     try {
       const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
-      bundleName = info.name;
-      versionName = info.versionName;
-      versionCode = info.versionCode;
+      if (info.name.length === 0 || info.versionName.length === 0 || !Number.isSafeInteger(info.versionCode)) {
+        throw new Error('HarmonyOS returned invalid bundle information.');
+      }
+
+      return new PlatformConstants(
+        new HarmonyPlatformConstants(info.name, info.versionName, info.versionCode, deviceInfo.deviceType, deviceInfo.sdkApiVersion, deviceInfo.osFullName),
+      );
     } catch (error) {
-      throw new ExpoModuleError('ERR_CONSTANTS_PLATFORM_INFO', 'Unable to read HarmonyOS bundle information.', error as Object);
+      context.logger.warn(`Unable to read HarmonyOS bundle information: ${String(error)}`);
+      return undefined;
     }
-
-    if (bundleName.length === 0 || versionName.length === 0 || !Number.isSafeInteger(versionCode)) {
-      throw new ExpoModuleError('ERR_CONSTANTS_PLATFORM_INFO', 'HarmonyOS returned invalid bundle information.');
-    }
-
-    return new PlatformConstants(
-      new HarmonyPlatformConstants(bundleName, versionName, versionCode, deviceInfo.deviceType, deviceInfo.sdkApiVersion, deviceInfo.osFullName),
-    );
   }
 }
 
