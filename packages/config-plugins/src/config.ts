@@ -13,10 +13,10 @@ export type ExpoHarmonyPlatform = ExpoKnownPlatform | HarmonyPlatform;
 export type HarmonyDeviceType = string;
 export type HarmonyOrientation = string;
 
-export interface HarmonyPermission {
+export interface HarmonyPermission extends Record<string, unknown> {
   name: string;
   reason?: string;
-  usedScene?: { abilities?: string[]; when?: 'inuse' | 'always' };
+  usedScene?: Record<string, unknown> & { abilities?: string[]; when?: 'inuse' | 'always' };
 }
 
 export type HarmonySkillUri = Record<string, string | number | boolean>;

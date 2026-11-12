@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/config-plugins",
-  "version": "55.0.11-harmony.3",
+  "version": "57.0.10-harmony.0",
   "keywords": [
     "react-native",
     "expo",
@@ -34,24 +34,20 @@
       "types": "./build/internal.d.ts",
       "require": "./build/internal.js",
       "default": "./build/internal.js"
-    },
-    "./internal/native-inputs": {
-      "types": "./build/nativeInputs.d.ts",
-      "require": "./build/nativeInputs.js",
-      "default": "./build/nativeInputs.js"
     }
   },
   "dependencies": {
-    "@expo/config-plugins": "55.0.11",
-    "@expo/config-types": "^55.0.5",
+    "@expo/config-plugins": "57.0.11",
+    "@expo/config-types": "^57.0.2",
+    "@react-native/normalize-colors": "0.86.3",
     "json5": "2.2.3"
   },
   "devDependencies": {
-    "@types/node": "18.19.0",
+    "@types/node": "22.14.0",
     "typescript": "^6.0.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
   },
   "publishConfig": {
     "access": "public"

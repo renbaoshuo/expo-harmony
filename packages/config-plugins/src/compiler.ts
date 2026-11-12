@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { compileModsAsync, type ExportedConfig, type ModPlatform } from '@expo/config-plugins';
+import { evalModsAsync, type ExportedConfig, type Mod, type ModPlatform } from '@expo/config-plugins';
 
 import type { ExpoConfigWithHarmony } from './config';
 import { withHarmonyBaseMods } from './mods';
@@ -20,9 +20,25 @@ export async function compileHarmonyModsAsync<Config extends ExpoConfigWithHarmo
   config: Config,
   options: HarmonyCompileOptions
 ): Promise<Config> {
-  return await compileModsAsync(withHarmonyBaseMods(config) as ExportedConfig, {
+  const base = withHarmonyBaseMods(config) as ExportedConfig;
+  const mods = base.mods as Record<string, Record<string, Mod>>;
+
+  // Expo's full compiler installs Android/iOS providers and prunes its mod table in place.
+  const input = options.introspect
+    ? {
+        ...base,
+        mods: {
+          harmony: Object.fromEntries(Object.entries(mods.harmony).filter(([, mod]) => mod.isIntrospective)),
+        } as ExportedConfig['mods'],
+      }
+    : base;
+
+  const result = await evalModsAsync(input, {
     ...options,
     platforms: ['harmony' as ModPlatform],
     assertMissingModProviders: true,
-  }) as Config;
+  });
+  if (options.introspect) result.mods = base.mods;
+
+  return result as Config;
 }

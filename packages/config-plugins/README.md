@@ -1,129 +1,131 @@
 # @expo-harmony/config-plugins
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/config-plugins)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/config-plugins) | [官方文档](https://docs.expo.dev/config-plugins/introduction/)
 
-这个包定义 `expo.harmony` 的字段和默认值，并提供读写 Harmony 原生工程的 Mod、资源与权限操作，以及插件生成文件的归属管理。
+为 HarmonyOS 上的 React Native 应用提供 Expo Config Plugins 的原生实现，与官方同版本的 `@expo/config-plugins` 配套使用。
 
 ## 安装
+
+本包适配 Expo SDK 57。
 
 ```sh
 npm install @expo-harmony/config-plugins
 ```
 
-## 声明 HarmonyOS 配置
+## API 对照表
 
-用 `defineExpoHarmonyConfig` 在 `app.config.js` 里写配置：
+### Constants
 
-```js
-const { defineExpoHarmonyConfig } = require('@expo-harmony/config-plugins');
+#### `HARMONY_MOD_NAMES`
 
-module.exports = defineExpoHarmonyConfig({
-  name: 'Example',
-  slug: 'example',
-  platforms: ['ios', 'android', 'harmony'],
-  plugins: ['@expo-harmony/prebuild-config'],
-  harmony: {
-    bundleName: 'com.example.app',
-    versionCode: 1,
-  },
-});
-```
+Harmony Mod 名称列表：`dangerous`、`reactNativeConfig`、`appJson`、`projectBuildProfile`、`rootOhPackage`、`rootHvigor`、`hvigorConfig`、`entryBuildProfile`、`entryOhPackage`、`entryHvigor`、`moduleJson`、`strings`、`colors`、`media`、`profiles`、`abilityStage`、`entryAbility`、`indexPage`、`worker`、`arktsPackageProvider`、`cppPackageProvider`、`cmakeLists` 和 `autolinking`。
 
-`defineExpoHarmonyConfig` 里的 `harmony` 字段可以写这些配置：
+#### `HarmonyPaths`
 
-| 字段 | 默认值 / 说明 |
+提供 Harmony 工程路径常量和路径查询方法。路径均相对于 Harmony 工程根目录。
+
+| 常量 | 路径 |
 | --- | --- |
-| `bundleName` | 必填，至少三段点分隔的合法标识符 |
-| `moduleName` | `entry` |
-| `abilityName` | `EntryAbility` |
-| `productName` | `default` |
-| `vendor` | `expo-harmony` |
-| `versionCode` | `1` |
-| `versionName` | 配置里的 `version`，没有则 `1.0.0` |
-| `targetApiVersion` | 旧版别名，建议改用 `expo-build-properties` 的 `targetSdkVersion` |
-| `targetSdkVersion` | 数字或 SDK 字符串，默认 `24`，兼容旧 `targetApiVersion` |
-| `compatibleSdkVersion` | `20`，不能低于 20，也不能大于 target |
-| `deviceTypes` | `['phone', 'tablet']` |
-| `permissions` | 权限列表，默认包含 `ohos.permission.INTERNET` |
-| `skills` | 技能列表，`scheme` 会追加对应项 |
-| `querySchemes` | 默认包含 `http`、`https`、`tel`、`sms` 和 `scheme` |
-| `icon` | 配置里的 `icon` |
-| `label` | 配置里的 `name` |
-| `backgroundColor` | 配置里的 `backgroundColor`，没有则 `#FFFFFF` |
-| `orientation` | 配置里的 `orientation`，没有则 `default` |
-| `userInterfaceStyle` | 供 `expo-system-ui` 和 `expo-splash-screen` 插件读取的 HarmonyOS 外观覆盖值，由模块插件校验和应用 |
-| `jsEngine` | `hermes` |
-| `abiFilters` | `['arm64-v8a', 'x86_64']` |
-| `signingConfigFile` | 签名配置文件路径，不设置则忽略 |
+| `HARMONY_PATHS.appJson` | `AppScope/app.json5` |
+| `HARMONY_PATHS.projectBuildProfile` | `build-profile.json5` |
+| `HARMONY_PATHS.rootOhPackage` | `oh-package.json5` |
+| `HARMONY_PATHS.rootHvigor` | `hvigorfile.ts` |
+| `HARMONY_PATHS.hvigorConfig` | `hvigor/hvigor-config.json5` |
+| `HARMONY_PATHS.entryBuildProfile` | `entry/build-profile.json5` |
+| `HARMONY_PATHS.entryOhPackage` | `entry/oh-package.json5` |
+| `HARMONY_PATHS.entryHvigor` | `entry/hvigorfile.ts` |
+| `HARMONY_PATHS.moduleJson` | `entry/src/main/module.json5` |
+| `HARMONY_PATHS.profiles` | `entry/src/main/resources/base/profile/main_pages.json` |
+| `HARMONY_PATHS.abilityStage` | `entry/src/main/ets/abilitystage/EntryAbilityStage.ets` |
+| `HARMONY_PATHS.entryAbility` | `entry/src/main/ets/entryability/EntryAbility.ets` |
+| `HARMONY_PATHS.indexPage` | `entry/src/main/ets/pages/Index.ets` |
+| `HARMONY_PATHS.worker` | `entry/src/main/ets/workers/RNOHWorker.ets` |
+| `HARMONY_PATHS.arktsPackageProvider` | `entry/src/main/ets/PackageProvider.ets` |
+| `HARMONY_PATHS.cppPackageProvider` | `entry/src/main/cpp/PackageProvider.cpp` |
+| `HARMONY_PATHS.cmakeLists` | `entry/src/main/cpp/CMakeLists.txt` |
+| `PROJECT_PATHS.reactNativeConfig` | `react-native.config.js` |
+| `PROJECT_PATH_CANDIDATES.reactNativeConfig` | `react-native.config.js`、`.cjs`、`.ts`、`.mjs` |
+| `RESOURCE_PATHS.strings` | `app`、`entry` 两个作用域的 string 资源文件 |
+| `RESOURCE_PATHS.colors` | `entry`、`entryDark` 两个作用域的 color 资源文件 |
+| `RESOURCE_PATHS.media` | `app`、`entry`、`entryDark` 三个作用域的 media 目录 |
 
-SDK/ABI 的这些旧字段继续兼容，新项目建议使用 `@expo-harmony/expo-build-properties`。`targetSdkVersion` 和 `compatibleSdkVersion` 可以写数字或带 API 级别的 SDK 标签；API 26 起使用 `26.0.0` 这样的分段版本。内置旧标签覆盖 API 13、14、20、21、23、24，已知 API 不接受错误的标签。`targetApiVersion` 与 `targetSdkVersion` 同时存在时须一致。`backgroundColor` 写 `#RRGGBB` 或 `#RRGGBBAA`，写入原生工程时转成 ARGB。`jsEngine` 目前只能是 `hermes`。
+### Methods
 
-`normalizeHarmonyConfig(config)` 返回补齐默认值并校验后的配置。
+#### `defineExpoHarmonyConfig(config)`
 
-## 修改原生工程文件
+接受包含 `harmony` 字段的 Expo 配置并原样返回。此函数保留配置的具体 TypeScript 类型，可用于 `app.config.ts`。
 
-Mod 读写原生工程里的文件。以 `module.json5` 为例：
+#### `normalizeHarmonyConfig(config)`
 
-```js
-const { withModuleJson } = require('@expo-harmony/config-plugins');
+返回补齐默认值并校验后的 `NormalizedHarmonyConfig`。`harmony.bundleName` 必须是至少三段的点分隔标识符；SDK 版本值、权限、技能、设备类型、颜色和模块构建选项不符合类型或格式时会抛出 `HarmonyConfigPluginError`。
 
-module.exports = function withExampleMetadata(config) {
-  return withModuleJson(config, (mod) => {
-    const moduleConfig = mod.modResults.module || {};
-    const metadata = Array.isArray(moduleConfig.metadata) ? moduleConfig.metadata : [];
+#### `parseHarmonySdkVersion(value, field?)`
 
-    mod.modResults.module = {
-      ...moduleConfig,
-      metadata: [...metadata, { name: 'example.enabled', value: 'true' }],
-    };
-    return mod;
-  });
-};
-```
+把 API 级别或 SDK 标签解析为 `{ api, native }`。数字 API 支持 13、14、20、21、23、24，以及 26 及以上；其他低于 26 的 API 级别需传入完整标签，例如 `6.1.1(24)`。API 26 及以上使用 `26.0.0` 格式。`field` 可用于指定错误信息中的字段名。
 
-回调在 `mod.modResults` 上读写并返回 `mod`。JSON 文件的 `modResults` 是对象，文本文件是字符串，返回结果写回文件。同一个 Mod 注册多次时，后注册的回调先执行。需要读最终原始配置时用 `mod.modRawConfig`。
+#### `compareHarmonyApiVersions(left, right)`
 
-内置 Mod 与目标文件：
+逐段比较由数字或点分隔字符串表示的 API 版本，返回负数、零或正数。
 
-| 接口                       | 文件                                                                                                          |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `withAppJson`              | `AppScope/app.json5`                                                                                          |
-| `withProjectBuildProfile`  | `build-profile.json5`                                                                                         |
-| `withRootOhPackage`        | `oh-package.json5`                                                                                            |
-| `withHvigorConfig`         | `hvigor/hvigor-config.json5`                                                                                  |
-| `withEntryBuildProfile`    | `entry/build-profile.json5`                                                                                   |
-| `withEntryOhPackage`       | `entry/oh-package.json5`                                                                                      |
-| `withModuleJson`           | `entry/src/main/module.json5`                                                                                 |
-| `withProfiles`             | `entry/src/main/resources/base/profile/main_pages.json`                                                       |
-| `withReactNativeConfig`    | `react-native.config.js`                                                                                      |
-| `withRootHvigor`           | `hvigorfile.ts`                                                                                               |
-| `withEntryHvigor`          | `entry/hvigorfile.ts`                                                                                         |
-| `withEntryAbility`         | `entry/src/main/ets/entryability/EntryAbility.ets`                                                            |
-| `withIndexPage`            | `entry/src/main/ets/pages/Index.ets`                                                                          |
-| `withWorker`               | `entry/src/main/ets/workers/RNOHWorker.ets`                                                                   |
-| `withArkTSPackageProvider` | `entry/src/main/ets/PackageProvider.ets`                                                                      |
-| `withCppPackageProvider`   | `entry/src/main/cpp/PackageProvider.cpp`                                                                      |
-| `withCMakeLists`           | `entry/src/main/cpp/CMakeLists.txt`                                                                           |
-| `withStrings`              | `AppScope/resources/base/element/string.json`、`entry/src/main/resources/base/element/string.json`            |
-| `withColors`               | `entry/src/main/resources/base/element/color.json`、`entry/src/main/resources/dark/element/color.json`        |
-| `withMedia`                | `AppScope/resources/base/media`、`entry/src/main/resources/base/media`、`entry/src/main/resources/dark/media` |
+#### `compileHarmonyModsAsync(config, options)`
 
-`withHarmonyMod(config, [name, action])` 按名称注册 Mod，`HARMONY_MOD_NAMES` 列出可用名称。`withHarmonyResources` 把同一个 action 注册到 strings、colors、media。`withHarmonyDangerousMod` 用来改写没有固定目标文件的内容。`withHarmonyAutolinking` 执行原生模块自动链接。`withHarmonyBaseMods` 注册整套 Harmony Base Mod。
+执行 Harmony Mods 并返回更新后的配置。`options.projectRoot` 必填；`introspect: true` 只读取可 introspect 的 Mod，不写工程文件；`ignoreExistingNativeFiles: true` 忽略工程中的现有原生文件。
 
-`compileHarmonyModsAsync(config, { projectRoot, introspect?, ignoreExistingNativeFiles? })` 直接执行 Mods。`introspect: true` 时只跑静态 Mod，不写文件，结果保存在 `_internal.modResults.harmony`，自定义文件以 `file:<相对路径>` 为键。从 `expo/config` 读配置时要设 `isModdedConfig: true`，否则 Mods 会丢失。
+使用 `expo/config` 读取配置后再调用时，应将 `isModdedConfig` 设为 `true`，以保留 Mod 配置。
 
-`HarmonyPaths` 提供工程内路径常量（`HARMONY_PATHS`、`PROJECT_PATHS`、`PROJECT_PATH_CANDIDATES`、`RESOURCE_PATHS`）和路径解析、边界检查函数。
+#### `withHarmonyBaseMods(config)`
 
-## Manifest
+为配置注册 `HARMONY_MOD_NAMES` 中的基础 Mod，返回更新后的配置。
 
-`HarmonyManifest` 原地修改和查询 `module.json5`：
+#### `withHarmonyMod(config, [name, action])`
 
-- `getModuleOrThrow(manifest)` 读取 `module`，缺失或格式不对时抛错。
-- `getMainAbilityOrThrow(manifest, name?)` 按显式名称、`mainElement`、第一个 Ability 的顺序选取，目标缺失或重名时抛错。
-- `setMetadata(target, item)`、`removeMetadata(target, name)` 按名称更新 module 或 Ability 的 metadata，保留其他条目和字段。
-- `ensureExtensionAbility(manifest, ability)` 添加 ExtensionAbility，重复调用不会追加，同名声明存在不兼容字段时抛错。
+按 `name` 将 `action` 注册到 Harmony Mod，返回更新后的配置。`action` 接收并返回 Mod 配置，可同步或异步执行；Mod 回调按后注册先执行的顺序调用。
 
-`withModuleJson` 的结果是 `HarmonyModuleJson`。`HarmonyModule`、`HarmonyAbility`、`HarmonyExtensionAbility`、`HarmonyMetadata` 保留未知字段，可以使用新 SDK 的字段。`HarmonySkillUri` 的值可以是字符串、数字或布尔值。
+JSON Mod 的 `modResults` 是对象，文本 Mod 是字符串，资源 Mod 是按作用域组织的对象。回调可从 `mod.modRawConfig` 读取原始 Expo 配置；`mod.modRequest.platform` 的值为 `harmony`。
+
+#### `withHarmonyResources(config, action)`
+
+将同一个 `action` 注册到 `strings`、`colors` 和 `media` 三个 Mod。每次回调收到对应 Mod 的资源结果。
+
+#### `withReactNativeConfig(config, action)`
+
+修改 Expo 项目根目录中的 `react-native.config.js`，回调的 `modResults` 是文本。
+
+#### `withAppJson(config, action)`
+
+修改 `AppScope/app.json5`，回调的 `modResults` 是 JSON 对象。
+
+#### `withProjectBuildProfile(config, action)`
+
+修改 Harmony 工程根目录的 `build-profile.json5`，回调的 `modResults` 是 JSON 对象。
+
+#### `withRootOhPackage(config, action)`
+
+修改 Harmony 工程根目录的 `oh-package.json5`，回调的 `modResults` 是 JSON 对象。
+
+#### `withRootHvigor(config, action)`
+
+修改 Harmony 工程根目录的 `hvigorfile.ts`，回调的 `modResults` 是文本。
+
+#### `withHvigorConfig(config, action)`
+
+修改 `hvigor/hvigor-config.json5`，回调的 `modResults` 是 JSON 对象。
+
+#### `withEntryBuildProfile(config, action)`
+
+修改 `entry/build-profile.json5`，回调的 `modResults` 是 JSON 对象。
+
+#### `withEntryOhPackage(config, action)`
+
+修改 `entry/oh-package.json5`，回调的 `modResults` 是 JSON 对象。
+
+#### `withEntryHvigor(config, action)`
+
+修改 `entry/hvigorfile.ts`，回调的 `modResults` 是文本。
+
+#### `withModuleJson(config, action)`
+
+修改 `entry/src/main/module.json5`，回调的 `modResults` 是 `HarmonyModuleJson` 对象。
 
 ```js
 const { HarmonyManifest, withModuleJson } = require('@expo-harmony/config-plugins');
@@ -132,125 +134,296 @@ function withExample(config) {
   return withModuleJson(config, (mod) => {
     const module = HarmonyManifest.getModuleOrThrow(mod.modResults);
     HarmonyManifest.setMetadata(module, { name: 'example.enabled', value: 'true' });
-
-    const ability = HarmonyManifest.getMainAbilityOrThrow(mod.modResults);
-    ability.backgroundModes = [...new Set([...(ability.backgroundModes || []), 'audioPlayback'])];
     return mod;
   });
 }
 ```
 
-## 权限
+#### `withStrings(config, action)`
 
-`withHarmonyPermissions(config, permissions)` 把权限合并进 `expo.harmony.permissions` 和生成的 `module.json5`。权限名用完整的 `ohos.permission.*`。同名权限合并 `usedScene.abilities`，任一声明要求 `always` 就保留 `always`，后传入的 `reason` 覆盖旧值。`reason` 写 `$string:...` 这样的原生引用，文案放在字符串资源里。
+修改 `app` 和 `entry` 作用域的字符串资源。回调的 `modResults` 是作用域到资源 JSON 的映射。
 
-`HarmonyPermissions.mergePermissions(current, additions)` 返回合并后的新数组。`ensurePermissions(manifest, additions)` 和 `removePermissions(manifest, names)` 修改并返回 manifest。删除只改应用 manifest 里列出的声明，不会动 HAR 自己声明的权限。
+#### `withColors(config, action)`
 
-## 字符串、颜色和媒体
+修改 `entry` 和 `entryDark` 作用域的颜色资源。回调的 `modResults` 是作用域到资源 JSON 的映射。
 
-`HarmonyResources.setString(file, { name, value })`、`removeString(file, name)`、`setColor`、`removeColor` 原地修改单个资源 JSON 对象并返回，按名称去重，保留其他内容。空字符串是合法值，删除要显式调用 remove。
+#### `withMedia(config, action)`
 
-```js
-const { HarmonyResources, registerHarmonyConfigPlugin, withStrings } = require('@expo-harmony/config-plugins');
+修改 `app`、`entry` 和 `entryDark` 作用域的媒体文件。回调的 `modResults` 是作用域到文件名和媒体描述符的映射；`source` 指向 Expo 项目中的文件，`content` 可为字符串或 `Uint8Array`。设置 `replaceBase: true` 会替换同基本名的文件。
 
-function withExampleReason(config, reason) {
-  config = registerHarmonyConfigPlugin(config, 'example-plugin', {
-    resources: { strings: { entry: ['example_permission_reason'] } },
-  });
-  return withStrings(config, (mod) => {
-    const entry = (mod.modResults.entry ??= {});
-    HarmonyResources.setString(entry, { name: 'example_permission_reason', value: reason });
-    return mod;
-  });
-}
-```
+#### `withProfiles(config, action)`
 
-`setColor` 接收原生颜色值，不改通道顺序。`HarmonyResources.toArgb` 把 `#RRGGBB`、Expo 的 `#RRGGBBAA` 或无符号 RGBA 整数转成 Harmony 颜色。命名颜色先用调用方的颜色解析器转成 RGBA 整数。
+修改 `entry/src/main/resources/base/profile/main_pages.json`，回调的 `modResults` 是 JSON 对象。
 
-`withStrings` 改的是 `app` 和 `entry`，`withColors` 改的是 `entry` 和 `entryDark`。`withMedia` 在 `app`、`entry` 或 `entryDark` 里按文件名设置 `{ source }` 或 `{ content }`，`replaceBase: true` 会替换同基本名的其他扩展名。
+#### `withAbilityStage(config, action)`
 
-## Rawfile 和生成文件
+修改 `entry/src/main/ets/abilitystage/EntryAbilityStage.ets`，回调的 `modResults` 是文本。
 
-```js
-const { withRawfile, withHarmonyGeneratedFiles } = require('@expo-harmony/config-plugins');
+#### `withEntryAbility(config, action)`
 
-function withExampleFiles(config) {
-  config = withRawfile(config, {
-    owner: 'example-plugin',
-    files: {
-      'audio/example.wav': { source: './assets/example.wav' },
-      'example.json': { content: JSON.stringify({ enabled: true }) },
-    },
-  });
-  return withHarmonyGeneratedFiles(config, {
-    owner: 'example-plugin',
-    files: {
-      'entry/src/main/ets/example/Example.ets': { content: 'export const enabled = true;\n' },
-    },
-  });
-}
-```
+修改 `entry/src/main/ets/entryability/EntryAbility.ets`，回调的 `modResults` 是文本。
 
-`withRawfile` 的路径相对 `entry/src/main/resources/rawfile`，`withHarmonyGeneratedFiles` 的路径相对 Harmony 工程根目录。路径用 `/`，不接受绝对路径、`.`、`..` 和指向工程外的符号链接。`source` 相对 Expo 项目根目录，也可以用绝对路径；`content` 是字符串或 `Uint8Array`，和 `source` 二选一。
+#### `withIndexPage(config, action)`
 
-两个接口会覆盖自己声明的目标文件，执行时读取源文件，先校验整批输入再原子写入，并登记文件归属。introspection 阶段不写文件。多个插件不能声明同一个目标路径，同一个 owner 的多次调用合并成这次配置的完整文件集合。
+修改 `entry/src/main/ets/pages/Index.ets`，回调的 `modResults` 是文本。
 
-配合 `@expo-harmony/prebuild-config` 时，下次生成会清掉同一 owner 不再声明的旧文件，卸载插件会清理它管理的文件。字体这类需要动态计算的场景可以用 `withHarmonyDangerousMod`、`atomicWrite` 和 `recordManagedFile`。
+#### `withWorker(config, action)`
 
-## 自定义文件
+修改 `entry/src/main/ets/workers/RNOHWorker.ets`，回调的 `modResults` 是文本。
 
-`withHarmonyJsonFile` 管理一个 JSON 或 JSON5 文件：
+#### `withArkTSPackageProvider(config, action)`
 
-```js
-const { withHarmonyJsonFile } = require('@expo-harmony/config-plugins');
+修改 `entry/src/main/ets/PackageProvider.ets`，回调的 `modResults` 是文本。
 
-module.exports = (config) =>
-  withHarmonyJsonFile(config, {
-    path: 'entry/src/main/resources/zh_CN/element/string.json',
-    owner: 'my-library/locales',
-    action: (mod) => {
-      mod.modResults.string = [{ name: 'my_message', value: '你好' }];
-      return mod;
-    },
-  });
-```
+#### `withCppPackageProvider(config, action)`
 
-一个文件由一个 owner 管理。其他插件用相同的 `path` 和 `owner` 继续修改时，文件只读写一次；不同 owner 声明同一路径会报错。多个插件改资源数组时按名称合并，避免覆盖别人的条目。
+修改 `entry/src/main/cpp/PackageProvider.cpp`，回调的 `modResults` 是文本。
 
-`createHarmonyFileMod({ path, owner, parse, serialize, isIntrospective? })` 用来定义其他文本格式，返回和 `withModuleJson` 一样接收 `(config, action)` 的函数。`parse` 接收文件内容或表示文件不存在的 `null`，`serialize` 返回字符串，两者是纯函数。序列化对象时可以用 `stableHarmonyJson`，它按固定键序输出。定义一次并导出，供其他插件复用。只有静态、可 JSON 序列化、不产生文件副作用的 Mod 才能设 `isIntrospective: true`，JSON 快捷接口已经开启。
+#### `withCMakeLists(config, action)`
 
-provider 会校验路径、登记归属并原子写入，移除 provider 后 prebuild 会清理它生成的文件。它管理整个文件，不会单独撤销某个 action 对字段的修改。内置 Mod 已经管理的路径不能再声明。
+修改 `entry/src/main/cpp/CMakeLists.txt`，回调的 `modResults` 是文本。
 
-## 声明文件与资源归属
+#### `withHarmonyAutolinking(config, action)`
 
-`registerHarmonyConfigPlugin(config, owner, claims)` 声明插件占用的文件和资源名。`files` 是相对路径列表，`resources` 按 `strings`、`colors`、`media` 分组，每组再按作用域列出名称，`ability` 现在能写 `startWindowBackground` 和 `startWindowIcon`。不同 owner 声明同一个文件会报错。
+注册 Harmony 自动链接 Mod 的回调。该 Mod 的 `modResults` 为 `null`。
 
-```js
-const { registerHarmonyConfigPlugin } = require('@expo-harmony/config-plugins');
+#### `withHarmonyDangerousMod(config, action)`
 
-module.exports = (config) =>
-  registerHarmonyConfigPlugin(config, 'my-plugin', {
-    files: ['entry/src/main/resources/base/profile/shortcuts.json'],
-    resources: {
-      colors: { entry: ['brand_primary'] },
-      strings: { app: ['app_display_name'] },
-    },
-  });
-```
+注册没有固定目标文件的 Harmony Mod 回调。该 Mod 的 `modResults` 为 `null`。
 
-`recordManagedFile(config, file, owner)` 单独登记一个受管理文件，适合动态生成的文件。
+#### `withRawfile(config, options)`
 
-## 插件组合
+将文件写入 `entry/src/main/resources/rawfile`。`options.files` 的键是相对 rawfile 根目录的路径，值为 `source` 或 `content` 描述符；`source` 相对 Expo 项目根目录，也可使用绝对路径，`content` 为字符串或 `Uint8Array`。路径不能包含绝对路径、反斜线、`.` 或 `..` 段。
 
-`withPlugins`、`withRunOnce`、`withStaticPlugin`、`createRunOncePlugin` 可以写 `platforms: ['harmony']`，并保留调用方的配置类型。其他 Expo 通用工具从项目的 `expo/config-plugins` 取。
+#### `withHarmonyGeneratedFiles(config, options)`
 
-## 类型
+将文件写入 Harmony 工程。`options.files` 的键是相对工程根目录的路径，值必须且只能指定 `source` 或 `content`。`source` 相对 Expo 项目根目录，也可使用绝对路径；`content` 为字符串或 `Uint8Array`。路径不能越出工程目录、指向工程外的符号链接，或覆盖内置 Mod 管理的文件。
 
-`HarmonyConfigPlugin<Props>` 保留传入配置的具体类型，可以写 `platforms: ['harmony']`。`HarmonyModAction<T>` 和 `HarmonyModConfig<T>` 里的 Harmony 配置、`modRawConfig.harmony`、`modRequest.platform: 'harmony'` 和结果都有类型。文件 Mod 还能读到可选的 `modRequest.modFile` 和 `modFileExists`。
+`options.owner` 标识文件归属。配合 `@expo-harmony/prebuild-config` 使用时，后续生成会清理该 owner 不再声明的文件，卸载插件时会清理其管理的文件。不同 owner 不能声明相同路径或文件与目录的父子路径。
 
-## Author
+#### `createHarmonyFileMod(options)`
 
-**expo-harmony** © [Baoshuo](https://github.com/renbaoshuo), Released under the MIT License.<br>
-Authored and maintained by Baoshuo with help from [contributors](https://github.com/renbaoshuo/expo-harmony/contributors).
+为自定义文件格式创建 Mod，返回接收 `(config, action)` 的插件函数。`options.path` 是相对 Harmony 工程根目录的文件路径；`parse(source)` 接收文本或 `null`（文件不存在），`serialize(value)` 返回文本。仅当 Mod 可在不写文件时安全读取结果，才设置 `isIntrospective: true`。
 
-> [Personal Website](https://baoshuo.ren) · [Blog](https://blog.baoshuo.ren) · GitHub [@renbaoshuo](https://github.com/renbaoshuo) · Twitter [@renbaoshuo](https://twitter.com/renbaoshuo)
+#### `withHarmonyJsonFile(config, options)`
+
+创建 JSON 或 JSON5 文件 Mod。`options` 包含相对工程根目录的 `path`、`owner` 和修改 `modResults` 的 `action`；`modResults` 是对象。
+
+#### `registerHarmonyConfigPlugin(config, owner, claims?)`
+
+声明插件管理的文件、Ability 字段和资源名，并返回配置。`claims.files` 是相对工程根目录的文件路径；`claims.resources` 按 `strings`、`colors`、`media` 和资源作用域声明名称；`claims.ability` 支持 `startWindowBackground`、`startWindowIcon`。不同 owner 不能声明相同文件或文件与目录的父子路径。
+
+#### `recordManagedFile(config, file, owner)`
+
+登记已生成文件的归属，供 `@expo-harmony/prebuild-config` 在后续生成或移除插件时清理。
+
+#### `withPlugins(config, plugins)`
+
+按数组顺序应用静态插件，并保留 Harmony 配置的类型。插件可以是包名、插件函数，或 `[插件, props]`。
+
+#### `withRunOnce(config, options)`
+
+只应用一次指定插件。`options` 包含 `plugin`、`name` 和可选的 `version`。
+
+#### `withStaticPlugin(config, options)`
+
+应用静态插件。`options` 支持 `plugin`、可选的 `projectRoot` 和 `fallback`。
+
+#### `createRunOncePlugin(plugin, name, version?)`
+
+将插件包装为只运行一次的插件，返回保留 Harmony 配置类型的插件函数。
+
+#### `HarmonyManifest.getModuleOrThrow(manifest)`
+
+返回 `manifest.module`。模块缺失或格式不正确时抛出 `ERR_HARMONY_MANIFEST_INVALID`。
+
+#### `HarmonyManifest.getMainAbilityOrThrow(manifest, name?)`
+
+返回目标 Ability。未传 `name` 时，按 `module.mainElement`、第一个 Ability 的顺序选择；目标缺失或同名 Ability 重复时抛错。
+
+#### `HarmonyManifest.setMetadata(target, item)`
+
+按 `item.name` 更新 `module` 或 Ability 的 metadata；同名项会合并字段，其他 metadata 保留。`target` 可以是 `HarmonyModule` 或 `HarmonyAbility`。
+
+#### `HarmonyManifest.removeMetadata(target, name)`
+
+从 `module` 或 Ability 的 metadata 中删除指定名称。
+
+#### `HarmonyManifest.ensureExtensionAbility(manifest, ability)`
+
+按名称添加 ExtensionAbility。已有同名声明且字段兼容时不重复添加；同名声明字段冲突或重复时抛错。
+
+#### `HarmonyResources.setString(file, item)`
+
+按 `item.name` 添加或替换字符串资源并返回更新后的资源对象。`item` 需要包含合法的 `name` 和字符串 `value`；空字符串值有效。
+
+#### `HarmonyResources.removeString(file, name)`
+
+删除指定名称的字符串资源并返回更新后的资源对象。
+
+#### `HarmonyResources.setColor(file, item)`
+
+按 `item.name` 添加或替换颜色资源并返回更新后的资源对象。`item.value` 是 Harmony 颜色字符串。
+
+#### `HarmonyResources.removeColor(file, name)`
+
+删除指定名称的颜色资源并返回更新后的资源对象。
+
+#### `HarmonyResources.toArgb(value)`
+
+将 React Native 颜色字符串或无符号 32 位 RGBA 整数转换为 Harmony 颜色字符串并返回。`#RRGGBB` 会转为大写原样返回。
+
+#### `atomicWrite(file, content)`
+
+将字符串或 `Uint8Array` 写入文件，返回 `Promise<void>`。
+
+#### `stableHarmonyJson(value)`
+
+返回按键名排序、缩进两个空格并以换行结尾的 JSON 字符串。
+
+#### `HarmonyPaths.assertNoExternalSymlink(root, target)`
+
+检查目标路径是否留在 `root` 内；发现指向工程外部的符号链接时抛出路径错误。
+
+#### `HarmonyPaths.isInside(root, target)`
+
+判断 `target` 是否位于 `root` 内，返回布尔值。
+
+#### `HarmonyPaths.resolveHarmonyPath(directory, relative)`
+
+解析 Harmony 工程内的相对路径并返回绝对路径。拒绝绝对路径、越界路径和指向工程外部的符号链接。
+
+#### `HarmonyPaths.resolveProjectPath(root, name)`
+
+根据 `name` 解析 Expo 项目文件路径。`reactNativeConfig` 按 `react-native.config.js`、`.cjs`、`.ts`、`.mjs` 的顺序查找；均不存在时返回第一个候选路径。
+
+#### `HarmonyPaths.toPosixRelative(root, target)`
+
+返回以 `/` 分隔的相对路径字符串。
+
+### Types
+
+#### `HarmonyConfig` 与 `ExpoConfigWithHarmony`
+
+`ExpoConfigWithHarmony` 是增加 `harmony` 配置和 `harmony` 平台类型的 Expo 配置。`harmony` 对象支持以下字段：
+
+| 字段 | 类型 | 默认值或行为 |
+| --- | --- | --- |
+| `bundleName` | `string` | 必填；至少三段点分隔标识符 |
+| `moduleName` | `string` | `entry` |
+| `abilityName` | `string` | `EntryAbility` |
+| `productName` | `string` | `default` |
+| `vendor` | `string` | `expo-harmony` |
+| `versionCode` | `number` | `1` |
+| `versionName` | `string` | Expo 配置中的 `version`，默认 `1.0.0` |
+| `runtimeVersion` | `string \| object` | 版本字符串或 `nativeVersion`、`sdkVersion`、`appVersion`、`fingerprint` 策略 |
+| `targetSdkVersion` | `number \| string` | 默认 API 24；SDK 标签或 API 26 起的点分隔版本 |
+| `compatibleSdkVersion` | `number \| string` | 默认 API 20；格式同 `targetSdkVersion` |
+| `targetApiVersion` | `number` | 已弃用；未设置 `targetSdkVersion` 时仍可提供目标 API 级别 |
+| `deviceTypes` | `string[]` | `['phone', 'tablet']` |
+| `permissions` | `HarmonyPermission[]` | 默认包含 `ohos.permission.INTERNET` |
+| `skills` | `HarmonySkill[]` | `scheme` 配置会追加对应的 URI 技能 |
+| `querySchemes` | `string[]` | 默认包括 `http`、`https`、`tel`、`sms` 和 `scheme` 中的值 |
+| `icon`、`label` | `string` | 分别取 Expo 配置的 `icon`、`name` |
+| `backgroundColor` | `string` | Expo 配置中的 `backgroundColor`，默认 `#FFFFFF` |
+| `orientation` | `string` | Expo 配置中的 `orientation`，默认 `default` |
+| `userInterfaceStyle` | `'light' \| 'dark' \| 'automatic'` | Harmony 外观覆盖值，供相关插件读取 |
+| `jsEngine` | `'hermes'` | 目前只接受 `hermes` |
+| `abiFilters` | `string[]` | `['arm64-v8a', 'x86_64']` |
+| `signingConfigFile` | `string` | 可选的签名配置文件路径 |
+| `moduleBuilds` | `Record<string, Record<string, string \| number \| boolean>>` | 可选的原生模块构建选项 |
+
+`HarmonyPlatform` 的值为 `harmony`；`ExpoHarmonyPlatform` 包含 Expo 已知平台及 `harmony`。
+
+#### `HarmonyPermission`
+
+权限声明包含必填的 `name` 和可选的 `reason`、`usedScene`。`usedScene` 支持 `abilities: string[]`、`when: 'inuse' | 'always'` 及 HarmonyOS 权限字段；未指定 `when` 时为 `inuse`。其他 HarmonyOS 声明字段会保留。
+
+#### `HarmonySkill` 与 `HarmonySkillUri`
+
+`HarmonySkill` 支持 `entities`、`actions` 和 `uris`；至少提供其中一项。`HarmonySkillUri` 的各字段值可以是字符串、数字或布尔值。
+
+#### `HarmonyConfigPlugin<Props>`
+
+配置插件函数类型，参数为 Expo Harmony 配置和可选插件参数 `Props`，返回同一配置类型。
+
+#### `HarmonyModAction<T>` 与 `HarmonyModConfig<T>`
+
+`HarmonyModAction<T>` 接收并返回 Mod 配置，可返回 Promise。`HarmonyModConfig<T>` 为 Harmony 平台的 Mod 配置类型：`modRawConfig` 包含 Harmony 配置，`modRequest.platform` 固定为 `harmony`；文件 Mod 可提供 `modRequest.modFile` 和 `modFileExists`。
+
+#### `HarmonyModName` 与 `HarmonyJson`
+
+`HarmonyModName` 是 `HARMONY_MOD_NAMES` 中 Mod 名称的联合类型。`HarmonyJson` 是 Harmony JSON 配置对象类型。
+
+#### `HarmonyCompileOptions`
+
+编译选项包含必填的 `projectRoot`，以及可选布尔值 `introspect`、`ignoreExistingNativeFiles`。
+
+#### `HarmonyPluginReference` 与 `HarmonyStaticPlugin`
+
+插件引用可以是包名或插件函数。静态插件也可以写成 `[插件引用, props]`。
+
+#### Harmony 清单类型
+
+`HarmonyModuleJson`、`HarmonyModule`、`HarmonyAbility`、`HarmonyExtensionAbility` 和 `HarmonyMetadata` 对应 Harmony `module.json5` 的结构。对象保留未列出的 HarmonyOS 字段，可用于扩展 SDK 字段。
+
+#### Harmony 资源类型
+
+`HarmonyResourceFile` 表示字符串或颜色资源文件；`HarmonyResourceItem` 包含资源 `name` 和字符串 `value`。`HarmonyResourceMap` 表示按作用域组织的资源对象。`HarmonyMediaDescriptor` 为 `{ source, content?, replaceBase? }` 或 `{ content, source?, replaceBase? }`，其中 `source` 与 `content` 二选一；`HarmonyMediaMap` 按作用域和文件名组织描述符。
+
+#### 生成文件类型
+
+`HarmonyFileDescriptor` 为 `{ source }` 或 `{ content }`，`HarmonyFileMap` 按目标相对路径映射描述符。`HarmonyGeneratedFilesOptions` 包含 `owner` 和 `files`。
+
+#### 自定义文件类型
+
+`HarmonyFileModOptions<T>` 包含 `path`、`owner`、`parse`、`serialize` 和可选的 `isIntrospective`。`HarmonyJsonFileOptions` 包含 `path`、`owner` 和接收 JSON 对象 Mod 配置的 `action`。
+
+#### `HarmonyConfigPluginOwnership`
+
+插件归属声明包含可选的 `files`、`ability` 和 `resources`。资源名称按 `strings`、`colors`、`media` 及其作用域列出；Ability 可声明 `startWindowBackground` 和 `startWindowIcon`。
+
+#### `HarmonySdkVersion`
+
+SDK 版本解析结果包含 `api` 和 `native` 字段，分别表示 API 级别和 Harmony SDK 版本标签。
+
+#### `HarmonyConfigPluginError`
+
+错误对象提供 `code`、`operation` 和可选的 `file`、`cause`。构造参数 `HarmonyConfigPluginErrorOptions` 支持 `cause`、`file`、`operation`。
+
+### Error codes
+
+| 错误码 | 触发情况 |
+| --- | --- |
+| `ERR_HARMONY_CONFIG_INVALID` | Expo Harmony 配置、SDK 版本、资源描述符或构建选项格式无效 |
+| `ERR_HARMONY_MANIFEST_INVALID` | Harmony 模块清单或 Ability 声明格式无效、同名声明冲突 |
+| `ERR_HARMONY_MOD_NOT_REGISTERED` | 注册了不存在或不可用的 Harmony Mod |
+| `ERR_HARMONY_MOD_RESULTS_INVALID` | Mod 回调返回的 JSON、资源对象或文本类型不符合该 Mod 的要求 |
+| `ERR_HARMONY_RESOURCE_INVALID` | 字符串或颜色资源项格式无效 |
+| `ERR_HARMONY_RESOURCE_READ` | 无法读取 Harmony 媒体目录 |
+| `ERR_HARMONY_PATH_INVALID` | 路径格式不支持，或目标由内置 Mod 管理 |
+| `ERR_HARMONY_PATH_ESCAPE` | 路径超出 Harmony 工程，或符号链接指向工程外部 |
+| `ERR_HARMONY_JSON5_INVALID` | Harmony JSON5 文件读取或解析失败 |
+| `ERR_HARMONY_TEXT_INVALID` | Harmony 文本文件读取失败 |
+
+### Permissions
+
+#### `harmony.permissions`
+
+权限项使用完整的 HarmonyOS 权限名，例如 `ohos.permission.INTERNET`。`reason` 可引用字符串资源，如 `$string:permission_reason`。`usedScene` 可声明使用时机和 Ability；同名权限合并时，`reason` 取后传入的值，`usedScene.abilities` 去重合并，`when: 'always'` 优先于 `inuse`。
+
+#### `withHarmonyPermissions(config, permissions)`
+
+将权限合并到 `expo.harmony.permissions`，并写入入口模块 `module.json5` 的 `requestPermissions`。该接口只处理应用的权限声明。
+
+#### `HarmonyPermissions.mergePermissions(current, additions)`
+
+按权限名称合并两个数组并返回新数组，不修改输入数组。
+
+#### `HarmonyPermissions.ensurePermissions(manifest, additions)`
+
+将权限合并到 manifest 的 `module.requestPermissions`，原地修改并返回 manifest。
+
+#### `HarmonyPermissions.removePermissions(manifest, names)`
+
+从 manifest 的 `module.requestPermissions` 删除指定权限名，原地修改并返回 manifest。

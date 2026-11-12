@@ -12,7 +12,7 @@ import { HarmonyConfigPluginError } from './errors';
 import { atomicWrite } from './files';
 import { recordManagedFile, withHarmonyDangerousMod } from './mods';
 import { getHarmonyConfigPlugins, registerHarmonyConfigPlugin } from './ownership';
-import { resolveHarmonyPath } from './paths';
+import { assertUnreservedHarmonyFilePath, resolveUnreservedHarmonyFilePath } from './paths';
 import type { HarmonyConfigPlugin } from './pluginTypes';
 
 export type HarmonyFileDescriptor
@@ -30,21 +30,32 @@ export const withHarmonyGeneratedFiles: HarmonyConfigPlugin<HarmonyGeneratedFile
     throw new HarmonyConfigPluginError('ERR_HARMONY_CONFIG_INVALID', 'Generated files must be a path-to-descriptor map.');
   }
 
+  const entries = Object.entries(files);
+  for (const [relative] of entries) assertUnreservedHarmonyFilePath(relative);
+
   const claims = getHarmonyConfigPlugins(config).find(plugin => plugin.owner === owner);
-  const paths = [...new Set([...(claims?.files ?? []), ...Object.keys(files)])];
+  const paths = [...new Set([...(claims?.files ?? []), ...entries.map(([relative]) => relative)])];
   config = registerHarmonyConfigPlugin(config, owner, { ...claims, files: paths });
 
   return withHarmonyDangerousMod(config, async (mod) => {
     if (mod.modRequest.introspect) return mod;
 
     const writes: Array<{ file: string; content: string | Uint8Array }> = [];
-    for (const [relative, input] of Object.entries(files)) {
+    for (const [relative, input] of entries) {
       if (!input || typeof input !== 'object'
         || Object.hasOwn(input, 'source') === Object.hasOwn(input, 'content')) {
         throw new HarmonyConfigPluginError('ERR_HARMONY_CONFIG_INVALID', `${relative} must define exactly one of source or content.`);
       }
 
-      const file = await resolveHarmonyPath(mod.modRequest.platformProjectRoot, relative);
+      const file = await resolveUnreservedHarmonyFilePath(mod.modRequest.platformProjectRoot, relative);
+      const stat = await fs.promises.lstat(file).catch((cause) => {
+        if (cause.code === 'ENOENT') return undefined;
+        throw cause;
+      });
+      if (stat && !stat.isFile() && !stat.isSymbolicLink()) {
+        throw new HarmonyConfigPluginError('ERR_HARMONY_PATH_INVALID', `Generated output must be a file: ${relative}.`);
+      }
+
       let content: string | Uint8Array;
       if (Object.hasOwn(input, 'source')) {
         if (typeof input.source !== 'string' || !input.source) {

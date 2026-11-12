@@ -44,8 +44,6 @@ interface NormalizedHarmonyConfig {
 
 const BundlePattern = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*){2,}$/;
 const IdentifierPattern = /^[A-Za-z][A-Za-z0-9_]*$/;
-const ColorPattern = /^(#[0-9A-Fa-f]{6}|#[0-9A-Fa-f]{8})$/;
-// ponytail: Hvigor and native dependencies determine supported SDK, ABI, device, and orientation values.
 const DefaultCompatibleApi = 20;
 const TargetApi = 24;
 
@@ -71,12 +69,15 @@ function readString(value: unknown, field: string, fallback?: string): string {
 
 function normalizeColor(value: unknown, field: string, fallback: string): string {
   const color = value === undefined ? fallback : value;
-
-  if (typeof color !== 'string' || !ColorPattern.test(color)) {
-    throw new HarmonyConfigError(`${field} must be #RRGGBB or #RRGGBBAA.`);
+  if (typeof color !== 'string') {
+    throw new HarmonyConfigError(`${field} must be a valid React Native color.`);
   }
 
-  return toArgb(color);
+  try {
+    return toArgb(color);
+  } catch {
+    throw new HarmonyConfigError(`${field} must be a valid React Native color.`);
+  }
 }
 
 function normalizeStringArray(value: unknown, field: string): string[] {
@@ -96,43 +97,66 @@ function normalizeStringArray(value: unknown, field: string): string[] {
   return result;
 }
 
-export function normalizePermission(permission: HarmonyPermission) {
-  if (!permission || typeof permission !== 'object') {
+function normalizePermission(permission: HarmonyPermission): HarmonyPermission {
+  if (!permission || typeof permission !== 'object' || Array.isArray(permission)) {
     throw new HarmonyConfigError('harmony.permissions entries must be objects.');
   }
 
-  const name = readString(permission.name, 'harmony.permissions[].name');
+  const { name, reason, usedScene, ...nativeFields } = permission;
+  const result: HarmonyPermission = { ...nativeFields, name: readString(name, 'harmony.permissions[].name') };
 
-  const result: {
-    name: string;
-    reason?: string;
-    usedScene?: { abilities?: string[]; when: 'always' | 'inuse' };
-  } = { name };
-
-  if (permission.reason !== undefined) {
-    result.reason = readString(permission.reason, 'harmony.permissions[].reason');
+  if (reason !== undefined) {
+    result.reason = readString(reason, 'harmony.permissions[].reason');
   }
 
-  if (permission.usedScene !== undefined) {
-    if (!permission.usedScene || typeof permission.usedScene !== 'object') {
+  if (usedScene !== undefined) {
+    if (!usedScene || typeof usedScene !== 'object' || Array.isArray(usedScene)) {
       throw new HarmonyConfigError('permission.usedScene must be an object.');
     }
 
-    const when: 'always' | 'inuse' = permission.usedScene.when === undefined
-      ? 'inuse'
-      : permission.usedScene.when;
+    const { abilities, when = 'inuse', ...sceneFields } = usedScene;
     if (!['inuse', 'always'].includes(when)) {
       throw new HarmonyConfigError('permission.usedScene.when must be inuse or always.');
     }
 
-    const abilities = permission.usedScene.abilities === undefined
-      ? undefined
-      : normalizeStringArray(permission.usedScene.abilities, 'permission.usedScene.abilities');
-
-    result.usedScene = { ...(abilities ? { abilities } : {}), when };
+    result.usedScene = { ...sceneFields, when };
+    if (abilities !== undefined) {
+      result.usedScene.abilities = normalizeStringArray(abilities, 'permission.usedScene.abilities');
+    }
   }
 
   return result;
+}
+
+export function mergePermissions(
+  current: readonly HarmonyPermission[],
+  additions: readonly HarmonyPermission[]
+): HarmonyPermission[] {
+  if (!Array.isArray(current) || !Array.isArray(additions)) {
+    throw new HarmonyConfigError('Harmony permissions must be arrays.');
+  }
+
+  const permissions = new Map<string, HarmonyPermission>();
+  for (const entry of [...current, ...additions]) {
+    const permission = normalizePermission(entry);
+    const existing = permissions.get(permission.name);
+    const merged = { ...existing, ...permission };
+    const previousScene = existing?.usedScene;
+    const nextScene = permission.usedScene;
+    if (previousScene && nextScene) {
+      merged.usedScene = {
+        ...previousScene,
+        ...nextScene,
+        ...(previousScene.abilities || nextScene.abilities
+          ? { abilities: [...new Set([...(previousScene.abilities ?? []), ...(nextScene.abilities ?? [])])] }
+          : {}),
+        when: previousScene.when === 'always' || nextScene.when === 'always' ? 'always' : 'inuse',
+      };
+    }
+    permissions.set(permission.name, merged);
+  }
+
+  return [...permissions.values()];
 }
 
 function normalizeSkill(skill: HarmonySkill) {
@@ -231,15 +255,10 @@ function normalizeHarmonyConfig(config: HarmonyExpoConfig): NormalizedHarmonyCon
     ? ['arm64-v8a', 'x86_64']
     : normalizeStringArray(harmony.abiFilters, 'harmony.abiFilters');
 
-  const permissions = (harmony.permissions || []).map(normalizePermission);
+  const permissions = mergePermissions(harmony.permissions ?? [], []);
 
   if (!permissions.some(permission => permission.name === 'ohos.permission.INTERNET')) {
     permissions.unshift({ name: 'ohos.permission.INTERNET' });
-  }
-
-  if (config.updates?.checkAutomatically === 'WIFI_ONLY'
-    && !permissions.some(permission => permission.name === 'ohos.permission.GET_NETWORK_INFO')) {
-    permissions.push({ name: 'ohos.permission.GET_NETWORK_INFO' });
   }
 
   const schemes = readExpoSchemes(config);

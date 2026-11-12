@@ -6,6 +6,7 @@
  */
 
 import fs from 'node:fs/promises';
+import { isDeepStrictEqual } from 'node:util';
 
 import { withBaseMod, type ExportedConfig, type ModPlatform } from '@expo/config-plugins';
 import JSON5 from 'json5';
@@ -14,7 +15,7 @@ import { HarmonyConfigPluginError } from './errors';
 import { atomicWrite, stableJson } from './files';
 import { recordManagedFile, registerMod } from './mods';
 import { getHarmonyConfigPlugins, normalizeHarmonyConfigPlugins, registerHarmonyConfigPlugin } from './ownership';
-import { ManagedPaths, ResourcePaths, resolveHarmonyPath } from './paths';
+import { assertUnreservedHarmonyFilePath, resolveUnreservedHarmonyFilePath } from './paths';
 import type { HarmonyConfigPlugin, HarmonyModAction, HarmonyModConfig } from './pluginTypes';
 
 export interface HarmonyFileModOptions<T> {
@@ -34,13 +35,7 @@ export function createHarmonyFileMod<T>(options: HarmonyFileModOptions<T>): Harm
   const { path: relative, owner, parse, serialize, isIntrospective = false } = definition;
 
   normalizeHarmonyConfigPlugins([{ owner, files: [relative] }]);
-
-  const reserved = Object.values(ManagedPaths).includes(relative)
-    || Object.values(ResourcePaths).some(scopes => Object.values(scopes).some(file => relative === file))
-    || Object.values(ResourcePaths.media).some(directory => relative.startsWith(`${directory}/`));
-  if (reserved || relative.split('/').some(part => part === '.git') || relative.startsWith('.expo/')) {
-    throw new HarmonyConfigPluginError('ERR_HARMONY_PATH_INVALID', `Use the built-in mod for reserved path ${relative}.`);
-  }
+  assertUnreservedHarmonyFilePath(relative);
   if (typeof parse !== 'function' || typeof serialize !== 'function') {
     throw new TypeError('A file mod requires parse and serialize functions.');
   }
@@ -73,7 +68,7 @@ export function createHarmonyFileMod<T>(options: HarmonyFileModOptions<T>): Harm
         saveToInternal: isIntrospective,
         async action(value) {
           const { nextMod: _next, ...request } = value.modRequest;
-          const file = await resolveHarmonyPath(request.platformProjectRoot, relative);
+          const file = await resolveUnreservedHarmonyFilePath(request.platformProjectRoot, relative);
           let source: string | null = null;
 
           if (!request.ignoreExistingNativeFiles) {
@@ -90,10 +85,14 @@ export function createHarmonyFileMod<T>(options: HarmonyFileModOptions<T>): Harm
             }
           }
 
+          const data = parse(source);
+          const originalJson = source !== null && !request.introspect && parse === parseJson
+            ? structuredClone(data)
+            : undefined;
           let result = {
             ...value,
             modRequest: { ...request, modFile: file, modFileExists: source !== null },
-            modResults: parse(source),
+            modResults: data,
           } as unknown as HarmonyModConfig<T>;
           for (let index = actions.length - 1; index >= 0; index--) {
             result = await actions[index](result) as HarmonyModConfig<T>;
@@ -103,7 +102,10 @@ export function createHarmonyFileMod<T>(options: HarmonyFileModOptions<T>): Harm
           if (typeof output !== 'string') throw new TypeError(`Serializer for ${relative} must return a string.`);
 
           if (!request.introspect) {
-            await atomicWrite(file, output);
+            const unchangedJson = originalJson !== undefined && isDeepStrictEqual(result.modResults, originalJson);
+            if (output !== source && !unchangedJson) {
+              await atomicWrite(file, output);
+            }
             recordManagedFile(result, file, owner);
           }
 

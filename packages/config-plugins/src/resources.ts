@@ -5,7 +5,13 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+import { createRequire } from 'node:module';
+
 import { HarmonyConfigPluginError } from './errors';
+
+const normalizeReactNativeColor = createRequire(__filename)('@react-native/normalize-colors') as (
+  value: string
+) => number | null;
 
 export interface HarmonyResourceItem extends Record<string, unknown> {
   name: string;
@@ -59,14 +65,16 @@ export function removeColor(file: HarmonyResourceFile, name: string): HarmonyRes
 }
 
 export function toArgb(value: string | number): string {
-  let hex: string;
-  if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 0xffffffff) {
-    hex = value.toString(16).padStart(8, '0');
-  } else if (typeof value === 'string' && /^#[0-9a-f]{6}(?:[0-9a-f]{2})?$/i.test(value)) {
-    hex = value.slice(1);
-  } else {
-    throw new HarmonyConfigPluginError('ERR_HARMONY_CONFIG_INVALID', 'Color must be #RRGGBB, #RRGGBBAA or an unsigned RGBA integer.', { operation: 'convert-color' });
+  if (typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)) return value.toUpperCase();
+
+  const color = typeof value === 'string' ? normalizeReactNativeColor(value) : value;
+  if (color == null || !Number.isInteger(color) || color < 0 || color > 0xffffffff) {
+    throw new HarmonyConfigPluginError(
+      'ERR_HARMONY_CONFIG_INVALID', 'Color must be a valid React Native color or an unsigned RGBA integer.',
+      { operation: 'convert-color' }
+    );
   }
 
-  return `#${hex.length === 8 ? hex.slice(6, 8) + hex.slice(0, 6) : hex}`.toUpperCase();
+  const hex = color.toString(16).padStart(8, '0');
+  return `#${hex.slice(6, 8)}${hex.slice(0, 6)}`.toUpperCase();
 }

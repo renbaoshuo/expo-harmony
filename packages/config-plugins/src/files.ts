@@ -78,8 +78,3 @@ export async function atomicWrite(file: string, content: string | Uint8Array): P
 export async function writeJson5(file: string, value: unknown): Promise<void> {
   await atomicWrite(file, stableJson(value));
 }
-
-export async function sha256File(file: string): Promise<string> {
-  const data = Uint8Array.from(await fs.promises.readFile(file));
-  return crypto.createHash('sha256').update(data).digest('hex');
-}

@@ -113,8 +113,19 @@ export function isInside(root: string, target: string): boolean {
     || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
-export async function assertNoExternalSymlink(root: string, target: string): Promise<void> {
+export async function assertNoExternalSymlink(
+  root: string,
+  target: string,
+  assertAlias?: (relative: string) => void
+): Promise<void> {
   const absolute = path.resolve(root);
+  if (!isInside(absolute, target)) {
+    throw new HarmonyConfigPluginError(
+      'ERR_HARMONY_PATH_ESCAPE', `Managed path escapes the Harmony project: ${target}`,
+      { file: target, operation: 'resolve-path' }
+    );
+  }
+
   const canonical = await fs.promises.realpath(absolute).catch(() => absolute);
   const relative = path.relative(absolute, target);
   let current = absolute;
@@ -146,13 +157,26 @@ export async function assertNoExternalSymlink(root: string, target: string): Pro
           { file: current, operation: 'resolve-path' }
         );
       }
+      assertAlias?.(toPosixRelative(canonical, path.join(real, path.relative(current, target))));
     }
+  }
+}
+
+export function assertUnreservedHarmonyFilePath(relative: string): void {
+  const segments = relative.split('/');
+  if (segments.includes('.git') || segments[0] === '.expo'
+    || Object.values(ManagedPaths).includes(relative)
+    || Object.values(ResourcePaths.strings).includes(relative)
+    || Object.values(ResourcePaths.colors).includes(relative)
+    || Object.values(ResourcePaths.media).some(directory => relative === directory || relative.startsWith(`${directory}/`))) {
+    throw new HarmonyConfigPluginError('ERR_HARMONY_PATH_INVALID', `Use the built-in mod for reserved path ${relative}.`);
   }
 }
 
 export async function resolveHarmonyPath(
   directory: string,
-  relative: string
+  relative: string,
+  assertAlias?: (relative: string) => void
 ): Promise<string> {
   if (typeof relative !== 'string' || !relative || path.isAbsolute(relative)) {
     throw new HarmonyConfigPluginError(
@@ -173,9 +197,13 @@ export async function resolveHarmonyPath(
     );
   }
 
-  await assertNoExternalSymlink(root, target);
+  await assertNoExternalSymlink(root, target, assertAlias);
 
   return target;
+}
+
+export function resolveUnreservedHarmonyFilePath(directory: string, relative: string): Promise<string> {
+  return resolveHarmonyPath(directory, relative, assertUnreservedHarmonyFilePath);
 }
 
 export async function resolveProjectPath(

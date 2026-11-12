@@ -6,6 +6,7 @@
  */
 
 import type { ExpoConfigWithHarmony } from './config';
+import { ResourcePaths } from './paths';
 
 export interface HarmonyConfigPluginOwnership {
   readonly owner: string;
@@ -21,11 +22,6 @@ export interface HarmonyConfigPluginOwnership {
   }>>;
 }
 
-const ResourceScopes = {
-  colors: new Set(['entry', 'entryDark']),
-  media: new Set(['app', 'entry', 'entryDark']),
-  strings: new Set(['app', 'entry']),
-} as const;
 const AbilityFields = new Set(['startWindowBackground', 'startWindowIcon']);
 const ResourceName = /^[A-Za-z0-9_.-]+$/u;
 
@@ -58,7 +54,7 @@ function normalizeResources(value: unknown): NonNullable<HarmonyConfigPluginOwne
 
   const resources: Record<string, Record<string, string[]>> = {};
   for (const kind of Object.keys(value).sort()) {
-    if (!Object.hasOwn(ResourceScopes, kind)) {
+    if (!Object.hasOwn(ResourcePaths, kind)) {
       throw new TypeError(`Invalid Harmony config-plugin ownership: resources.${kind} is not supported.`);
     }
 
@@ -67,11 +63,11 @@ function normalizeResources(value: unknown): NonNullable<HarmonyConfigPluginOwne
       throw new TypeError(`Invalid Harmony config-plugin ownership: resources.${kind} must be an object.`);
     }
 
-    const allowed = ResourceScopes[kind as keyof typeof ResourceScopes];
+    const allowed = ResourcePaths[kind as keyof typeof ResourcePaths];
     resources[kind] = {};
 
     for (const scope of Object.keys(scopes).sort()) {
-      if (!allowed.has(scope)) {
+      if (!Object.hasOwn(allowed, scope)) {
         throw new TypeError(`Invalid Harmony config-plugin ownership: resources.${kind}.${scope} is not a supported scope.`);
       }
 
@@ -153,18 +149,29 @@ export function registerHarmonyConfigPlugin<Config extends ExpoConfigWithHarmony
   const plugin = normalizeHarmonyConfigPlugins([{ ...claims, owner }])[0];
 
   config._internal ??= {};
-  const plugins = normalizeHarmonyConfigPlugins(config._internal.harmonyConfigPlugins);
-  for (const other of plugins) {
-    if (other.owner === owner) continue;
+  const plugins = normalizeHarmonyConfigPlugins(config._internal.harmonyConfigPlugins)
+    .filter(item => item.owner !== owner);
+  const fileOwners = new Map<string, string>();
+  for (const item of [...plugins, plugin]) {
+    for (const file of item.files ?? []) {
+      const previous = fileOwners.get(file);
+      if (previous) throw new TypeError(`Harmony file ${file} is claimed by both ${previous} and ${item.owner}.`);
 
-    const duplicate = plugin.files?.find(file => other.files?.includes(file));
-    if (duplicate) throw new TypeError(`Harmony file ${duplicate} is claimed by both ${other.owner} and ${owner}.`);
+      fileOwners.set(file, item.owner);
+    }
+  }
+  for (const file of fileOwners.keys()) {
+    let parent = file;
+    let separator: number;
+    while ((separator = parent.lastIndexOf('/')) !== -1) {
+      parent = parent.slice(0, separator);
+      if (fileOwners.has(parent)) {
+        throw new TypeError(`Harmony output ${parent} cannot be both a file and a parent directory of ${file}.`);
+      }
+    }
   }
 
-  config._internal.harmonyConfigPlugins = normalizeHarmonyConfigPlugins([
-    ...plugins.filter(item => item.owner !== owner),
-    plugin,
-  ]);
+  config._internal.harmonyConfigPlugins = normalizeHarmonyConfigPlugins([...plugins, plugin]);
 
   return config;
 }

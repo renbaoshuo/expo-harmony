@@ -7,6 +7,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import {
   withBaseMod, withMod,
@@ -16,10 +17,10 @@ import type { ExpoConfig } from '@expo/config-types';
 
 import { HarmonyConfigPluginError } from './errors';
 import type { ExpoConfigWithHarmony } from './config';
-import type { HarmonyModuleJson } from './manifest';
+import { restoreManagedManifestConfig, type HarmonyModuleJson } from './manifest';
 import type { HarmonyConfigPlugin, HarmonyModAction, HarmonyModConfig } from './pluginTypes';
 import type { HarmonyResourceFile } from './resources';
-import { atomicWrite, readJson5, readText, writeJson5 } from './files';
+import { atomicWrite, readJson5, readText, stableJson, writeJson5 } from './files';
 import {
   ManagedPaths, ProjectPaths, ResourcePaths,
   resolveHarmonyPath, resolveProjectPath, toPosixRelative,
@@ -71,6 +72,7 @@ export type HarmonyMediaMap = Record<string, Record<string, HarmonyMediaDescript
 type FileModName = keyof typeof ManagedPaths | keyof typeof ProjectPaths;
 type ResourceModName = keyof typeof ResourcePaths;
 type FileResult = HarmonyJson | string;
+type BeforeJsonWrite = (file: string, original: HarmonyJson | undefined, content: string) => Promise<void>;
 type ResourceResult = HarmonyResourceMap | HarmonyMediaMap;
 type ModEntry = {
   isProvider?: boolean;
@@ -85,8 +87,7 @@ interface ManagedConfig {
 
 interface MediaWrite {
   content: string | Uint8Array;
-  directory: string;
-  name: string;
+  file: string;
   replaceBase: boolean;
 }
 
@@ -177,7 +178,7 @@ function assertModResults(name: AnyModName, value: unknown, kind: 'json' | 'reso
   }
 }
 
-function withFileProvider(config: ExpoConfig, name: FileModName): ExpoConfig {
+function withFileProvider(config: ExpoConfig, name: FileModName, hasActions: () => boolean): ExpoConfig {
   return withBaseMod<FileResult>(config, {
     platform: 'harmony' as ModPlatform,
     mod: name,
@@ -186,6 +187,8 @@ function withFileProvider(config: ExpoConfig, name: FileModName): ExpoConfig {
     saveToInternal: JsonMods.has(name),
     async action(value) {
       const { nextMod: next, ...request } = value.modRequest;
+      if (!request.introspect && !hasActions()) return value;
+
       const project = name in ProjectPaths;
       const root = project ? request.projectRoot : request.platformProjectRoot;
       const file = project
@@ -201,7 +204,13 @@ function withFileProvider(config: ExpoConfig, name: FileModName): ExpoConfig {
         ? (JsonMods.has(name) ? {} : '')
         : JsonMods.has(name)
           ? await readJson5<HarmonyJson>(input, {}, name)
-          : await readText(file);
+          : await readText(input);
+      assertModResults(name, data, JsonMods.has(name) ? 'json' : 'text');
+
+      const original = exists ? structuredClone(data) : undefined;
+      if (name === 'moduleJson' && value._internal?.harmonyPreviousManagedManifestConfig) {
+        restoreManagedManifestConfig(data as HarmonyModuleJson, value._internal.harmonyPreviousManagedManifestConfig);
+      }
 
       const context = { ...request, modFile: file, modFileExists: exists } as typeof value.modRequest;
       const result = await next!({ ...value, modRequest: context, modResults: data });
@@ -209,10 +218,16 @@ function withFileProvider(config: ExpoConfig, name: FileModName): ExpoConfig {
       assertModResults(name, result.modResults, JsonMods.has(name) ? 'json' : 'text');
 
       if (!result.modRequest.introspect) {
-        if (typeof result.modResults === 'string') {
-          await atomicWrite(file, result.modResults.replace(/\r\n?/g, '\n').replace(/\n?$/, '\n'));
-        } else {
-          await writeJson5(file, result.modResults);
+        if (!isDeepStrictEqual(original, result.modResults)) {
+          if (typeof result.modResults === 'string') {
+            const text = result.modResults.replace(/\r\n?/g, '\n').replace(/\n?$/, '\n');
+            if (text !== original) await atomicWrite(file, text);
+          } else {
+            const content = stableJson(result.modResults);
+            const beforeWrite: BeforeJsonWrite | undefined = result._internal?.harmonyBeforeJsonWrite;
+            await beforeWrite?.(file, original as HarmonyJson | undefined, content);
+            await atomicWrite(file, content);
+          }
         }
 
         recordManagedFile(result, file, name);
@@ -237,7 +252,9 @@ async function readResourceMap(
     const fallback = ignore || !fs.existsSync(file);
     const input = fallback && template ? await resolveHarmonyPath(template, relative) : file;
 
-    resources[scope] = ignore && input === file ? {} : await readJson5<HarmonyJson>(input, {}, name);
+    const resource = ignore && input === file ? {} : await readJson5<HarmonyJson>(input, {}, name);
+    assertModResults(name, resource, 'resource');
+    resources[scope] = resource;
   }
 
   return resources;
@@ -282,9 +299,10 @@ async function writeMediaMap(
   previous: Record<string, string[]> = {}
 ): Promise<void> {
   const writes: MediaWrite[] = [];
+  const removals = new Set<string>();
 
   for (const [scope, files] of Object.entries(media || {})) {
-    if (!(scope in ResourcePaths.media)) continue;
+    if (!Object.hasOwn(ResourcePaths.media, scope)) continue;
 
     if (!files || typeof files !== 'object' || Array.isArray(files)) {
       throw new HarmonyConfigPluginError(
@@ -297,7 +315,7 @@ async function writeMediaMap(
     const directory = await resolveHarmonyPath(root, ResourcePaths.media[scope as keyof typeof ResourcePaths.media]);
 
     for (const [name, descriptor] of Object.entries(files)) {
-      if (!/^[A-Za-z0-9_.-]+$/.test(name) || name.includes('..')) {
+      if (!/^[A-Za-z0-9_.-]+$/.test(name) || name === '.' || name.includes('..')) {
         throw new HarmonyConfigPluginError(
           'ERR_HARMONY_CONFIG_INVALID',
           `Invalid Harmony media file name: ${name}`,
@@ -330,6 +348,7 @@ async function writeMediaMap(
         );
       }
 
+      const file = await resolveHarmonyPath(directory, name);
       let content: string | Uint8Array;
 
       if (Object.hasOwn(item, 'source')) {
@@ -341,7 +360,9 @@ async function writeMediaMap(
           );
         }
 
-        content = Uint8Array.from(await fs.promises.readFile(item.source));
+        const source = path.resolve(config.modRequest.projectRoot, item.source);
+        if (source === file && item.replaceBase !== true && previous[scope]?.includes(name)) continue;
+        content = Uint8Array.from(await fs.promises.readFile(source));
       } else {
         if (typeof item.content !== 'string' && !(item.content instanceof Uint8Array)) {
           throw new HarmonyConfigPluginError(
@@ -356,15 +377,14 @@ async function writeMediaMap(
 
       writes.push({
         content,
-        directory,
-        name,
+        file,
         replaceBase: item.replaceBase === true,
       });
     }
   }
 
   for (const [scope, names] of Object.entries(previous)) {
-    if (!(scope in ResourcePaths.media)) continue;
+    if (!Object.hasOwn(ResourcePaths.media, scope)) continue;
 
     const directory = await resolveHarmonyPath(
       root,
@@ -374,34 +394,46 @@ async function writeMediaMap(
 
     for (const name of names) {
       if (!next || typeof next !== 'object' || !Object.hasOwn(next, name)) {
-        const file = await resolveHarmonyPath(directory, name);
-
-        await fs.promises.rm(file, { force: true });
+        removals.add(await resolveHarmonyPath(directory, name));
       }
     }
   }
 
-  for (const { content, directory, name, replaceBase } of writes) {
-    await fs.promises.mkdir(directory, { recursive: true });
+  for (const { file, replaceBase } of writes) {
+    if (!replaceBase) continue;
 
-    if (replaceBase) {
-      const base = path.parse(name).name;
-
-      for (const entry of await fs.promises.readdir(directory)) {
-        if (path.parse(entry).name === base && entry !== name) {
-          await fs.promises.rm(path.join(directory, entry), { force: true });
-        }
-      }
+    const { dir, name: base, base: filename } = path.parse(file);
+    const conflict = writes.find(item => (
+      item.file !== file && path.dirname(item.file) === dir && path.parse(item.file).name === base
+    ));
+    if (conflict) {
+      throw new HarmonyConfigPluginError(
+        'ERR_HARMONY_CONFIG_INVALID',
+        `Harmony media replacement ${file} conflicts with ${conflict.file}.`,
+        { operation: 'harmony.media.write' }
+      );
     }
 
-    const file = await resolveHarmonyPath(directory, name);
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true }).catch((cause) => {
+      if (cause.code === 'ENOENT') return [];
+      throw cause;
+    });
+    for (const entry of entries) {
+      const sameBase = entry.name !== filename && path.parse(entry.name).name === base;
+      if (sameBase && (entry.isFile() || entry.isSymbolicLink())) {
+        removals.add(path.join(dir, entry.name));
+      }
+    }
+  }
 
+  for (const { content, file } of writes) {
     await atomicWrite(file, content);
     recordManagedFile(config, file, 'media');
   }
+  for (const file of removals) await fs.promises.rm(file, { force: true });
 }
 
-function withResourceProvider(config: ExpoConfig, name: ResourceModName): ExpoConfig {
+function withResourceProvider(config: ExpoConfig, name: ResourceModName, hasActions: () => boolean): ExpoConfig {
   const introspective = name !== 'media';
 
   return withBaseMod<ResourceResult>(config, {
@@ -412,6 +444,8 @@ function withResourceProvider(config: ExpoConfig, name: ResourceModName): ExpoCo
     saveToInternal: introspective,
     async action(value) {
       const { nextMod: next, ...request } = value.modRequest;
+      if (!request.introspect && !hasActions()) return value;
+
       const root = request.platformProjectRoot;
       const data = name === 'media'
         ? (request.ignoreExistingNativeFiles
@@ -426,6 +460,7 @@ function withResourceProvider(config: ExpoConfig, name: ResourceModName): ExpoCo
             Object.entries(data).map(([scope, files]) => [scope, Object.keys(files)])
           )
         : {};
+      const originalResources = name === 'media' || request.introspect ? {} : structuredClone(data);
 
       const result = await next!({ ...value, modRequest: request, modResults: data });
 
@@ -438,7 +473,7 @@ function withResourceProvider(config: ExpoConfig, name: ResourceModName): ExpoCo
           const paths = ResourcePaths[name];
 
           for (const [scope, resource] of Object.entries(result.modResults)) {
-            if (!(scope in paths)) continue;
+            if (!Object.hasOwn(paths, scope)) continue;
 
             if (!resource || typeof resource !== 'object' || Array.isArray(resource)) {
               throw new HarmonyConfigPluginError(
@@ -457,7 +492,10 @@ function withResourceProvider(config: ExpoConfig, name: ResourceModName): ExpoCo
               continue;
             }
 
-            await writeJson5(file, resource);
+            const changed = !isDeepStrictEqual(originalResources[scope], resource);
+            if (request.ignoreExistingNativeFiles || changed || !fs.existsSync(file)) {
+              await writeJson5(file, resource);
+            }
             recordManagedFile(result, file, name);
           }
         }
@@ -483,6 +521,8 @@ function withVirtualProvider(config: ExpoConfig, name: AnyModName): ExpoConfig {
 
 function withProvider(config: ExpoConfig, name: AnyModName): ExpoConfig {
   const actions: HarmonyModAction[] = [];
+  const existing = ((config as ExportedConfig).mods as ModTable | undefined)?.harmony?.[name];
+  const hasActions = () => existing !== undefined || actions.length > 0;
 
   config = withMod(config, {
     platform: 'harmony' as ModPlatform,
@@ -500,9 +540,9 @@ function withProvider(config: ExpoConfig, name: AnyModName): ExpoConfig {
   });
 
   if (JsonMods.has(name as FileModName) || TextMods.has(name as FileModName)) {
-    config = withFileProvider(config, name as FileModName);
+    config = withFileProvider(config, name as FileModName, hasActions);
   } else if (ResourceMods.has(name as HarmonyModName)) {
-    config = withResourceProvider(config, name as ResourceModName);
+    config = withResourceProvider(config, name as ResourceModName, hasActions);
   } else if (VirtualMods.has(name)) {
     config = withVirtualProvider(config, name);
   } else {
