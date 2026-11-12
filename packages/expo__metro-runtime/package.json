@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo__metro-runtime",
-  "version": "55.0.12-harmony.2",
+  "version": "57.0.17-harmony.0",
   "description": "HarmonyOS port of @expo/metro-runtime",
   "keywords": [
     "react-native",
@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/metro-runtime": "55.0.12"
+    "@expo/metro-runtime": "57.0.17"
   },
   "engines": {
     "node": ">=20"
