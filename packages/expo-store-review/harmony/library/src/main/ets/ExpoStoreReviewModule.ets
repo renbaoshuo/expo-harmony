@@ -32,11 +32,11 @@ export class ExpoStoreReviewModule extends ExpoModule {
         try {
           await commentManager.showCommentDialog(this.context.uiAbilityContext);
         } catch (error) {
-          const cause = error as BusinessError;
+          const failure = error as BusinessError;
 
           throw new ExpoModuleError(
-            cause.code?.toString() ?? 'ERR_STORE_REVIEW_REQUEST_FAILED',
-            cause.message || 'Failed to request an AppGallery review.',
+            failure?.code?.toString() || 'ERR_STORE_REVIEW_REQUEST_FAILED',
+            failure?.message || 'Failed to request an AppGallery review.',
             error as Object,
           );
         }

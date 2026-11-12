@@ -1,40 +1,74 @@
 # @expo-harmony/expo-store-review
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-store-review) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/storereview/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-store-review) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/storereview/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo StoreReview 的原生实现，与官方同版本的 `expo-store-review` 配套使用。支持查询应用内评价能力和拉起 AppGallery 评价弹窗。
+为 HarmonyOS 上的 React Native 应用提供 Expo StoreReview 的原生实现，与官方同版本的 `expo-store-review` 配套使用。
 
 ## 安装
 
-```bash
-npm install @expo-harmony/expo-store-review expo-store-review@55.0.18
-```
+本包适配 Expo SDK 57。
 
-原生模块通过 Expo Harmony 自动链接，业务代码从 `expo-store-review` 导入。最低支持 HarmonyOS 6.0.0（API 20），宿主的 `compatibleSdkVersion` 也要满足这一要求。支持手机、平板和 PC/2in1。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 20（HarmonyOS 6.0.0）。
+
+```bash
+npm install @expo-harmony/expo-store-review expo-store-review
+```
 
 ## API 对照表
 
 ### Methods
 
+#### `StoreReview.hasAction()`
+
+返回 `Promise<boolean>`。HarmonyOS 上结果与 `StoreReview.isAvailableAsync()` 相同；`true` 表示设备支持 AppGallery 应用内评论，不保证调用请求时一定会显示弹窗。
+
 #### `StoreReview.isAvailableAsync()`
 
-返回 `Promise<boolean>`，检查设备是否具有 AppGallery 应用内评价能力。无界面的 headless 运行环境返回 `false`。查询不会显示弹窗，也不检查账号登录状态、历史评论或评价配额；返回 `true` 不保证请求评价时一定显示弹窗。AppGallery 的评价能力不支持模拟器，实际弹窗、账号资格和评价配额以真机 AppGallery 环境为准。
+返回 `Promise<boolean>`。设备支持 AppGallery 评论服务且应用有可用界面时返回 `true`，否则返回 `false`。查询不会显示弹窗。
 
 #### `StoreReview.requestReview()`
 
-返回 `Promise<void>`，使用当前前台应用的 `UIAbilityContext` 调用 AppGallery Kit 的 `commentManager.showCommentDialog`。服务不可用或处于 headless 环境时抛出 `ERR_STORE_REVIEW_UNAVAILABLE`，应用不在前台时抛出 `ERR_STORE_REVIEW_BACKGROUND`。
-
-系统调用失败时，将 `BusinessError.code` 转为字符串作为错误码，并保留原生消息；没有原生错误码时使用 `ERR_STORE_REVIEW_REQUEST_FAILED`。账号未登录、当前版本已评论或超过评价配额等情况由 AppGallery 判断。
-
-成功返回不代表用户已完成评价，也不会提供评分值。模块不记录评价状态、不自行限制调用次数，也不自动跳转商店页面。
+无参数，返回 `Promise<void>`，请求显示 AppGallery 应用内评论弹窗。Promise 不返回评分或用户是否提交评价的结果。应用不在前台时以 `ERR_STORE_REVIEW_BACKGROUND` 拒绝；应用无可用界面或 AppGallery 评论服务不可用时以 `ERR_STORE_REVIEW_UNAVAILABLE` 拒绝。AppGallery 也可能因帐号或评论资格问题拒绝请求。
 
 #### `StoreReview.storeUrl()`
 
-返回 `string | null`。沿用官方 JS，仅在 iOS/Android 上读取商店地址，因此 HarmonyOS 返回 `null`。
+返回 `string | null`。
 
-#### `StoreReview.hasAction()`
+- HarmonyOS 不提供可由此 API 返回的 AppGallery 评论链接，因此返回 `null`。
 
-返回 `Promise<boolean>`。沿用官方 JS，在 HarmonyOS 上结果与 `isAvailableAsync()` 一致。
+### Error codes
+
+#### `ERR_STORE_REVIEW_BACKGROUND`
+
+AppGallery 评论服务可用，但应用不在前台时调用 `StoreReview.requestReview()`，Promise 会以此错误拒绝。
+
+#### `ERR_STORE_REVIEW_UNAVAILABLE`
+
+应用没有可用界面或 AppGallery 评论服务不可用时，调用 `StoreReview.requestReview()` 会以此错误拒绝。
+
+#### `ERR_STORE_REVIEW_REQUEST_FAILED`
+
+AppGallery 评论服务请求失败且系统未提供错误码时，Promise 会以此错误拒绝。系统提供错误码时会使用该错误码。
+
+#### AppGallery 评论服务错误码
+
+AppGallery 服务可能在请求失败时返回以下错误码：
+
+| 错误码 | 原因 |
+| --- | --- |
+| `1021500001` | 系统内部错误。 |
+| `1021500002` | 服务请求失败。 |
+| `1021500003` | 无法连接 AppGallery。 |
+| `1021500004` | 参数写入失败。 |
+| `1021500005` | 应用上下文无效。 |
+| `1021500006` | 用户尚未登录华为帐号。 |
+| `1021500007` | 用户已评价当前版本。 |
+| `1021500008` | 评论数量已达到上限。 |
+| `1021500009` | 用户已评价，且距上次评价不足一年。 |
+
+### Permissions
+
+不需要额外声明权限。
 
 ## Author
 
