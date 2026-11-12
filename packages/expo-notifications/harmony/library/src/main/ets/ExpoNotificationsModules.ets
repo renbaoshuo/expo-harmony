@@ -6,7 +6,7 @@
  */
 
 import { ExpoModule, ExpoModuleDefinition, ExpoModuleError, ExpoFunction, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
-import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { pushService } from '@kit.PushKit';
 import { NotificationsStore, NotificationReceiver, ResponseReceiver, TokenReceiver } from './NotificationsStore';
@@ -21,10 +21,18 @@ import {
   EXPO_SERVICE_ERROR,
   identifier,
   integer,
+  ExpoNotificationError,
   record,
 } from './NotificationTypes';
 import { validateTrigger, nextTriggerDate } from './NotificationTriggers';
-import { presentedNotification, publishNotification, validateActions, validateBehavior } from './NotificationPresentation';
+import {
+  dismissPresentedNotification,
+  presentedNotification,
+  publishNotification,
+  setNotificationBadge,
+  validateActions,
+  validateBehavior,
+} from './NotificationPresentation';
 import { schedule, cancelScheduled } from './NotificationScheduling';
 
 const NotificationRecord = ExpoValueTypes.custom<Record<string, ESObject>>(
@@ -46,6 +54,7 @@ const NotificationActions = ExpoValueTypes.custom<NotificationAction[]>(
 
 const NOTIFICATIONS_DISABLED = 1600004;
 const CAPABILITY_UNSUPPORTED = 801;
+const PERMISSION_REQUESTED = 'permissionRequested';
 
 abstract class NotificationsModule extends ExpoModule {
   protected get store(): NotificationsStore {
@@ -54,7 +63,6 @@ abstract class NotificationsModule extends ExpoModule {
 
   protected queue<T>(operation: () => Promise<T>): Promise<T> {
     return this.store.run((): Promise<T> => {
-      // The epoch getter validates runtime lifetime.
       this.context.runtimeEpoch;
 
       return operation();
@@ -66,7 +74,7 @@ abstract class NotificationsModule extends ExpoModule {
       this.context.runtimeEpoch;
 
       return operation();
-    });
+    }, true);
   }
 
   protected listen(callback: NotificationReceiver): void {
@@ -84,11 +92,22 @@ abstract class NotificationsModule extends ExpoModule {
     callbacks?.delete(callback);
     if (callbacks?.size === 0) this.store.received.delete(this.context.uiAbilityContext);
   }
+
+  protected canSendEvents(): boolean {
+    try {
+      // The runtime can stop accepting events before its onDestroy hook runs.
+      this.context.runtimeEpoch;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 }
 
 export class ExpoPushTokenManager extends NotificationsModule {
-  private alive: boolean = true;
   private receiver: TokenReceiver = (token: string): void => {
+    if (!this.canSendEvents()) return;
+
     const payload: Record<string, ESObject> = { 'devicePushToken': token };
     this.sendEvent('onDevicePushToken', payload);
   };
@@ -97,15 +116,15 @@ export class ExpoPushTokenManager extends NotificationsModule {
     return new ExpoModuleDefinition()
       .name('ExpoPushTokenManager')
       .events(['onDevicePushToken'])
-      .onCreate((): void => {
-        this.store.tokens.add(this.receiver);
-      })
       .onDestroy((): void => {
-        this.alive = false;
         this.store.tokens.delete(this.receiver);
       })
       .onStartObserving('onDevicePushToken', (): void => {
+        this.store.tokens.add(this.receiver);
         this.refreshToken();
+      })
+      .onStopObserving('onDevicePushToken', (): void => {
+        this.store.tokens.delete(this.receiver);
       })
       .onForeground((): void => {
         this.refreshToken();
@@ -118,16 +137,23 @@ export class ExpoPushTokenManager extends NotificationsModule {
             // Persist opt-out so late token callbacks cannot re-register.
             await this.store.clearToken();
 
-            await pushService.deleteToken();
+            try {
+              await pushService.deleteToken();
+            } catch (error) {
+              if (error instanceof ExpoModuleError) throw error;
+              throw new ExpoNotificationError('ERR_NOTIFICATIONS_PUSH_TOKEN', error as Object);
+            }
           }),
       );
   }
 
   private refreshToken(): void {
+    if (!this.store.tokens.has(this.receiver)) return;
+
     this.queueToken(async (): Promise<void> => {
-      if (this.store.lastToken !== undefined) await this.fetchToken();
+      if (this.store.tokens.has(this.receiver) && this.store.lastToken !== undefined) await this.fetchToken(true);
     }).catch((error: Object): void => {
-      if (this.alive) this.context.logger.warn(`Unable to refresh Push Kit registration (code ${(error as BusinessError).code}).`);
+      if (this.canSendEvents()) this.context.logger.warn(`Unable to refresh Push Kit registration (code ${(error as BusinessError).code}).`);
     });
   }
 
@@ -135,15 +161,22 @@ export class ExpoPushTokenManager extends NotificationsModule {
     return this.queueToken((): Promise<string> => this.fetchToken());
   }
 
-  private async fetchToken(): Promise<string> {
+  private async fetchToken(observingOnly: boolean = false): Promise<string> {
     const store = this.store;
-    const token = await pushService.getToken();
+    let token: string;
+
+    try {
+      token = await pushService.getToken();
+    } catch (error) {
+      if (error instanceof ExpoModuleError) throw error;
+      throw new ExpoNotificationError('ERR_NOTIFICATIONS_PUSH_TOKEN', error as Object);
+    }
 
     if (token.length === 0) {
       throw new ExpoModuleError('ERR_NOTIFICATIONS_PUSH_TOKEN', 'Push Kit returned an empty token.');
     }
 
-    await store.updateToken(token);
+    if (!observingOnly || store.tokens.size > 0) await store.updateToken(token);
 
     return token;
   }
@@ -166,21 +199,18 @@ export class ExpoNotificationPermissionsModule extends NotificationsModule {
 
             // Keep the shared request independent of runtime lifetime.
             await store.requestPermissions(async (): Promise<void> => {
-              if (await notificationManager.isNotificationEnabled()) return;
+              if (store.read<boolean>(PERMISSION_REQUESTED, false) || await notificationManager.isNotificationEnabled()) return;
 
               try {
                 await notificationManager.requestEnableNotification(context);
               } catch (error) {
                 if ((error as BusinessError).code !== NOTIFICATIONS_DISABLED) {
-                  throw new ExpoModuleError(
-                    String((error as BusinessError).code ?? 'ERR_NOTIFICATIONS_PERMISSION'),
-                    (error as Error).message,
-                    error as Object,
-                  );
+                  if (error instanceof ExpoModuleError) throw error;
+                  throw new ExpoNotificationError('ERR_NOTIFICATIONS_PERMISSION', error as Object);
                 }
               }
 
-              await store.write('permissionRequested', true);
+              await store.write(PERMISSION_REQUESTED, true);
             });
 
             return this.permissions();
@@ -192,12 +222,12 @@ export class ExpoNotificationPermissionsModule extends NotificationsModule {
   private async permissions(): Promise<Record<string, ESObject>> {
     this.context.runtimeEpoch;
 
-    const granted = await notificationManager.isNotificationEnabled();
-    const asked = this.store.read<boolean>('permissionRequested', false);
-
-    if (granted && !asked) await this.store.write('permissionRequested', true);
-
+    const store = this.store;
     const settings = await notificationManager.getNotificationSetting();
+    const granted = settings.notificationEnabled ?? await notificationManager.isNotificationEnabled();
+    const asked = store.read<boolean>(PERMISSION_REQUESTED, false);
+
+    if (granted && !asked) await store.write(PERMISSION_REQUESTED, true);
 
     const response: Record<string, ESObject> = {};
     response['status'] = granted ? 'granted' : asked ? 'denied' : 'undetermined';
@@ -219,29 +249,15 @@ export class ExpoBadgeModule extends NotificationsModule {
           return await notificationManager.getBadgeNumber();
         } catch (error) {
           if ((error as BusinessError).code === CAPABILITY_UNSUPPORTED) return 0;
-          throw new ExpoModuleError(String((error as BusinessError).code ?? 'ERR_NOTIFICATIONS_BADGE'), (error as Error).message, error as Object);
+          if (error instanceof ExpoModuleError) throw error;
+          throw new ExpoNotificationError('ERR_NOTIFICATIONS_BADGE', error as Object);
         }
       })
       .asyncFunction(
         'setBadgeCountAsync',
-        ExpoFunction.typed1(ExpoValueTypes.number(), async (count: number): Promise<boolean> => {
-          integer(count, 'badgeCount', 0, 2147483647);
-
-          try {
-            if (!(await notificationManager.isNotificationEnabled())) return false;
-            if (deviceInfo.apiAvailable('26.0.0')) {
-              const settings = await notificationManager.getNotificationSetting();
-              if (settings.badgeNumberEnabled === false) return false;
-            }
-
-            await notificationManager.setBadgeNumber(count);
-
-            return true;
-          } catch (error) {
-            if ((error as BusinessError).code === CAPABILITY_UNSUPPORTED) return false;
-            throw new ExpoModuleError(String((error as BusinessError).code ?? 'ERR_NOTIFICATIONS_BADGE'), (error as Error).message, error as Object);
-          }
-        }),
+        ExpoFunction.typed1(ExpoValueTypes.number(), (count: number): Promise<boolean> =>
+          setNotificationBadge(integer(count, 'badgeCount', 0, 2147483647)),
+        ),
       );
   }
 }
@@ -274,12 +290,7 @@ export class ExpoNotificationScheduler extends NotificationsModule {
       )
       .asyncFunction(
         'cancelAllScheduledNotificationsAsync',
-        (): Promise<void> =>
-          this.queue(async (): Promise<void> => {
-            await this.store.validSchedules(true);
-
-            for (const entry of this.store.schedules()) await cancelScheduled(this.store, entry.request.identifier);
-          }),
+        (): Promise<void> => this.queue((): Promise<void> => cancelScheduled(this.store)),
       )
       .asyncFunction(
         'getNextTriggerDateAsync',
@@ -295,28 +306,43 @@ export class ExpoNotificationPresenter extends NotificationsModule {
   definition(): ExpoModuleDefinition {
     return new ExpoModuleDefinition()
       .name('ExpoNotificationPresenter')
-      .asyncFunction('getPresentedNotificationsAsync', async (): Promise<Notification[]> => {
-        const scheduled = this.store.schedules();
+      .asyncFunction(
+        'getPresentedNotificationsAsync',
+        (): Promise<Notification[]> => this.queue(async (): Promise<Notification[]> => {
+          const scheduled = this.store.schedules();
 
-        return (await notificationManager.getActiveNotifications()).map(
-          (request: notificationManager.NotificationRequest): Notification => presentedNotification(request, scheduled),
-        );
-      })
+          return (await notificationManager.getActiveNotifications()).map(
+            (request: notificationManager.NotificationRequest): Notification => presentedNotification(request, scheduled),
+          );
+        }),
+      )
       .asyncFunction(
         'dismissNotificationAsync',
-        ExpoFunction.typed1(ExpoValueTypes.string(), async (id: string): Promise<void> => {
-          identifier(id);
+        ExpoFunction.typed1(ExpoValueTypes.string(), (id: string): Promise<void> =>
+          this.queue(async (): Promise<void> => {
+            identifier(id);
+
+            const scheduled = this.store.schedules();
+
+            for (const item of await notificationManager.getActiveNotifications()) {
+              if (presentedNotification(item, scheduled).request.identifier === id) {
+                await dismissPresentedNotification(item, scheduled);
+              }
+            }
+          }),
+        ),
+      )
+      .asyncFunction(
+        'dismissAllNotificationsAsync',
+        (): Promise<void> => this.queue(async (): Promise<void> => {
 
           const scheduled = this.store.schedules();
 
           for (const item of await notificationManager.getActiveNotifications()) {
-            if (presentedNotification(item, scheduled).request.identifier === id && item.id !== undefined) {
-              await notificationManager.cancel(item.id, item.label);
-            }
+            await dismissPresentedNotification(item, scheduled);
           }
         }),
-      )
-      .asyncFunction('dismissAllNotificationsAsync', (): Promise<void> => notificationManager.cancelAll());
+      );
   }
 }
 
@@ -324,13 +350,14 @@ export class ExpoNotificationsEmitter extends NotificationsModule {
   private observing: boolean = false;
   private delivered?: NotificationResponse;
   private received: NotificationReceiver = (notification: Notification): void => {
+    if (!this.canSendEvents()) return;
     this.sendEvent('onDidReceiveNotification', notification);
   };
   private response: ResponseReceiver = (response: NotificationResponse): void => {
-    if (!this.observing) return;
+    if (!this.observing || !this.canSendEvents()) return;
 
-    this.delivered = response;
     this.sendEvent('onDidReceiveNotificationResponse', response);
+    this.delivered = response;
   };
 
   definition(): ExpoModuleDefinition {
@@ -342,6 +369,7 @@ export class ExpoNotificationsEmitter extends NotificationsModule {
         this.store.responses.add(this.response);
       })
       .onDestroy((): void => {
+        this.observing = false;
         this.unlisten(this.received);
         this.store.responses.delete(this.response);
       })
@@ -373,6 +401,8 @@ class PendingNotification {
 export class ExpoNotificationsHandlerModule extends NotificationsModule {
   private pending: Map<string, PendingNotification> = new Map();
   private received: NotificationReceiver = (notification: Notification): void => {
+    if (!this.canSendEvents()) return;
+
     const id = notification.request.identifier;
     const previous = this.pending.get(id);
     if (previous !== undefined) this.expire(id, previous);
@@ -391,8 +421,11 @@ export class ExpoNotificationsHandlerModule extends NotificationsModule {
     return new ExpoModuleDefinition()
       .name('ExpoNotificationsHandlerModule')
       .events(['onHandleNotification', 'onHandleNotificationTimeout'])
-      .onCreate((): void => {
+      .onStartObserving('onHandleNotification', (): void => {
         this.listen(this.received);
+      })
+      .onStopObserving('onHandleNotification', (): void => {
+        this.unlisten(this.received);
       })
       .onDestroy((): void => {
         this.unlisten(this.received);
@@ -421,6 +454,8 @@ export class ExpoNotificationsHandlerModule extends NotificationsModule {
   private expire(id: string, entry: PendingNotification): void {
     clearTimeout(entry.timer);
     this.pending.delete(id);
+    if (!this.canSendEvents()) return;
+
     const payload: Record<string, ESObject> = { 'id': id, 'notification': entry.notification };
     this.sendEvent('onHandleNotificationTimeout', payload);
   }

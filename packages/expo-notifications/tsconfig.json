@@ -12,6 +12,7 @@
     ]
   },
   "include": [
-    "src/**/*.ts"
+    "src/**/*.ts",
+    "plugin/**/*.d.ts"
   ]
 }

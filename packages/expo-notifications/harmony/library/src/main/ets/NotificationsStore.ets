@@ -47,6 +47,7 @@ export class NotificationsStore {
   private readonly notifications: OperationQueue = new OperationQueue();
   private readonly registration: OperationQueue = new OperationQueue();
   private readonly writes: OperationQueue = new OperationQueue();
+  private registrationRevision: number = 0;
   private permission?: Promise<void>;
   private failure?: Object;
   readonly received: Map<common.UIAbilityContext, Set<NotificationReceiver>> = new Map();
@@ -73,8 +74,16 @@ export class NotificationsStore {
     return this.notifications.run(operation);
   }
 
-  runToken<T>(operation: () => Promise<T>): Promise<T> {
-    return this.registration.run(operation);
+  get tokenRevision(): number {
+    return this.registrationRevision;
+  }
+
+  runToken<T>(operation: () => Promise<T>, supersedesUpdates: boolean = false): Promise<T> {
+    return this.registration.run(async (): Promise<T> => {
+      const result = await operation();
+      if (supersedesUpdates) this.registrationRevision += 1;
+      return result;
+    });
   }
 
   requestPermissions(operation: () => Promise<void>): Promise<void> {
@@ -132,6 +141,7 @@ export class NotificationsStore {
         await this.storage.flush();
       } catch (rollback) {
         this.failure = rollback as Object;
+
         throw new ExpoModuleError(
           'ERR_NOTIFICATIONS_STORAGE',
           `Could not persist or restore notifications data (${key}); restart the application before retrying.`,
@@ -160,7 +170,6 @@ export class NotificationsStore {
 
     let next = this.read<number>('nextId', 0);
     do {
-      // Reserve distinct WantAgent request codes for the body and action buttons.
       next = next >= MAX_NOTIFICATION_ID ? 1 : next + 1;
     } while (occupied.has(next));
 
@@ -188,22 +197,27 @@ export class NotificationsStore {
 
     const retained = saved.filter((entry: ScheduledNotification): boolean => ids.has(entry.reminderId) || displayed.has(entry.notificationId));
 
-    // The system request also holds our serialized Expo request. Recover handles
-    // if a crash or storage failure occurred after publishReminder succeeded.
+    // Recover missing records or an interrupted update from the system's Expo payload.
     for (const item of valid) {
-      if (retained.some((entry: ScheduledNotification): boolean => entry.reminderId === item.reminderId)) continue;
-
       const serialized = item.reminderReq.wantAgent?.parameters?.[RESPONSE_KEY];
       if (typeof serialized !== 'string' || item.reminderReq.notificationId === undefined) continue;
 
       let response: NotificationResponse;
+
       try {
         response = parseResponse(serialized);
       } catch (_) {
         continue;
       }
 
-      retained.push({ reminderId: item.reminderId, notificationId: item.reminderReq.notificationId, request: response.notification.request });
+      const entry: ScheduledNotification = {
+        reminderId: item.reminderId,
+        notificationId: item.reminderReq.notificationId,
+        request: response.notification.request,
+      };
+      const index = retained.findIndex((cached: ScheduledNotification): boolean => cached.reminderId === item.reminderId);
+      if (index === -1) retained.push(entry);
+      else retained[index] = entry;
     }
 
     if (JSON.stringify(retained) !== JSON.stringify(saved)) await this.write('scheduled', retained);
@@ -212,12 +226,14 @@ export class NotificationsStore {
   }
 
   receive(context: common.UIAbilityContext, notification: Notification): void {
-    this.received.get(context)?.forEach((callback: NotificationReceiver): void => callback(notification));
+    const callbacks = this.received.get(context);
+    // Snapshot before callbacks, which can register or remove listeners synchronously.
+    if (callbacks !== undefined) Array.from(callbacks).forEach((callback: NotificationReceiver): void => callback(notification));
   }
 
   respond(response: NotificationResponse): void {
     this.lastResponse = response;
-    this.responses.forEach((callback: ResponseReceiver): void => callback(response));
+    Array.from(this.responses).forEach((callback: ResponseReceiver): void => callback(response));
   }
 
   get lastToken(): string | undefined {
@@ -233,6 +249,6 @@ export class NotificationsStore {
 
     await this.write('pushToken', token);
 
-    this.tokens.forEach((callback: TokenReceiver): void => callback(token));
+    Array.from(this.tokens).forEach((callback: TokenReceiver): void => callback(token));
   }
 }

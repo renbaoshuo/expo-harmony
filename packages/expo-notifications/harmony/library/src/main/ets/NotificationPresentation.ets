@@ -7,12 +7,15 @@
 
 import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
 import { common, wantAgent, WantAgent } from '@kit.AbilityKit';
+import { reminderAgentManager } from '@kit.BackgroundTasksKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { NotificationsStore } from './NotificationsStore';
 import {
   DEFAULT_ACTION,
   RESPONSE_KEY,
   MAX_ACTION_BUTTONS,
+  MAX_NOTIFICATION_ID,
   Notification,
   NotificationResponse,
   NotificationAction,
@@ -21,18 +24,38 @@ import {
   pushNotification,
   notificationSlot,
   parseResponse,
+  ExpoNotificationError,
 } from './NotificationTypes';
 
 // NotificationFlagStatus is an SDK type but is not re-exported by NotificationKit.
 const FLAG_DEFAULT = 0;
 const FLAG_DISABLED = 2;
+const CAPABILITY_UNSUPPORTED = 801;
+const NOTIFICATION_NOT_FOUND = 1600007;
+const REMINDER_NOT_FOUND = 1700003;
+
+export async function setNotificationBadge(count: number): Promise<boolean> {
+  try {
+    if (!(await notificationManager.isNotificationEnabled())) return false;
+    // apiAvailable itself requires API 26; the minimum here is API 23.
+    if (deviceInfo.sdkApiVersion >= 26 && (await notificationManager.getNotificationSetting()).badgeNumberEnabled === false) return false;
+
+    await notificationManager.setBadgeNumber(count);
+
+    return true;
+  } catch (error) {
+    if ((error as BusinessError).code === CAPABILITY_UNSUPPORTED) return false;
+    if (error instanceof ExpoModuleError) throw error;
+    throw new ExpoNotificationError('ERR_NOTIFICATIONS_BADGE', error as Object);
+  }
+}
 
 export function responseParameters(notification: Notification, action: string = DEFAULT_ACTION): Record<string, Object> {
   const response: NotificationResponse = { actionIdentifier: action, notification };
-  const parameters: Record<string, Object> = {};
-  parameters[RESPONSE_KEY] = JSON.stringify(response);
+  const params: Record<string, Object> = {};
+  params[RESPONSE_KEY] = JSON.stringify(response);
 
-  return parameters;
+  return params;
 }
 
 async function clickAgent(
@@ -63,10 +86,14 @@ export function validateBehavior(value: Record<string, ESObject>): void {
       throw new ExpoModuleError('ERR_NOTIFICATIONS_INVALID_ARGUMENT', `${key} must be a boolean.`);
     }
   }
+
   if (value.priority !== undefined) {
     throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Android notification priority is not supported on HarmonyOS.');
   }
-  if (value.shouldShowBanner === true && value.shouldShowList === false) {
+
+  const banner: boolean = value.shouldShowBanner ?? value.shouldShowAlert ?? false;
+  const list: boolean = value.shouldShowList ?? value.shouldShowAlert ?? false;
+  if (banner && !list) {
     throw new ExpoModuleError(
       'ERR_NOTIFICATIONS_UNSUPPORTED',
       'Banner-only notifications without a notification-center entry are not supported on HarmonyOS.',
@@ -83,23 +110,29 @@ export async function publishNotification(
   const content = notification.request.content;
   if (behavior !== undefined) {
     validateBehavior(behavior);
+
     if (behavior.shouldSetBadge === true && content.badge !== undefined) {
-      await notificationManager.setBadgeNumber(content.badge as number);
+      await setNotificationBadge(content.badge as number);
     }
 
     const banner: boolean = behavior.shouldShowBanner ?? behavior.shouldShowAlert ?? false;
     const list: boolean = behavior.shouldShowList ?? behavior.shouldShowAlert ?? false;
     if (!banner && !list) return;
   } else if (content.badge !== undefined) {
-    await notificationManager.setBadgeNumber(content.badge as number);
+    await setNotificationBadge(content.badge as number);
   }
 
   const active = await notificationManager.getActiveNotifications();
-  const previous = active.find((entry: notificationManager.NotificationRequest): boolean => entry.label === notification.request.identifier);
+  const previous = active.find((entry: notificationManager.NotificationRequest): boolean =>
+    entry.label === notification.request.identifier &&
+    typeof entry.extraInfo?.[RESPONSE_KEY] === 'string' &&
+    entry.id !== undefined && entry.id > 0 && entry.id <= MAX_NOTIFICATION_ID,
+  );
   const id = previous?.id ?? (await store.allocateId());
   const category = store.categories().find((entry: NotificationCategory): boolean => entry.identifier === content.categoryIdentifier);
 
   const buttons: notificationManager.NotificationActionButton[] = [];
+
   for (const action of category?.actions ?? []) {
     buttons.push({ title: action.buttonTitle, wantAgent: await clickAgent(context, notification, id, action.identifier, buttons.length + 1) });
   }
@@ -155,12 +188,43 @@ export function presentedNotification(request: notificationManager.NotificationR
   return notification;
 }
 
+export async function dismissPresentedNotification(
+  request: notificationManager.NotificationRequest,
+  schedules: ScheduledNotification[],
+): Promise<void> {
+  if (request.id === undefined) return;
+
+  const reminder = schedules.find((entry: ScheduledNotification): boolean => entry.notificationId === request.id);
+  if (reminder !== undefined) {
+    try {
+      // Remove the card while preserving future occurrences of this reminder.
+      await reminderAgentManager.cancelReminderOnDisplay(reminder.reminderId);
+      return;
+    } catch (error) {
+      if ((error as BusinessError).code !== REMINDER_NOT_FOUND) {
+        if (error instanceof ExpoModuleError) throw error;
+        throw new ExpoNotificationError('ERR_NOTIFICATIONS_DISMISS', error as Object);
+      }
+    }
+  }
+
+  try {
+    await notificationManager.cancel(request.id, request.label);
+  } catch (error) {
+    if ((error as BusinessError).code !== NOTIFICATION_NOT_FOUND) {
+      if (error instanceof ExpoModuleError) throw error;
+      throw new ExpoNotificationError('ERR_NOTIFICATIONS_DISMISS', error as Object);
+    }
+  }
+}
+
 export function validateActions(actions: NotificationAction[], options?: Record<string, ESObject>): void {
   if (!Array.isArray(actions) || actions.length > MAX_ACTION_BUTTONS) {
     throw new ExpoModuleError('ERR_NOTIFICATIONS_INVALID_ARGUMENT', 'HarmonyOS supports at most two notification action buttons.');
   }
 
   const ids = new Set<string>();
+
   for (const action of actions) {
     if (!action || typeof action.identifier !== 'string' || !action.identifier || !action.buttonTitle || typeof action.buttonTitle !== 'string') {
       throw new ExpoModuleError('ERR_NOTIFICATIONS_INVALID_ARGUMENT', 'Notification actions require an identifier and buttonTitle.');

@@ -7,6 +7,7 @@
 
 import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
 import { common } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { notificationManager } from '@kit.NotificationKit';
 
 export const DEFAULT_ACTION = 'expo.modules.notifications.actions.DEFAULT';
@@ -18,6 +19,12 @@ export const MAX_ACTION_BUTTONS = 2;
 export const MAX_NOTIFICATION_ID = Math.floor((2147483647 - MAX_ACTION_BUTTONS) / (MAX_ACTION_BUTTONS + 1));
 export const REMINDER_PERMISSION = 'ohos.permission.PUBLISH_AGENT_REMINDER';
 export const EXPO_SERVICE_ERROR = 'ERR_NOTIFICATIONS_EXPO_PUSH_SERVICE_UNSUPPORTED';
+
+export class ExpoNotificationError extends ExpoModuleError {
+  constructor(fallback: string, error: Object) {
+    super(String((error as BusinessError).code ?? fallback), (error as Error).message, error);
+  }
+}
 
 export function notificationSlot(context: common.UIAbilityContext): notificationManager.SlotType {
   const value = context.abilityInfo.metadata?.find((entry): boolean => entry.name === SLOT_METADATA)?.value ?? 'service';
@@ -131,19 +138,23 @@ export function notificationContent(input: ESObject): Record<string, ESObject> {
       throw new ExpoModuleError('ERR_NOTIFICATIONS_INVALID_ARGUMENT', `content.${name} must be a string.`);
     }
   }
+
   if (content.data !== undefined && content.data !== null) record(content.data, 'content.data');
   if (content.badge !== undefined) integer(content.badge, 'badge', 0, 2147483647);
   if (content.sound !== undefined && content.sound !== null && typeof content.sound !== 'boolean' && content.sound !== 'default') {
     throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Custom local notification sounds are not supported on HarmonyOS.');
   }
+
   for (const name of ['autoDismiss', 'sticky']) {
     if (content[name] !== undefined && typeof content[name] !== 'boolean') {
       throw new ExpoModuleError('ERR_NOTIFICATIONS_INVALID_ARGUMENT', `content.${name} must be a boolean.`);
     }
   }
+
   if (content.sticky === true) {
     throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Sticky notifications are not supported on HarmonyOS.');
   }
+
   for (const name of ['attachments', 'vibrate', 'color', 'priority', 'interruptionLevel', 'launchImageName']) {
     if (content[name] !== undefined) {
       throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', `content.${name} is not supported on HarmonyOS.`);

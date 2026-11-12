@@ -7,7 +7,7 @@
 
 'use strict';
 
-const { createRunOncePlugin } = require('@expo/config-plugins');
+const { createRunOncePlugin } = require('expo/config-plugins');
 const {
   HarmonyManifest, withModuleJson, parseHarmonySdkVersion, compareHarmonyApiVersions,
 } = require('@expo-harmony/config-plugins');
@@ -34,6 +34,7 @@ function withNotifications(config, { defaultSlotType = 'service' } = {}) {
     const abilities = mod.modResults.module.abilities;
     const duplicate = abilities.some(ability => ability !== main
       && ability.skills?.some(skill => skill.actions?.includes(PUSH_LISTENER_ACTION)));
+
     if (duplicate) {
       throw new Error('Push Kit permits only one ability with action.ohos.push.listener; move it to the main Expo ability.');
     }
@@ -44,8 +45,10 @@ function withNotifications(config, { defaultSlotType = 'service' } = {}) {
       if (!skill.actions?.includes(PUSH_LISTENER_ACTION)) return [skill];
 
       const actions = skill.actions.filter(action => action !== PUSH_LISTENER_ACTION);
+
       return actions.length > 0 ? [{ ...skill, actions }] : [];
     });
+
     main.skills.push({ actions: [PUSH_LISTENER_ACTION] });
     HarmonyManifest.setMetadata(main, { name: PUSH_LISTENER_ACTION, value: 'true' });
     HarmonyManifest.setMetadata(main, { name: SLOT_METADATA, value: defaultSlotType });

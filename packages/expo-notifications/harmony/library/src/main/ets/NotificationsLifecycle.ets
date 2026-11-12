@@ -25,7 +25,33 @@ import {
 } from './NotificationTypes';
 
 const NOTIFICATION_LAUNCH_REASON = 'ReasonMessage_Notification';
-const SYSTEM_WANT_KEYS = new Set<string>(Object.values(wantConstant.Params));
+// ArkTS does not support reflecting over SDK enum classes with Object.values.
+const SYSTEM_WANT_KEYS = new Set<string>([
+  wantConstant.Params.ABILITY_BACK_TO_OTHER_MISSION_STACK,
+  wantConstant.Params.ABILITY_RECOVERY_RESTART,
+  wantConstant.Params.CONTENT_TITLE_KEY,
+  wantConstant.Params.SHARE_ABSTRACT_KEY,
+  wantConstant.Params.SHARE_URL_KEY,
+  wantConstant.Params.SUPPORT_CONTINUE_PAGE_STACK_KEY,
+  wantConstant.Params.SUPPORT_CONTINUE_SOURCE_EXIT_KEY,
+  wantConstant.Params.SHOW_MODE_KEY,
+  wantConstant.Params.PARAMS_STREAM,
+  wantConstant.Params.APP_CLONE_INDEX_KEY,
+  wantConstant.Params.CALLER_REQUEST_CODE,
+  wantConstant.Params.PAGE_PATH,
+  wantConstant.Params.ROUTER_NAME,
+  wantConstant.Params.PAGE_SOURCE_FILE,
+  wantConstant.Params.BUILD_FUNCTION,
+  wantConstant.Params.SUB_PACKAGE_NAME,
+  wantConstant.Params.APP_INSTANCE_KEY,
+  wantConstant.Params.CREATE_APP_INSTANCE_KEY,
+  wantConstant.Params.CALLER_APP_CLONE_INDEX,
+  wantConstant.Params.DESTINATION_PLUGIN_ABILITY,
+  wantConstant.Params.APP_LAUNCH_TRUSTLIST,
+  wantConstant.Params.ATOMIC_SERVICE_SHARE_ROUTER,
+  wantConstant.Params.LAUNCH_REASON_MESSAGE,
+  wantConstant.Params.ABILITY_UNIFIED_DATA_KEY,
+]);
 
 function report(error: Object): void {
   hilog.error(
@@ -81,7 +107,6 @@ class PushLifecycle extends AbilityLifecycleCallback {
 
   onAbilityCreate(ability: UIAbility): void {
     if (!ability.context.abilityInfo.metadata?.some((entry): boolean => entry.name === PUSH_LISTENER_ACTION && entry.value === 'true')) return;
-    if (this.ability === ability && this.listener !== undefined) return;
     if (this.ability !== undefined && this.ability !== ability) this.onAbilityDestroy(this.ability);
 
     this.ability = ability;
@@ -91,7 +116,7 @@ class PushLifecycle extends AbilityLifecycleCallback {
       if (this.receiver !== ability) {
         pushService.receiveMessage('DEFAULT', ability, (payload: pushCommon.PushPayload): void => {
           const current = this.ability;
-          if (current === undefined || payload.type !== 'ALERT') return;
+          if (current !== ability || payload.type !== 'ALERT') return;
 
           try {
             const envelope = record(JSON.parse(payload.data), 'Push Kit payload');
@@ -105,8 +130,11 @@ class PushLifecycle extends AbilityLifecycleCallback {
               }
             }
 
+            // Push Kit uses -1 (or omission) to request an automatically generated ID.
             const id =
-              source.notifyId === undefined ? util.generateRandomUUID() : String(integer(source.notifyId, 'Push Kit notifyId', 0, 2147483647));
+              source.notifyId === undefined || source.notifyId === -1
+                ? util.generateRandomUUID()
+                : String(integer(source.notifyId, 'Push Kit notifyId', 0, 2147483647));
             const notification = pushNotification(id, source.title ?? null, source.body ?? null, data, Date.now());
 
             store.receive(current.context, notification);
@@ -116,17 +144,36 @@ class PushLifecycle extends AbilityLifecycleCallback {
         });
         this.receiver = ability;
       }
+    } catch (error) {
+      report(error as Object);
+    }
 
-      this.listener = (token: string): void => {
+    if (this.listener !== undefined) return;
+
+    const listener = (token: string): void => {
+      if (this.ability !== ability || store.tokens.size === 0) return;
+
+      try {
+        if (store.lastToken === undefined) return;
+
+        const revision = store.tokenRevision;
+
         store
           .runToken(async (): Promise<void> => {
-            if (store.lastToken !== undefined) await store.updateToken(token);
+            if (this.ability === ability && store.tokens.size > 0 && store.tokenRevision === revision && store.lastToken !== undefined) {
+              await store.updateToken(token);
+            }
           })
           .catch((error: Object): void => report(error));
-      };
-      pushService.on('tokenUpdate', ability, this.listener);
+      } catch (error) {
+        report(error as Object);
+      }
+    };
+
+    try {
+      pushService.on('tokenUpdate', ability, listener);
+      this.listener = listener;
     } catch (error) {
-      this.listener = undefined;
       report(error as Object);
     }
   }
@@ -134,6 +181,7 @@ class PushLifecycle extends AbilityLifecycleCallback {
   onAbilityDestroy(ability: UIAbility): void {
     if (this.ability !== ability) return;
 
+    this.ability = undefined;
     if (this.listener !== undefined) {
       try {
         pushService.off('tokenUpdate', this.listener);
@@ -143,7 +191,6 @@ class PushLifecycle extends AbilityLifecycleCallback {
     }
 
     this.listener = undefined;
-    this.ability = undefined;
     // DEFAULT binds the Ability's callee and has no public off API. Register
     // once for each new Ability, matching the documented onCreate integration.
     this.receiver = undefined;
