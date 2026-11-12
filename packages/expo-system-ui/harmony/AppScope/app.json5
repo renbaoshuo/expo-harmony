@@ -9,7 +9,7 @@
   "app": {
     "bundleName": "dev.expo.systemui.build",
     "vendor": "expo-harmony",
-    "versionCode": 550022,
-    "versionName": "55.0.22-harmony.0"
+    "versionCode": 570004,
+    "versionName": "57.0.4-harmony.0"
   }
 }

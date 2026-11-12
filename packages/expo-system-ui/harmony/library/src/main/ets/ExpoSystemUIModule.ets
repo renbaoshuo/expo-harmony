@@ -93,11 +93,13 @@ class AbilitySystemUIState {
     this.style = config.userInterfaceStyle;
     this.mode = resolvedSystemColorMode(context);
 
-    this.store = preferences.getPreferences(context, { name: PREFERENCES_NAME }).catch((error: Object): preferences.Preferences | null => {
-      console.warn(`Unable to open Expo System UI preferences: ${String(error)}`);
+    this.store = Promise.resolve()
+      .then((): Promise<preferences.Preferences> => preferences.getPreferences(context, { name: PREFERENCES_NAME }))
+      .catch((error: Object): preferences.Preferences | null => {
+        console.warn(`Unable to open Expo System UI preferences: ${String(error)}`);
 
-      return null;
-    });
+        return null;
+      });
     this.ready = this.loadPersistedBackground();
   }
 
@@ -191,31 +193,18 @@ class AbilitySystemUIState {
       await this.ready;
 
       this.assertActive();
-      if (!valid()) return;
+      requireCurrentWindow(valid);
 
       const id: number = inspectWindowId(target);
+      const background = new WindowBackgroundState(color ?? this.systemBackgroundColor(), color === null);
 
-      if (color === null) {
-        const fallback: ParsedBackgroundColor = this.systemBackgroundColor();
-
-        applyWindowColor(target, fallback.argb);
-        await this.removePersistedBackground();
-
-        if (!valid()) return;
-
-        this.windows.set(id, target);
-        this.backgrounds.set(id, new WindowBackgroundState(fallback, true));
-
-        return;
-      }
-
-      applyWindowColor(target, color.argb);
-      await this.persistBackground(color);
-
-      if (!valid()) return;
-
+      applyWindowColor(target, background.color.argb);
       this.windows.set(id, target);
-      this.backgrounds.set(id, new WindowBackgroundState(color, false));
+      this.backgrounds.set(id, background);
+
+      if (color === null) await this.removePersistedBackground();
+      else await this.persistBackground(color);
+      requireCurrentWindow(valid);
     });
   }
 
@@ -223,7 +212,7 @@ class AbilitySystemUIState {
     await this.mutation.catch((): void => {});
 
     this.assertActive();
-    if (!valid()) return null;
+    requireCurrentWindow(valid);
 
     const background: WindowBackgroundState | undefined = this.backgrounds.get(inspectWindowId(target));
 
@@ -244,15 +233,11 @@ class AbilitySystemUIState {
     this.resolveWindowReady = null;
   }
 
-  async waitForWindowReady(): Promise<void> {
+  async waitForWindowReady(runtimeDestroyed: Promise<void>): Promise<void> {
     this.assertActive();
 
-    const valid = this.captureWindowGuard();
-    await this.windowReady;
-
-    this.assertActive();
-    if (!valid()) {
-      throw new ExpoSystemUIError('ERR_SYSTEM_UI_WINDOW', 'The React Native window was removed before its content became ready.');
+    if (this.resolveWindowReady !== null) {
+      await Promise.race([this.windowReady, runtimeDestroyed]);
     }
   }
 
@@ -346,10 +331,10 @@ class AbilitySystemUIState {
   }
 }
 
-const abilityStates: WeakMap<common.UIAbilityContext, AbilitySystemUIState> = new WeakMap<common.UIAbilityContext, AbilitySystemUIState>();
+const states: WeakMap<common.UIAbilityContext, AbilitySystemUIState> = new WeakMap<common.UIAbilityContext, AbilitySystemUIState>();
 
 function stateForAbility(context: common.UIAbilityContext): AbilitySystemUIState {
-  const state = abilityStates.get(context);
+  const state = states.get(context);
   if (state === undefined) {
     throw new ExpoSystemUIError(
       'ERR_SYSTEM_UI_ABILITY_NOT_INITIALIZED',
@@ -369,7 +354,7 @@ export class ExpoSystemUILifecycleSubscriber extends ExpoAbilityLifecycleSubscri
   constructor(context: common.UIAbilityContext) {
     super(context);
     this.state = new AbilitySystemUIState(context);
-    abilityStates.set(context, this.state);
+    states.set(context, this.state);
   }
 
   override onWindowStageCreate(stage: window.WindowStage): void {
@@ -386,14 +371,20 @@ export class ExpoSystemUILifecycleSubscriber extends ExpoAbilityLifecycleSubscri
     if (this.destroyed || this.stage !== stage) return;
 
     this.ready = true;
-    this.state.markWindowReady();
 
-    this.state.applyInterfaceStyle();
-    await this.state.initializeWindowFrom(
+    try {
+      this.state.applyInterfaceStyle();
+    } catch (error) {
+      console.warn(`Unable to apply Expo System UI interface style: ${String(error)}`);
+    }
+
+    const initialization = this.state.initializeWindowFrom(
       (): Promise<window.Window> => stage.getMainWindow(),
       true,
       (): boolean => !this.destroyed && this.stage === stage,
     );
+    this.state.markWindowReady();
+    await initialization;
   }
 
   override onForeground(): void {
@@ -424,12 +415,16 @@ export class ExpoSystemUILifecycleSubscriber extends ExpoAbilityLifecycleSubscri
     this.stage = undefined;
 
     this.state.destroy();
-    abilityStates.delete(this.context);
+    states.delete(this.context);
   }
 }
 
 export class ExpoSystemUIModule extends ExpoModule {
   private destroyed: boolean = false;
+  private resolveRuntimeDestroyed: (() => void) | null = null;
+  private readonly runtimeDestroyed: Promise<void> = new Promise<void>((resolve): void => {
+    this.resolveRuntimeDestroyed = resolve;
+  });
 
   private get state(): AbilitySystemUIState {
     if (this.context.isHeadless) throw new ExpoSystemUIError('ERR_SYSTEM_UI_WINDOW', 'SystemUI requires a UIAbility window.');
@@ -446,12 +441,13 @@ export class ExpoSystemUIModule extends ExpoModule {
           this.assertActive();
           if (color !== null) requireProcessedColor(color);
 
-          const valid = this.state.captureWindowGuard();
-          const target: window.Window = await this.currentWindow();
+          const state = this.state;
+          const valid = this.captureWindowGuard(state);
+          const target: window.Window = await this.currentWindow(state, valid);
 
           const parsed: ParsedBackgroundColor | null = color === null ? null : parseProcessedColor(color);
 
-          await this.state.setBackgroundColor(target, parsed, (): boolean => this.isActive() && valid());
+          await state.setBackgroundColor(target, parsed, valid);
 
           this.assertActive();
         }),
@@ -459,39 +455,45 @@ export class ExpoSystemUIModule extends ExpoModule {
       .asyncFunction('getBackgroundColorAsync', async (): Promise<string | null> => {
         this.assertActive();
 
-        const valid = this.state.captureWindowGuard();
-        const target: window.Window = await this.currentWindow();
+        const state = this.state;
+        const valid = this.captureWindowGuard(state);
+        const target: window.Window = await this.currentWindow(state, valid);
 
-        const color: string | null = await this.state.getBackgroundColor(target, (): boolean => this.isActive() && valid());
+        const color: string | null = await state.getBackgroundColor(target, valid);
         this.assertActive();
 
         return color;
       })
       .onDestroy((): void => {
         this.destroyed = true;
+        this.resolveRuntimeDestroyed?.();
+        this.resolveRuntimeDestroyed = null;
       });
   }
 
-  private async currentWindow(): Promise<window.Window> {
-    this.assertActive();
+  private captureWindowGuard(state: AbilitySystemUIState): () => boolean {
+    const valid = state.captureWindowGuard();
+    return (): boolean => {
+      this.assertActive();
+      return valid();
+    };
+  }
 
+  private async currentWindow(state: AbilitySystemUIState, valid: () => boolean): Promise<window.Window> {
     // RNOH can return the main window while its page is still loading.
-    await this.state.waitForWindowReady();
-    this.assertActive();
+    await state.waitForWindowReady(this.runtimeDestroyed);
+    requireCurrentWindow(valid);
 
     try {
       return await this.context.getReactNativeWindow();
     } catch (error) {
+      this.assertActive();
       throw new ExpoSystemUIError('ERR_SYSTEM_UI_WINDOW', `Unable to locate the current React Native window: ${String(error)}`);
     }
   }
 
-  private isActive(): boolean {
-    return !this.destroyed && this.context.isValid;
-  }
-
   private assertActive(): void {
-    if (!this.isActive()) {
+    if (this.destroyed || !this.context.isValid) {
       throw new ExpoSystemUIError('ERR_SYSTEM_UI_DESTROYED', 'ExpoSystemUI cannot run after its Expo runtime has been invalidated.');
     }
   }
@@ -502,6 +504,12 @@ function inspectWindowId(target: window.Window): number {
     return target.getWindowProperties().id;
   } catch (error) {
     throw new ExpoSystemUIError('ERR_SYSTEM_UI_WINDOW', `Unable to inspect the current application window: ${String(error)}`);
+  }
+}
+
+function requireCurrentWindow(valid: () => boolean): void {
+  if (!valid()) {
+    throw new ExpoSystemUIError('ERR_SYSTEM_UI_WINDOW', 'The React Native window was removed or replaced before the SystemUI operation completed.');
   }
 }
 

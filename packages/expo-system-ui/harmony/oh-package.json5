@@ -8,7 +8,7 @@
 {
   "modelVersion": "5.0.0",
   "name": "@expo-harmony-internal/expo-system-ui",
-  "version": "55.0.22-harmony.4",
+  "version": "57.0.4-harmony.0",
   "description": "HarmonyOS port of expo-system-ui",
   "keywords": [
     "react-native",
@@ -28,7 +28,7 @@
     "@expo-harmony/expo-system-ui": "./library"
   },
   "overrides": {
-    "@expo-harmony/expo-modules-core": "55.0.26-harmony.3",
-    "@rnoh/react-native-openharmony": "0.84.1"
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
+    "@rnoh/react-native-openharmony": "0.86.1"
   }
 }
