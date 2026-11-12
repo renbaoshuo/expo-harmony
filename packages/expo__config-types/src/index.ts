@@ -5,4 +5,4 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-export * from '@expo/config-types';
+export type * from '@expo/config-types';
