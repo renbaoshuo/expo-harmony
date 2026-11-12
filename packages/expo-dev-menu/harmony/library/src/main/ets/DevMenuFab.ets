@@ -8,7 +8,7 @@
 import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
 import { ComponentContent, UIContext, window } from '@kit.ArkUI';
 import { DevMenuFabModel } from './DevMenuFabModel';
-import { FabBounds, FabInsets, FabPoint } from './DevMenuFabGeometry';
+import { FAB_CONTENT_SIZE, FAB_LABEL_HEIGHT, FAB_MARGIN, FAB_HIT_AREA_ID, FabBounds, FabInsets, FabPoint } from './DevMenuFabGeometry';
 import { DevMenuPreferences } from './DevMenuPreferences';
 
 @Component
@@ -37,34 +37,36 @@ struct DevMenuFabView {
             .height(52)
             .border({ width: 4, color: this.model.blueBorder, radius: 26 })
             .shadow({ radius: 8, color: '#66000000', offsetX: 0, offsetY: 4 })
-            Text('Tools')
-              .fontSize(11)
-              .fontWeight(600)
-              .fontColor(Color.Black)
-              .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-              .backgroundColor(Color.White)
-              .borderRadius(50)
-              .margin({ top: 6 })
-              .shadow({ radius: 4, color: '#33000000', offsetX: 0, offsetY: 2 })
-              .opacity(this.model.labelAlpha)
-              .scale({ x: this.model.labelScale, y: this.model.labelScale })
-              .accessibilityLevel('no')
+            if (this.model.labelVisible) {
+              Text('Tools')
+                .fontSize(11)
+                .fontWeight(600)
+                .fontColor(Color.Black)
+                .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+                .backgroundColor(Color.White)
+                .borderRadius(50)
+                .margin({ top: 6 })
+                .shadow({ radius: 4, color: '#33000000', offsetX: 0, offsetY: 2 })
+                .opacity(this.model.labelAlpha)
+                .scale({ x: this.model.labelScale, y: this.model.labelScale })
+                .accessibilityLevel('no')
+            }
           }
-          .width(72)
-          .height(94)
+          .width(FAB_CONTENT_SIZE)
+          .height(this.model.labelVisible ? FAB_LABEL_HEIGHT : FAB_CONTENT_SIZE)
           .scale({ x: this.model.scale, y: this.model.scale })
           .opacity(this.model.idleAlpha)
         }
-        .id('expo-dev-menu-fab-hit-area')
-        .width(72)
-        .height(94)
+        .id(FAB_HIT_AREA_ID)
+        .width(FAB_CONTENT_SIZE)
+        .height(this.model.labelVisible ? FAB_LABEL_HEIGHT : FAB_CONTENT_SIZE)
         .padding(0)
         .backgroundColor(Color.Transparent)
         .borderRadius(0)
         .clip(false)
         .accessibilityText('Tools')
         .accessibilityDescription('Open development menu')
-        .position({ x: this.model.x + 16, y: this.model.y + 16 })
+        .position({ x: this.model.x + FAB_MARGIN, y: this.model.y + FAB_MARGIN })
         .opacity(this.model.alpha)
         .hitTestBehavior(this.model.interactive ? HitTestMode.Default : HitTestMode.None)
         .accessibilityLevel(this.model.interactive ? 'yes' : 'no-hide-descendants')
@@ -90,7 +92,7 @@ class DevMenuFabViewProps {
 
 @Builder
 function buildDevMenuFab(props: DevMenuFabViewProps): void {
-  // Both full-screen nodes must pass through touches outside the FAB's 72x94 hit area.
+  // Both full-screen nodes pass through touches outside the FAB's current hit area.
   DevMenuFabView({ model: props.model, onArea: props.onArea }).hitTestBehavior(HitTestMode.Transparent);
 }
 
@@ -111,11 +113,13 @@ export class DevMenuFab {
 
     const name = ui.getWindowName();
     if (name === undefined) throw new Error('Expo Dev Menu FAB requires a mounted window.');
+
     this.ui = ui;
     this.model.ui = ui;
     this.model.onHidden = (): void => {
       if (this.content !== undefined) this.ui?.getOverlayManager().hideComponentContent(this.content);
     };
+
     try {
       this.window = window.findWindow(name);
       this.window.on('avoidAreaChange', this.avoidChanged);
@@ -163,6 +167,7 @@ export class DevMenuFab {
     const width = Number(area.width);
     const height = Number(area.height);
     const insets = new FabInsets();
+
     for (const type of [window.AvoidAreaType.TYPE_SYSTEM, window.AvoidAreaType.TYPE_CUTOUT, window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR]) {
       const avoid = target.getWindowAvoidArea(type);
       insets.top = Math.max(insets.top, ui.px2vp(avoid.topRect.height) - origin.y);
@@ -183,17 +188,19 @@ export class DevMenuFab {
     this.model.detach();
 
     const content = this.content;
+    const ui = this.ui;
+    const nativeWindow = this.window;
     this.content = undefined;
+    this.window = undefined;
+    this.ui = undefined;
+    this.area = undefined;
     try {
-      this.window?.off('avoidAreaChange', this.avoidChanged);
+      nativeWindow?.off('avoidAreaChange', this.avoidChanged);
     } finally {
-      this.window = undefined;
       try {
-        if (content !== undefined) this.ui?.getOverlayManager().removeComponentContent(content);
+        if (content !== undefined) ui?.getOverlayManager().removeComponentContent(content);
       } finally {
         content?.dispose();
-        this.ui = undefined;
-        this.area = undefined;
       }
     }
   }

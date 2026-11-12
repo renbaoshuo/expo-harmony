@@ -7,8 +7,12 @@
 
 // Ported from expo-dev-menu/android/.../fab/{FabState,FabUtils,ExpoVelocityTracker}.kt.
 // Copyright 2015-present 650 Industries. All rights reserved. MIT licensed.
-export const FAB_WIDTH: number = 104; // 72dp content + 16dp margin on each side
-export const FAB_HEIGHT: number = 126; // 94dp content + 16dp margin on each side
+export const FAB_CONTENT_SIZE: number = 52;
+export const FAB_LABEL_HEIGHT: number = 94;
+export const FAB_MARGIN: number = 16;
+export const FAB_WIDTH: number = FAB_CONTENT_SIZE + FAB_MARGIN * 2;
+export const FAB_HEIGHT: number = FAB_WIDTH;
+export const FAB_HIT_AREA_ID: string = 'expo-dev-menu-fab-hit-area';
 
 export class FabPoint {
   x: number;
@@ -58,6 +62,7 @@ function clamp(value: number, min: number, max: number): number {
 
 export function restoreFabPosition(saved: FabPoint | undefined, bounds: FabBounds): FabPoint {
   if (saved === undefined || !Number.isFinite(saved.x) || !Number.isFinite(saved.y)) return new FabPoint(bounds.maxX, bounds.minY);
+
   return new FabPoint(
     bounds.minX + clamp(saved.x, 0, 1) * (bounds.maxX - bounds.minX),
     bounds.minY + clamp(saved.y, 0, 1) * (bounds.maxY - bounds.minY),
@@ -105,14 +110,14 @@ export class FabDrag {
     this.samples = [];
   }
 
-  move(pointer: FabPoint, bounds: FabBounds, tolerance: number, time: number): void {
+  move(pointer: FabPoint, bounds: FabBounds, tolerance: number, time: number, height: number = FAB_HEIGHT): void {
     const dx = pointer.x - this.previous.x;
     const dy = pointer.y - this.previous.y;
     this.previous = pointer;
     this.distance += Math.hypot(dx, dy);
     this.position = new FabPoint(
-      clamp(this.position.x + dx, -FAB_WIDTH / 2, bounds.width - FAB_WIDTH / 2),
-      clamp(this.position.y + dy, -FAB_HEIGHT / 2, bounds.height - FAB_HEIGHT / 2),
+      clamp(this.position.x + dx, bounds.minX - FAB_WIDTH / 2, bounds.maxX + FAB_WIDTH / 2),
+      clamp(this.position.y + dy, bounds.minY - height / 2, bounds.maxY + height / 2),
     );
     this.dragging = this.distance > tolerance;
     this.samples.push(new FabSample(this.position, time));

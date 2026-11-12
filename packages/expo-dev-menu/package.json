@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-dev-menu",
-  "version": "55.0.35-harmony.3",
+  "version": "57.0.20-harmony.0",
   "description": "HarmonyOS port of expo-dev-menu",
   "keywords": [
     "react-native",
@@ -26,24 +26,23 @@
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
     "harmony:build": "expo-harmony-module prepare",
-    "prepack": "expo-harmony-module prepack"
+    "prepack": "expo-harmony-module prepare"
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo-dev-menu": "55.0.35"
+    "expo-dev-menu": "57.0.20"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "@react-native-oh/react-native-harmony": "0.84.1",
-    "expo": "55.0.31",
-    "expo-dev-menu": "55.0.35",
-    "expo-modules-core": "55.0.26",
+    "expo": "57.0.31",
+    "expo-dev-menu": "57.0.20",
+    "expo-modules-core": "57.0.24",
     "react": "19.2.3",
-    "react-native": "0.84.1"
+    "react-native": "0.86.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
   },
   "publishConfig": {
     "access": "public"

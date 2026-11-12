@@ -17,11 +17,15 @@ import { DevMenuDialogModel, DevMenuScreen, ExpoDevMenuPresenter } from './ExpoD
 import { DevMenuPreferences, DevMenuPreference } from './DevMenuPreferences';
 import { DevMenuFab } from './DevMenuFab';
 import { DevMenuAppInfo, DevMenuAppInfoProvider, readDevMenuAppInfo } from './DevMenuAppInfo';
+import { DevMenuSourceMap } from './DevMenuSourceMap';
 
 const RNOH_MENU_ITEM_EVENT: 'DID_PRESS_MENU_ITEM' = 'DID_PRESS_MENU_ITEM';
 const OPEN_EXPO_MENU_ITEM: string = 'Open Expo development menu';
 const RELOAD_REASON: string = 'Reload from Expo Dev Menu';
 const HMR_CLIENT: string = 'HMRClient';
+const TOGGLE_INSPECTOR_EVENT: string = 'toggleElementInspector';
+const RELOAD_DEBOUNCE_MS: number = 500;
+const RELOAD_TIMEOUT_MS: number = 5000;
 
 class RnohMenuItemEvent {
   readonly title: string;
@@ -55,6 +59,10 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
   // RNOH initializes each Metro HMR client with isEnabled=true.
   private fastRefreshEnabled: boolean = true;
   private launchPending: boolean = true;
+  private showsAtLaunch: boolean;
+  private lastReloadAt: number = Date.now();
+  private reloading: boolean = false;
+  private reloadTimer?: number;
   private keyboardVisible: boolean = false;
   private callbacks: DevMenuCallback[] = [];
   private callbacksByName: Map<string, DevMenuCallback> = new Map<string, DevMenuCallback>();
@@ -67,6 +75,7 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
   private constructor(runtime: ReactRuntimeContext) {
     this.runtime = runtime;
     this.preferences = new DevMenuPreferences(runtime.core.uiAbilityContext);
+    this.showsAtLaunch = this.getShowsAtLaunch();
     this.fab = new DevMenuFab(this.preferences, (): void => {
       this.openMenu();
     });
@@ -99,17 +108,25 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
         if (!this.active) return;
 
         try {
+          const showsAtLaunch = this.getShowsAtLaunch();
+          if (showsAtLaunch && !this.showsAtLaunch) this.launchPending = true;
+          this.showsAtLaunch = showsAtLaunch;
           this.syncFastRefresh();
           this.presenter.update(this.menuItems());
           this.refreshFab();
+          this.maybeShowAtLaunch();
         } catch (error) {
           this.reportActionError(error instanceof Error ? error : new Error(String(error)));
         }
       }),
     );
     this.cleanup.push(
-      this.runtime.instance.subscribeToLifecycleEvents('JS_BUNDLE_EXECUTION_FINISH', (): void => {
+      this.runtime.instance.subscribeToLifecycleEvents('JS_BUNDLE_EXECUTION_FINISH', (event): void => {
+        // Split bundles can finish before the initial app bundle on a shared instance.
+        const source = this.runtime.instance.getInitialBundleUrl();
+        if (source === undefined || event.jsBundleUrl !== source || this.runtime.instance.getBundleExecutionStatus(source) !== 'DONE') return;
         this.bundleReady = true;
+        this.lastReloadAt = Date.now();
 
         try {
           this.syncFastRefresh();
@@ -226,13 +243,23 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
     if (name === undefined) throw new ExpoModuleError('ERR_DEV_MENU_WINDOW', 'The mounted root has no native window.');
 
     const nativeWindow = window.findWindow(name);
+    try {
+      const keyboard = nativeWindow.getWindowAvoidArea(window.AvoidAreaType.TYPE_KEYBOARD);
+      this.keyboardVisible = keyboard.bottomRect.height > 0;
+    } catch (error) {
+      this.reportActionError(error instanceof Error ? error : new Error(String(error)));
+    }
     const keyboardChanged = (height: number): void => {
       this.keyboardVisible = height > 0;
       this.refreshFab();
     };
     nativeWindow.on('keyboardHeightChange', keyboardChanged);
     this.windowCleanup = (): void => nativeWindow.off('keyboardHeightChange', keyboardChanged);
-    this.fab.attach(ui);
+    try {
+      this.fab.attach(ui);
+    } catch (error) {
+      this.reportActionError(error instanceof Error ? error : new Error(String(error)));
+    }
     this.windowActive = true;
     this.refreshFab();
     this.maybeShowAtLaunch();
@@ -241,6 +268,9 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
   get hasMountedWindow(): boolean {
     return this.active && this.ui !== undefined;
   }
+  get canPresentMenu(): boolean {
+    return this.hasMountedWindow && this.bundleReady && this.foreground;
+  }
   get isWindowOwner(): boolean {
     return this.active && this.windowActive;
   }
@@ -248,21 +278,85 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
   private maybeShowAtLaunch(): void {
     if (!this.active || !this.windowActive || !this.foreground || !this.bundleReady || this.ui === undefined || !this.launchPending) return;
     this.launchPending = false;
-    if (this.preferences.get(DevMenuPreference.ShowsAtLaunch) || !this.preferences.get(DevMenuPreference.OnboardingFinished)) this.openMenu();
+    if (!this.getShowsAtLaunch() && this.preferences.get(DevMenuPreference.OnboardingFinished)) return;
+    if (this.isVisible || this.opening !== undefined) return;
+    this.showAtLaunch().catch((error: Error): void => this.reportActionError(error));
+  }
+
+  private async showAtLaunch(): Promise<void> {
+    let opened = false;
+    try {
+      opened = await this.open();
+      if (opened && this.active) await this.setShowsAtLaunch(false);
+    } finally {
+      // An interrupted window claim or failed native sheet should be retryable at the next eligible lifecycle event.
+      if (!opened && this.active && (this.getShowsAtLaunch() || !this.preferences.get(DevMenuPreference.OnboardingFinished))) {
+        this.launchPending = true;
+      }
+    }
+  }
+
+  getShowsAtLaunch(): boolean {
+    return this.preferences.get(DevMenuPreference.ShowsAtLaunch);
+  }
+
+  async setShowsAtLaunch(enabled: boolean): Promise<void> {
+    this.assertActive();
+    this.launchPending = enabled;
+    await this.preferences.set(DevMenuPreference.ShowsAtLaunch, enabled);
+    this.maybeShowAtLaunch();
+  }
+
+  async reload(): Promise<void> {
+    if (!this.active || !this.bundleReady) return;
+
+    const now = Date.now();
+    if (this.reloading || now - this.lastReloadAt < RELOAD_DEBOUNCE_MS) {
+      this.lastReloadAt = now;
+      return;
+    }
+    this.lastReloadAt = now;
+    this.reloading = true;
+
+    const timer = setTimeout((): void => {
+      this.reloadTimer = undefined;
+      this.reloading = false;
+    }, RELOAD_TIMEOUT_MS);
+    this.reloadTimer = timer;
+
+    try {
+      await this.runtime.reload(RELOAD_REASON);
+    } catch (error) {
+      if (this.reloadTimer === timer) {
+        clearTimeout(timer);
+        this.reloadTimer = undefined;
+        this.reloading = false;
+      }
+      throw new ExpoModuleError(
+        error instanceof ExpoModuleError ? error.code : 'ERR_DEV_MENU_RELOAD',
+        error instanceof Error ? error.message : String(error),
+        error as Object,
+      );
+    }
   }
 
   private refreshFab(): void {
-    this.fab.setVisible(
-      this.active &&
-        this.windowActive &&
-        this.ui !== undefined &&
-        this.foreground &&
-        this.bundleReady &&
-        !this.keyboardVisible &&
-        this.preferences.get(DevMenuPreference.ShowFab) &&
-        this.preferences.get(DevMenuPreference.OnboardingFinished),
-      this.isVisible || this.opening !== undefined,
-    );
+    try {
+      this.fab.setVisible(
+        this.active &&
+          this.windowActive &&
+          this.ui !== undefined &&
+          this.foreground &&
+          this.bundleReady &&
+          !this.keyboardVisible &&
+          this.preferences.get(DevMenuPreference.ShowFab) &&
+          this.preferences.get(DevMenuPreference.OnboardingFinished),
+        this.isVisible || this.opening !== undefined,
+      );
+    } catch (error) {
+      // A stale native overlay must not prevent showing or releasing the sheet.
+      this.reportActionError(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 
   EXDevMenu_handleKeyCommand(event: KeyEvent): void {
@@ -274,6 +368,7 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
       !this.active ||
       !this.windowActive ||
       !this.foreground ||
+      !this.bundleReady ||
       this.keyboardVisible ||
       event.type !== KeyType.Up ||
       !this.preferences.get(DevMenuPreference.KeyCommands)
@@ -286,10 +381,11 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
     if (event.keyCode === KeyCode.KEYCODE_D) return this.toggleMenu();
 
     let action: (() => void | Promise<void>) | undefined;
-    if (event.keyCode === KeyCode.KEYCODE_R) action = (): Promise<void> => this.runtime.reload(RELOAD_REASON);
+    if (event.keyCode === KeyCode.KEYCODE_R) action = (): Promise<void> => this.reload();
     else if (event.keyCode === KeyCode.KEYCODE_I) action = (): void => this.toggleInspector();
     else if (event.keyCode === KeyCode.KEYCODE_P) action = (): void => this.togglePerformanceMonitor();
     if (action === undefined) return false;
+
     try {
       Promise.resolve(action()).catch((error: Error): void => this.reportActionError(error));
       this.closeMenu();
@@ -333,6 +429,12 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
     try {
       if (this.active) this.presenter.update(this.menuItems());
     } catch (error) {
+      if (delegate === null) {
+        // Presenter failures must not reattach a host that has already been disposed.
+        this.closeMenu();
+        this.reportActionError(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
       this.delegate = previous;
       throw new ExpoModuleError(
         error instanceof ExpoModuleError ? error.code : 'ERR_DEV_MENU_RUNTIME',
@@ -356,7 +458,7 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
   }
 
   openMenu(screen: string | null = null): boolean {
-    if (!this.active || this.ui === undefined || !this.foreground || this.isVisible || this.opening !== undefined) return false;
+    if (!this.canPresentMenu || this.isVisible || this.opening !== undefined) return false;
     this.open(screen).catch((error: Error): void => this.reportActionError(error));
     return true;
   }
@@ -379,11 +481,12 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
     const delegate = this.delegate;
     if (!this.active || delegate?.devMenuNavigateHome === undefined) return;
     await this.close();
-    if (this.active && this.delegate === delegate) delegate.devMenuNavigateHome?.();
+    if (this.canPresentMenu && this.isWindowOwner && this.delegate === delegate) delegate.devMenuNavigateHome?.();
   }
 
   togglePerformanceMonitor(): void {
     if (!this.active) return;
+
     const delegate = this.delegate;
     if (delegate?.devMenuTogglePerformanceMonitor !== undefined) {
       delegate.devMenuTogglePerformanceMonitor();
@@ -394,15 +497,17 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
 
   toggleInspector(): void {
     if (!this.active) return;
+
     const delegate = this.delegate;
     if (delegate?.devMenuToggleElementInspector !== undefined) {
       delegate.devMenuToggleElementInspector();
     } else {
-      this.runtime.core.devToolsController.toggleElementInspector();
+      // RNOH broadcasts this event to all instances when called through the core controller.
+      this.runtime.instance.emitDeviceEvent(TOGGLE_INSPECTOR_EVENT, {});
     }
   }
 
-  private get canToggleFastRefresh(): boolean {
+  private get hasMetroBundle(): boolean {
     if (!this.active || !this.bundleReady) return false;
 
     const source = this.runtime.instance.getInitialBundleUrl();
@@ -421,7 +526,7 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
   }
 
   private syncFastRefresh(): void {
-    if (!this.canToggleFastRefresh) return;
+    if (!this.hasMetroBundle) return;
 
     const enabled = this.preferences.getFastRefreshEnabled();
     if (enabled === this.fastRefreshEnabled) return;
@@ -496,7 +601,7 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
 
   async open(screen: string | null = null): Promise<boolean> {
     this.assertActive();
-    if (!this.foreground || this.isVisible || this.opening !== undefined) return false;
+    if (!this.canPresentMenu || this.isVisible || this.opening !== undefined) return false;
     this.screen = screen;
 
     const generation = ++this.openGeneration;
@@ -526,20 +631,21 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
   }
 
   private async openNow(generation: number): Promise<boolean> {
-    if (!this.active) return false;
-    if (generation !== this.openGeneration) return true;
+    if (!this.active || !this.bundleReady || !this.foreground) return false;
+    if (generation !== this.openGeneration) return false;
 
     const ui = this.ui;
-    if (ui === undefined) throw new ExpoModuleError('ERR_DEV_MENU_WINDOW', 'Expo Dev Menu requires a mounted React root in this runtime.');
+    if (ui === undefined) return false;
 
     const bridge = ExpoDevMenuRuntime.bridges.get(this.runtime.core);
     if (this.windowName === undefined || bridge === undefined || !(await bridge.claimWindow(this, this.windowName))) return false;
-    if (!this.active) return false;
-    if (generation !== this.openGeneration) return true;
+    if (!this.active || !this.bundleReady || !this.foreground || this.ui !== ui) return false;
+    if (generation !== this.openGeneration) return false;
 
     const app = this.readAppInfo();
     const model = new DevMenuDialogModel(
       app,
+      new DevMenuSourceMap(this.runtime.core.uiAbilityContext.resourceManager),
       this.menuItems(),
       this.preferences,
       async (): Promise<void> => this.close(),
@@ -557,11 +663,11 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
     }
     if (generation !== this.openGeneration) {
       model.dispose();
-      return true;
+      return false;
     }
-    await this.presenter.open(ui, model);
+    const presented = await this.presenter.open(ui, model);
 
-    return this.active;
+    return presented && this.active && generation === this.openGeneration;
   }
 
   updateCallbacks(callbacks: DevMenuCallback[]): void {
@@ -585,7 +691,7 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
         'Reload the current JavaScript bundle',
         true,
         async (): Promise<void> => {
-          await this.runtime.reload(RELOAD_REASON);
+          await this.reload();
         },
         connected,
       ),
@@ -602,12 +708,12 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
       new DevMenuDialogItem(
         'devtools',
         'Open React Native DevTools',
-        'Open the debugger connected to Metro',
+        'Requires a loaded development bundle from Metro',
         true,
         (): void => {
           this.runtime.core.devToolsController.openDebugger();
         },
-        connected && /^https?:\/\//i.test(this.runtime.instance.getInitialBundleUrl() ?? ''),
+        this.hasMetroBundle,
       ),
       new DevMenuDialogItem(
         'performance',
@@ -626,7 +732,7 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
         new DevMenuDialogItem('rnoh-menu', 'Open React Native dev menu', 'Open the RNOH developer menu', false, async (): Promise<void> => {
           await this.close();
 
-          if (this.active) this.runtime.core.devMenu.show();
+          if (this.canPresentMenu && this.isWindowOwner) this.runtime.core.devMenu.show();
         }),
       );
     }
@@ -638,7 +744,7 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
         'Requires a loaded development bundle from Metro',
         false,
         async (): Promise<void> => {
-          if (!this.canToggleFastRefresh) return;
+          if (!this.hasMetroBundle) return;
 
           await this.preferences.setFastRefreshEnabled(!this.fastRefreshEnabled);
 
@@ -646,14 +752,14 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
           this.syncFastRefresh();
           this.presenter.update(this.menuItems());
         },
-        this.canToggleFastRefresh,
+        this.hasMetroBundle,
         this.fastRefreshEnabled,
       ),
     );
 
     if (this.canNavigateHome) {
       items.push(
-        new DevMenuDialogItem('home', 'Go home', 'Return to the development launcher', false, async (): Promise<void> => {
+        new DevMenuDialogItem('home', 'Go home', 'Return to the host home screen', false, async (): Promise<void> => {
           await this.navigateHome();
         }),
       );
@@ -697,6 +803,8 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
   private dispose(): void {
     if (!this.active) return;
     this.active = false;
+    if (this.reloadTimer !== undefined) clearTimeout(this.reloadTimer);
+    this.reloadTimer = undefined;
     ++this.windowGeneration;
     this.roots.clear();
     this.ui = undefined;
@@ -879,11 +987,11 @@ class DevMenuWindowGroup {
   desired?: ExpoDevMenuRuntime;
   pending: Promise<boolean> = Promise.resolve(true);
   availableRuntime(): ExpoDevMenuRuntime | undefined {
-    if (this.owner?.hasMountedWindow) return this.owner;
+    if (this.owner?.canPresentMenu) return this.owner;
     return this.runtimes
       .slice()
       .reverse()
-      .find((runtime: ExpoDevMenuRuntime): boolean => runtime.hasMountedWindow);
+      .find((runtime: ExpoDevMenuRuntime): boolean => runtime.canPresentMenu);
   }
 }
 

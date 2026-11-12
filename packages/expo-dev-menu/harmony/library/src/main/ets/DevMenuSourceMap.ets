@@ -8,6 +8,7 @@
 import { http } from '@kit.NetworkKit';
 import { util, url } from '@kit.ArkTS';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
+import type { resourceManager } from '@kit.LocalizationKit';
 import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
 
 // NetStack's documented maximum; its 5 MiB default is too small for Metro maps.
@@ -34,8 +35,13 @@ export class DevMenuSourceEntry {
 }
 
 export class DevMenuSourceMap {
+  private readonly resources: resourceManager.ResourceManager;
   private request?: http.HttpRequest;
   private disposed: boolean = false;
+
+  constructor(resources: resourceManager.ResourceManager) {
+    this.resources = resources;
+  }
 
   async load(bundle: string, local?: string): Promise<DevMenuSourceFile[]> {
     this.assertActive();
@@ -74,7 +80,18 @@ export class DevMenuSourceMap {
       }
     }
     this.assertActive();
+
     if (bundle.startsWith('file://') || bundle.startsWith('/')) return await this.loadLocal(bundle);
+    // RNOH ResourceJSBundleProvider exposes its rawfile-relative path as the bundle URL.
+    if (bundle.length > 0 && !bundle.includes('://')) {
+      try {
+        const bytes = await this.resources.getRawFileContent(bundle);
+        return this.parseInline(util.TextDecoder.create('utf-8').decodeToString(bytes));
+      } catch (error) {
+        failure = error as Object;
+      }
+    }
+
     throw new ExpoModuleError(
       'ERR_DEV_MENU_SOURCE_MAP',
       'No source map found. Connect to Metro or include an inline source map in the local bundle.',
@@ -84,18 +101,23 @@ export class DevMenuSourceMap {
 
   private async loadLocal(local: string): Promise<DevMenuSourceFile[]> {
     const path = local.startsWith('file://') ? new fileUri.FileUri(local).path : local;
-    const content = await fileIo.readText(path);
+    return this.parseInline(await fileIo.readText(path));
+  }
+
+  private parseInline(content: string): DevMenuSourceFile[] {
     this.assertActive();
     const match = /\/\/[@#]\s*sourceMappingURL=data:application\/json(?:;charset=utf-8)?;base64,([^\r\n]+)/.exec(content);
-    if (match === null) throw new ExpoModuleError('ERR_DEV_MENU_SOURCE_MAP', 'The cached bundle does not contain an inline source map.');
+    if (match === null) throw new ExpoModuleError('ERR_DEV_MENU_SOURCE_MAP', 'The local bundle does not contain an inline source map.');
+
     const bytes = new util.Base64Helper().decodeSync(match[1].trim());
     return this.parse(util.TextDecoder.create('utf-8').decodeToString(bytes));
   }
 
   dispose(): void {
     this.disposed = true;
-    this.request?.destroy();
+    const request = this.request;
     this.request = undefined;
+    request?.destroy();
   }
 
   private assertActive(): void {

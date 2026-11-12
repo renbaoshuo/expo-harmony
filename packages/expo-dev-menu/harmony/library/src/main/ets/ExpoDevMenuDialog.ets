@@ -7,7 +7,7 @@
 
 import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
 import { ComponentContent, UIContext } from '@kit.ArkUI';
-import { pasteboard } from '@kit.BasicServicesKit';
+import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { DevMenuDialogItem } from './DevMenuTypes';
 import { DevMenuAppInfo } from './DevMenuAppInfo';
 import { DevMenuPreference, DevMenuPreferences } from './DevMenuPreferences';
@@ -40,7 +40,7 @@ export class DevMenuDialogModel {
   sourceEditing: boolean = false;
   private selecting: boolean = false;
   private disposed: boolean = false;
-  private readonly sources: DevMenuSourceMap = new DevMenuSourceMap();
+  private readonly sources: DevMenuSourceMap;
   readonly sourceData: DevMenuSourceData = new DevMenuSourceData();
   private copyTimer?: number;
 
@@ -54,6 +54,7 @@ export class DevMenuDialogModel {
 
   constructor(
     app: DevMenuAppInfo,
+    sources: DevMenuSourceMap,
     items: DevMenuDialogItem[],
     preferences: DevMenuPreferences,
     close: () => Promise<void>,
@@ -62,6 +63,7 @@ export class DevMenuDialogModel {
     touchMenu: () => void,
   ) {
     this.app = app;
+    this.sources = sources;
     this.items = items;
     this.preferences = preferences;
     this.close = close;
@@ -80,6 +82,7 @@ export class DevMenuDialogModel {
 
   run(action: () => void | Promise<void>): void {
     if (this.disposed) return;
+
     try {
       Promise.resolve(action()).catch((error: Error): void => this.fail(error));
     } catch (error) {
@@ -87,8 +90,11 @@ export class DevMenuDialogModel {
     }
   }
 
-  async select(item: DevMenuDialogItem): Promise<void> {
-    if (this.selecting || !item.enabled || this.disposed) return;
+  async select(id: string): Promise<void> {
+    if (this.selecting || this.disposed) return;
+
+    const item = this.items.find((entry: DevMenuDialogItem): boolean => entry.id === id);
+    if (item === undefined || !item.enabled) return;
     this.selecting = true;
     try {
       // Android triggers the action, then starts collapsing without waiting for reload.
@@ -130,7 +136,7 @@ export class DevMenuDialogModel {
     } catch (error) {
       if (!this.disposed)
         throw new ExpoModuleError(
-          error instanceof ExpoModuleError ? error.code : 'ERR_DEV_MENU_WINDOW',
+          error instanceof ExpoModuleError ? error.code : 'ERR_DEV_MENU_SOURCE_MAP',
           error instanceof Error ? error.message : String(error),
           error as Object,
         );
@@ -199,9 +205,14 @@ export class DevMenuDialogModel {
   }
 
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
-    this.sources.dispose();
     if (this.copyTimer !== undefined) clearTimeout(this.copyTimer);
+    try {
+      this.sources.dispose();
+    } catch (error) {
+      this.report(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 }
 
@@ -219,9 +230,7 @@ struct DevMenuToggleRow {
     this.pending = true;
 
     try {
-      const item = this.model.items.find((entry: DevMenuDialogItem): boolean => entry.id === this.itemId);
-
-      if (item !== undefined) await this.model.select(item);
+      await this.model.select(this.itemId);
     } finally {
       // Even an ignored action can change the native toggle's visual state.
       const item = this.model.items.find((entry: DevMenuDialogItem): boolean => entry.id === this.itemId);
@@ -297,7 +306,7 @@ struct ExpoDevMenuDialog {
         if (item.checked !== undefined) {
           DevMenuToggleRow({ model: this.model, itemId: item.id, title: item.title, available: item.enabled, checked: item.checked });
         } else {
-          this.action(item.title, (): Promise<void> => this.model.select(item), item.enabled);
+          this.action(item.title, (): Promise<void> => this.model.select(item.id), item.enabled);
         }
 
         if (!item.enabled && item.detail.length > 0) {
@@ -314,7 +323,7 @@ struct ExpoDevMenuDialog {
     });
     this.action('Source code explorer', (): Promise<void> => this.model.showSources());
     if (this.model.app.hostUrl.length > 0) {
-      Text('Connected to')
+      Text(this.model.app.hostUrl.startsWith('http://') || this.model.app.hostUrl.startsWith('https://') ? 'Connected to' : 'Bundle')
         .fontSize(12)
         .fontColor($r('sys.color.font_secondary'));
       Text(this.model.app.hostUrl)
@@ -505,7 +514,7 @@ struct ExpoDevMenuDialog {
             this.setting('Show at launch', DevMenuPreference.ShowsAtLaunch);
             this.setting('Tools button', DevMenuPreference.ShowFab);
             this.setting('Shake to open', DevMenuPreference.MotionGesture, false);
-            Text('RNOH 0.84.1 owns the shake detector. Its menu cannot yet be intercepted or disabled through a public API.').fontSize(13);
+            Text('RNOH owns the shake detector. Its menu cannot yet be intercepted or disabled through a public API.').fontSize(13);
           } else if (this.model.screen === DevMenuScreen.SourceMap) {
             this.sourceExplorer();
           } else {
@@ -565,25 +574,27 @@ export class ExpoDevMenuPresenter {
     return this.model?.screen;
   }
 
-  async open(ui: UIContext, model: DevMenuDialogModel): Promise<void> {
-    if (this.closing !== undefined) await this.closing;
-    if (this.disposed || this.content !== undefined) {
-      model.dispose();
-      return;
-    }
-
-    const content = new ComponentContent<DevMenuDialogModel>(ui, wrapBuilder(buildExpoDevMenuDialog), model);
-    this.content = content;
-    this.ui = ui;
-    this.model = model;
-    this.dismissed = new Promise<void>((resolve: () => void): void => {
-      this.resolveDismissed = resolve;
-    });
-    this.onVisibility();
-
+  async open(ui: UIContext, model: DevMenuDialogModel): Promise<boolean> {
+    let attachedContent: ComponentContent<DevMenuDialogModel> | undefined;
     let pending: Promise<void> | undefined;
 
     try {
+      if (this.closing !== undefined) await this.closing;
+      if (this.disposed || this.content !== undefined) {
+        model.dispose();
+        return false;
+      }
+
+      const content = new ComponentContent<DevMenuDialogModel>(ui, wrapBuilder(buildExpoDevMenuDialog), model);
+      attachedContent = content;
+      this.content = content;
+      this.ui = ui;
+      this.model = model;
+      this.dismissed = new Promise<void>((resolve: () => void): void => {
+        this.resolveDismissed = resolve;
+      });
+      this.onVisibility();
+
       pending = ui.openBindSheet(content, {
         height: SheetSize.MEDIUM,
         detents: [SheetSize.MEDIUM, SheetSize.LARGE],
@@ -594,8 +605,11 @@ export class ExpoDevMenuPresenter {
       });
       this.opening = pending;
       await pending;
+
+      return this.content === content;
     } catch (error) {
-      this.release(content);
+      if (attachedContent === undefined) model.dispose();
+      else this.release(attachedContent);
       throw new ExpoModuleError(
         error instanceof ExpoModuleError ? error.code : 'ERR_DEV_MENU_WINDOW',
         error instanceof Error ? error.message : String(error),
@@ -628,9 +642,16 @@ export class ExpoDevMenuPresenter {
     if (content === undefined || ui === undefined) return;
 
     const dismissed = this.dismissed;
-    const pending = ui.closeBindSheet(content).then(async (): Promise<void> => {
-      await dismissed;
-    });
+    const pending = Promise.resolve()
+      .then((): Promise<void> => ui.closeBindSheet(content))
+      .then(async (): Promise<void> => {
+        await dismissed;
+      })
+      .catch((error: BusinessError): void => {
+        // A detached window or native gesture may already have removed this sheet.
+        if (error.code === 120003) this.release(content);
+        else throw new ExpoModuleError('ERR_DEV_MENU_WINDOW', error.message, error);
+      });
     this.closing = pending;
     try {
       await pending;

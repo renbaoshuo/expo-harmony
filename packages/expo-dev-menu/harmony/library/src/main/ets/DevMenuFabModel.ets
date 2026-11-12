@@ -7,7 +7,10 @@
 
 import { curves, UIContext } from '@kit.ArkUI';
 import { DevMenuPreferences } from './DevMenuPreferences';
-import { FAB_WIDTH, FabBounds, FabDrag, FabPoint, fabTarget, normalizeFabPosition, restoreFabPosition } from './DevMenuFabGeometry';
+import {
+  FAB_WIDTH, FAB_CONTENT_SIZE, FAB_LABEL_HEIGHT, FAB_MARGIN, FAB_HIT_AREA_ID,
+  FabBounds, FabDrag, FabPoint, fabTarget, normalizeFabPosition, restoreFabPosition,
+} from './DevMenuFabGeometry';
 
 @Observed
 export class DevMenuFabModel {
@@ -22,6 +25,7 @@ export class DevMenuFabModel {
   scale: number = 1;
   labelAlpha: number = 1;
   labelScale: number = 1;
+  labelVisible: boolean = true;
   bounds: FabBounds = new FabBounds(0, 0);
   origin: FabPoint = new FabPoint();
   ui?: UIContext;
@@ -56,9 +60,13 @@ export class DevMenuFabModel {
       this.bounds.maxY === bounds.maxY
     )
       return;
-    this.pointerId = undefined;
     this.bounds = bounds;
     this.resting = restoreFabPosition(this.normalized, bounds);
+    // Resize the safe area without resetting a pointer interaction in progress.
+    if (this.pointerId !== undefined) {
+      this.setVisible(this.enabled, this.menuOpen);
+      return;
+    }
     this.animate({ duration: 0 }, (): void => {
       this.x = this.menuOpen ? this.offscreenX() : this.resting.x;
       this.y = this.resting.y;
@@ -83,6 +91,7 @@ export class DevMenuFabModel {
         this.rendered = true;
         this.labelAlpha = 1;
         this.labelScale = 1;
+        this.labelVisible = true;
         this.x = menuOpen ? this.offscreenX() : this.resting.x;
         this.y = this.resting.y;
         this.animate({ curve: curves.interpolatingSpring(0, 1, 400, 40) }, (): void => {
@@ -91,10 +100,18 @@ export class DevMenuFabModel {
         this.interact();
         this.labelTimer = setTimeout((): void => {
           this.labelTimer = undefined;
-          this.animate({ curve: curves.interpolatingSpring(0, 1, 400, 40) }, (): void => {
-            this.labelAlpha = 0;
-            this.labelScale = 0;
-          });
+          this.animate(
+            {
+              curve: curves.interpolatingSpring(0, 1, 400, 40),
+              onFinish: (): void => {
+                if (generation === this.generation) this.labelVisible = false;
+              },
+            },
+            (): void => {
+              this.labelAlpha = 0;
+              this.labelScale = 0;
+            },
+          );
         }, 10000);
       } else {
         this.clearTimers();
@@ -136,11 +153,11 @@ export class DevMenuFabModel {
       if (point === undefined) return;
       this.pointerId = point.id;
       // Interrupt a running snap at its rendered position, not at the old animation target.
-      const rendered = this.ui?.getFrameNodeById('expo-dev-menu-fab-hit-area')?.getPositionToWindowWithTransform();
+      const rendered = this.ui?.getFrameNodeById(FAB_HIT_AREA_ID)?.getPositionToWindowWithTransform();
       if (rendered !== undefined) {
         this.animate({ duration: 0 }, (): void => {
-          this.x = rendered.x - this.origin.x - 16;
-          this.y = rendered.y - this.origin.y - 16;
+          this.x = rendered.x - this.origin.x - FAB_MARGIN;
+          this.y = rendered.y - this.origin.y - FAB_MARGIN;
         });
       }
       this.drag.begin(new FabPoint(point.windowX, point.windowY), new FabPoint(this.x, this.y));
@@ -157,7 +174,8 @@ export class DevMenuFabModel {
     }
     if (point === undefined || this.pointerId === undefined) return;
     if (event.type === TouchType.Move) {
-      this.drag.move(new FabPoint(point.windowX, point.windowY), this.bounds, this.ui?.px2vp(40) ?? 40, Date.now());
+      const height = (this.labelVisible ? FAB_LABEL_HEIGHT : FAB_CONTENT_SIZE) + FAB_MARGIN * 2;
+      this.drag.move(new FabPoint(point.windowX, point.windowY), this.bounds, this.ui?.px2vp(40) ?? 40, Date.now(), height);
       if (this.drag.dragging) {
         this.press(false);
         this.animate({ curve: curves.interpolatingSpring(0, 1, 1500, 2 * Math.sqrt(1500)) }, (): void => {
@@ -256,7 +274,10 @@ export class DevMenuFabModel {
     this.rendered = false;
     this.showing = false;
     this.enabled = false;
+    this.bounds = new FabBounds(0, 0);
+    this.origin = new FabPoint();
     this.alpha = 0;
+    this.scale = 1;
     this.ui = undefined;
     this.onHidden = undefined;
   }
