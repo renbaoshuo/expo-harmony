@@ -1,6 +1,7 @@
 {
   "platforms": ["harmony"],
   "harmony": {
-    "modules": ["ExpoCalendarModule"]
+    "modules": ["ExpoCalendarModule", "ExpoCalendarNextModule"],
+    "services": ["ExpoCalendarService"]
   }
 }

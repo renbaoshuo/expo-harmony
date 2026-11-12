@@ -7,7 +7,7 @@
 
 'use strict';
 
-const { createRunOncePlugin } = require('@expo/config-plugins');
+const { createRunOncePlugin } = require('expo/config-plugins');
 const { registerHarmonyConfigPlugin, withStrings } = require('@expo-harmony/config-plugins');
 
 const pkg = require('../package.json');

@@ -6,11 +6,15 @@
  */
 
 import { ExpoRuntimePermissionsKey, ExpoModuleContext, ExpoModuleError, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
-import { Permissions } from '@kit.AbilityKit';
+import { bundleManager, Permissions } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { deviceInfo } from '@kit.BasicServicesKit';
 
-const CALENDAR_PERMISSIONS: Permissions[] = ['ohos.permission.READ_CALENDAR', 'ohos.permission.WRITE_CALENDAR'];
+const READ_CALENDAR: Permissions = 'ohos.permission.READ_CALENDAR';
+const WRITE_CALENDAR: Permissions = 'ohos.permission.WRITE_CALENDAR';
+const READ_WHOLE_CALENDAR: Permissions = 'ohos.permission.READ_WHOLE_CALENDAR';
+const WRITE_WHOLE_CALENDAR: Permissions = 'ohos.permission.WRITE_WHOLE_CALENDAR';
+const WHOLE_CALENDAR_API: number = 21;
 const SELF_PERMISSION_STATUS_API: number = 20;
 const PREFERENCES_NAME: string = 'ExpoCalendarPermissions';
 
@@ -18,6 +22,7 @@ enum RequestReason {
   Success = 0,
   InvalidPermission = 1,
   NotDeclared = 2,
+  ConditionsNotMet = 3,
   CannotRequest = 5,
   ManualSettings = 6,
 }
@@ -43,19 +48,49 @@ export class CalendarPermissions {
     this.context = context;
   }
 
-  ensureGranted(): void {
-    if (
-      !CALENDAR_PERMISSIONS.every((permission: Permissions): boolean => this.context.permissionStatus(permission) === ExpoPermissionStatus.GRANTED)
-    ) {
-      throw new ExpoModuleError('E_MISSING_PERMISSIONS', 'CALENDAR permission is required to do this operation.');
+  ensureReadable(): void {
+    if (!this.hasAccess(READ_CALENDAR, READ_WHOLE_CALENDAR)) {
+      throw new ExpoModuleError('E_MISSING_PERMISSIONS', 'READ_CALENDAR permission is required to read calendars.');
     }
+  }
+
+  ensureWritable(): void {
+    this.ensureReadable();
+    if (!this.hasAccess(WRITE_CALENDAR, WRITE_WHOLE_CALENDAR)) {
+      throw new ExpoModuleError('E_MISSING_PERMISSIONS', 'WRITE_CALENDAR permission is required to change calendars.');
+    }
+  }
+
+  private hasAccess(ordinary: Permissions, whole: Permissions): boolean {
+    return this.context.permissionStatus(ordinary) === ExpoPermissionStatus.GRANTED ||
+      (deviceInfo.sdkApiVersion >= WHOLE_CALENDAR_API && this.context.permissionStatus(whole) === ExpoPermissionStatus.GRANTED);
+  }
+
+  private requestedPermissions(): Permissions[] {
+    this.context.assertActive();
+    if (deviceInfo.sdkApiVersion < WHOLE_CALENDAR_API) return [READ_CALENDAR, WRITE_CALENDAR];
+
+    const flags = bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_REQUESTED_PERMISSION;
+    const details = bundleManager.getBundleInfoForSelfSync(flags).reqPermissionDetails;
+    return [
+      details?.some((permission: bundleManager.ReqPermissionDetail): boolean => permission.name === READ_WHOLE_CALENDAR)
+        ? READ_WHOLE_CALENDAR : READ_CALENDAR,
+      details?.some((permission: bundleManager.ReqPermissionDetail): boolean => permission.name === WRITE_WHOLE_CALENDAR)
+        ? WRITE_WHOLE_CALENDAR : WRITE_CALENDAR,
+    ];
   }
 
   async get(): Promise<CalendarPermissionResponse> {
     let undetermined: boolean = false;
     let denied: boolean = false;
 
-    for (const permission of CALENDAR_PERMISSIONS) {
+    const permissions = this.requestedPermissions();
+    const baseline = [READ_CALENDAR, WRITE_CALENDAR];
+    for (let index = 0; index < permissions.length; index += 1) {
+      const permission = permissions[index];
+      const ordinary = baseline[index];
+      if (permission !== ordinary && this.context.permissionStatus(ordinary) === ExpoPermissionStatus.GRANTED) continue;
+
       const system = this.context.systemPermissionStatus(permission) === ExpoPermissionStatus.GRANTED;
       if (system && deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) await this.rememberDenial(permission, false);
 
@@ -85,12 +120,13 @@ export class CalendarPermissions {
   }
 
   private async requestOnce(): Promise<CalendarPermissionResponse> {
-    const request = await this.context.requestPermissions(CALENDAR_PERMISSIONS);
+    const permissions = this.requestedPermissions();
+    const request = await this.context.requestPermissions(permissions);
 
     let blocked: boolean = false;
 
     for (const result of request.systemResults) {
-      for (const permission of CALENDAR_PERMISSIONS) {
+      for (const permission of permissions) {
         const index = result.permissions.indexOf(permission);
         const reason = result.errorReasons?.[index] ?? RequestReason.Success;
         const granted = result.authResults[index] === ExpoPermissionStatus.GRANTED;
@@ -107,16 +143,17 @@ export class CalendarPermissions {
           );
         }
 
+        const restricted = reason === RequestReason.ConditionsNotMet || reason === RequestReason.CannotRequest ||
+          reason === RequestReason.ManualSettings;
         if (
           deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API &&
           ((reason === RequestReason.Success && (granted || result.dialogShownResults?.[index] === true)) ||
-            reason === RequestReason.CannotRequest ||
-            reason === RequestReason.ManualSettings)
+            restricted)
         ) {
           await this.rememberDenial(permission, !granted);
         }
 
-        if (!granted && (reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings)) blocked = true;
+        if (!granted && restricted) blocked = true;
       }
     }
 
@@ -129,7 +166,7 @@ export class CalendarPermissions {
 
   private async wasDenied(permission: Permissions): Promise<boolean> {
     try {
-      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: PREFERENCES_NAME });
+      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: this.context.preferenceName(PREFERENCES_NAME) });
       return (await store.get(permission, false)) === true;
     } catch (_) {
       return false;
@@ -138,7 +175,7 @@ export class CalendarPermissions {
 
   private async rememberDenial(permission: Permissions, denied: boolean): Promise<void> {
     try {
-      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: PREFERENCES_NAME });
+      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: this.context.preferenceName(PREFERENCES_NAME) });
       if ((await store.get(permission, false)) === denied) return;
 
       await store.put(permission, denied);

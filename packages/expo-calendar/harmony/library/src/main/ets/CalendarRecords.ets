@@ -6,13 +6,17 @@
  */
 
 import { calendarManager } from '@kit.CalendarKit';
-import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
+import { ExpoModuleError, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
 
 const ENTITY_EVENT: string = 'event';
 const ENTITY_REMINDER: string = 'reminder';
 const AVAILABILITY_UNSUPPORTED: string = 'notSupported';
 const STATUS_NONE: string = 'none';
 const DEFAULT_COLOR: string = '#000000';
+const NATIVE_COLOR: RegExp = /^#([0-9a-f]{6}|[0-9a-f]{8})$/i;
+const DATE_VALUE = ExpoValueTypes.date();
+const MAX_NATIVE_INT: number = 2147483647;
+const MIN_NATIVE_INT: number = -2147483648;
 // Calendar Kit's native reader returns NORULE for an empty RRULE, even though the ArkTS enum omits it.
 const NO_RECURRENCE: number = -1;
 // Calendar Kit anchors all-day alarms at 09:00; Expo offsets start at midnight.
@@ -97,8 +101,8 @@ export class ExpoRecurrenceRuleRecord {
   weeksOfTheYear?: number[];
   daysOfTheYear?: number[];
 
-  constructor(rule: calendarManager.RecurrenceRule) {
-    this.frequency = expoFrequency(rule.recurrenceFrequency);
+  constructor(rule: calendarManager.RecurrenceRule, frequency: string) {
+    this.frequency = frequency;
     this.interval = rule.interval === undefined || rule.interval <= 0 ? undefined : Math.floor(rule.interval);
     this.endDate = rule.expire === undefined ? undefined : isoDate(rule.expire);
     this.occurrence = rule.expire === undefined && rule.count !== undefined && rule.count > 0 ? Math.floor(rule.count) : undefined;
@@ -116,9 +120,10 @@ export class ExpoEventRecord {
   title: string;
   location: string | null;
   timeZone: string;
+  organizerEmail?: string;
   notes: string;
   alarms: ExpoAlarmRecord[];
-  recurrenceRule: ExpoRecurrenceRuleRecord | null;
+  recurrenceRule?: ExpoRecurrenceRuleRecord | null;
   startDate: string;
   endDate: string;
   allDay: boolean;
@@ -126,24 +131,23 @@ export class ExpoEventRecord {
   status: string = STATUS_NONE;
 
   constructor(event: calendarManager.Event, calendarId: string) {
-    const rule = eventRecurrence(event);
-    if (event.id === undefined) {
-      throw new ExpoCalendarError('ERR_CALENDAR_INVALID_NATIVE_EVENT', 'HarmonyOS returned an event without an ID.');
-    }
-    if (event.isLunar && rule !== undefined) {
-      throw new ExpoCalendarError('ERR_CALENDAR_UNSUPPORTED', 'Expo recurrence rules cannot represent a lunar calendar schedule.');
+    const id = event.id;
+    if (id === undefined || !Number.isSafeInteger(id) || id <= 0) {
+      throw new ExpoCalendarError('ERR_CALENDAR_INVALID_NATIVE_EVENT', 'HarmonyOS returned an event without a valid ID.');
     }
 
-    this.id = String(event.id);
+    this.id = String(id);
     this.calendarId = calendarId;
     this.title = event.title ?? '';
 
     const location = event.location?.location;
     this.location = location === undefined || location.length === 0 ? null : location;
     this.timeZone = event.timeZone ?? '';
+    const organizer = event.attendee?.find((attendee: calendarManager.Attendee): boolean => attendee.role === calendarManager.AttendeeRole.ORGANIZER);
+    this.organizerEmail = optionalString(organizer?.email);
     this.notes = event.description ?? '';
     this.alarms = (event.reminderTime ?? []).map((minutes: number): ExpoAlarmRecord => new ExpoAlarmRecord(minutes, event.isAllDay ?? false));
-    this.recurrenceRule = rule === undefined ? null : new ExpoRecurrenceRuleRecord(rule);
+    this.recurrenceRule = expoRecurrence(event);
 
     this.startDate = isoDate(event.instanceStartTime ?? event.startTime);
     this.endDate = isoDate(event.instanceEndTime ?? event.endTime);
@@ -163,7 +167,7 @@ export class ExpoAttendeeRecord {
     this.role = expoAttendeeRole(attendee);
     this.status = expoAttendeeStatus(attendee.status);
     this.type = expoAttendeeType(attendee.type);
-    this.email = attendee.email.length > 0 ? attendee.email : undefined;
+    this.email = optionalString(attendee.email);
   }
 }
 
@@ -204,16 +208,11 @@ export function requireEventId(value: ESObject, name: string = 'eventId'): numbe
 }
 
 export function requireDate(value: ESObject, name: string): number {
-  let time: number;
-  if (typeof value === 'number') time = value;
-  else if (typeof value === 'string' && value.length > 0) time = Date.parse(value);
-  else time = Number.NaN;
-
-  if (!Number.isFinite(time) || !Number.isFinite(new Date(time).getTime())) {
+  try {
+    return DATE_VALUE.decode(value, name).getTime();
+  } catch (_) {
     throw new ExpoCalendarError('ERR_CALENDAR_INVALID_DATE', `'${name}' must be a valid ISO-8601 date or timestamp.`);
   }
-
-  return time;
 }
 
 export function calendarAccountFromDetails(data: Record<string, ESObject>): calendarManager.CalendarAccount {
@@ -250,13 +249,11 @@ export function calendarConfigFromDetails(data: Record<string, ESObject>, curren
 
   if (has(data, 'color')) {
     const color: ESObject = data['color'];
-    if (color === undefined) return config;
-
     if (color === null) {
       config.color = undefined;
-    } else if (typeof color === 'number' && Number.isFinite(color) && Number.isInteger(color)) {
+    } else if (typeof color === 'number' && Number.isInteger(color) && color >= MIN_NATIVE_INT && color <= 0xffffffff) {
       config.color = color;
-    } else if (typeof color === 'string' && color.length > 0) {
+    } else if (typeof color === 'string' && NATIVE_COLOR.test(color)) {
       config.color = color;
     } else {
       throw new ExpoCalendarError('ERR_CALENDAR_INVALID_COLOR', "'color' must be a valid processed color value.");
@@ -312,7 +309,7 @@ export function eventFromDetails(data: Record<string, ESObject>, current?: calen
   let alarms = has(data, 'alarms') ? nativeAlarms(data['alarms'], allDay ?? false) : current?.reminderTime;
   if (!has(data, 'alarms') && current !== undefined && (allDay ?? false) !== (current.isAllDay ?? false)) {
     const shift = (allDay ? ALL_DAY_ALARM_ANCHOR_MINUTES : 0) - (current.isAllDay ? ALL_DAY_ALARM_ANCHOR_MINUTES : 0);
-    alarms = alarms?.map((minutes: number): number => minutes + shift);
+    alarms = alarms?.map((minutes: number): number => requireNativeReminderMinutes(minutes + shift));
   }
 
   const recurrence = nativeRecurrence(data, current);
@@ -447,14 +444,22 @@ function nativeAlarms(value: ESObject, allDay: boolean): number[] | undefined {
     }
 
     const offset: ESObject = alarm['relativeOffset'];
-    if (typeof offset !== 'number' || !Number.isFinite(offset) || !Number.isInteger(offset)) {
+    if (typeof offset !== 'number' || !Number.isSafeInteger(offset)) {
       throw new ExpoCalendarError('ERR_CALENDAR_INVALID_ALARM', "An alarm's 'relativeOffset' must be an integer number of minutes.");
     }
 
-    reminders.push((allDay ? ALL_DAY_ALARM_ANCHOR_MINUTES : 0) - offset);
+    reminders.push(requireNativeReminderMinutes((allDay ? ALL_DAY_ALARM_ANCHOR_MINUTES : 0) - offset));
   });
 
   return reminders;
+}
+
+function requireNativeReminderMinutes(minutes: number): number {
+  if (minutes < MIN_NATIVE_INT || minutes > MAX_NATIVE_INT) {
+    throw new ExpoCalendarError('ERR_CALENDAR_INVALID_ALARM', "An alarm's 'relativeOffset' is outside the Calendar Kit range.");
+  }
+
+  return minutes;
 }
 
 function nativeRecurrence(data: Record<string, ESObject>, current?: calendarManager.Event): calendarManager.RecurrenceRule | undefined {
@@ -462,10 +467,9 @@ function nativeRecurrence(data: Record<string, ESObject>, current?: calendarMana
   // Re-serializing a fetched rule would lose native selectors not exposed by its reader.
   if (!has(data, 'recurrenceRule')) return undefined;
 
-  const previous = eventRecurrence(current);
   const value: ESObject = data['recurrenceRule'];
   if (value === undefined || value === null) {
-    if (previous !== undefined) {
+    if (eventRecurrence(current) !== undefined) {
       throw new ExpoCalendarError(
         'ERR_CALENDAR_UNSUPPORTED',
         'HarmonyOS Calendar Kit cannot remove a recurrence rule from an existing event; delete and recreate the event instead.',
@@ -506,7 +510,6 @@ function nativeRecurrence(data: Record<string, ESObject>, current?: calendarMana
   if (expire !== undefined) rule.expire = expire;
   if (count !== undefined) rule.count = count;
   if (interval !== undefined) rule.interval = interval;
-  if (previous?.excludedDates !== undefined) rule.excludedDates = previous.excludedDates;
   if (weekdays.days !== undefined) rule.daysOfWeek = weekdays.days;
   if (weekdays.weeks !== undefined) rule.weeksOfMonth = weekdays.weeks;
   if (dates.days !== undefined) rule.daysOfMonth = dates.days;
@@ -514,6 +517,7 @@ function nativeRecurrence(data: Record<string, ESObject>, current?: calendarMana
   if (weeks !== undefined) rule.weeksOfYear = weeks;
   if (days !== undefined) rule.daysOfYear = days;
 
+  // Omit EXDATE so Calendar Kit preserves it without decoding and re-encoding its timestamps.
   return rule;
 }
 
@@ -568,6 +572,22 @@ function nativeMonthDays(days: ESObject, months: ESObject): MonthDays {
   const result = new MonthDays();
   result.days = numberArray(days, 'recurrenceRule.daysOfTheMonth', 1, 31);
   result.months = numberArray(months, 'recurrenceRule.monthsOfTheYear', 1, 12);
+  if (result.days !== undefined && result.months !== undefined) {
+    // Expo selects every day in every selected month. Calendar Kit documents
+    // these arrays as paired, so pass the full product rather than zip the inputs.
+    const pairedDays: number[] = [];
+    const pairedMonths: number[] = [];
+    for (const month of result.months) {
+      for (const day of result.days) {
+        pairedDays.push(day);
+        pairedMonths.push(month);
+      }
+    }
+
+    result.days = pairedDays;
+    result.months = pairedMonths;
+  }
+
   return result;
 }
 
@@ -651,8 +671,8 @@ function optionalInteger(value: ESObject, name: string, min: number, max: number
 
 function optionalPositiveInteger(value: ESObject, name: string): number | undefined {
   if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
-    throw new ExpoCalendarError('ERR_CALENDAR_INVALID_RECURRENCE', `'${name}' must be an integer.`);
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value > MAX_NATIVE_INT) {
+    throw new ExpoCalendarError('ERR_CALENDAR_INVALID_RECURRENCE', `'${name}' must be an integer at most ${MAX_NATIVE_INT}.`);
   }
 
   return value > 0 ? value : undefined;
@@ -706,18 +726,30 @@ function nativeFrequency(value: string): calendarManager.RecurrenceFrequency {
   throw new ExpoCalendarError('ERR_CALENDAR_INVALID_RECURRENCE', `Unsupported recurrence frequency '${value}'.`);
 }
 
-function expoFrequency(value: calendarManager.RecurrenceFrequency): string {
+function expoFrequency(value: calendarManager.RecurrenceFrequency): string | undefined {
   if (value === calendarManager.RecurrenceFrequency.DAILY) return 'daily';
   if (value === calendarManager.RecurrenceFrequency.WEEKLY) return 'weekly';
   if (value === calendarManager.RecurrenceFrequency.MONTHLY) return 'monthly';
   if (value === calendarManager.RecurrenceFrequency.YEARLY) return 'yearly';
 
-  throw new ExpoCalendarError('ERR_CALENDAR_INVALID_NATIVE_EVENT', `HarmonyOS returned an unknown recurrence frequency '${value}'.`);
+  return undefined;
 }
 
 function eventRecurrence(event?: calendarManager.Event): calendarManager.RecurrenceRule | undefined {
   const rule = event?.recurrenceRule;
   return rule?.recurrenceFrequency === NO_RECURRENCE ? undefined : rule;
+}
+
+function expoRecurrence(event: calendarManager.Event): ExpoRecurrenceRuleRecord | null | undefined {
+  const rule = eventRecurrence(event);
+  if (rule === undefined) return null;
+  // Lunar rules cannot be represented by Expo. Calendar Kit also drops the positions
+  // of unnumbered weekdays when it reads a rule mixing numbered and unnumbered weekdays.
+  const monthWeeks = rule.weeksOfMonth?.length ?? 0;
+  if (event.isLunar || (monthWeeks > 0 && monthWeeks !== rule.daysOfWeek?.length)) return undefined;
+
+  const frequency = expoFrequency(rule.recurrenceFrequency);
+  return frequency === undefined ? undefined : new ExpoRecurrenceRuleRecord(rule, frequency);
 }
 
 function nativeCalendarType(value: string): calendarManager.CalendarType {
@@ -738,7 +770,7 @@ function expoCalendarType(value: calendarManager.CalendarType): string {
 
 function expoColor(value: number | string | undefined): string {
   // Calendar Kit may return #AARRGGBB; Expo serializes calendar colors as #RRGGBB.
-  const color = typeof value === 'string' && /^#([0-9a-f]{6}|[0-9a-f]{8})$/i.test(value) ? Number.parseInt(value.slice(1), 16) : value;
+  const color = typeof value === 'string' && NATIVE_COLOR.test(value) ? Number.parseInt(value.slice(1), 16) : value;
   if (typeof color !== 'number' || !Number.isFinite(color)) return DEFAULT_COLOR;
 
   const rgb = (Math.trunc(color) & 0xffffff) >>> 0;
@@ -747,23 +779,7 @@ function expoColor(value: number | string | undefined): string {
 }
 
 function expoWeekdays(days?: number[], weeks?: number[]): ExpoWeekdayRecord[] | undefined {
-  if (days === undefined || days.length === 0) {
-    if (weeks !== undefined && weeks.length > 0) {
-      throw new ExpoCalendarError(
-        'ERR_CALENDAR_INVALID_NATIVE_EVENT',
-        'HarmonyOS returned a recurrence rule with month-week selectors but no weekdays.',
-      );
-    }
-
-    return undefined;
-  }
-
-  if (weeks !== undefined && weeks.length > 0 && weeks.length !== days.length) {
-    throw new ExpoCalendarError(
-      'ERR_CALENDAR_INVALID_NATIVE_EVENT',
-      'HarmonyOS returned a recurrence rule with mismatched weekday and month-week arrays.',
-    );
-  }
+  if (days === undefined || days.length === 0) return undefined;
 
   const result: ExpoWeekdayRecord[] = [];
   days.forEach((day: number, index: number): void => {

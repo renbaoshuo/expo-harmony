@@ -6,3 +6,5 @@
  */
 
 export { ExpoCalendarModule } from './src/main/ets/ExpoCalendarModule';
+export { ExpoCalendarNextModule } from './src/main/ets/ExpoCalendarNextModule';
+export { ExpoCalendarService } from './src/main/ets/ExpoCalendarStore';
