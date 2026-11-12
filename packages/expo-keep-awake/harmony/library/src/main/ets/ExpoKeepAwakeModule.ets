@@ -15,45 +15,86 @@ import {
   ExpoModuleDefinition,
   ExpoModuleError,
   ExpoValueTypes,
+  ExpoWindowKeepAwake,
 } from '@expo-harmony/expo-modules-core';
 
 const ERROR_DESTROYED: string = 'ERR_KEEP_AWAKE_DESTROYED';
 const ERROR_WINDOW: string = 'ERR_KEEP_AWAKE_WINDOW';
 
-type WindowResolver = () => window.Window;
+class KeepAwakeOwner {
+  readonly context: ExpoModuleContext;
+  readonly tags: Set<string> = new Set<string>();
+  windowId?: number;
+  released: boolean = false;
 
-class ExpoKeepAwakeError extends ExpoModuleError {
-  constructor(code: string, message: string) {
-    super(code, message);
-    this.name = 'ExpoKeepAwakeError';
+  constructor(context: ExpoModuleContext) {
+    this.context = context;
+  }
+
+  assertActive(): void {
+    if (this.released || !this.context.isValid) {
+      throw new ExpoModuleError(ERROR_DESTROYED, 'The Expo KeepAwake runtime has already been destroyed.');
+    }
   }
 }
 
 class AbilityKeepAwakeController {
-  private readonly owners: Map<string, Set<string>> = new Map<string, Set<string>>();
-  private window: window.Window | null = null;
+  private readonly owners: Set<KeepAwakeOwner> = new Set<KeepAwakeOwner>();
+  private readonly windows: Map<number, window.Window> = new Map<number, window.Window>();
+  private stage?: window.WindowStage;
   private foreground: boolean = false;
   private generation: number = 0;
-  private activated: boolean = false;
-  private known: boolean = false;
   private pending: Promise<void> = Promise.resolve();
-  private resolver: WindowResolver | null = null;
   private destroyed: boolean = false;
 
-  retain(owner: string): void {
-    if (!this.owners.has(owner)) this.owners.set(owner, new Set<string>());
+  retain(owner: KeepAwakeOwner): void {
+    this.owners.add(owner);
   }
 
-  async activate(owner: string, tag: string): Promise<void> {
-    await this.mutateTag(owner, tag, true);
+  activate(owner: KeepAwakeOwner, tag: string): Promise<void> {
+    return this.serialize(async (): Promise<void> => {
+      try {
+        await this.bindWindow(owner, tag);
+      } finally {
+        // After a failed bind or a handoff, only windows with live owners may stay awake.
+        await this.releaseUnusedWindows();
+      }
+    });
   }
 
-  async deactivate(owner: string, tag: string): Promise<void> {
-    await this.mutateTag(owner, tag, false);
+  deactivate(owner: KeepAwakeOwner, tag: string): Promise<void> {
+    return this.serialize(async (): Promise<void> => {
+      this.assertActive();
+      owner.assertActive();
+
+      const id: number | undefined = owner.windowId;
+      const removed: boolean = owner.tags.delete(tag);
+
+      try {
+        await this.releaseUnusedWindows(removed && id !== undefined && !this.hasWindowTags(id) ? id : undefined);
+      } catch (error) {
+        if (!owner.released && owner.context.isValid) owner.tags.add(tag);
+        this.refresh();
+
+        throw error as ExpoModuleError;
+      }
+    });
   }
 
-  hasTags(owner: string): boolean {
-    return (this.owners.get(owner)?.size ?? 0) > 0;
+  async isActivated(owner: KeepAwakeOwner): Promise<boolean> {
+    await this.pending;
+    this.assertActive();
+    owner.assertActive();
+    return owner.tags.size > 0;
+  }
+
+  release(owner: KeepAwakeOwner): Promise<void> {
+    owner.released = true;
+    return this.serialize(async (): Promise<void> => {
+      this.owners.delete(owner);
+      owner.tags.clear();
+      await this.releaseUnusedWindows();
+    });
   }
 
   setForeground(foreground: boolean): void {
@@ -64,146 +105,129 @@ class AbilityKeepAwakeController {
   }
 
   setStage(stage: window.WindowStage): void {
-    this.windowWillDestroy();
-    this.resolver = (): window.Window => stage.getMainWindowSync();
-  }
+    if (this.destroyed) return;
 
-  async prepareWindow(): Promise<void> {
-    await this.serialize(async (): Promise<void> => this.applyDesiredState());
-  }
-
-  private refresh(): void {
-    this.prepareWindow().catch((error: Object): void => {
-      if (!this.destroyed) console.warn(`Unable to reconcile Expo KeepAwake: ${String(error)}`);
-    });
-  }
-
-  windowWillDestroy(): void {
-    const target: window.Window | null = this.window;
-
+    this.stage = stage;
     this.generation += 1;
-    this.resolver = null;
-    this.window = null;
-    this.known = false;
-    this.activated = false;
-
-    // A restored Stage can leave the old window alive; release it after pending writes.
-    if (target !== null) {
-      this.serialize(async (): Promise<void> => {
-        try {
-          await target.setWindowKeepScreenOn(false);
-        } finally {
-          // A restored Stage may return the same underlying window.
-          this.known = false;
-        }
-      }).catch((error: Object): void => {
-        console.warn(`Unable to release Expo KeepAwake window: ${String(error)}`);
-      });
-    }
   }
 
-  async release(owner: string): Promise<void> {
-    if (!this.owners.has(owner)) return;
+  windowWillDestroy(stage?: window.WindowStage): void {
+    if (this.stage === undefined || (stage !== undefined && this.stage !== stage)) return;
 
-    await this.serialize(async (): Promise<void> => {
-      this.owners.delete(owner);
-      await this.applyDesiredState();
-    });
+    this.stage = undefined;
+    this.generation += 1;
+    for (const owner of this.owners) owner.windowId = undefined;
+
+    this.refresh();
   }
 
   destroy(): void {
-    if (this.destroyed) return;
-
     this.destroyed = true;
-    this.foreground = false;
-    this.owners.clear();
+    this.stage = undefined;
+    this.generation += 1;
+    for (const owner of this.owners) {
+      owner.released = true;
+      owner.tags.clear();
+    }
 
-    this.windowWillDestroy();
+    this.owners.clear();
+    this.refresh();
   }
 
-  private async mutateTag(owner: string, tag: string, adding: boolean): Promise<void> {
-    await this.serialize(async (): Promise<void> => {
-      this.assertActive();
+  refresh(): Promise<void> {
+    return this.serialize(async (): Promise<void> => {
+      if (this.foreground && this.stage !== undefined) {
+        for (const owner of this.owners) {
+          if (owner.tags.size === 0 || owner.released || !owner.context.isValid) continue;
 
-      const tags: Set<string> = this.owners.get(owner) ?? new Set<string>();
-      const present: boolean = tags.has(tag);
-
-      this.owners.set(owner, tags);
-      if (adding) tags.add(tag);
-      else tags.delete(tag);
-
-      try {
-        await this.applyDesiredState();
-      } catch (error) {
-        if (present) tags.add(tag);
-        else tags.delete(tag);
-
-        try {
-          await this.applyDesiredState();
-        } catch (_) {
-          this.known = false;
+          try {
+            await this.bindWindow(owner);
+          } catch (error) {
+            console.warn(`Unable to reconcile Expo KeepAwake: ${String(error)}`);
+          }
         }
-
-        throw new ExpoKeepAwakeError(ERROR_WINDOW, `Unable to update the Harmony keep-screen-on state: ${String(error)}`);
       }
+      await this.releaseUnusedWindows();
     });
   }
 
-  private async applyDesiredState(): Promise<void> {
-    if (this.destroyed) return;
-
+  private async bindWindow(owner: KeepAwakeOwner, tag?: string): Promise<void> {
     const generation: number = this.generation;
+    this.assertStage(generation);
+    owner.assertActive();
 
-    if (this.window === null && this.hasAnyTags()) {
-      const resolver: WindowResolver | null = this.resolver;
-      if (resolver === null) {
-        throw new ExpoKeepAwakeError(ERROR_WINDOW, 'The UIAbility main window is not available.');
-      }
+    let target: window.Window;
 
-      this.window = resolver();
-      this.known = false;
-    }
-
-    const target: window.Window | null = this.window;
-    if (target === null) return;
-
-    const desired: boolean = this.foreground && this.hasAnyTags();
-    if (this.known && this.activated === desired) return;
-
-    this.known = false;
     try {
-      await target.setWindowKeepScreenOn(desired);
+      target = await owner.context.getReactNativeWindow();
     } catch (error) {
-      throw new ExpoKeepAwakeError(ERROR_WINDOW, `Unable to set keep-screen-on to ${String(desired)}: ${String(error)}`);
+      owner.assertActive();
+      throw new ExpoModuleError(ERROR_WINDOW, `Unable to find the React Native window: ${String(error)}`);
     }
 
-    this.assertActive();
-    if (generation !== this.generation) {
-      throw new ExpoKeepAwakeError(ERROR_WINDOW, 'The UIAbility main window changed during the keep-awake request.');
+    this.assertStage(generation);
+    owner.assertActive();
+
+    let id: number;
+
+    try {
+      id = target.getWindowProperties().id;
+      if (this.foreground) {
+        // A write can fail or finish after the runtime or stage changes. Keep its cleanup target.
+        this.windows.set(id, target);
+        await ExpoWindowKeepAwake.acquire(target, this);
+      }
+    } catch (error) {
+      throw new ExpoModuleError(ERROR_WINDOW, `Unable to enable keep-screen-on: ${String(error)}`);
     }
 
-    this.activated = desired;
-    this.known = true;
+    this.assertStage(generation);
+    owner.assertActive();
+
+    owner.windowId = id;
+    if (tag !== undefined) owner.tags.add(tag);
   }
 
-  private hasAnyTags(): boolean {
-    for (const tags of this.owners.values()) {
-      if (tags.size > 0) return true;
-    }
+  private async releaseUnusedWindows(strictWindowId?: number): Promise<void> {
+    for (const entry of this.windows.entries()) {
+      const id: number = entry[0];
+      if (this.foreground && this.stage !== undefined && this.hasWindowTags(id)) continue;
 
+      try {
+        await ExpoWindowKeepAwake.release(entry[1], this);
+        this.windows.delete(id);
+      } catch (error) {
+        const message: string = `Unable to release Expo KeepAwake window: ${String(error)}`;
+        if (id === strictWindowId) throw new ExpoModuleError(ERROR_WINDOW, message);
+
+        console.warn(message);
+      }
+    }
+  }
+
+  private hasWindowTags(id: number): boolean {
+    for (const owner of this.owners) {
+      if (owner.windowId === id && owner.tags.size > 0 && !owner.released && owner.context.isValid) return true;
+    }
     return false;
   }
 
-  private async serialize(task: () => Promise<void>): Promise<void> {
-    const next: Promise<void> = this.pending.catch((): void => {}).then(task);
-    this.pending = next;
-
-    await next;
+  private serialize(task: () => Promise<void>): Promise<void> {
+    const next: Promise<void> = this.pending.then(task);
+    this.pending = next.catch((): void => {});
+    return next;
   }
 
   private assertActive(): void {
     if (this.destroyed) {
-      throw new ExpoKeepAwakeError(ERROR_DESTROYED, 'The Expo KeepAwake Ability has already been destroyed.');
+      throw new ExpoModuleError(ERROR_DESTROYED, 'The Expo KeepAwake Ability has already been destroyed.');
+    }
+  }
+
+  private assertStage(generation: number): void {
+    this.assertActive();
+    if (this.stage === undefined || this.generation !== generation) {
+      throw new ExpoModuleError(ERROR_WINDOW, 'The UIAbility window stage is unavailable or has changed.');
     }
   }
 }
@@ -235,11 +259,11 @@ export class ExpoKeepAwakeLifecycleSubscriber extends ExpoAbilityLifecycleSubscr
   }
 
   override async onWindowStageSetup(): Promise<void> {
-    await this.controller.prepareWindow();
+    await this.controller.refresh();
   }
 
-  override onWindowStageWillDestroy(): void {
-    this.controller.windowWillDestroy();
+  override onWindowStageWillDestroy(stage?: window.WindowStage): void {
+    this.controller.windowWillDestroy(stage);
   }
 
   override onWindowStageDestroy(): void {
@@ -254,21 +278,19 @@ export class ExpoKeepAwakeLifecycleSubscriber extends ExpoAbilityLifecycleSubscr
 
 export class ExpoKeepAwakeModule extends ExpoModule {
   private readonly controller?: AbilityKeepAwakeController;
-  private readonly owner: string;
-  private released: boolean = false;
-  private destroyed: boolean = false;
+  private readonly owner: KeepAwakeOwner;
 
   constructor(context: ExpoModuleContext) {
     super(context);
 
-    const controller = controllers.get(context.uiAbilityContext);
-
-    if (controller === undefined && !context.isHeadless) {
-      throw new ExpoKeepAwakeError(ERROR_DESTROYED, 'Expo KeepAwake requires its autolinked Ability lifecycle subscriber.');
+    if (!context.isHeadless) {
+      this.controller = controllers.get(context.uiAbilityContext);
+      if (this.controller === undefined) {
+        throw new ExpoModuleError(ERROR_DESTROYED, 'Expo KeepAwake requires its autolinked Ability lifecycle subscriber.');
+      }
     }
 
-    this.controller = controller;
-    this.owner = context.runtimeEpoch;
+    this.owner = new KeepAwakeOwner(context);
     this.controller?.retain(this.owner);
   }
 
@@ -278,45 +300,31 @@ export class ExpoKeepAwakeModule extends ExpoModule {
       .asyncFunction(
         'activate',
         ExpoFunction.typed1(ExpoValueTypes.string(), async (tag: string): Promise<void> => {
-          this.assertActive();
-          await this.controller?.activate(this.owner, tag);
+          await this.requireController().activate(this.owner, tag);
         }),
       )
       .asyncFunction(
         'deactivate',
         ExpoFunction.typed1(ExpoValueTypes.string(), async (tag: string): Promise<void> => {
-          this.assertActive();
-          await this.controller?.deactivate(this.owner, tag);
+          await this.requireController().deactivate(this.owner, tag);
         }),
       )
-      .asyncFunction('isActivated', async (): Promise<boolean> => {
-        if (this.context.isHeadless) return false;
-        this.assertActive();
-
-        return this.controller?.hasTags(this.owner) ?? false;
-      })
+      .asyncFunction('isActivated', async (): Promise<boolean> => this.controller?.isActivated(this.owner) ?? false)
       .asyncFunction('isAvailableAsync', async (): Promise<boolean> => !this.context.isHeadless)
-      .onPrepareForReload(async (): Promise<void> => this.release())
+      .onContentAppeared((): void => {
+        this.controller?.refresh();
+      })
+      .onPrepareForReload(async (): Promise<void> => this.controller?.release(this.owner))
       .onDestroy((): void => {
-        this.destroyed = true;
-        this.release().catch((error: Object): void => {
-          console.warn(`Unable to release Expo KeepAwake runtime: ${String(error)}`);
-        });
+        this.controller?.release(this.owner);
       });
   }
 
-  private async release(): Promise<void> {
-    if (this.released) return;
-
-    this.released = true;
-    await this.controller?.release(this.owner);
-  }
-
-  private assertActive(): void {
-    if (this.context.isHeadless) throw new ExpoKeepAwakeError(ERROR_WINDOW, 'KeepAwake requires a foreground UIAbility window.');
-
-    if (this.destroyed || this.released || !this.context.isValid) {
-      throw new ExpoKeepAwakeError(ERROR_DESTROYED, 'The Expo KeepAwake runtime has already been destroyed.');
+  private requireController(): AbilityKeepAwakeController {
+    const controller: AbilityKeepAwakeController | undefined = this.controller;
+    if (controller === undefined) {
+      throw new ExpoModuleError(ERROR_WINDOW, 'KeepAwake requires a UIAbility window.');
     }
+    return controller;
   }
 }
