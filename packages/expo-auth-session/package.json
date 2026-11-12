@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-auth-session",
-  "version": "55.0.18-harmony.2",
+  "version": "57.0.16-harmony.0",
   "description": "HarmonyOS port of expo-auth-session",
   "keywords": [
     "react-native",
@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "expo-auth-session": "55.0.18",
+    "expo-auth-session": "57.0.16",
     "react": "*",
     "react-native": "*"
   },
