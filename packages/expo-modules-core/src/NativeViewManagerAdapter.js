@@ -7,16 +7,31 @@
 
 'use strict';
 
+/* global __DEV__: readonly */
+
 const React = require('react');
 const ReactNative = require('react-native');
+const { createViewConfig } = require('@react-native-oh/react-native-harmony/Libraries/NativeComponent/ViewConfig');
+const deepDiffer = require('@react-native-oh/react-native-harmony/Libraries/Utilities/differ/deepDiffer').default;
 
 const EXPO_VIEW_COMPONENT_NAME = 'ViewManagerAdapter_ExpoModulesCore';
 const nativeComponentsCache = new Map();
-const propsRevisions = new WeakMap();
 let nextPropsRevision = 1;
 
 function getExpoGlobal() {
   return globalThis.expo;
+}
+
+function processPropValue(value) {
+  const SharedObject = getExpoGlobal()?.SharedObject;
+  if (typeof SharedObject !== 'function' || !(value instanceof SharedObject)) return value;
+
+  const id = value.__expo_shared_object_id__;
+  return typeof id === 'number' ? id : value;
+}
+
+function addAttributeProcessing(attributes) {
+  return Object.fromEntries(Object.keys(attributes).map(name => [name, { process: processPropValue }]));
 }
 
 function expoLogicalComponentName(moduleName, viewName) {
@@ -25,38 +40,12 @@ function expoLogicalComponentName(moduleName, viewName) {
     : `ViewManagerAdapter_${moduleName}`;
 }
 
-function expoViewPropsRevision(props) {
-  const existing = propsRevisions.get(props);
-  if (existing !== undefined) return existing;
-
+function nextExpoViewPropsRevision() {
   if (!Number.isSafeInteger(nextPropsRevision)) {
     throw new Error('Expo View props revision identity space was exhausted.');
   }
 
-  const revision = nextPropsRevision;
-  nextPropsRevision += 1;
-  propsRevisions.set(props, revision);
-
-  return revision;
-}
-
-function ensureNativeModulesAreInstalled() {
-  if (getExpoGlobal()) return;
-
-  const core = ReactNative.TurboModuleRegistry.get('ExpoModulesCore');
-  if (!core || typeof core.installModules !== 'function') {
-    throw new Error('Unable to install Expo modules: ExpoModulesCore.installModules() is unavailable.');
-  }
-
-  try {
-    core.installModules();
-  } catch (error) {
-    throw new Error(`Unable to install Expo modules: ${error}`);
-  }
-
-  if (!getExpoGlobal()) {
-    throw new Error('Unable to install Expo modules: the native installer did not create globalThis.expo.');
-  }
+  return nextPropsRevision++;
 }
 
 function requireExpoViewComponent(moduleName, viewName) {
@@ -69,45 +58,20 @@ function requireExpoViewComponent(moduleName, viewName) {
   const component = ReactNative.registerViewConfig(key, () => {
     const config = getExpoGlobal()?.getViewConfig?.(moduleName, viewName);
     if (!config) {
-      throw new Error(`Unable to get the view config for ${viewName ?? 'default view'} from module ${moduleName}.`);
+      console.warn(`Unable to get the view config for ${viewName ?? 'default view'} from module ${moduleName}.`);
     }
 
-    // registerViewConfig expects a complete config. Reuse RNOH's View props and
-    // events, including the processors in its exported style attribute table.
-    const baseConfig = ReactNative.UIManager.getViewManagerConfig('RCTView');
-    if (!baseConfig) {
-      throw new Error('Unable to get the RNOH RCTView config for Expo views.');
-    }
-    const constants = ReactNative.UIManager.getConstants();
-    // RNOH 0.84 exports the module namespace rather than its default value.
-    const viewAttributes = ReactNative.ReactNativeViewAttributes.default.RCTView;
-    const validAttributes = { ...viewAttributes.style, ...viewAttributes };
-    for (const prop of Object.keys(baseConfig.NativeProps)) {
-      validAttributes[prop] ??= true;
-    }
-
-    return {
+    // Expo views share one Fabric host, so native reflection cannot supply each view's props.
+    return createViewConfig({
       ...config,
       uiViewClassName: EXPO_VIEW_COMPONENT_NAME,
-      Commands: {},
-      bubblingEventTypes: {
-        ...constants.genericBubblingEventTypes,
-        ...baseConfig.bubblingEventTypes,
-        ...config.bubblingEventTypes,
-      },
-      directEventTypes: {
-        ...constants.genericDirectEventTypes,
-        ...baseConfig.directEventTypes,
-        ...config.directEventTypes,
-      },
       validAttributes: {
-        ...validAttributes,
-        ...config.validAttributes,
+        ...addAttributeProcessing(config?.validAttributes ?? {}),
         expoModuleName: true,
         expoViewRevision: true,
         expoViewName: true,
       },
-    };
+    });
   });
 
   nativeComponentsCache.set(key, component);
@@ -116,29 +80,35 @@ function requireExpoViewComponent(moduleName, viewName) {
 }
 
 function requireNativeViewManager(moduleName, viewName) {
-  ensureNativeModulesAreInstalled();
-
   const ReactNativeComponent = requireExpoViewComponent(moduleName, viewName);
+  const config = getExpoGlobal()?.getViewConfig?.(moduleName, viewName);
+  const propNames = Object.keys(config?.validAttributes ?? {});
+  let warnedAboutHostedContent = false;
 
   class NativeComponent extends React.PureComponent {
     static displayName = viewName ?? moduleName;
 
     nativeRef = React.createRef();
     nativeTag = null;
-    committedPropsRevision = 0;
+    committedProps = null;
+    renderedProps = new WeakMap();
     nativeComponentName = expoLogicalComponentName(moduleName, viewName);
 
     get nativePropsRevision() {
-      return this.committedPropsRevision;
+      return this.committedProps?.revision ?? 0;
+    }
+
+    getNativeRef() {
+      return this.nativeRef.current;
     }
 
     componentDidMount() {
-      this.committedPropsRevision = propsRevisions.get(this.props) ?? this.committedPropsRevision;
+      this.committedProps = this.renderedProps.get(this.props);
       this.nativeTag = ReactNative.findNodeHandle(this.nativeRef.current);
     }
 
     componentDidUpdate() {
-      this.committedPropsRevision = propsRevisions.get(this.props) ?? this.committedPropsRevision;
+      this.committedProps = this.renderedProps.get(this.props);
     }
 
     componentWillUnmount() {
@@ -146,10 +116,21 @@ function requireNativeViewManager(moduleName, viewName) {
     }
 
     render() {
+      // eslint-disable-next-line react/prop-types -- Expo view props are declared by the native module.
+      if (__DEV__ && this.props.expoInternalSizeFromChildren && !warnedAboutHostedContent) {
+        warnedAboutHostedContent = true;
+        console.warn(`Expo view ${this.nativeComponentName} does not support sizing to hosted content on HarmonyOS.`);
+      }
+      const values = Object.fromEntries(propNames.map(name => [name, processPropValue(this.props[name])]));
+      const committed = this.committedProps;
+      const revision = committed && !deepDiffer(committed.values, values, 64)
+        ? committed.revision
+        : nextExpoViewPropsRevision();
+      this.renderedProps.set(this.props, { values, revision });
       return React.createElement(ReactNativeComponent, {
         ...this.props,
         expoModuleName: moduleName,
-        expoViewRevision: expoViewPropsRevision(this.props),
+        expoViewRevision: revision,
         expoViewName: viewName ?? '',
         ref: this.nativeRef,
       });

@@ -19,7 +19,8 @@ class WorkletRuntimeInstaller final {
 public:
   static void install(
       facebook::jsi::Runtime &mainRuntime,
-      const std::shared_ptr<RuntimeContext> &mainContext);
+      const std::shared_ptr<RuntimeContext> &mainContext,
+      const facebook::jsi::Value &runtimeHolder);
 };
 
 }  // namespace expo::harmony

@@ -350,7 +350,7 @@ jsi::Value encodeTypedJSIValue(
 
     auto native = context->getNativeSharedObject(nativeState->objectId);
     auto identity = context->nativeSharedObjectIdentity(native);
-    if (identity.runtimeEpoch != context->runtimeEpochString()) {
+    if (identity.runtimeEpoch != context->bridgeRuntimeEpochString()) {
       throw CodedError(
           "ERR_SHARED_OBJECT_TYPE",
           "A SharedObject cannot cross RuntimeContext epochs.");
@@ -566,7 +566,7 @@ void discardAuthorIds(
     }
     context->callPlatformSync(
         "discardExpoSharedObjects",
-        {context->runtimeEpochString(), std::move(values)});
+        {context->bridgeRuntimeEpochString(), std::move(values)});
   } catch (...) {
   }
 }
@@ -671,7 +671,7 @@ jsi::Value decodeArkTSValue(
         requireField(marker, "objectId", "SharedObject marker"));
     auto authorIdValue = readTransportInteger(
         requireField(marker, "authorId", "SharedObject marker"));
-    if (!objectIdValue || !authorIdValue || runtimeEpoch != context->runtimeEpochString() || *objectIdValue > static_cast<uint64_t>(std::numeric_limits<long>::max())) {
+    if (!objectIdValue || !authorIdValue || runtimeEpoch != context->bridgeRuntimeEpochString() || *objectIdValue > static_cast<uint64_t>(std::numeric_limits<long>::max())) {
       throw CodedError(
           "ERR_SHARED_OBJECT_TYPE",
           "ArkTS returned a SharedObject for another or invalid runtime identity.");
@@ -709,6 +709,10 @@ jsi::Value decodeArkTSValue(
           "ERR_SHARED_OBJECT_TYPE",
           "ArkTS returned an unbound SharedObject without an author identity.");
     }
+    if (context->isWorkletContext()) {
+      throw CodedError("ERR_WORKLET_SHARED_OBJECT", "A worklet can return existing SharedObjects; create new native instances on the React Native runtime.");
+    }
+
     if (auto iterator = staged.find(*authorIdValue); iterator != staged.end()) {
       auto cached = context->getSharedObject(iterator->second->objectId());
       if (!cached.isUndefined()) {
@@ -1198,9 +1202,9 @@ std::vector<std::string> requireEvents(
 
 std::vector<std::shared_ptr<ExpoModule>> ArkTSModuleAdapter::createModules(
     const std::shared_ptr<RuntimeContext> &context) {
-  const auto runtimeEpoch = context->runtimeEpochString();
+  const auto epoch = context->bridgeRuntimeEpochString();
   try {
-    context->callPlatformSync("bindExpoModuleRuntime", {runtimeEpoch});
+    context->callPlatformSync("bindExpoModuleRuntime", {epoch});
   } catch (const CodedError &error) {
     throw CodedError(error);
   } catch (const std::exception &error) {
@@ -1212,7 +1216,7 @@ std::vector<std::shared_ptr<ExpoModule>> ArkTSModuleAdapter::createModules(
   jsi::Value value;
   try {
     value = context->callPlatformSync(
-        "getExpoModuleDescriptors", {runtimeEpoch});
+        "getExpoModuleDescriptors", {epoch});
   } catch (const CodedError &error) {
     throw CodedError(error);
   } catch (const std::exception &error) {
@@ -1355,7 +1359,7 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
               "getExpoModuleConstant",
               makeTypedArguments(
                   invocation.runtime(),
-                  context->runtimeEpochString(),
+                  context->bridgeRuntimeEpochString(),
                   moduleName,
                   name));
           return decodeTypedResult(context, std::move(result));
@@ -1405,7 +1409,7 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
                       makeTypedValueArguments(
                           context->runtime(),
                           arguments,
-                          context->runtimeEpochString(),
+                          context->bridgeRuntimeEpochString(),
                           moduleName,
                           name));
                 });
@@ -1430,18 +1434,22 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
               }
               writeBack->add(invocation.argument(index));
             }
+
             auto encoded = encodeTypedArguments(invocation);
+            auto leases = retainInvocationLeases(context, encoded.sharedObjects);
             auto arguments = takeTypedArgumentArray(
                 invocation.runtime(), std::move(encoded.values));
+
             auto result = context->callPlatformSyncTyped(
                 "invokeExpoModuleSync",
                 makeTypedValueArguments(
                     invocation.runtime(),
                     arguments,
-                    context->runtimeEpochString(),
+                    context->bridgeRuntimeEpochString(),
                     moduleName,
                     name),
                 writeBack ? &*writeBack : nullptr);
+
             if (writableIndices.empty()) {
               return decodeTypedResult(context, std::move(result));
             }
@@ -1473,7 +1481,7 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
               "getExpoModuleProperty",
               makeTypedArguments(
                   invocation.runtime(),
-                  context->runtimeEpochString(),
+                  context->bridgeRuntimeEpochString(),
                   moduleName,
                   name));
           return decodeTypedResult(context, std::move(result));
@@ -1488,12 +1496,14 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
         auto context = invocation.sharedContext();
         auto encoded = encodeTypedJSIValue(
             context, invocation.runtime(), value, referenced, 0);
+        auto leases = retainInvocationLeases(context, referenced);
+
         context->callPlatformSyncTyped(
             "setExpoModuleProperty",
             makeTypedValueArguments(
                 invocation.runtime(),
                 encoded,
-                context->runtimeEpochString(),
+                context->bridgeRuntimeEpochString(),
                 moduleName,
                 name));
       };
@@ -1501,7 +1511,6 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
     builder.property(std::move(definition));
   }
   builder.events(requireEvents(descriptor_, modulePath));
-  // Forward listener transitions to the runtime-scoped ArkTS definition.
   builder.onStartObserving(
       [moduleName](RuntimeContext &context, const std::string &eventName) {
         context.callPlatformSync(
@@ -1558,27 +1567,31 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
       auto context = invocation.sharedContext();
       auto object = std::make_shared<ArkTSSharedObject>(
           context,
-          context->runtimeEpochString(),
+          context->bridgeRuntimeEpochString(),
           moduleName,
           className,
           nativeRefType);
       auto objectId = context->registerNativeSharedObject(object);
       object->bindObjectId(objectId);
+
       try {
         auto encoded = encodeTypedArguments(invocation);
+        auto leases = retainInvocationLeases(context, encoded.sharedObjects);
         auto arguments = takeTypedArgumentArray(
             invocation.runtime(), std::move(encoded.values));
+
         context->callPlatformSyncTyped(
             "constructExpoSharedObject",
             makeTypedValueArguments(
                 invocation.runtime(),
                 arguments,
-                context->runtimeEpochString(),
+                context->bridgeRuntimeEpochString(),
                 objectId,
                 moduleName,
                 className,
                 nativeRefType));
         loadMemoryPressure(context, object);
+
         return std::shared_ptr<NativeSharedObject>(std::move(object));
       } catch (const CodedError &error) {
         rollbackStagedObject(context, objectId);
@@ -1614,7 +1627,7 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
                 "getExpoSharedObjectConstant",
                 makeTypedArguments(
                     invocation.runtime(),
-                    context->runtimeEpochString(),
+                    context->bridgeRuntimeEpochString(),
                     moduleName,
                     className,
                     name));
@@ -1668,7 +1681,7 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
                     makeTypedValueArguments(
                         context->runtime(),
                         arguments,
-                        context->runtimeEpochString(),
+                        context->bridgeRuntimeEpochString(),
                         object->objectId(),
                         moduleName,
                         className,
@@ -1681,19 +1694,23 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
                               const std::shared_ptr<NativeSharedObject> &receiver) {
           auto object = requireArkTSObject(receiver, invocation.path());
           auto context = invocation.sharedContext();
+
           auto encoded = encodeTypedArguments(invocation, object);
+          auto leases = retainInvocationLeases(context, encoded.sharedObjects);
           auto arguments = takeTypedArgumentArray(
               invocation.runtime(), std::move(encoded.values));
+
           auto result = context->callPlatformSyncTyped(
               "invokeExpoSharedObjectSync",
               makeTypedValueArguments(
                   invocation.runtime(),
                   arguments,
-                  context->runtimeEpochString(),
+                  context->bridgeRuntimeEpochString(),
                   object->objectId(),
                   moduleName,
                   className,
                   name));
+
           return decodeTypedResult(context, std::move(result));
         };
       }
@@ -1745,7 +1762,7 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
                     makeTypedValueArguments(
                         context->runtime(),
                         arguments,
-                        context->runtimeEpochString(),
+                        context->bridgeRuntimeEpochString(),
                         moduleName,
                         className,
                         name));
@@ -1755,17 +1772,20 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
         definition.body = [moduleName, className, name](Invocation &invocation) {
           auto context = invocation.sharedContext();
           auto encoded = encodeTypedArguments(invocation);
+          auto leases = retainInvocationLeases(context, encoded.sharedObjects);
           auto arguments = takeTypedArgumentArray(
               invocation.runtime(), std::move(encoded.values));
+
           auto result = context->callPlatformSyncTyped(
               "invokeExpoSharedObjectStaticSync",
               makeTypedValueArguments(
                   invocation.runtime(),
                   arguments,
-                  context->runtimeEpochString(),
+                  context->bridgeRuntimeEpochString(),
                   moduleName,
                   className,
                   name));
+
           return decodeTypedResult(context, std::move(result));
         };
       }
@@ -1795,7 +1815,7 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
                 "getExpoSharedObjectProperty",
                 makeTypedArguments(
                     invocation.runtime(),
-                    context->runtimeEpochString(),
+                    context->bridgeRuntimeEpochString(),
                     object->objectId(),
                     moduleName,
                     className,
@@ -1814,12 +1834,14 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
           auto context = invocation.sharedContext();
           auto encoded = encodeTypedJSIValue(
               context, invocation.runtime(), value, referenced, 0);
+          auto leases = retainInvocationLeases(context, referenced);
+
           context->callPlatformSyncTyped(
               "setExpoSharedObjectProperty",
               makeTypedValueArguments(
                   invocation.runtime(),
                   encoded,
-                  context->runtimeEpochString(),
+                  context->bridgeRuntimeEpochString(),
                   object->objectId(),
                   moduleName,
                   className,
@@ -1872,7 +1894,7 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
     view.group = requireBoolean(viewDescriptor, "group", viewPath);
     std::vector<std::string> componentNames{componentName};
     if (view.defaultView) {
-      auto defaultComponentName = "ViewManagerAdapter_" + moduleName;
+      auto defaultComponentName = protocol::kViewComponentPrefix + moduleName;
       if (defaultComponentName != componentName) {
         componentNames.push_back(std::move(defaultComponentName));
       }
@@ -1942,7 +1964,7 @@ ModuleDefinition ArkTSModuleAdapter::definition() {
                       makeTypedValueArguments(
                           context->runtime(),
                           arguments,
-                          context->runtimeEpochString(),
+                          context->bridgeRuntimeEpochString(),
                           tag,
                           componentName,
                           propsRevision,

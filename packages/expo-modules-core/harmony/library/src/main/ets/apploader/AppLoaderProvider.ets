@@ -16,6 +16,7 @@ export class AppLoaderProvider {
   static readonly reactNative = 'react-native-headless';
   private static readonly loaders = new Map<string, AppLoaderRegistration>();
 
+  /** Registers a loader until the returned disposer is called. A live registration cannot be replaced by another loader. */
   static registerLoader(name: string, loader: HeadlessAppLoader): () => void {
     const current = AppLoaderProvider.loaders.get(name);
     if (current !== undefined && current.loader !== loader)

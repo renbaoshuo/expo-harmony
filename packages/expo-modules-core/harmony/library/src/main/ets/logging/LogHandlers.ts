@@ -9,6 +9,8 @@ import hilog from '@ohos.hilog';
 import { LogHandler, LogType } from './Logger';
 import { PersistentFileLog } from './PersistentFileLog';
 
+const APP_LOG_DOMAIN = 0;
+
 interface LogError extends Error { cause?: Error; }
 
 export function describeLogError(error: Error): string {
@@ -37,11 +39,11 @@ class OSLogHandler implements LogHandler {
   log(type: LogType, message: string, cause?: Error): void {
     const text = cause === undefined ? message : `${message}\n${describeLogError(cause)}`;
     switch (type) {
-      case 'info': hilog.info(0, this.category, '%{public}s', text); break;
-      case 'warn': hilog.warn(0, this.category, '%{public}s', text); break;
-      case 'error': hilog.error(0, this.category, '%{public}s', text); break;
-      case 'fatal': hilog.fatal(0, this.category, '%{public}s', text); break;
-      default: hilog.debug(0, this.category, '%{public}s', text);
+      case 'info': hilog.info(APP_LOG_DOMAIN, this.category, '%{public}s', text); break;
+      case 'warn': hilog.warn(APP_LOG_DOMAIN, this.category, '%{public}s', text); break;
+      case 'error': hilog.error(APP_LOG_DOMAIN, this.category, '%{public}s', text); break;
+      case 'fatal': hilog.fatal(APP_LOG_DOMAIN, this.category, '%{public}s', text); break;
+      default: hilog.debug(APP_LOG_DOMAIN, this.category, '%{public}s', text);
     }
   }
 }

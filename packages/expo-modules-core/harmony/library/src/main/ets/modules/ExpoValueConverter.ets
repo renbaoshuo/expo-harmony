@@ -6,6 +6,8 @@
  */
 
 import { url } from '@kit.ArkTS';
+import { fileUriFromPath } from '../appcontext/FileUri';
+import { parseExpoColor } from './ExpoColor';
 import type { ExpoSharedObjectRegistry } from './ExpoSharedObject';
 import { ExpoModuleError } from './ExpoModuleError';
 import { defineExpoRecordValue, hasOwnExpoRecordKey } from './ExpoRecord';
@@ -449,12 +451,30 @@ export class ExpoFunction {
   }
 }
 
-export type ExpoSyncFunction = ExpoFunction0<ESObject | void> | ExpoFunctionSpec<ExpoSyncFunctionBody>;
-export type ExpoAsyncFunction = ExpoFunction0<Promise<ESObject | void>> | ExpoFunctionSpec<ExpoAsyncFunctionBody>;
-export type ExpoOwnedSyncFunction<Owner> = ExpoFunction1<Owner, ESObject | void> | ExpoFunctionSpec<ExpoOwnedSyncFunctionBody<Owner>>;
-export type ExpoOwnedAsyncFunction<Owner> = ExpoFunction1<Owner, Promise<ESObject | void>> | ExpoFunctionSpec<ExpoOwnedAsyncFunctionBody<Owner>>;
+export type ExpoSyncFunction = ExpoSyncFunctionBody | ExpoFunctionSpec<ExpoSyncFunctionBody>;
+export type ExpoAsyncFunction = ExpoAsyncFunctionBody | ExpoFunctionSpec<ExpoAsyncFunctionBody>;
+export type ExpoOwnedSyncFunction<Owner> = ExpoOwnedSyncFunctionBody<Owner> | ExpoFunctionSpec<ExpoOwnedSyncFunctionBody<Owner>>;
+export type ExpoOwnedAsyncFunction<Owner> = ExpoOwnedAsyncFunctionBody<Owner> | ExpoFunctionSpec<ExpoOwnedAsyncFunctionBody<Owner>>;
 
-const MAX_VALUE_DEPTH: number = 64;
+/** The settlement callbacks for a module function registered with asyncFunctionWithPromise. */
+export class ExpoPromise {
+  private readonly resolveValue: (value: ESObject | void) => void;
+  private readonly rejectValue: (error: Object) => void;
+
+  constructor(resolveValue: (value: ESObject | void) => void, rejectValue: (error: Object) => void) {
+    this.resolveValue = resolveValue;
+    this.rejectValue = rejectValue;
+  }
+
+  resolve(value?: ESObject): void {
+    this.resolveValue(value);
+  }
+
+  reject(code: string, message: string, cause?: Object): void {
+    this.rejectValue(new ExpoModuleError(code, message, cause) as Object);
+  }
+}
+
 
 /** Decoder used by reusable author-defined value types. */
 export type ExpoValueDecoder<Value> = (value: ESObject, path: string, sharedObjects?: ExpoSharedObjectRegistry) => Value;
@@ -503,8 +523,8 @@ export class ExpoValueType<Value> {
 
   /**
    * Writes the original binary argument's native snapshot back after a successful
-   * synchronous module call. Decoders may wrap its storage, but must not copy it.
-   * Argument encoders do not participate in write-back.
+   * synchronous module call. ArrayBuffer arguments converted from TypedArrays
+   * commit their viewed bytes to that snapshot after the body succeeds.
    */
   writable(): ExpoValueType<Value> {
     return new ExpoValueType<Value>(
@@ -526,7 +546,7 @@ export class ExpoValueType<Value> {
         return this.decode(value, path, sharedObjects);
       },
       (value: Value | undefined, path: string): ESObject | void => {
-        if (value === undefined) return undefined;
+        if (value === undefined || value === null) return value;
         return this.encode(value, path);
       },
       true,
@@ -550,17 +570,17 @@ export class ExpoValueType<Value> {
 
   nullable(): ExpoValueType<Value | null> {
     return new ExpoValueType<Value | null>(
-      `${this.expectedType} or null`,
+      `${this.expectedType} or null/undefined`,
       (value: ESObject, path: string, sharedObjects?: ExpoSharedObjectRegistry): Value | null => {
-        if (value === null) return null;
+        if (value === null || value === undefined) return null;
         return this.decode(value, path, sharedObjects);
       },
       (value: Value | null, path: string): ESObject | void => {
-        if (value === null) return null;
+        if (value === null || value === undefined) return null;
         return this.encode(value, path);
       },
-      false,
-      false,
+      true,
+      true,
       this.isWritable,
     );
   }
@@ -764,6 +784,11 @@ export type ExpoNumericTypedArray =
   | BigUint64Array;
 
 export class ExpoValueTypes {
+  /** Passes through values supported by the runtime bridge without coercion. */
+  static any(): ExpoValueType<ESObject> {
+    return new ExpoValueType<ESObject>('any', (value: ESObject): ESObject => value, (value: ESObject): ESObject => value, true);
+  }
+
   static callback(): ExpoValueType<ExpoJavaScriptCallback> {
     return new ExpoValueType<ExpoJavaScriptCallback>(
       'JavaScript callback',
@@ -802,7 +827,7 @@ export class ExpoValueTypes {
         const decoded: Record<string, ESObject> = {};
 
         fields.forEach((field: ExpoRecordField): void => {
-          const present = hasOwnExpoRecordKey(input, field.key);
+          const present = hasOwnExpoRecordKey(input, field.key) && input[field.key] !== undefined;
           if (!present) {
             if (field.required) throw new ExpoModuleError('ERR_FIELD_REQUIRED', `${path}.${field.key} is required.`);
             if (field.type.fillsUndefined)
@@ -821,9 +846,10 @@ export class ExpoValueTypes {
         const encoded: Record<string, ESObject> = {};
 
         fields.forEach((field: ExpoRecordField): void => {
-          const present = hasOwnExpoRecordKey(input, field.name);
+          const present = hasOwnExpoRecordKey(input, field.name) && input[field.name] !== undefined;
           if (!present) {
             if (field.required) throw new ExpoModuleError('ERR_FIELD_REQUIRED', `${path}.${field.key} is required.`);
+            defineExpoRecordValue(encoded, field.key, null);
             return;
           }
           defineExpoRecordValue(encoded, field.key, field.type.encode(input[field.name], `${path}.${field.key}`) as ESObject);
@@ -846,16 +872,29 @@ export class ExpoValueTypes {
     );
   }
 
+  /** Converts Expo color inputs to an unsigned AARRGGBB value. */
+  static color(): ExpoValueType<number> {
+    return new ExpoValueType<number>(
+      'color',
+      (value: ESObject): number => parseExpoColor(value),
+      (value: number): ESObject => parseExpoColor(value),
+    );
+  }
+
   static string(): ExpoValueType<string> {
     return primitiveType<string>('string', 'string');
+  }
+
+  static bigint(): ExpoValueType<bigint> {
+    return primitiveType<bigint>('bigint', 'bigint');
   }
 
   static array<Value>(element: ExpoValueType<Value>): ExpoValueType<Value[]> {
     return new ExpoValueType<Value[]>(
       `array of ${element.expectedType}`,
       (value: ESObject, path: string, sharedObjects?: ExpoSharedObjectRegistry): Value[] => {
-        if (!Array.isArray(value)) throw new ExpoArgumentTypeError(path, `array of ${element.expectedType}`, value);
-        return value.map((item: ESObject, index: number): Value => element.decode(item, `${path}[${index}]`, sharedObjects));
+        const items: ESObject[] = Array.isArray(value) ? value : [value];
+        return items.map((item: ESObject, index: number): Value => element.decode(item, `${path}[${index}]`, sharedObjects));
       },
       (value: Value[], path: string): ESObject =>
         value.map((item: Value, index: number): ESObject => element.encode(item, `${path}[${index}]`) as ESObject),
@@ -872,6 +911,7 @@ export class ExpoValueTypes {
         const output: Record<string, Value> = {};
 
         Object.keys(input).forEach((key: string): void => {
+          if (input[key] === undefined) return;
           defineExpoRecordValue(output, key, valueType.decode(input[key], `${path}.${key}`, sharedObjects));
         });
 
@@ -885,7 +925,8 @@ export class ExpoValueTypes {
         const output: Record<string, ESObject> = {};
 
         Object.keys(value).forEach((key: string): void => {
-          defineExpoRecordValue(output, key, valueType.encode(value[key], `${path}.${key}`) as ESObject);
+          const item: Value = value[key];
+          defineExpoRecordValue(output, key, item === undefined ? null : valueType.encode(item, `${path}.${key}`) as ESObject);
         });
 
         return output;
@@ -1014,19 +1055,20 @@ export class ExpoValueTypes {
       if (!reverseNumericKey) rawValues.push(rawValue);
     }
 
+    const expected: string = `${name} (${rawValues.map((value: ESObject): string => JSON.stringify(value)).join(', ')})`;
     return new ExpoValueType<Value>(
-      name,
+      expected,
       (value: ESObject, path: string): Value => {
         for (let index = 0; index < rawValues.length; index += 1) {
           if (rawValues[index] === value) return rawValues[index] as Value;
         }
-        throw new ExpoArgumentTypeError(path, name, value);
+        throw new ExpoArgumentTypeError(path, expected, value);
       },
       (value: Value, path: string): ESObject => {
         for (let index = 0; index < rawValues.length; index += 1) {
           if (rawValues[index] === value) return rawValues[index];
         }
-        throw new ExpoModuleError('ERR_INVALID_RETURN_VALUE', `${path} returned an unknown ${name} value.`);
+        throw new ExpoModuleError('ERR_INVALID_RETURN_VALUE', `${path} expected ${expected}.`, undefined, path);
       },
     );
   }
@@ -1035,7 +1077,7 @@ export class ExpoValueTypes {
     return new ExpoValueType<Date>(
       'Date epoch milliseconds or ISO-8601 string',
       (value: ESObject, path: string): Date => decodeDate(value, path),
-      (value: Date): ESObject => value.getTime(),
+      (value: Date): ESObject => value.toISOString(),
     );
   }
 
@@ -1043,8 +1085,21 @@ export class ExpoValueTypes {
     return new ExpoValueType<url.URL>(
       'URL string',
       (value: ESObject, path: string): url.URL => {
+        if (value instanceof url.URL) return value;
         if (typeof value !== 'string') throw new ExpoArgumentTypeError(path, 'URL string', value);
-        return url.URL.parseURL(value);
+        try {
+          return url.URL.parseURL(value);
+        } catch (_) {
+          try {
+            // Preserve already escaped segments when repairing the rest of the URL.
+            const encoded: string = value.startsWith('/')
+              ? fileUriFromPath(value)
+              : encodeURI(value).replace(/%25([a-f\d]{2})/gi, '%$1');
+            return url.URL.parseURL(encoded);
+          } catch (error) {
+            throw new ExpoModuleError('ERR_URL_CONTAINS_INVALID_CHARACTERS', `${path} is not a valid URL.`, error, path);
+          }
+        }
       },
       (value: url.URL): ESObject => value.toString(),
     );
@@ -1054,8 +1109,14 @@ export class ExpoValueTypes {
     return new ExpoValueType<ArrayBuffer>(
       'ArrayBuffer',
       (value: ESObject, path: string): ArrayBuffer => {
-        if (!(value instanceof ArrayBuffer)) throw new ExpoArgumentTypeError(path, 'ArrayBuffer', value);
-        return value;
+        if (value instanceof ArrayBuffer) return value;
+
+        if (isNumericTypedArray(value)) {
+          const view = value as ExpoNumericTypedArray;
+          return new Uint8Array(new Uint8Array(view.buffer, view.byteOffset, view.byteLength)).buffer as ArrayBuffer;
+        }
+
+        throw new ExpoArgumentTypeError(path, 'ArrayBuffer or numeric TypedArray', value);
       },
       (value: ArrayBuffer, path: string): ESObject => {
         if (!(value instanceof ArrayBuffer)) throw new ExpoArgumentTypeError(path, 'ArrayBuffer', value);
@@ -1123,10 +1184,8 @@ export class ExpoValueConverter {
           throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
         }
 
-        throw new ExpoModuleError(
-          'ERR_INVALID_ARGUMENT_TYPE',
-          `${path} expected ${type.expectedType}, received ${ExpoValueConverter.actualType(value)}.`,
-        );
+        const detail: string = error instanceof Error ? error.message : String(error);
+        throw new ExpoModuleError('ERR_INVALID_ARGUMENT_TYPE', `Could not convert ${path} to ${type.expectedType}: ${detail}`, error, path);
       }
     }
 
@@ -1145,13 +1204,11 @@ export class ExpoValueConverter {
             throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
           }
 
-          throw new ExpoModuleError('ERR_INVALID_RETURN_VALUE', error.message);
+          throw new ExpoModuleError('ERR_INVALID_RETURN_VALUE', error.message, error, error.path ?? path);
         }
 
-        throw new ExpoModuleError(
-          'ERR_INVALID_RETURN_VALUE',
-          `${path} expected ${type.expectedType}, received ${ExpoValueConverter.actualType(value as ESObject)}.`,
-        );
+        const detail: string = error instanceof Error ? error.message : String(error);
+        throw new ExpoModuleError('ERR_INVALID_RETURN_VALUE', `Could not encode ${path} as ${type.expectedType}: ${detail}`, error, path);
       }
     }
 
@@ -1212,7 +1269,22 @@ export function invokeSyncFunction(body: ExpoSyncFunction, args: ESObject[], pat
     writableBinaryLength(args[index], `${path} argument ${index + 1}`);
   });
   const values: ESObject[] = prepareArguments(body, args, 0, path);
+
   const result: ESObject | void = invokeRawSyncFunction(unwrapSyncFunction(body), values);
+
+  // Writable TypedArray views were copied into ArrayBuffers during decoding.
+  writableFunctionArguments(body).forEach((index: number): void => {
+    if (!isNumericTypedArray(args[index]) || !(values[index] instanceof ArrayBuffer)) return;
+
+    const source = args[index] as ExpoNumericTypedArray;
+    const buffer = values[index] as ArrayBuffer;
+    if (source.byteLength !== buffer.byteLength) {
+      throw new ExpoModuleError('ERR_WRITABLE_ARGUMENT', 'A writable ArrayBuffer changed its byte length.');
+    }
+
+    new Uint8Array(source.buffer, source.byteOffset, source.byteLength).set(new Uint8Array(buffer));
+  });
+
   return encodeFunctionResult(body, result, `${path} return value`);
 }
 
@@ -1388,6 +1460,20 @@ export async function invokeOwnedAsyncFunction<Owner>(
   return encodeFunctionResult(body, result, `${path} return value`);
 }
 
+/** @internal Invokes an async function whose first author argument settles the result. */
+export async function invokeFunctionWithPromise(
+  body: ExpoOwnedSyncFunction<ExpoPromise>,
+  args: ESObject[],
+  path: string,
+): Promise<ESObject | void> {
+  const decoded: ESObject[] = prepareArguments(body, args, 1, path);
+  const result: ESObject | void = await new Promise<ESObject | void>((resolve, reject): void => {
+    decoded.unshift(new ExpoPromise(resolve, reject));
+    invokeRawSyncFunction(unwrapOwnedSyncFunction(body) as ExpoSyncFunctionBody, decoded);
+  });
+  return encodeFunctionResult(body, result, `${path} return value`);
+}
+
 function encodeFunctionResult<Body>(body: Body | ExpoFunctionSpec<Body>, value: ESObject | void, path: string): ESObject | void {
   if (body instanceof ExpoFunctionSpec) {
     const resultType: ExpoValueType<ESObject> | undefined = body.resultTypeValue();
@@ -1413,9 +1499,6 @@ function functionArityWithOwner<Body>(body: Body | ExpoFunctionSpec<Body>, owner
   }
 
   const arity: number = rawFunctionLength(body) - ownerArity;
-  if (arity !== 0) {
-    throw new ExpoModuleError('ERR_VALUE_CONVERTER_REQUIRED', 'Expo functions with arguments must use ExpoFunction.typed* converter tokens.');
-  }
 
   requireArityRange(arity, arity);
 
@@ -1481,12 +1564,6 @@ function typedFunctionSpec<Body>(body: Body, argumentTypes: ExpoValueType<ESObje
     requiredArguments -= 1;
   }
 
-  for (let index = 0; index < requiredArguments; index += 1) {
-    if (argumentTypes[index].isOmittable) {
-      throw new Error('Expo function optional/default arguments must be trailing.');
-    }
-  }
-
   return new ExpoFunctionSpec<Body>(body, ownerArity + requiredArguments, rawMaximum, requiredArguments < argumentTypes.length, argumentTypes);
 }
 
@@ -1519,9 +1596,11 @@ function requireNumber(value: ESObject, path: string): number {
 }
 
 function decodeDate(value: ESObject, path: string): Date {
+  if (value instanceof Date) return value;
   if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new ExpoArgumentTypeError(path, 'finite Date epoch milliseconds', value);
-    return new Date(value);
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) throw new ExpoArgumentTypeError(path, 'valid Date epoch milliseconds', value);
+    return date;
   }
 
   if (typeof value !== 'string') {
@@ -1610,53 +1689,6 @@ function numericTypedArrayName(value: ESObject): string | undefined {
   if (value instanceof BigInt64Array) return 'BigInt64Array';
   if (value instanceof BigUint64Array) return 'BigUint64Array';
   return undefined;
-}
-
-function validateCopyValue(value: ESObject, path: string, depth: number): void {
-  if (depth > MAX_VALUE_DEPTH) {
-    throw new ExpoModuleError('ERR_VALUE_NESTING', `${path} exceeds the maximum copy-value depth of ${MAX_VALUE_DEPTH}.`);
-  }
-
-  if (value === undefined || value === null || typeof value === 'boolean' || typeof value === 'string') return;
-
-  if (typeof value === 'number') {
-    requireNumber(value, path);
-    return;
-  }
-
-  if (Array.isArray(value)) {
-    value.forEach((item: ESObject, index: number): void => validateCopyValue(item, `${path}[${index}]`, depth + 1));
-    return;
-  }
-
-  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-    throw new ExpoModuleError(
-      'ERR_VALUE_CONVERTER_REQUIRED',
-      `${path} is ${ExpoValueConverter.actualType(value)} and requires its explicit ExpoValueTypes converter.`,
-    );
-  }
-
-  if (value instanceof Date || value instanceof url.URL) {
-    throw new ExpoModuleError(
-      'ERR_VALUE_CONVERTER_REQUIRED',
-      `${path} is ${ExpoValueConverter.actualType(value)} and requires its explicit ExpoValueTypes converter.`,
-    );
-  }
-
-  if (typeof value === 'function') {
-    throw new ExpoModuleError(
-      'ERR_UNSUPPORTED_VALUE_TYPE',
-      `${path} is a function/callback. Harmony callback values are not supported; use module or SharedObject events.`,
-    );
-  }
-
-  if (typeof value === 'symbol' || typeof value === 'bigint') {
-    throw new ExpoModuleError('ERR_UNSUPPORTED_VALUE_TYPE', `${path} has unsupported type '${typeof value}'.`);
-  }
-
-  Object.keys(value).forEach((key: string): void => {
-    validateCopyValue(value[key], `${path}.${key}`, depth + 1);
-  });
 }
 
 function isRecordValue(value: ESObject): boolean {

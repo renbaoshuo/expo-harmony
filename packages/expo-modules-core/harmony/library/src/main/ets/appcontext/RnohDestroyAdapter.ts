@@ -11,6 +11,7 @@ interface Destruction {
   before: Set<() => Promise<void>>;
   after: Set<() => void>;
   pending?: Promise<void>;
+  started: boolean;
   finished: boolean;
 }
 
@@ -23,17 +24,27 @@ function destruction(instance: RNInstance): Destruction {
     throw new Error('Expo Modules requires an RNInstanceImpl destruction lifecycle.');
   }
 
-  const state: Destruction = { before: new Set(), after: new Set(), finished: false };
+  const state: Destruction = { before: new Set(), after: new Set(), started: false, finished: false };
   const destroy = instance.onDestroy.bind(instance);
-  // RNOH 0.84.1 has no awaited pre-destroy hook or destruction notification.
-  // Keep the native route alive through the barrier and notify only after onDestroy completes.
+  // RNOH 0.86.1 lacks an awaited pre-destroy hook. Keep the native route alive through the barrier.
   instance.onDestroy = (disconnect: boolean = true): Promise<void> => {
     if (state.pending === undefined) {
+      state.started = true;
       state.pending = Promise.resolve().then(async (): Promise<void> => {
-        for (const before of state.before) await before();
+        for (const before of state.before) {
+          try {
+            await before();
+            state.before.delete(before);
+          } catch (error) {
+            // Retry invalidation before RNOH destroys the native executor.
+            state.pending = undefined;
+            throw error;
+          }
+        }
+
         await destroy(disconnect);
         state.finished = true;
-        state.before.clear();
+
         for (const after of Array.from(state.after)) {
           if (!state.after.has(after)) continue;
           try { after(); }
@@ -51,7 +62,7 @@ function destruction(instance: RNInstance): Destruction {
 
 export function installRnohDestroyBarrier(instance: RNInstance, beforeDestroy: () => Promise<void>): void {
   const state = destruction(instance);
-  if (state.pending !== undefined) throw new Error('Cannot register a destruction barrier after runtime teardown has started.');
+  if (state.started) throw new Error('Cannot register a destruction barrier after runtime teardown has started.');
   state.before.add(beforeDestroy);
 }
 

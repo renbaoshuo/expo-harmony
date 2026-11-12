@@ -17,6 +17,7 @@ export interface HeadlessAppLoaderParams {
 
 export interface HeadlessAppLoader {
   isAvailable(): boolean;
+  /** Joins a loading scope. Invalidate a failed or closing scope before starting it again. */
   loadApp(context: common.Context, params: HeadlessAppLoaderParams, alreadyRunning?: () => void, callback?: (success: boolean) => void): void;
   invalidateApp(appScopeKey: string): boolean;
   isRunning(appScopeKey: string): boolean;

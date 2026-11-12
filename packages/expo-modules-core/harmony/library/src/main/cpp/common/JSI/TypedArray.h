@@ -46,6 +46,9 @@ class TypedArray : public jsi::Object {
 
   jsi::ArrayBuffer getBuffer(jsi::Runtime &runtime) const;
 
+  /** Returns this view's bytes, copying only when it does not span the buffer. */
+  jsi::ArrayBuffer getViewedBufferSlice(jsi::Runtime &runtime) const;
+
   void* getRawPointer(jsi::Runtime &runtime) const;
 };
 

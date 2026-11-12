@@ -9,7 +9,7 @@
 
 namespace jsi = facebook::jsi;
 
-namespace expo::harmony {
+namespace expo::common {
 
 namespace {
 
@@ -121,4 +121,4 @@ CodedJSError::CodedJSError(
           runtime,
           CodedError(std::move(code), std::move(message))) {}
 
-}  // namespace expo::harmony
+}  // namespace expo::common

@@ -17,7 +17,7 @@
 #include <vector>
 #include <jsi/jsi.h>
 
-#include "errors/CodedError.h"
+#include "JSI/CodedError.h"
 
 namespace jsi = facebook::jsi;
 
@@ -25,9 +25,6 @@ namespace expo::EventEmitter {
 
 using ListenerDrainCallback = std::function<void(const std::string &eventName)>;
 
-/**
- Class containing and managing listeners of the event emitter.
- */
 class Listeners {
 private:
   friend class NativeState;
@@ -36,63 +33,28 @@ private:
   friend void removeAllListeners(jsi::Runtime &runtime, const jsi::Object &emitter, const std::string &eventName);
   friend void emitEvent(jsi::Runtime &runtime, const jsi::Object &emitter, const std::string &eventName, const jsi::Value *args, size_t count);
   friend size_t getListenerCount(jsi::Runtime &runtime, const jsi::Object &emitter, const std::string &eventName);
-  friend std::optional<expo::harmony::CodedError> drainListeners(
+  friend std::optional<expo::common::CodedError> drainListeners(
       jsi::Runtime &runtime,
       const jsi::Object &emitter,
       const ListenerDrainCallback &callback) noexcept;
 
-  /**
-   Type of the list containing listeners for the specific event name.
-   */
   using ListenersList = std::list<jsi::Value>;
-
-  /**
-   Type of the map where the keys are event names and the values are lists of listeners.
-   */
   using ListenersMap = std::unordered_map<std::string, ListenersList>;
 
-  /**
-   Map with the events and listeners.
-   */
   ListenersMap listenersMap;
 
-  /**
-   Adds a listener for the given event name.
-   */
   void add(jsi::Runtime &runtime, const std::string& eventName, const jsi::Function &listener) noexcept;
-
-  /**
-   Removes the listener for the given event name.
-   */
   void remove(jsi::Runtime &runtime, const std::string& eventName, const jsi::Function &listener) noexcept;
-
-  /**
-   Removes all listeners for the given event name.
-   */
   void removeAll(const std::string& eventName) noexcept;
-
-  /**
-   Clears the entire map of events and listeners.
-   */
   void clear() noexcept;
 
   /** Detaches all listeners before cleanup hooks are invoked. */
   ListenersMap takeAll() noexcept;
 
-  /**
-   Returns a number of listeners added for the given event name.
-   */
   size_t listenersCount(const std::string& eventName) noexcept;
-
-  /**
-   Calls listeners for the given event name, with the given `this` object and payload arguments.
-   */
   void call(jsi::Runtime &runtime, const std::string& eventName, const jsi::Object &thisObject, const jsi::Value *args, size_t count) noexcept;
 };
 
-/**
- Class representing a native state of objects that emit events.
- */
 class JSI_EXPORT NativeState : public jsi::NativeState {
 public:
   using Shared = std::shared_ptr<NativeState>;
@@ -100,9 +62,6 @@ public:
   NativeState();
   ~NativeState() override;
 
-  /**
-   A structure containing event listeners.
-   */
   Listeners listeners;
 
   /**
@@ -126,30 +85,20 @@ void closeListenerAdmission(
     jsi::Runtime &runtime,
     const jsi::Object &emitter) noexcept;
 
-/**
- Emits an event with the given name and arguments to the emitter object.
- Does nothing if the given object is not an instance of the EventEmitter class.
- */
-void emitEvent(jsi::Runtime &runtime, jsi::Object &emitter, const std::string &eventName, const std::vector<jsi::Value> &arguments);
+/** Does nothing if the object is not an EventEmitter. */
+void emitEvent(jsi::Runtime &runtime, const jsi::Object &emitter, const std::string &eventName, const std::vector<jsi::Value> &arguments);
 
 /**
  Drains every active event before invoking its native and JavaScript stop hooks.
  Listener state is detached first, all hooks are attempted, and the first error
  is returned to the owner so release can finish before reporting it.
  */
-std::optional<expo::harmony::CodedError> drainListeners(
+std::optional<expo::common::CodedError> drainListeners(
     jsi::Runtime &runtime,
     const jsi::Object &emitter,
     const ListenerDrainCallback &callback) noexcept;
 
-/**
- Gets `expo.EventEmitter` class from the given runtime.
- */
 jsi::Function getClass(jsi::Runtime &runtime);
-
-/**
- Installs `expo.EventEmitter` class in the given runtime.
- */
 void installClass(jsi::Runtime &runtime);
 
 } // namespace expo::EventEmitter

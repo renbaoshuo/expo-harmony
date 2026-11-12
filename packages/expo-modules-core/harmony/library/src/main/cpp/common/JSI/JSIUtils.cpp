@@ -133,13 +133,17 @@ void defineProperty(jsi::Runtime &runtime, jsi::Object *object, const char *name
 }
 
 void defineProperty(jsi::Runtime &runtime, jsi::Object *object, const char *name, jsi::Object descriptor) {
+  defineProperty(runtime, object, jsi::String::createFromUtf8(runtime, name), std::move(descriptor));
+}
+
+void defineProperty(jsi::Runtime &runtime, jsi::Object *object, const jsi::String &name, jsi::Object descriptor) {
   jsi::Object global = runtime.global();
   jsi::Object objectClass = global.getPropertyAsObject(runtime, "Object");
   jsi::Function definePropertyFunction = objectClass.getPropertyAsFunction(runtime, "defineProperty");
 
   definePropertyFunction.callWithThis(runtime, objectClass, {
     jsi::Value(runtime, *object),
-    jsi::String::createFromUtf8(runtime, name),
+    jsi::Value(runtime, name),
     std::move(descriptor),
   });
 }

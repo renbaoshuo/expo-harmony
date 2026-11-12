@@ -25,7 +25,7 @@ function snapshotExpoEventValue(value: ESObject, depth: number): ESObject {
   if (value === null || value === undefined) return value;
 
   const kind = typeof value;
-  if (kind === 'string' || kind === 'number' || kind === 'boolean') {
+  if (kind === 'string' || kind === 'number' || kind === 'boolean' || kind === 'bigint') {
     return value;
   }
 

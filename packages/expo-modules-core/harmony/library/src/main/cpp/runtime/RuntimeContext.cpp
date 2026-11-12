@@ -25,6 +25,7 @@
 #include "modules/ExpoModulesCoreTurboModule.h"
 #include "modules/internal/ModuleDefinition.h"
 #include "runtime/ModuleRegistry.h"
+#include "runtime/Protocol.h"
 #include "runtime/RuntimeInstaller.h"
 
 namespace jsi = facebook::jsi;
@@ -33,8 +34,6 @@ namespace expo::harmony {
 
 namespace {
 
-constexpr unsigned int kExpoModulesLogDomain = 0xD003900;
-constexpr const char *kExpoModulesLogTag = "ExpoModulesCore";
 
 void logSharedObjectReleaseError(
     long objectId,
@@ -44,8 +43,8 @@ void logSharedObjectReleaseError(
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Expo SharedObject %{public}ld failed during %{public}s: %{public}s",
         objectId,
         phase,
@@ -56,8 +55,8 @@ void logSharedObjectReleaseError(
   OH_LOG_Print(
       LOG_APP,
       LOG_ERROR,
-      kExpoModulesLogDomain,
-      kExpoModulesLogTag,
+      protocol::kLogDomain,
+      protocol::kLogTag,
       "Expo SharedObject %{public}ld failed during %{public}s with a native exception",
       objectId,
       phase);
@@ -147,8 +146,8 @@ std::shared_ptr<RuntimeContext> RuntimeContext::create(
               OH_LOG_Print(
                   LOG_APP,
                   LOG_FATAL,
-                  kExpoModulesLogDomain,
-                  kExpoModulesLogTag,
+                  protocol::kLogDomain,
+                  protocol::kLogTag,
                   "Leaking RuntimeContext because its JS executor discarded teardown");
             });
             deletionInvoker->invokeAsync(
@@ -166,8 +165,8 @@ std::shared_ptr<RuntimeContext> RuntimeContext::create(
         OH_LOG_Print(
             LOG_APP,
             LOG_FATAL,
-            kExpoModulesLogDomain,
-            kExpoModulesLogTag,
+            protocol::kLogDomain,
+            protocol::kLogTag,
             "Leaking RuntimeContext because its JS executor cannot accept teardown");
       });
 }
@@ -229,7 +228,11 @@ bool RuntimeContext::isAlive() const noexcept {
 }
 
 bool RuntimeContext::isAcceptingTasks() const noexcept {
-  return acceptingTasks_.load(std::memory_order_acquire);
+  if (!acceptingTasks_.load(std::memory_order_acquire)) return false;
+  if (!workletContext_) return true;
+
+  auto owner = sharedObjectOwner_.lock();
+  return owner && owner->isAlive() && owner->isAcceptingTasks();
 }
 
 bool RuntimeContext::isRuntimeThread() const noexcept {
@@ -242,6 +245,87 @@ RuntimeEpoch RuntimeContext::runtimeEpoch() const noexcept {
 
 std::string RuntimeContext::runtimeEpochString() const {
   return encodeRuntimeEpoch(runtimeEpoch_);
+}
+
+bool RuntimeContext::isWorkletContext() const noexcept {
+  return workletContext_;
+}
+
+std::shared_ptr<RuntimeContext> RuntimeContext::requireSharedObjectOwner() const {
+  auto owner = sharedObjectOwner_.lock();
+  if (!owner || !owner->isAlive() || !owner->isAcceptingTasks()) {
+    throw CodedError("ERR_RUNTIME_DESTROYED", "The React Native runtime owning this worklet's SharedObjects was destroyed.");
+  }
+
+  return owner;
+}
+
+std::string RuntimeContext::bridgeRuntimeEpochString() const {
+  return workletContext_ ? requireSharedObjectOwner()->runtimeEpochString() : runtimeEpochString();
+}
+
+void RuntimeContext::initializeWorkletModuleRegistry(
+    const std::shared_ptr<RuntimeContext> &owner,
+    std::vector<ModuleDefinition> definitions) {
+  assertRuntimeThread();
+  workletContext_ = true;
+  sharedObjectOwner_ = owner;
+
+  moduleRegistry_ = std::make_unique<ModuleRegistry>(shared_from_this());
+  moduleRegistry_->initializeWorkletClasses(std::move(definitions));
+
+  // Registration and the owner's retirement snapshot share one lock, so a
+  // concurrent reload cannot leave an installed UI context without teardown.
+  std::scoped_lock lock(owner->mutex_);
+  if (!owner->isAlive() || !owner->isAcceptingTasks()) {
+    throw CodedError("ERR_RUNTIME_DESTROYED", "Cannot attach a worklet context to a retired React Native runtime.");
+  }
+  std::erase_if(owner->workletContexts_, [](const auto &context) { return context.expired(); });
+  owner->workletContexts_.push_back(shared_from_this());
+}
+
+jsi::Value RuntimeContext::resolveWorkletSharedObject(long objectId) {
+  assertRuntimeThread();
+
+  auto owner = requireSharedObjectOwner();
+  auto identity = owner->nativeSharedObjectIdentity(objectId);
+  auto cached = getSharedObject(objectId);
+  if (!cached.isUndefined()) return cached;
+
+  auto &rt = runtime();
+  auto modules = rt.global().getPropertyAsObject(rt, "expo").getPropertyAsObject(rt, "modules");
+  // Loading a module installs its classes and any cross-module base classes.
+  modules.getProperty(rt, identity.moduleName.c_str());
+  auto klass = getClass(identity.moduleName, identity.className);
+  if (!klass.isObject()) {
+    throw CodedError("ERR_CLASS_NOT_FOUND", "The SharedObject's class is not registered in this worklet runtime.");
+  }
+
+  auto prototype = klass.getObject(rt).getPropertyAsObject(rt, "prototype");
+  auto proxy = expo::common::createObjectWithPrototype(rt, &prototype);
+
+  // A proxy never pairs or finalizes the owner's native instance. It has its
+  // own local release state; owner release/reload invalidates all future calls.
+  SharedObjectWrapperState::Token wrapper;
+  {
+    std::scoped_lock lock(mutex_);
+    wrapper = sharedObjectWrappers_.replace(objectId);
+  }
+
+  proxy.setNativeState(
+      rt, std::make_shared<expo::SharedObject::NativeState>(
+              objectId, [weakContext = weak_from_this(), wrapper](long id) {
+                if (auto context = weakContext.lock()) {
+                  context->scheduleSharedObjectRelease(id, wrapper);
+                }
+              }));
+  if (identity.nativeRefType != "SharedObject") {
+    expo::common::defineProperty(rt, &proxy, "nativeRefType", {
+        .value = jsi::String::createFromUtf8(rt, identity.nativeRefType)});
+  }
+  retainSharedObject(objectId, proxy);
+
+  return proxy;
 }
 
 void RuntimeContext::assertRuntimeThread() const {
@@ -266,8 +350,8 @@ void RuntimeContext::invalidate(std::function<void()> completion) noexcept {
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Unable to retain Expo runtime invalidation completion");
       completion = nullptr;
     }
@@ -280,7 +364,21 @@ void RuntimeContext::invalidate(std::function<void()> completion) noexcept {
     return;
   }
 
-  acceptingTasks_.store(false, std::memory_order_release);
+  if (acceptingTasks_.exchange(false, std::memory_order_acq_rel)) {
+    std::vector<std::weak_ptr<RuntimeContext>> worklets;
+    {
+      std::scoped_lock lock(mutex_);
+      worklets.swap(workletContexts_);
+    }
+
+    for (const auto &worklet : worklets) {
+      if (auto context = worklet.lock()) {
+        // Each context releases its JSI roots on its own executor.
+        context->invalidate();
+      }
+    }
+  }
+
   if (!isRuntimeThread()) {
     if (invalidationScheduled_.exchange(true, std::memory_order_acq_rel)) {
       return;
@@ -302,8 +400,8 @@ void RuntimeContext::invalidate(std::function<void()> completion) noexcept {
               OH_LOG_Print(
                   LOG_APP,
                   LOG_ERROR,
-                  kExpoModulesLogDomain,
-                  kExpoModulesLogTag,
+                  protocol::kLogDomain,
+                  protocol::kLogTag,
                   "Expo runtime invalidation was discarded by its JS executor");
             });
         jsInvoker_->invokeAsync(
@@ -319,8 +417,8 @@ void RuntimeContext::invalidate(std::function<void()> completion) noexcept {
         OH_LOG_Print(
             LOG_APP,
             LOG_ERROR,
-            kExpoModulesLogDomain,
-            kExpoModulesLogTag,
+            protocol::kLogDomain,
+            protocol::kLogTag,
             "Unable to allocate Expo runtime invalidation callback");
       }
     } else {
@@ -340,8 +438,8 @@ void RuntimeContext::invalidate(std::function<void()> completion) noexcept {
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Unable to retain Expo runtime during asynchronous invalidation");
     return;
   }
@@ -355,8 +453,8 @@ void RuntimeContext::invalidateAfterViewTeardown() noexcept {
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Expo View teardown did not return to its owning JavaScript executor");
     return;
   }
@@ -416,8 +514,8 @@ void RuntimeContext::scheduleInvalidationAfterDispatchedInvocations() noexcept {
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Expo invocation teardown continuation was discarded by its JS executor");
     });
     invoker->invokeAsync(
@@ -430,8 +528,8 @@ void RuntimeContext::scheduleInvalidationAfterDispatchedInvocations() noexcept {
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Unable to schedule Expo invocation teardown continuation");
   }
 }
@@ -468,8 +566,8 @@ void RuntimeContext::finishInvalidation() noexcept {
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Expo module registry threw during runtime teardown");
     }
   }
@@ -483,16 +581,16 @@ void RuntimeContext::finishInvalidation() noexcept {
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Unable to invalidate ArkTS Expo module runtime scope: %{public}s",
         error.what());
   } catch (...) {
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Unable to invalidate ArkTS Expo module runtime scope");
   }
   try {
@@ -503,8 +601,8 @@ void RuntimeContext::finishInvalidation() noexcept {
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Unable to clear Expo runtime references during teardown");
     {
       std::scoped_lock lock(mutex_);
@@ -531,7 +629,7 @@ void RuntimeContext::dispatchToJavaScript(std::function<void()> task) {
   if (!task) {
     return;
   }
-  if (!isAlive() || !acceptingTasks_.load(std::memory_order_acquire)) {
+  if (!isAlive() || !isAcceptingTasks()) {
     throw CodedError(
         "ERR_RUNTIME_DESTROYED",
         "Cannot dispatch Expo module work while the runtime is being destroyed.");
@@ -557,7 +655,7 @@ void RuntimeContext::dispatchToJavaScript(std::function<void()> task) {
 
 bool RuntimeContext::beginDispatchedInvocation() noexcept {
   std::scoped_lock lock(mutex_);
-  if (!alive_.load(std::memory_order_acquire) || !acceptingTasks_.load(std::memory_order_acquire) || runtimeInvocations_.isDrainRequested()) {
+  if (!isAlive() || !isAcceptingTasks() || runtimeInvocations_.isDrainRequested()) {
     return false;
   }
   runtimeInvocations_.acquire();
@@ -769,8 +867,8 @@ void RuntimeContext::scheduleMountedViewTeardown() noexcept {
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Expo View teardown was requested off its owning JavaScript executor");
     return;
   }
@@ -801,8 +899,8 @@ void RuntimeContext::scheduleMountedViewTeardown() noexcept {
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Cannot destroy mounted Expo views without a MAIN executor");
       return;
     }
@@ -828,8 +926,8 @@ void RuntimeContext::scheduleMountedViewTeardown() noexcept {
               OH_LOG_Print(
                   LOG_APP,
                   LOG_ERROR,
-                  kExpoModulesLogDomain,
-                  kExpoModulesLogTag,
+                  protocol::kLogDomain,
+                  protocol::kLogTag,
                   "Expo View teardown completed, but its JS continuation was discarded");
             });
             invoker->invokeAsync(
@@ -842,8 +940,8 @@ void RuntimeContext::scheduleMountedViewTeardown() noexcept {
             OH_LOG_Print(
                 LOG_APP,
                 LOG_ERROR,
-                kExpoModulesLogDomain,
-                kExpoModulesLogTag,
+                protocol::kLogDomain,
+                protocol::kLogTag,
                 "Unable to schedule the Expo View teardown JS continuation");
           }
         });
@@ -851,8 +949,8 @@ void RuntimeContext::scheduleMountedViewTeardown() noexcept {
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Unable to schedule Expo View teardown on MAIN");
   }
 }
@@ -863,8 +961,8 @@ bool RuntimeContext::destroyMountedViews() noexcept {
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Refusing to destroy Expo views outside the MAIN executor");
       return false;
     }
@@ -883,8 +981,8 @@ bool RuntimeContext::destroyMountedViews() noexcept {
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Cannot destroy mounted Expo views without their module registry");
     return false;
   }
@@ -903,8 +1001,8 @@ bool RuntimeContext::destroyMountedViews() noexcept {
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Unable to snapshot mounted Expo views during runtime teardown");
     return false;
   }
@@ -923,8 +1021,8 @@ bool RuntimeContext::destroyMountedViews() noexcept {
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Expo view %{public}s#%{public}lld failed during runtime teardown [%{public}s]: %{public}s",
           componentName.c_str(),
           static_cast<long long>(tag),
@@ -934,8 +1032,8 @@ bool RuntimeContext::destroyMountedViews() noexcept {
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Expo view %{public}s#%{public}lld failed during runtime teardown: %{public}s",
           componentName.c_str(),
           static_cast<long long>(tag),
@@ -944,8 +1042,8 @@ bool RuntimeContext::destroyMountedViews() noexcept {
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Expo view %{public}s#%{public}lld failed during runtime teardown with an unknown native exception",
           componentName.c_str(),
           static_cast<long long>(tag));
@@ -980,6 +1078,9 @@ ModuleRegistry &RuntimeContext::moduleRegistry() const {
   return *moduleRegistry_;
 }
 
+// Numeric View props must never alias an ID owned by another runtime or reload.
+std::atomic_long RuntimeContext::nextObjectId_{1};
+
 long RuntimeContext::allocateSharedObjectId() {
   constexpr long kMaximumSharedObjectId = static_cast<long>(9007199254740991LL);
   auto candidate = nextObjectId_.load(std::memory_order_relaxed);
@@ -988,7 +1089,7 @@ long RuntimeContext::allocateSharedObjectId() {
     if (candidate <= 0 || candidate > kMaximumSharedObjectId) {
       throw CodedError(
           "ERR_SHARED_OBJECT_ID_EXHAUSTED",
-          "The Expo SharedObject identity space for this runtime was exhausted.");
+          "The Expo SharedObject identity space was exhausted.");
     }
 
     if (nextObjectId_.compare_exchange_weak(
@@ -1043,6 +1144,10 @@ jsi::Value RuntimeContext::materializeNativeSharedObject(
     std::string className,
     std::shared_ptr<NativeSharedObject> nativeObject) {
   assertRuntimeThread();
+  if (workletContext_) {
+    return resolveWorkletSharedObject(requireSharedObjectOwner()->nativeSharedObjectIdentity(nativeObject).objectId);
+  }
+
   auto classValue = getClass(moduleName, className);
   if (!classValue.isObject() || !classValue.getObject(runtime()).isFunction(runtime())) {
     throw CodedError(
@@ -1147,6 +1252,8 @@ jsi::Value RuntimeContext::bindNativeSharedObject(
 
 std::shared_ptr<NativeSharedObject> RuntimeContext::getNativeSharedObject(
     long objectId) const {
+  if (workletContext_) return requireSharedObjectOwner()->getNativeSharedObject(objectId);
+
   std::scoped_lock lock(mutex_);
   auto iterator = nativeSharedObjects_.find(objectId);
   if (iterator == nativeSharedObjects_.end() || sharedObjectInvocations_.isReleaseRequested(objectId) || iterator->second->isReleaseRequested()) {
@@ -1165,6 +1272,8 @@ std::shared_ptr<NativeSharedObject> RuntimeContext::getNativeSharedObject(
     long objectId,
     const std::string &moduleName,
     const std::string &className) const {
+  if (workletContext_) return requireSharedObjectOwner()->getNativeSharedObject(objectId, moduleName, className);
+
   std::scoped_lock lock(mutex_);
   auto nativeIterator = nativeSharedObjects_.find(objectId);
   auto classIterator = nativeSharedObjectClasses_.find(objectId);
@@ -1190,6 +1299,7 @@ std::shared_ptr<NativeSharedObject> RuntimeContext::getNativeSharedObject(
 
 NativeSharedObjectIdentity RuntimeContext::nativeSharedObjectIdentity(
     const std::shared_ptr<NativeSharedObject> &object) const {
+  if (workletContext_) return requireSharedObjectOwner()->nativeSharedObjectIdentity(object);
   if (!object) {
     throw CodedError(
         "ERR_SHARED_OBJECT_RELEASED",
@@ -1229,6 +1339,7 @@ NativeSharedObjectIdentity RuntimeContext::nativeSharedObjectIdentity(
 
 SharedObjectInvocationIdentity RuntimeContext::captureSharedObjectInvocation(
     const std::shared_ptr<NativeSharedObject> &object) const {
+  if (workletContext_) return requireSharedObjectOwner()->captureSharedObjectInvocation(object);
   if (!object) {
     throw CodedError(
         "ERR_SHARED_OBJECT_RELEASED",
@@ -1258,6 +1369,8 @@ SharedObjectInvocationIdentity RuntimeContext::captureSharedObjectInvocation(
 
 SharedObjectInvocationLeaseBundle RuntimeContext::acquireSharedObjectInvocations(
     const std::vector<std::shared_ptr<NativeSharedObject>> &objects) {
+  if (workletContext_) return requireSharedObjectOwner()->acquireSharedObjectInvocations(objects);
+
   auto context = shared_from_this();
   std::vector<std::shared_ptr<NativeSharedObject>> uniqueObjects;
   uniqueObjects.reserve(objects.size());
@@ -1351,6 +1464,13 @@ void RuntimeContext::retainSharedObject(
 
 void RuntimeContext::releaseSharedObject(long objectId) {
   assertRuntimeThread();
+  if (workletContext_) {
+    std::scoped_lock lock(mutex_);
+    sharedObjects_.erase(objectId);
+    sharedObjectWrappers_.erase(objectId);
+    return;
+  }
+
   std::shared_ptr<jsi::WeakObject> weakEmitter;
   {
     std::scoped_lock lock(mutex_);
@@ -1620,8 +1740,8 @@ void RuntimeContext::scheduleSharedObjectReleaseFinalization(
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "SharedObject %{public}ld release continuation was discarded by its JS executor",
           objectId);
     });
@@ -1655,8 +1775,8 @@ void RuntimeContext::scheduleSharedObjectReleaseFinalization(
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Unable to schedule SharedObject %{public}ld release continuation",
         objectId);
   }
@@ -1696,17 +1816,24 @@ void RuntimeContext::scheduleSharedObjectRelease(long objectId, SharedObjectWrap
 
 jsi::Value RuntimeContext::getSharedObject(long objectId) {
   assertRuntimeThread();
+  if (workletContext_) (void)requireSharedObjectOwner()->getNativeSharedObject(objectId);
+
   std::shared_ptr<jsi::WeakObject> weakObject;
   {
     std::scoped_lock lock(mutex_);
     const auto native = nativeSharedObjects_.find(objectId);
     auto iterator = sharedObjects_.find(objectId);
-    if (iterator == sharedObjects_.end() || native == nativeSharedObjects_.end() || sharedObjectInvocations_.isReleaseRequested(objectId) || native->second->isReleaseRequested()) {
+    if (iterator == sharedObjects_.end() || (!workletContext_ && (native == nativeSharedObjects_.end() || sharedObjectInvocations_.isReleaseRequested(objectId) || native->second->isReleaseRequested()))) {
       return jsi::Value::undefined();
     }
     weakObject = iterator->second;
   }
+
   auto value = weakObject->lock(runtime());
+  if (value.isObject() && value.getObject(runtime()).hasNativeState<expo::SharedObject::NativeState>(runtime()) &&
+      value.getObject(runtime()).getNativeState<expo::SharedObject::NativeState>(runtime())->isReleased()) {
+    return jsi::Value::undefined();
+  }
   if (value.isUndefined()) {
     std::scoped_lock lock(mutex_);
     auto iterator = sharedObjects_.find(objectId);
@@ -1806,8 +1933,8 @@ void RuntimeContext::drainModuleListeners() noexcept {
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Unable to snapshot Expo module listeners during runtime teardown");
     return;
   }
@@ -1818,8 +1945,8 @@ void RuntimeContext::drainModuleListeners() noexcept {
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Expo module %{public}s failed to stop observing during runtime teardown: %{public}s",
           moduleName.c_str(),
           error->what());
@@ -1895,8 +2022,8 @@ void RuntimeContext::releaseAllSharedObjects() noexcept {
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Unable to snapshot SharedObjects during runtime teardown");
     return;
   }

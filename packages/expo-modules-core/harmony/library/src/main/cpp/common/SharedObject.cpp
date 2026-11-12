@@ -43,7 +43,7 @@ void installBaseClass(jsi::Runtime &runtime, const ObjectReleaser& releaser) {
     runtime,
     jsi::PropNameID::forAscii(runtime, "release"),
     1,
-    [releaser](jsi::Runtime &runtime, const jsi::Value &thisValue, const jsi::Value *args, size_t count) -> jsi::Value {
+    [](jsi::Runtime &runtime, const jsi::Value &thisValue, const jsi::Value *args, size_t count) -> jsi::Value {
       jsi::Object thisObject = thisValue.getObject(runtime);
 
       if (thisObject.hasNativeState<NativeState>(runtime)) {

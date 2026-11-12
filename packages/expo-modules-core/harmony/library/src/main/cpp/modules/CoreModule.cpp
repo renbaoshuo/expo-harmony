@@ -12,7 +12,6 @@
 
 #include "api/Version.h"
 #include "errors/CodedError.h"
-#include "fabric/ExpoViewComponentRegistry.h"
 #include "modules/ExpoModulesCoreTurboModule.h"
 #include "modules/Uuid.h"
 #include "runtime/ModuleRegistry.h"
@@ -187,10 +186,10 @@ ModuleDefinition CoreModule::definition() {
                                runtime, "reloadAppAsync", &argument, 1);
                          }});
   builder.function({.name = "installOnUIRuntime",
-                    .arity = 0,
+                    .arity = 1,
                     .body = [](Invocation &invocation) {
                       WorkletRuntimeInstaller::install(
-                          invocation.runtime(), invocation.sharedContext());
+                          invocation.runtime(), invocation.sharedContext(), invocation.argument(0));
                       return jsi::Value::undefined();
                     }});
 

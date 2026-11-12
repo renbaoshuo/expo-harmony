@@ -7,6 +7,8 @@
 
 #include "RuntimeInstaller.h"
 
+#include <cmath>
+#include <limits>
 #include <common/EventEmitter.h>
 #include <common/JSI/JSIUtils.h>
 #include <common/NativeModule.h>
@@ -16,6 +18,7 @@
 #include "errors/CodedError.h"
 #include "modules/ModulesHostObject.h"
 #include "runtime/ModuleRegistry.h"
+#include "runtime/Protocol.h"
 #include "runtime/RuntimeContext.h"
 #include "worklets/WorkletRuntimeInstaller.h"
 
@@ -74,7 +77,7 @@ void defineCoreAlias(
 }  // namespace
 
 std::shared_ptr<RuntimeContext> RuntimeInstaller::installedContext(
-    jsi::Runtime &runtime) {
+    jsi::Runtime &runtime, bool requireAcceptingTasks) {
   auto existing = runtime.global().getProperty(runtime, "expo");
   if (!existing.isObject()) {
     return nullptr;
@@ -89,7 +92,7 @@ std::shared_ptr<RuntimeContext> RuntimeInstaller::installedContext(
   auto nativeState = expoObject.getNativeState<RuntimeContextNativeState>(runtime);
   auto context = nativeState ? nativeState->context() : nullptr;
 
-  return context && context->isAlive() && context->isAcceptingTasks()
+  return context && context->isAlive() && (!requireAcceptingTasks || context->isAcceptingTasks())
            ? context
            : nullptr;
 }
@@ -159,6 +162,8 @@ bool RuntimeInstaller::install(
     expoObject.setNativeState(
         runtime, std::make_shared<RuntimeContextNativeState>(context));
     if (!workletRuntime) {
+      defineReadOnly(runtime, expoObject, "__expo_app_identifier__",
+                     jsi::String::createFromUtf8(runtime, context->runtimeEpochString()));
       context->initializeModuleRegistry();
       auto modulesHost = std::make_shared<ModulesHostObject>(context);
       expoObject.setProperty(
@@ -166,9 +171,10 @@ bool RuntimeInstaller::install(
           "modules",
           jsi::Object::createFromHostObject(runtime, std::move(modulesHost)));
 
+      const auto *coreDefinition = context->moduleRegistry().find("ExpoModulesCore");
       auto coreValue = expoObject.getPropertyAsObject(runtime, "modules")
                            .getProperty(runtime, "ExpoModulesCore");
-      if (!coreValue.isObject()) {
+      if (!coreDefinition || !coreValue.isObject()) {
         throw CodedError(
             "ERR_INVALID_DEFINITION",
             "The native ExpoModulesCore definition was not registered.");
@@ -180,13 +186,45 @@ bool RuntimeInstaller::install(
           expoObject,
           "expoModulesCoreVersion",
           core.getProperty(runtime, "expoModulesCoreVersion"));
-      defineCoreAlias(runtime, expoObject, "cacheDir");
-      defineCoreAlias(runtime, expoObject, "documentsDir");
-
-      for (const char *function : {
-               "uuidv4", "uuidv5", "getViewConfig", "reloadAppAsync", "installOnUIRuntime"}) {
-        expoObject.setProperty(runtime, function, core.getProperty(runtime, function));
+      for (const auto &property : coreDefinition->properties) {
+        if (property.name != "expoModulesCoreVersion") {
+          defineCoreAlias(runtime, expoObject, property.name.c_str());
+        }
       }
+      for (const auto &[name, _] : coreDefinition->constants) {
+        defineCoreAlias(runtime, expoObject, name.c_str());
+      }
+      for (const auto &function : coreDefinition->functions) {
+        const auto *name = function.name.c_str();
+        expoObject.setProperty(runtime, name, core.getProperty(runtime, name));
+      }
+    } else {
+      expoObject.setProperty(runtime, "modules",
+          jsi::Object::createFromHostObject(runtime, std::make_shared<ModulesHostObject>(context)));
+      auto sharedObject = expoObject.getPropertyAsObject(runtime, "SharedObject");
+      sharedObject.setProperty(runtime, protocol::kResolveSharedObjectInWorklet,
+          jsi::Function::createFromHostFunction(runtime,
+              jsi::PropNameID::forAscii(runtime, protocol::kResolveSharedObjectInWorklet), 1,
+              [weakContext = std::weak_ptr<RuntimeContext>(context)](
+                  jsi::Runtime &rt, const jsi::Value &, const jsi::Value *args, size_t count) -> jsi::Value {
+                try {
+                  auto context = weakContext.lock();
+                  if (!context || !context->isAlive() || !context->isAcceptingTasks()) {
+                    throw CodedError("ERR_RUNTIME_DESTROYED", "The Expo worklet runtime was destroyed.");
+                  }
+
+                  if (count != 1 || !args[0].isNumber() || !std::isfinite(args[0].getNumber()) ||
+                      args[0].getNumber() <= 0 || args[0].getNumber() > 9007199254740991.0 ||
+                      args[0].getNumber() > static_cast<double>(std::numeric_limits<long>::max()) ||
+                      std::trunc(args[0].getNumber()) != args[0].getNumber()) {
+                    throw CodedError("ERR_INVALID_SHARED_OBJECT_ID", "__resolveInWorklet expects a positive safe integer SharedObject ID.");
+                  }
+
+                  return context->resolveWorkletSharedObject(static_cast<long>(args[0].getNumber()));
+                } catch (const CodedError &error) {
+                  throw CodedJSError(rt, error);
+                }
+              }));
     }
 
     defineReadOnly(

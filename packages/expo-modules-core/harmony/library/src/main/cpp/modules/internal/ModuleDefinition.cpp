@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "errors/CodedError.h"
+#include "runtime/Protocol.h"
 #include "runtime/RuntimeContext.h"
 
 namespace jsi = facebook::jsi;
@@ -200,7 +201,7 @@ ModuleDefinitionBuilder &ModuleDefinitionBuilder::view(
   const auto defaultView = definition.defaultView || definition_.views.empty();
   definition.defaultView = defaultView;
   if (definition.componentName.empty()) {
-    definition.componentName = "ViewManagerAdapter_" + definition_.name;
+    definition.componentName = protocol::kViewComponentPrefix + definition_.name;
     if (!defaultView) {
       definition.componentName += "_" + definition.name;
     }

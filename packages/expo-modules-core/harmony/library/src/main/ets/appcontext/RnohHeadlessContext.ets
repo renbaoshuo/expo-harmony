@@ -12,6 +12,8 @@ import { RnohContextLifecycle } from './RnohContextLifecycle';
 import { RnohPackagerClient } from './RnohPackagerClient';
 import { adaptRnohExtensionContext } from './RnohExtensionContext';
 
+const WINDOW_NOT_FOUND: number = 1300002;
+
 export class RnohHeadlessContext {
   readonly coordinator: RNInstancesCoordinator;
   readonly ability: common.UIAbilityContext;
@@ -59,7 +61,7 @@ export class RnohHeadlessContext {
       const insets: ESObject = core.safeAreaInsetsProvider;
       // Only a missing window is expected for ExtensionAbility; other failures still reject startup.
       this.ready = insets.ready.catch((error: ESObject): void => {
-        if (error?.code !== 1300002)
+        if (error?.code !== WINDOW_NOT_FOUND)
           throw new ExpoModuleError('ERR_REACT_HOST_INSETS', 'Unable to initialize background display insets.', error as Object);
       });
       insets.ready = this.ready;

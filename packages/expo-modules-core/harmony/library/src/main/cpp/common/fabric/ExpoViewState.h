@@ -15,10 +15,6 @@
 #include <limits>
 
 #include <folly/dynamic.h>
-#ifdef ANDROID
-#include <react/renderer/mapbuffer/MapBuffer.h>
-#include <react/renderer/mapbuffer/MapBufferBuilder.h>
-#endif
 
 namespace expo {
 
@@ -81,16 +77,6 @@ public:
     return static_cast<float>(dimension);
   }
 
-#ifdef ANDROID
-  folly::dynamic getDynamic() const {
-    return {};
-  };
-
-  facebook::react::MapBuffer getMapBuffer() const {
-    return facebook::react::MapBufferBuilder::EMPTY();
-  };
-
-#endif
 
   float _width = std::numeric_limits<float>::quiet_NaN();
   float _height = std::numeric_limits<float>::quiet_NaN();

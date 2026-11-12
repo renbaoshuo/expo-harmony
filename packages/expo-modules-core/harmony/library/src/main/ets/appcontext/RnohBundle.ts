@@ -6,30 +6,30 @@
  */
 
 import { RNInstance } from '@rnoh/react-native-openharmony/ts';
-import { EXPO_BUNDLE_WAIT, EXPO_BUNDLE_CANCEL, EXPO_BUNDLE_READY } from '../protocol/Protocol';
 import { observeRnohDestroy } from './RnohDestroyAdapter';
 
-let sequence = 0;
+type BundleProvider = { getURL(): string; };
 
 function sameBundle(left: BundleProvider, right: BundleProvider): boolean {
   if (left === right) return true;
+
   try {
     const leftUrl = left.getURL();
     const rightUrl = right.getURL();
+
     return typeof leftUrl === 'string' && leftUrl.length > 0 && leftUrl === rightUrl;
-  } catch (_error) {
+  } catch (_) {
     return false;
   }
 }
-type BundleProvider = { getURL(): string; };
 
 interface BundleCompletion {
-  initialization: Promise<void>;
   completion: Promise<void>;
   loaded: boolean;
   failed: boolean;
   fail(error: Error): void;
 }
+
 const bundles = new WeakMap<RNInstance, BundleCompletion>();
 
 export function waitForRnohBundle(instance: RNInstance): Promise<void> {
@@ -37,7 +37,7 @@ export function waitForRnohBundle(instance: RNInstance): Promise<void> {
 }
 
 export function waitForRnohInitialization(instance: RNInstance): Promise<void> {
-  return bundles.get(instance)?.initialization ?? Promise.reject(new Error('Install the React bundle lifecycle before initializing the runtime.'));
+  return waitForRnohBundle(instance);
 }
 
 export function hasLoadedRnohBundle(instance: RNInstance): boolean {
@@ -53,29 +53,50 @@ export function installRnohBundleBarrier(instance: RNInstance): void {
 
   let finish: () => void = () => {};
   let reject: (error: Error) => void = () => {};
-  const failure = new Promise<void>((_resolve, failure) => { reject = failure; });
-  const completion = Promise.race([new Promise<void>(resolve => { finish = resolve; }), failure]);
-  let initialized: () => void = () => {};
-  let unavailable: (error: Error) => void = () => {};
-  const initialization = new Promise<void>((resolve, reject) => { initialized = resolve; unavailable = reject; });
+  const completion = new Promise<void>((resolve, failure) => {
+    finish = resolve;
+    reject = failure;
+  });
   const fail = (error: Error): void => {
-    if (!bundle.loaded) { bundle.failed = true; reject(error); unavailable(error); }
+    if (!bundle.loaded && !bundle.failed) {
+      bundle.failed = true;
+      reject(error);
+    }
   };
-  const bundle: BundleCompletion = { initialization, completion, loaded: false, failed: false, fail };
-  completion.catch(() => {});
+
+  const bundle: BundleCompletion = { completion, loaded: false, failed: false, fail };
   bundles.set(instance, bundle);
-  const created = instance.subscribeToLifecycleEvents('JS_BUNDLE_EXECUTION_FINISH', initialized);
-  initialization.then(created, created);
+
+  const loaded = (): void => {
+    if (bundle.failed) return;
+
+    bundle.loaded = true;
+    finish();
+  };
+  // RNOH 0.86 emits this after the app bundle, separately from its resource bootstrap.
+  const unsubscribeLoaded = instance.subscribeToLifecycleEvents('JS_BUNDLE_EXECUTION_FINISH', loaded);
+  const unsubscribeError = instance.subscribeToRNOHErrors(error => {
+    const failure = new Error(error.getMessage());
+    const stack = error.getStack()?.toString();
+    if (stack) failure.stack = `${failure.message}\n${stack}`;
+    fail(failure);
+  });
+  const unsubscribeDestroy = observeRnohDestroy(instance, () => fail(new Error('The React runtime was destroyed before its first bundle completed.')));
+  const cleanup = (): void => {
+    unsubscribeLoaded();
+    unsubscribeError();
+    unsubscribeDestroy();
+  };
+  completion.then(cleanup, cleanup);
+
   const url = instance.getInitialBundleUrl();
-  if (url !== undefined && instance.getBundleExecutionStatus(url) === 'DONE') initialized();
-  const detached = observeRnohDestroy(instance, () => fail(new Error('The React runtime was destroyed before its first bundle completed.')));
-  completion.then(detached, detached);
+  if (url !== undefined && instance.getBundleExecutionStatus(url) === 'DONE') loaded();
 
   const run = instance.runJSBundle.bind(instance);
   let tail: Promise<void> = Promise.resolve();
   let first: { provider: BundleProvider; promise: Promise<void> } | undefined;
   instance.runJSBundle = provider => {
-    if (!bundle.loaded && !bundle.failed && first !== undefined && sameBundle(first.provider, provider)) {
+    if (first !== undefined && sameBundle(first.provider, provider)) {
       return first.promise;
     }
 
@@ -83,47 +104,21 @@ export function installRnohBundleBarrier(instance: RNInstance): void {
       if (bundle.failed) return completion;
       if (bundle.loaded) return run(provider);
 
-      const request = `${instance.getId()}:${++sequence}`;
-      let resolve: () => void = () => {};
-      let reject: (error: Error) => void = () => {};
-      const ready = new Promise<void>((success, failure) => { resolve = success; reject = failure; });
-      ready.catch(() => {});
-      const received = instance.cppEventEmitter.subscribe(EXPO_BUNDLE_READY, event => {
-        if ((event as { request?: string }).request === request) resolve();
-      });
-      const failed = instance.subscribeToRNOHErrors(error => {
-        const failure = new Error(error.getMessage());
-        const stack = error.getStack()?.toString();
-        if (stack) failure.stack = `${failure.message}\n${stack}`;
-        fail(failure);
-      });
-      let alive = true;
-      const destroyed = observeRnohDestroy(instance, () => {
-        alive = false;
-        reject(new Error('The React runtime was destroyed while loading its first bundle.'));
-      });
-
       try {
-        instance.postMessageToCpp(EXPO_BUNDLE_WAIT, { request });
-        await Promise.race([Promise.all([run(provider), ready]), failure]);
-        bundle.loaded = true;
-        finish();
+        await Promise.all([run(provider), completion]);
       } catch (error) {
         fail(error instanceof Error ? error : new Error(String(error)));
+        if (bundle.loaded) throw error;
+
         return completion;
-      } finally {
-        received();
-        failed();
-        destroyed();
-        if (alive) {
-          try { instance.postMessageToCpp(EXPO_BUNDLE_CANCEL, { request }); }
-          catch (error) { console.error(`Unable to cancel the bundle completion listener: ${String(error)}`); }
-        }
       }
     });
+
     if (!bundle.loaded && !bundle.failed && first === undefined) {
       first = { provider, promise: pending };
-      const clear = (): void => { if (first?.promise === pending) first = undefined; };
+      const clear = (): void => {
+        if (first?.promise === pending) first = undefined;
+      };
       pending.then(clear, clear);
     }
     tail = pending.catch(() => {});

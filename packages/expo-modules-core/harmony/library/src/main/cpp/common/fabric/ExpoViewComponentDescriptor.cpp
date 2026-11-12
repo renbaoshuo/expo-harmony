@@ -9,7 +9,6 @@
 
 #include "ExpoViewComponentDescriptor.h"
 #include <react/renderer/core/ShadowNode.h>
-#include <cmath>
 
 namespace expo {
 
@@ -28,57 +27,8 @@ facebook::react::ComponentName ExpoViewComponentDescriptor::getComponentName() c
 void ExpoViewComponentDescriptor::adopt(facebook::react::ShadowNode &shadowNode) const {
   react_native_assert(dynamic_cast<ExpoViewShadowNode *>(&shadowNode));
 
-  const auto snode = dynamic_cast<ExpoViewShadowNode *>(&shadowNode);
-  const auto state = snode->getStateData();
-
-  auto width = state._width;
-  auto height = state._height;
-
-  if (!isnan(width) || !isnan(height)) {
-    auto const &props = *std::static_pointer_cast<const facebook::react::ViewProps>(snode->getProps());
-
-    // Preserve dimensions set by style props.
-    auto widthProp = props.yogaStyle.dimension(facebook::yoga::Dimension::Width);
-    auto heightProp = props.yogaStyle.dimension(facebook::yoga::Dimension::Height);
-
-    if (widthProp.value().isDefined()) {
-      // Preserve the fixed width.
-      width = widthProp.value().unwrap();
-    }
-    if (heightProp.value().isDefined()) {
-      height = heightProp.value().unwrap();
-    }
-
-    snode->setSize({width, height});
-  }
-
-  // Apply layout style updates.
-  auto styleWidth = state._styleWidth;
-  auto styleHeight = state._styleHeight;
-
-  if (!isnan(styleWidth) || !isnan(styleHeight)) {
-    auto const &props = *std::static_pointer_cast<const facebook::react::ViewProps>(snode->getProps());
-
-    auto& style = const_cast<facebook::yoga::Style&>(props.yogaStyle);
-    bool changedStyle = false;
-
-    if (!isnan(styleWidth)) {
-      style.setDimension(facebook::yoga::Dimension::Width, facebook::yoga::StyleSizeLength::points(styleWidth));
-      changedStyle = true;
-    }
-
-    if (!isnan(styleHeight)) {
-      style.setDimension(facebook::yoga::Dimension::Height, facebook::yoga::StyleSizeLength::points(styleHeight));
-      changedStyle = true;
-    }
-
-    // Mark layout dirty when the style changes.
-    if (changedStyle) {
-      auto* expoNode = const_cast<ExpoViewShadowNode*>(snode);
-      expoNode->updateYogaProps();
-      expoNode->dirtyLayout();
-    }
-  }
+  const auto node = dynamic_cast<ExpoViewShadowNode *>(&shadowNode);
+  node->applySizeState(node->getStateData());
   ConcreteComponentDescriptor::adopt(shadowNode);
 }
 

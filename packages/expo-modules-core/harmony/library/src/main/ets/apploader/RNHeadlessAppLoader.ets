@@ -11,7 +11,7 @@ import { ExpoModuleError } from '../modules/ExpoModuleError';
 import { ReactNativeRuntime, ReactRuntimeListener } from '../interfaces/ReactNativeRuntime';
 import { RnohHeadlessContext } from '../appcontext/RnohHeadlessContext';
 import { observeRnohDestroy } from '../appcontext/RnohDestroyAdapter';
-import { waitForRnohInitialization } from '../appcontext/RnohBundle';
+import { waitForRnohBundle } from '../appcontext/RnohBundle';
 import { HeadlessAppLoader, HeadlessAppLoaderDelegate, HeadlessAppLoaderParams } from './HeadlessAppLoader';
 
 interface AppRecord {
@@ -116,13 +116,19 @@ export class RNHeadlessAppLoader implements HeadlessAppLoader {
     if (record === undefined) return Promise.resolve();
     if (record.closing !== undefined) return record.closing;
 
-    record.closing = record.owner.enqueue(async (): Promise<void> => {
+    const closing = record.owner.enqueue(async (): Promise<void> => {
       const others = Array.from(RNHeadlessAppLoader.records.values()).some((value) => value !== record && value.owner === record.owner);
+
       if (!others) await record.owner.stop();
       record.owner.remove(scope, record);
     });
 
-    return record.closing;
+    record.closing = closing;
+    closing.catch((): void => {
+      if (record.closing === closing) record.closing = undefined;
+    });
+
+    return closing;
   }
 
   unload(): Promise<void> {
@@ -159,6 +165,7 @@ export class RNHeadlessAppLoader implements HeadlessAppLoader {
       const scope = item[0];
       const record = item[1];
       if (record.owner !== this || (record.instance === instance && !record.destroyed)) continue;
+
       record.detach?.();
       record.instance = instance;
       record.failure = undefined;
@@ -169,13 +176,17 @@ export class RNHeadlessAppLoader implements HeadlessAppLoader {
         record.destroyed = true;
         this.loaded = false;
       });
-      waitForRnohInitialization(instance).then(
+
+      waitForRnohBundle(instance).then(
         (): void => {
-          if (record.instance !== instance || record.destroyed || RNHeadlessAppLoader.records.get(scope) !== record) return;
+          if (record.instance !== instance || record.destroyed || record.closing !== undefined || RNHeadlessAppLoader.records.get(scope) !== record) return;
+
           record.started = true;
           this.notify(record, true);
         },
-        (): void => this.notify(record, false),
+        (): void => {
+          if (record.instance === instance && RNHeadlessAppLoader.records.get(scope) === record) this.notify(record, false);
+        },
       );
     }
   }
@@ -255,10 +266,16 @@ export class RNHeadlessAppLoader implements HeadlessAppLoader {
       changed: (instance: RNInstance | undefined): void => {
         this.instance = instance;
         this.loaded = instance !== undefined;
+
         if (instance !== undefined) this.bind(instance);
         else {
           for (const record of RNHeadlessAppLoader.records.values()) {
-            if (record.owner === this) record.started = false;
+            if (record.owner !== this) continue;
+
+            record.detach?.();
+            record.detach = undefined;
+            record.instance = undefined;
+            record.started = false;
           }
         }
       },

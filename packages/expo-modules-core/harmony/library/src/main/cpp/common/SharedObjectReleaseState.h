@@ -10,7 +10,7 @@
 #include <atomic>
 #include <functional>
 
-namespace expo::harmony {
+namespace expo::SharedObject {
 
 /** One-shot release token shared by explicit release and the JSI finalizer. */
 class SharedObjectReleaseState final {
@@ -32,4 +32,4 @@ private:
   std::atomic_bool released_{false};
 };
 
-}  // namespace expo::harmony
+}  // namespace expo::SharedObject

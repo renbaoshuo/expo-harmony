@@ -21,8 +21,16 @@ export {
   ExpoBackgroundTaskResult,
 } from './modules/ExpoModule';
 export { ExpoModuleError } from './modules/ExpoModuleError';
+export { parseExpoColor } from './modules/ExpoColor';
 export { ExpoModuleLogger } from './appcontext/ExpoModuleLogger';
 export { fileUriFromPath, filePathFromUri } from './appcontext/FileUri';
+export { resolveFileReadSource } from './appcontext/FileReadSource';
+export { isRnohRawfileResourceUri, rawResourcePathFromUri } from './appcontext/RawResourceUri';
+export { ExpoRawResourceFile, openRawResourceFile } from './appcontext/RawResourceFile';
+export { ExpoAVSessionClient, ExpoAVSessionControls, ExpoAVSessionOptions } from './appcontext/ExpoAVSession';
+export { ExpoAudioSessionClient, ExpoAudioSessionOptions } from './appcontext/ExpoAudioSession';
+export { ExpoWindowKeepAwake } from './appcontext/ExpoWindowKeepAwake';
+export { tryAcquireUserAuthPrompt } from './appcontext/UserAuthPrompt';
 export {
   ExpoEither,
   ExpoEitherOfFour,
@@ -30,6 +38,7 @@ export {
   ExpoFunction,
   ExpoJavaScriptCallback,
   ExpoNumericTypedArray,
+  ExpoPromise,
   ExpoRecordFieldOptions,
   ExpoRecordShape,
   ExpoValueOrUndefined,
@@ -45,6 +54,7 @@ export { ExpoRuntimeConfig, ExpoRuntimeOptions } from './appcontext/ExpoRuntimeC
 export { ExpoRuntimePermissions, ExpoRuntimePermissionsKey, ExpoPermissionRequestResult } from './appcontext/ExpoRuntimePermissions';
 export { ExpoRuntimeDirectories, ExpoRuntimeDirectoriesKey, ExpoAppDirectories } from './appcontext/ExpoRuntimeDirectories';
 export { ExpoRuntimeSession } from './appcontext/ExpoRuntimeSession';
+export { copyWant } from './appcontext/ExpoWant';
 export {
   ExpoFileAccessPolicy,
   ExpoFileAccessKey,

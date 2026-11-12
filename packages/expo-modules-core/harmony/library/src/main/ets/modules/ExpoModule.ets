@@ -17,6 +17,7 @@ import { ExpoAppDirectories, ExpoRuntimeDirectoriesKey } from '../appcontext/Exp
 import { ExpoServiceClass, ExpoServiceContext, ExpoServicesRegistry } from '../appcontext/ExpoServicesRegistry';
 import { ExpoFileAccessMode, ExpoFileAccessKey, ExpoFileAccessRegistry } from '../appcontext/ExpoFileAccess';
 import fs from '@ohos.file.fs';
+import { resolveFileReadSource } from '../appcontext/FileReadSource';
 import { LifecycleState, UITurboModuleContext } from '@rnoh/react-native-openharmony';
 import {
   EXPO_LIFECYCLE_ACTIVITY_DESTROY,
@@ -56,20 +57,25 @@ import {
   ExpoFunction8,
   ExpoFunctionArityRange,
   ExpoFunctionSpec,
+  ExpoOwnedSyncFunction,
+  ExpoPromise,
   ExpoSyncFunction,
   ExpoSyncFunctionBody,
   ExpoValueConverter,
   ExpoValueType,
   functionArity,
   invokeAsyncFunction,
+  invokeFunctionWithPromise,
   invokeSyncFunction,
+  ownedFunctionArity,
   writableFunctionArguments,
 } from './ExpoValueConverter';
 import { ExpoModuleError } from './ExpoModuleError';
 import { createExpoModuleLogger, ExpoModuleLogger } from '../appcontext/ExpoModuleLogger';
+import { LogType } from '../logging/Logger';
 import { ExpoLifecycleEventQueue, ExpoLifecycleSink } from '../appcontext/LifecycleDispatcher';
 import { snapshotExpoEventArguments } from './ExpoEventValueSnapshot';
-import { ensureDirectoryUri, filePathFromUri } from '../appcontext/FileUri';
+import { ensureDirectoryUri } from '../appcontext/FileUri';
 import { ExpoRnohWorkerParams, ExpoRnohWorkerTask, runOnRnohWorker } from '../appcontext/RnohWorkerAdapter';
 
 export { ExpoPermissionStatus } from '../appcontext/ExpoRuntimePermissions';
@@ -112,6 +118,7 @@ export type ExpoBackgroundTaskResult = lang.ISendable | void;
 /** Minimal runtime identity visible to an explicitly sendable background task. */
 export interface ExpoBackgroundTaskContext {
   getId(): number;
+  getTurboModule<NativeModule>(name: string): NativeModule;
 }
 
 /** Sendable work executed by RNOH's worker actor. */
@@ -430,7 +437,15 @@ export class ExpoModuleContext {
     this.sharedObjects = sharedObjects;
     this.typedEvents = typedEvents;
     this.moduleResolver = moduleResolver;
-    this.scopedLogger = createExpoModuleLogger(this.coreContext.logger, name, this.coreContext.uiAbilityContext.applicationInfo.debug);
+    this.scopedLogger = createExpoModuleLogger(
+      this.coreContext.logger,
+      name,
+      this.coreContext.uiAbilityContext.applicationInfo.debug,
+      (type: LogType, message: string): void => {
+        const logger = moduleResolver(EXPO_JS_LOGGER_NAME);
+        if (logger instanceof ExpoJSLoggerModule) logger.report(type, message);
+      },
+    );
   }
 
   /** Stable identity for this RuntimeContext generation. */
@@ -451,7 +466,6 @@ export class ExpoModuleContext {
     return this.session === undefined ? this.initialWantValue : this.session.initialWant;
   }
 
-  /** Debug state of the consuming RNOH application, not the prebuilt module HAR. */
   get isHeadless(): boolean {
     return this.serviceRegistry.isHeadless;
   }
@@ -491,6 +505,11 @@ export class ExpoModuleContext {
   registerReactNativeFont(family: string, path: string): void {
     this.assertValid();
     this.coreContext.rnInstance.registerFont(family, path);
+  }
+
+  getReactNativeModule<NativeModule>(name: string): NativeModule | undefined {
+    this.assertValid();
+    return this.coreContext.rnInstance.getTurboModule<NativeModule | undefined>(name);
   }
 
   /** `file://` URI for disposable cache files. */
@@ -608,35 +627,44 @@ export class ExpoModuleContext {
 
   assertFileAccess(path: string, mode: ExpoFileAccessMode = 'read'): boolean {
     this.assertValid();
-    const policy = this.services.get(ExpoFileAccessKey);
-    const granted = ExpoFileAccessRegistry.check(this.runtimeId, path, mode, policy);
-    if (granted === false) throw new Error('The file access policy denied this operation.');
-    if (granted === true) return true;
+    return ExpoFileAccessRegistry.assertAccess(this.runtimeId, path, mode, this.services.get(ExpoFileAccessKey));
+  }
 
-    policy?.assertAccess(path, mode);
+  /** Keeps a provider's authority for APIs that can open a granted file URI. */
+  fileSourceForRead(value: string): string {
+    this.assertValid();
 
-    return policy !== undefined;
+    const source = resolveFileReadSource(value, this.uiAbilityContext.cacheDir);
+    this.assertFileAccess(source, 'read');
+
+    return source;
   }
 
   filePathForRead(value: string): string {
+    const source = this.fileSourceForRead(value);
+    if (!source.startsWith('/')) throw new Error('The file URI requires provider access. Copy it to a local file first.');
+    return source;
+  }
+
+  /** Gets the verified local path or the original provider URI of an open read handle. */
+  readPathForDescriptor(source: string, file: fs.File): string {
     this.assertValid();
+    return ExpoFileAccessRegistry.assertReadDescriptor(this.runtimeId, source, file, this.services.get(ExpoFileAccessKey));
+  }
 
-    let path: string;
-    if (value.startsWith('/')) path = value;
-    else if (/^file:\/\/(?:localhost)?\//i.test(value)) path = filePathFromUri(value);
-    else {
-      if (!/^file:\/\//i.test(value)) throw new Error('Expected a local file path or URI.');
+  /** The caller owns the descriptor and validates the file type before reading. */
+  openFileForRead(value: string): fs.File {
+    const source = this.fileSourceForRead(value);
+    const file = fs.openSync(source, fs.OpenMode.READ_ONLY | fs.OpenMode.NONBLOCK);
 
-      const file = fs.openSync(value, fs.OpenMode.READ_ONLY);
-      try {
-        path = file.path;
-      } finally {
-        fs.closeSync(file.fd);
-      }
+    try {
+      this.readPathForDescriptor(source, file);
+
+      return file;
+    } catch (error) {
+      try { fs.closeSync(file.fd); } catch (_) {}
+      throw error as Error;
     }
-
-    this.assertFileAccess(path, 'read');
-    return path;
   }
 
   grantFileAccess(path: string, directory: boolean, writable: boolean): void {
@@ -759,6 +787,7 @@ export class ExpoModuleContext {
   sendEvent(eventName: string): void;
   sendEvent<Payload>(eventName: string, payload: Payload): void;
   sendEvent<Payload>(eventName: string, payload?: Payload): void {
+    if (!this.acceptsEvents) return;
     this.assertEventAdmission();
     if (this.moduleName === undefined) {
       throw new Error('An Expo module cannot send events before its definition is registered.');
@@ -773,36 +802,29 @@ export class ExpoModuleContext {
     }
 
     const moduleName: string = this.moduleName;
-    const value: ESObject | void = ExpoValueConverter.toBridge(
-      payload as ESObject,
-      this.declaredEventPayloadTypes.get(eventName),
-      `Expo module event '${moduleName}.${eventName}' payload`,
-    );
-
     const typedEvents = this.typedEvents;
     if (typedEvents === undefined) {
       throw new Error('The Expo module typed event transport is not bound.');
     }
 
-    const encoded: ESObject[] = sharedObjects.encodeArguments(value === undefined ? [] : [value]);
-
+    let encoded: ESObject[] = [];
     try {
+      const value: ESObject | void = ExpoValueConverter.toBridge(
+        payload as ESObject,
+        this.declaredEventPayloadTypes.get(eventName),
+        `Expo module event '${moduleName}.${eventName}' payload`,
+      );
+      encoded = sharedObjects.encodeArguments(value === undefined ? [] : [value]);
       typedEvents.emitModule(this.epoch, moduleName, eventName, encoded);
     } catch (error) {
       sharedObjects.discardEncodedArguments(encoded);
-
-      if (error instanceof ExpoModuleError) {
-        throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
-      }
-      if (error instanceof Error) {
-        throw new Error(error.message);
-      }
-      throw new Error(errorMessage(error));
+      this.coreContext.logger.warn(`Unable to send Expo event '${moduleName}.${eventName}': ${errorMessage(error)}`);
     }
   }
 
   /** @internal */
   sendSharedObjectEvent(runtimeEpoch: string, objectId: number, moduleName: string, className: string, eventName: string, args: ESObject[]): void {
+    if (!this.acceptsEvents) return;
     this.assertEventAdmission();
     this.assertRuntimeEpoch(runtimeEpoch);
 
@@ -964,8 +986,7 @@ export class ExpoModuleDefinition {
   private readonly stopObservingByEvent: Map<string, ExpoModuleLifecycleBody[]> = new Map<string, ExpoModuleLifecycleBody[]>();
 
   name(value: string): ExpoModuleDefinition {
-    if (value.length === 0) throw new Error('Expo module names cannot be empty.');
-    this.moduleName = value;
+    this.moduleName = value.length > 0 ? value : undefined;
     return this;
   }
 
@@ -1007,6 +1028,7 @@ export class ExpoModuleDefinition {
   }
 
   syncFunction<Result>(name: string, body: ExpoFunction0<Result>): ExpoModuleDefinition;
+  syncFunction(name: string, body: ExpoSyncFunctionBody): ExpoModuleDefinition;
   syncFunction<Body extends ExpoSyncFunctionBody>(name: string, body: ExpoFunctionSpec<Body>): ExpoModuleDefinition;
   syncFunction(name: string, body: ExpoSyncFunction): ExpoModuleDefinition {
     this.registerFunction(name, functionArity(body), false, body, undefined);
@@ -1014,9 +1036,19 @@ export class ExpoModuleDefinition {
   }
 
   asyncFunction<Result>(name: string, body: ExpoFunction0<Promise<Result>>): ExpoModuleDefinition;
+  asyncFunction(name: string, body: ExpoAsyncFunctionBody): ExpoModuleDefinition;
   asyncFunction<Body extends ExpoAsyncFunctionBody>(name: string, body: ExpoFunctionSpec<Body>): ExpoModuleDefinition;
   asyncFunction(name: string, body: ExpoAsyncFunction): ExpoModuleDefinition {
     this.registerFunction(name, functionArity(body), true, undefined, body);
+    return this;
+  }
+
+  /** Registers a function whose first author argument settles the JS Promise. */
+  asyncFunctionWithPromise(name: string, body: ExpoOwnedSyncFunction<ExpoPromise>): ExpoModuleDefinition {
+    const arity: ExpoFunctionArityRange = ownedFunctionArity(body);
+    const invoke = (...args: ESObject[]): Promise<ESObject | void> =>
+      invokeFunctionWithPromise(body, args, `Expo module function '${this.requireName()}.${name}'`);
+    this.registerFunction(name, arity, true, undefined, invoke);
     return this;
   }
 
@@ -1531,6 +1563,45 @@ class ScopedExpoModule {
   }
 }
 
+const EXPO_JS_LOGGER_NAME: string = 'ExpoModulesCoreJSLogger';
+
+interface ExpoJSLogMessage {
+  readonly message: string;
+}
+
+class ExpoJSLoggerModule extends ExpoModule {
+  private readonly observedEvents: Set<string> = new Set<string>();
+
+  definition(): ExpoModuleDefinition {
+    return new ExpoModuleDefinition()
+      .name(EXPO_JS_LOGGER_NAME)
+      .events(['Trace', 'Debug', 'Info', 'Warning', 'Error'].map((suffix: string): string => this.eventName(suffix)))
+      .onStartObserving((name: string): void => { this.observedEvents.add(name); })
+      .onStopObserving((name: string): void => { this.observedEvents.delete(name); });
+  }
+
+  report(type: LogType, message: string): void {
+    const name: string = this.eventName(this.eventSuffix(type));
+    if (this.observedEvents.has(name)) this.sendEvent<ExpoJSLogMessage>(name, { message });
+  }
+
+  private eventSuffix(type: LogType): string {
+    switch (type) {
+      case 'trace':
+      case 'stacktrace': return 'Trace';
+      case 'info': return 'Info';
+      case 'warn': return 'Warning';
+      case 'error':
+      case 'fatal': return 'Error';
+      default: return 'Debug';
+    }
+  }
+
+  private eventName(suffix: string): string {
+    return `${EXPO_JS_LOGGER_NAME}.onNew${suffix}`;
+  }
+}
+
 /** Module instances and SharedObject state for one RuntimeContext epoch. */
 class ExpoModulesRuntimeScope implements ExpoLifecycleSink {
   private readonly runtimeEpoch: string;
@@ -1560,7 +1631,15 @@ class ExpoModulesRuntimeScope implements ExpoLifecycleSink {
     this.sharedObjects = new ExpoSharedObjectRegistry(runtimeEpoch, session);
 
     try {
-      registrations.forEach((registration: ExpoResolvedModuleRegistration): void => {
+      const loggerRegistration: ExpoResolvedModuleRegistration = {
+        registrationId: EXPO_JS_LOGGER_NAME,
+        moduleClassName: EXPO_JS_LOGGER_NAME,
+        factory: (context: ExpoModuleContext): ExpoModule => new ExpoJSLoggerModule(context),
+      };
+      const runtimeRegistrations: ExpoResolvedModuleRegistration[] = coreContext.uiAbilityContext.applicationInfo.debug
+        ? [loggerRegistration, ...registrations]
+        : registrations;
+      runtimeRegistrations.forEach((registration: ExpoResolvedModuleRegistration): void => {
         const registrationId = registration.registrationId;
         const context = new ExpoModuleContext(
           coreContext,
@@ -1869,7 +1948,12 @@ export class ExpoModulesRegistry {
     this.hostId = hostId;
     this.hostRuntimeGeneration = hostRuntimeGeneration;
     this.session = runtimeConfig.session;
-    this.services = new ExpoServicesRegistry(coreContext.uiAbilityContext, this.session, runtimeConfig.isHeadless);
+    this.services = new ExpoServicesRegistry(
+      coreContext.uiAbilityContext,
+      this.session,
+      runtimeConfig.isHeadless,
+      coreContext.rnInstance.getId(),
+    );
 
     const identifiers: Set<string> = new Set<string>();
 

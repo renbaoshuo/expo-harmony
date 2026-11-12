@@ -45,6 +45,7 @@ export abstract class ExpoAbilityLifecycleSubscriber {
   onWindowStageCreate(_stage: window.WindowStage): void {}
   onWindowStageRestore(_stage: window.WindowStage): void {}
   onWindowStageSetup(_stage: window.WindowStage): void | Promise<void> {}
+  onWindowSetup(_target: window.Window): void | Promise<void> {}
   onWindowStageReady(_stage: window.WindowStage): void | Promise<void> {}
   onWindowStageWillDestroy(_stage?: window.WindowStage): void {}
   onWindowStageDestroy(): void {}

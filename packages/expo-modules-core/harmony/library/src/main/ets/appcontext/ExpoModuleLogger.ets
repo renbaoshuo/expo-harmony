@@ -11,14 +11,18 @@ import { describeLogError } from '../logging/LogHandlers';
 
 export type ExpoModuleLogger = Logger;
 
-export function createExpoModuleLogger(logger: RNOHLogger, moduleName: string, debug: boolean): ExpoModuleLogger {
-  return new Logger([new RNOHLogHandler(logger.clone(['ExpoModules', moduleName]))], debug);
+type JSLogReporter = (type: LogType, message: string) => void;
+
+export function createExpoModuleLogger(logger: RNOHLogger, moduleName: string, debug: boolean, report: JSLogReporter): ExpoModuleLogger {
+  return new Logger([new RNOHLogHandler(logger.clone(['ExpoModulesCore', moduleName]), debug ? report : undefined)], debug);
 }
 
 class RNOHLogHandler implements LogHandler {
   private readonly logger: RNOHLogger;
-  constructor(logger: RNOHLogger) {
+  private readonly report?: JSLogReporter;
+  constructor(logger: RNOHLogger, report?: JSLogReporter) {
     this.logger = logger;
+    this.report = report;
   }
 
   log(type: LogType, message: string, cause?: Error): void {
@@ -39,5 +43,6 @@ class RNOHLogHandler implements LogHandler {
       default:
         this.logger.debug(text);
     }
+    this.report?.(type, text);
   }
 }

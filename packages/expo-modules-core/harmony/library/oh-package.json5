@@ -7,7 +7,7 @@
 
 {
   "name": "@expo-harmony/expo-modules-core",
-  "version": "55.0.26-harmony.3",
+  "version": "57.0.23-harmony.0",
   "keywords": [
     "react-native",
     "expo",
@@ -25,6 +25,6 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@rnoh/react-native-openharmony": "0.84.1"
+    "@rnoh/react-native-openharmony": "0.86.1"
   }
 }

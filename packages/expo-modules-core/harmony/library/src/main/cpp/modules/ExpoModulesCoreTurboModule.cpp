@@ -36,8 +36,6 @@ namespace expo::harmony {
 
 namespace {
 
-constexpr unsigned int kExpoModulesLogDomain = 0xD003900;
-constexpr const char *kExpoModulesLogTag = "ExpoModulesCore";
 constexpr double kMaxSafeTransportInteger = 9007199254740991.0;
 
 std::optional<long> readPositiveTransportLong(const folly::dynamic &value) {
@@ -261,16 +259,16 @@ void ExpoModulesCoreTurboModule::handleContentAppeared(size_t rnInstanceId) {
         OH_LOG_Print(
             LOG_APP,
             LOG_ERROR,
-            kExpoModulesLogDomain,
-            kExpoModulesLogTag,
+            protocol::kLogDomain,
+            protocol::kLogTag,
             "Unable to deliver the content-appeared lifecycle event: %{public}s",
             error.what());
       } catch (...) {
         OH_LOG_Print(
             LOG_APP,
             LOG_ERROR,
-            kExpoModulesLogDomain,
-            kExpoModulesLogTag,
+            protocol::kLogDomain,
+            protocol::kLogTag,
             "Unable to deliver the content-appeared lifecycle event");
       }
     });
@@ -278,16 +276,16 @@ void ExpoModulesCoreTurboModule::handleContentAppeared(size_t rnInstanceId) {
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Unable to schedule the content-appeared lifecycle event: %{public}s",
         error.what());
   } catch (...) {
     OH_LOG_Print(
         LOG_APP,
         LOG_ERROR,
-        kExpoModulesLogDomain,
-        kExpoModulesLogTag,
+        protocol::kLogDomain,
+        protocol::kLogTag,
         "Unable to schedule the content-appeared lifecycle event");
   }
 }
@@ -386,16 +384,16 @@ void ExpoModulesCoreTurboModule::beginDestroy(std::string destroyRequestId) {
                     OH_LOG_Print(
                         LOG_APP,
                         LOG_ERROR,
-                        kExpoModulesLogDomain,
-                        kExpoModulesLogTag,
+                        protocol::kLogDomain,
+                        protocol::kLogTag,
                         "Unable to acknowledge Expo runtime destruction: %{public}s",
                         error.what());
                   } catch (...) {
                     OH_LOG_Print(
                         LOG_APP,
                         LOG_ERROR,
-                        kExpoModulesLogDomain,
-                        kExpoModulesLogTag,
+                        protocol::kLogDomain,
+                        protocol::kLogTag,
                         "Unable to acknowledge Expo runtime destruction");
                   }
                 }
@@ -404,8 +402,8 @@ void ExpoModulesCoreTurboModule::beginDestroy(std::string destroyRequestId) {
           OH_LOG_Print(
               LOG_APP,
               LOG_ERROR,
-              kExpoModulesLogDomain,
-              kExpoModulesLogTag,
+              protocol::kLogDomain,
+              protocol::kLogTag,
               "Unable to schedule Expo runtime destruction acknowledgement");
         }
       };
@@ -466,8 +464,8 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
             OH_LOG_Print(
                 LOG_APP,
                 LOG_ERROR,
-                kExpoModulesLogDomain,
-                kExpoModulesLogTag,
+                protocol::kLogDomain,
+                protocol::kLogTag,
                 "Expo view rollback failed for %{public}s#%{public}lld: %{public}s",
                 componentName.c_str(),
                 static_cast<long long>(tag),
@@ -476,8 +474,8 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
             OH_LOG_Print(
                 LOG_APP,
                 LOG_ERROR,
-                kExpoModulesLogDomain,
-                kExpoModulesLogTag,
+                protocol::kLogDomain,
+                protocol::kLogTag,
                 "Expo view rollback failed for %{public}s#%{public}lld",
                 componentName.c_str(),
                 static_cast<long long>(tag));
@@ -495,8 +493,8 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
           OH_LOG_Print(
               LOG_APP,
               LOG_ERROR,
-              kExpoModulesLogDomain,
-              kExpoModulesLogTag,
+              protocol::kLogDomain,
+              protocol::kLogTag,
               "Expo view callback failed for %{public}s#%{public}lld in phase %{public}s: %{public}s",
               componentName.c_str(),
               static_cast<long long>(tag),
@@ -509,8 +507,8 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
           OH_LOG_Print(
               LOG_APP,
               LOG_ERROR,
-              kExpoModulesLogDomain,
-              kExpoModulesLogTag,
+              protocol::kLogDomain,
+              protocol::kLogTag,
               "Expo view callback failed for %{public}s#%{public}lld in phase %{public}s",
               componentName.c_str(),
               static_cast<long long>(tag),
@@ -528,8 +526,8 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Expo view callback failed for %{public}s#%{public}lld in phase %{public}s: %{public}s",
           componentName.c_str(),
           static_cast<long long>(tag),
@@ -539,8 +537,8 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Expo view callback failed for %{public}s#%{public}lld in phase %{public}s",
           componentName.c_str(),
           static_cast<long long>(tag),
@@ -642,8 +640,8 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
               OH_LOG_Print(
                   LOG_APP,
                   LOG_ERROR,
-                  kExpoModulesLogDomain,
-                  kExpoModulesLogTag,
+                  protocol::kLogDomain,
+                  protocol::kLogTag,
                   "Expo SharedObject event %{public}s failed: %{public}s",
                   eventName.c_str(),
                   error.what());
@@ -652,8 +650,8 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
               OH_LOG_Print(
                   LOG_APP,
                   LOG_ERROR,
-                  kExpoModulesLogDomain,
-                  kExpoModulesLogTag,
+                  protocol::kLogDomain,
+                  protocol::kLogTag,
                   "Expo SharedObject event %{public}s failed",
                   eventName.c_str());
             }
@@ -752,8 +750,8 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
             OH_LOG_Print(
                 LOG_APP,
                 LOG_ERROR,
-                kExpoModulesLogDomain,
-                kExpoModulesLogTag,
+                protocol::kLogDomain,
+                protocol::kLogTag,
                 "Expo module event %{public}s failed: %{public}s",
                 eventName.c_str(),
                 error.what());
@@ -762,8 +760,8 @@ void ExpoModulesCoreTurboModule::onMessageReceived(
             OH_LOG_Print(
                 LOG_APP,
                 LOG_ERROR,
-                kExpoModulesLogDomain,
-                kExpoModulesLogTag,
+                protocol::kLogDomain,
+                protocol::kLogTag,
                 "Expo module event %{public}s failed",
                 eventName.c_str());
           }

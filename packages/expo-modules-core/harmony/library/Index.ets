@@ -7,6 +7,13 @@
 
 export * from './src/main/ets/public-api';
 export { ExpoNetworkInspection } from './src/main/ets/appcontext/ExpoNetworkInspection';
+export {
+  ExpoNetworkObservation,
+  ExpoNetworkRequestStarted,
+  ExpoNetworkRequestCompleted,
+  ExpoNetworkRequestListener,
+  ExpoNetworkRequestRedirect,
+} from './src/main/ets/appcontext/ExpoNetworkObservation';
 
 export { ExpoModulesCorePackage as default, ExpoModulesCorePackage } from './src/main/ets/ExpoModulesCorePackage';
 export { ReactRuntimeBinding, ReactRuntimeContext, ReactRuntimeBindingRegistration } from './src/main/ets/interfaces/ReactRuntimeBinding';

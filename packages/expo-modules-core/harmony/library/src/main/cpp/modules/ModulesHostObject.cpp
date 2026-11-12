@@ -44,14 +44,18 @@ long requireSharedObjectId(
         className + " method called with an incompatible receiver.");
   }
 
-  const auto objectId = object.getNativeState<expo::SharedObject::NativeState>(runtime)->objectId;
-  if (objectId <= 0) {
+  const auto state = object.getNativeState<expo::SharedObject::NativeState>(runtime);
+  if (state->isReleased()) {
+    throw CodedError("ERR_SHARED_OBJECT_RELEASED", className + " method called after release().");
+  }
+  const auto id = state->objectId;
+  if (id <= 0) {
     throw CodedError(
         "ERR_INVALID_SHARED_OBJECT_ID",
         className + " method called with an unbound shared object.");
   }
 
-  return objectId;
+  return id;
 }
 
 ExceptionOrigin originForPath(const std::string &path) {
@@ -362,29 +366,31 @@ void defineConstant(
     const std::shared_ptr<RuntimeContext> &context,
     std::string path,
     const std::string &name,
-    const ValueFactory &factory) {
+    const ValueFactory &factory,
+    bool lazy = true) {
+  auto read = [context, path = std::move(path), factory = &factory](jsi::Runtime &rt) {
+    return translateErrors(rt, context, path, false, [&]() {
+      Invocation invocation(context, path, rt, jsi::Value::undefined(), nullptr, 0);
+      return (*factory)(invocation);
+    });
+  };
+  if (!lazy) {
+    expo::common::defineProperty(
+        runtime, &target, name.c_str(), {.enumerable = true, .value = read(runtime)});
+    return;
+  }
+
   auto cachedValue = std::make_shared<std::unique_ptr<jsi::Value>>();
   expo::common::defineProperty(
       runtime,
       &target,
       name.c_str(),
-      {.configurable = false, .enumerable = true, .get = [context, path = std::move(path), factory = &factory, cachedValue](jsi::Runtime &rt, jsi::Object) {
-         return translateErrors(rt, context, path, false, [&]() {
-           if (*cachedValue) {
-             return jsi::Value(rt, **cachedValue);
-           }
-
-           Invocation invocation(
-               context,
-               path,
-               rt,
-               jsi::Value::undefined(),
-               nullptr,
-               0);
-           auto value = (*factory)(invocation);
-           *cachedValue = std::make_unique<jsi::Value>(rt, value);
-           return value;
-         });
+      {.configurable = false, .enumerable = true, .get = [context, read = std::move(read), cachedValue](jsi::Runtime &rt, jsi::Object) {
+         requirePublicRuntime(rt, context, "Expo class constant");
+         if (*cachedValue) return jsi::Value(rt, **cachedValue);
+         auto value = read(rt);
+         *cachedValue = std::make_unique<jsi::Value>(rt, value);
+         return value;
        }});
 }
 
@@ -465,6 +471,8 @@ void defineSharedFunction(
               auto objectId = requireSharedObjectId(rt, thisValue, className);
               auto nativeObject = context->getNativeSharedObject(
                   objectId, moduleName, className);
+              auto lease = context->acquireSharedObjectInvocations({nativeObject});
+
               Invocation invocation(
                   context, path, rt, thisValue, arguments, argumentCount);
               invocation.requireArgumentCount(
@@ -512,6 +520,8 @@ void defineSharedProperty(
             requireSharedObjectId(rt, receiverValue, className),
             moduleName,
             className);
+        auto lease = context->acquireSharedObjectInvocations({nativeObject});
+
         Invocation invocation(
             context, path, rt, receiverValue, nullptr, 0);
         return definition->getter(invocation, nativeObject);
@@ -529,6 +539,8 @@ void defineSharedProperty(
             requireSharedObjectId(rt, receiverValue, className),
             moduleName,
             className);
+        auto lease = context->acquireSharedObjectInvocations({nativeObject});
+
         Invocation invocation(
             context, path, rt, receiverValue, nullptr, 0);
         definition->setter(invocation, nativeObject, value);
@@ -620,16 +632,6 @@ jsi::Object ModulesHostObject::createModule(
   auto module = expo::NativeModule::createInstance(runtime);
   expo::common::defineProperty(runtime, &module, "__expo_module_name__", {.value = jsi::String::createFromUtf8(runtime, definition.name)});
 
-  for (const auto &constant : definition.constants) {
-    const auto &name = constant.first;
-    defineConstant(
-        runtime,
-        module,
-        context_,
-        definition.name + "." + name,
-        name,
-        constant.second);
-  }
   for (const auto &function : definition.functions) {
     defineFunction(
         runtime,
@@ -1030,6 +1032,10 @@ jsi::Object ModulesHostObject::createModule(
     }
   }
   module.setProperty(runtime, "ViewPrototypes", std::move(viewPrototypes));
+
+  for (const auto &[name, factory] : definition.constants) {
+    defineConstant(runtime, module, context_, definition.name + "." + name, name, factory, false);
+  }
 
   return module;
 }

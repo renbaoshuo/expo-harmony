@@ -11,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <map>
 #include <optional>
@@ -23,6 +24,7 @@
 #include <RNOH/ArkJS.h>
 
 #include <ReactCommon/TurboModuleUtils.h>
+#include <react/bridging/CallbackWrapper.h>
 #include <react/bridging/LongLivedObject.h>
 
 #include "SynchronousNapiBuffers.h"
@@ -31,6 +33,7 @@
 #include "common/JSI/JSIUtils.h"
 #include "common/JSI/RecordProperty.h"
 #include "errors/CodedError.h"
+#include "runtime/RnohSyncTask.h"
 #include "runtime/RuntimeContext.h"
 #include "runtime/RuntimeInstaller.h"
 
@@ -45,6 +48,10 @@ constexpr size_t kMaximumTransportDepth = 64;
 struct UndefinedValue final {};
 
 struct NullValue final {};
+
+struct BigIntValue final {
+  std::string decimal;
+};
 
 struct ArrayBufferValue final {
   std::vector<uint8_t> bytes;
@@ -104,7 +111,7 @@ struct TypedArrayValue final {
 struct TypedPlatformValue final {
   using Array = std::vector<TypedPlatformValue>;
   using Record = std::map<std::string, TypedPlatformValue>;
-  using Callback = ArkJS::IntermediaryCallback;
+  using Callback = std::function<void(Array)>;
 
   using Storage = std::variant<
       UndefinedValue,
@@ -112,6 +119,7 @@ struct TypedPlatformValue final {
       bool,
       double,
       std::string,
+      BigIntValue,
       ArkTSErrorValue,
       Array,
       Record,
@@ -124,6 +132,9 @@ struct TypedPlatformValue final {
 
   Storage storage;
 };
+
+jsi::Value toJSI(jsi::Runtime &runtime, TypedPlatformValue value);
+napi_value createNapiCallback(napi_env env, TypedPlatformValue::Callback callback);
 
 class VectorMutableBuffer final : public jsi::MutableBuffer {
 public:
@@ -516,13 +527,13 @@ TypedArrayValue copyTypedArray(
 
 TypedPlatformValue fromJSI(
     jsi::Runtime &runtime,
-    const std::shared_ptr<react::CallInvoker> &jsInvoker,
     const jsi::Value &value,
     size_t depth,
     SynchronousBinarySnapshots *snapshots = nullptr) {
   if (depth > kMaximumTransportDepth) {
     throw std::runtime_error("Expo Modules platform value exceeds the maximum nesting depth.");
   }
+
   if (value.isUndefined()) {
     return TypedPlatformValue(UndefinedValue{});
   }
@@ -538,19 +549,64 @@ TypedPlatformValue fromJSI(
   if (value.isString()) {
     return TypedPlatformValue(value.getString(runtime).utf8(runtime));
   }
+  if (value.isBigInt()) {
+    return TypedPlatformValue(BigIntValue{value.getBigInt(runtime).toString(runtime).utf8(runtime)});
+  }
   if (!value.isObject()) {
-    throw std::runtime_error("Expo Modules cannot transport a symbol or bigint to ArkTS.");
+    throw std::runtime_error("Expo Modules cannot transport a symbol to ArkTS.");
   }
 
   auto object = value.getObject(runtime);
   if (object.isFunction(runtime)) {
-    auto intermediary = rnoh::ArkTSTurboModule::convertJSIValuesToIntermediaryValues(
-        runtime, jsInvoker, &value, 1);
-    if (intermediary.size() != 1 || !std::holds_alternative<ArkJS::IntermediaryCallback>(intermediary.front())) {
-      throw std::runtime_error("RNOH could not retain the JavaScript callback.");
+    auto context = RuntimeInstaller::installedContext(runtime);
+    if (!context) {
+      throw CodedError("ERR_RUNTIME_DESTROYED", "Cannot retain an Expo callback after runtime destruction.");
     }
-    return TypedPlatformValue(
-        std::get<ArkJS::IntermediaryCallback>(std::move(intermediary.front())));
+
+    auto weakCallback = react::CallbackWrapper::createWeak(object.getFunction(runtime), runtime, context->jsInvoker());
+    auto callback = weakCallback.lock();
+    if (!callback) {
+      throw CodedError("ERR_RUNTIME_DESTROYED", "The Expo callback was released before it could be retained.");
+    }
+
+    try {
+      context->retainLongLivedObject(callback);
+    } catch (...) {
+      // createWeak already rooted the function in React Native's collection.
+      callback->allowRelease();
+      throw;
+    }
+
+    auto weakContext = std::weak_ptr<RuntimeContext>(context);
+    // The last ArkTS callback copy releases its JS root on the owning executor.
+    // RuntimeContext also retires the root on reload, even if ArkTS retains it.
+    auto lifetime = std::shared_ptr<void>(nullptr, [weakContext, weakCallback](void *) {
+      try {
+        if (auto context = weakContext.lock(); context && context->isAcceptingTasks()) {
+          context->dispatchToJavaScript([weakCallback]() {
+            if (auto callback = weakCallback.lock()) callback->allowRelease();
+          });
+        }
+      } catch (...) {
+        // RuntimeContext owns the remaining root until its executor teardown.
+      }
+    });
+
+    return TypedPlatformValue(TypedPlatformValue::Callback(
+        [weakContext, weakCallback, lifetime](TypedPlatformValue::Array arguments) {
+          if (auto context = weakContext.lock(); context && context->isAcceptingTasks()) {
+            context->dispatchToJavaScript([weakCallback, arguments = std::move(arguments)]() mutable {
+              if (auto callback = weakCallback.lock()) {
+                auto &rt = callback->runtime();
+                std::vector<jsi::Value> values;
+                values.reserve(arguments.size());
+                for (auto &argument : arguments) values.push_back(toJSI(rt, std::move(argument)));
+
+                callback->callback().call(rt, static_cast<const jsi::Value *>(values.data()), values.size());
+              }
+            });
+          }
+        }));
   }
   if (object.isArrayBuffer(runtime)) {
     if (snapshots) {
@@ -567,22 +623,23 @@ TypedPlatformValue fromJSI(
     result.reserve(array.size(runtime));
     for (size_t index = 0; index < array.size(runtime); ++index) {
       auto element = array.getValueAtIndex(runtime, index);
-      result.push_back(fromJSI(runtime, jsInvoker, element, depth + 1, snapshots));
+      result.push_back(fromJSI(runtime, element, depth + 1, snapshots));
     }
     return TypedPlatformValue(std::move(result));
   }
 
   TypedPlatformValue::Record result;
-  auto propertyNames = object.getPropertyNames(runtime);
-  for (size_t index = 0; index < propertyNames.size(runtime); ++index) {
-    auto keyValue = propertyNames.getValueAtIndex(runtime, index);
-    if (!keyValue.isString()) {
+  auto names = object.getPropertyNames(runtime);
+  for (size_t index = 0; index < names.size(runtime); ++index) {
+    auto name = names.getValueAtIndex(runtime, index);
+    if (!name.isString()) {
       continue;
     }
-    auto key = keyValue.getString(runtime).utf8(runtime);
-    auto property = object.getProperty(runtime, key.c_str());
+
+    auto key = name.getString(runtime);
+    auto property = object.getProperty(runtime, key);
     result.emplace(
-        std::move(key), fromJSI(runtime, jsInvoker, property, depth + 1, snapshots));
+        key.utf8(runtime), fromJSI(runtime, property, depth + 1, snapshots));
   }
 
   return TypedPlatformValue(std::move(result));
@@ -624,6 +681,18 @@ napi_value toNapi(napi_env env, ArkJS &arkJS, TypedPlatformValue value, Synchron
           return arkJS.createDouble(stored);
         } else if constexpr (std::is_same_v<Value, std::string>) {
           return arkJS.createString(stored);
+        } else if constexpr (std::is_same_v<Value, BigIntValue>) {
+          napi_value global = nullptr;
+          napi_value constructor = nullptr;
+          napi_value result = nullptr;
+          requireNapiStatus(napi_get_global(env, &global), "get the ArkTS global object");
+          requireNapiStatus(napi_get_named_property(env, global, "BigInt", &constructor), "get BigInt");
+
+          auto decimal = arkJS.createString(stored.decimal);
+          requireNapiStatus(napi_call_function(env, global, constructor, 1, &decimal, &result), "create BigInt");
+          return result;
+        } else if constexpr (std::is_same_v<Value, ArkTSErrorValue>) {
+          throw std::runtime_error("An ArkTS error result cannot be passed back as a native argument.");
         } else if constexpr (std::is_same_v<Value, TypedPlatformValue::Array>) {
           std::vector<napi_value> items;
           items.reserve(stored.size());
@@ -632,11 +701,25 @@ napi_value toNapi(napi_env env, ArkJS &arkJS, TypedPlatformValue value, Synchron
           }
           return arkJS.createArray(items);
         } else if constexpr (std::is_same_v<Value, TypedPlatformValue::Record>) {
-          auto builder = arkJS.createObjectBuilder();
+          napi_value result = nullptr;
+          requireNapiStatus(napi_create_object(env, &result), "create a record");
+
+          std::vector<napi_property_descriptor> properties;
+          properties.reserve(stored.size());
           for (auto &[key, item] : stored) {
-            builder.addProperty(key.c_str(), toNapi(env, arkJS, std::move(item), buffers));
+            // A value name preserves embedded NULs, and defining the property
+            // handles keys such as __proto__ without invoking inherited setters.
+            properties.push_back(napi_property_descriptor{
+                .name = arkJS.createString(key),
+                .value = toNapi(env, arkJS, std::move(item), buffers),
+                .attributes = napi_default_jsproperty,
+            });
           }
-          return builder.build();
+
+          if (!properties.empty()) {
+            requireNapiStatus(napi_define_properties(env, result, properties.size(), properties.data()), "define record properties");
+          }
+          return result;
         } else if constexpr (std::is_same_v<Value, ArrayBufferValue>) {
           if (stored.synchronousBacking) {
             return synchronousNapiArrayBuffer(env, stored.synchronousBacking, buffers);
@@ -672,7 +755,7 @@ napi_value toNapi(napi_env env, ArkJS &arkJS, TypedPlatformValue value, Synchron
               "create a TypedArray");
           return result;
         } else if constexpr (std::is_same_v<Value, TypedPlatformValue::Callback>) {
-          return arkJS.convertIntermediaryValueToNapiValue(std::move(stored));
+          return createNapiCallback(env, std::move(stored));
         }
       },
       std::move(value.storage));
@@ -694,6 +777,11 @@ TypedPlatformValue fromNapi(napi_env env, ArkJS &arkJS, napi_value value, size_t
       return TypedPlatformValue(arkJS.getDouble(value));
     case napi_string:
       return TypedPlatformValue(arkJS.getString(value));
+    case napi_bigint: {
+      napi_value decimal = nullptr;
+      requireNapiStatus(napi_coerce_to_string(env, value, &decimal), "encode BigInt");
+      return TypedPlatformValue(BigIntValue{arkJS.getString(decimal)});
+    }
     case napi_object: {
       bool isTypedArray = false;
       requireNapiStatus(
@@ -763,8 +851,57 @@ TypedPlatformValue fromNapi(napi_env env, ArkJS &arkJS, napi_value value, size_t
     }
     default:
       throw std::runtime_error(
-          "Expo Modules cannot transport an ArkTS function, symbol, or bigint result to JSI.");
+          "Expo Modules cannot transport an ArkTS function or symbol result to JSI.");
   }
+}
+
+void throwNapiCallbackError(napi_env env, const char *message) noexcept {
+  bool pending = false;
+  if (napi_is_exception_pending(env, &pending) == napi_ok && pending) return;
+  (void)napi_throw_error(env, "ERR_EXPO_CALLBACK", message);
+}
+
+napi_value handleNapiCallback(napi_env env, napi_callback_info info) noexcept {
+  try {
+    size_t count = 0;
+    void *data = nullptr;
+    requireNapiStatus(napi_get_cb_info(env, info, &count, nullptr, nullptr, &data), "read callback arity");
+    std::vector<napi_value> arguments(count);
+    requireNapiStatus(napi_get_cb_info(env, info, &count, arguments.data(), nullptr, &data), "read callback arguments");
+    if (data == nullptr) throw std::runtime_error("The Expo callback has no native state.");
+
+    ArkJS arkJS(env);
+    TypedPlatformValue::Array values;
+    values.reserve(count);
+    // Copy while NAPI handles are valid before forwarding to the JS executor.
+    for (size_t index = 0; index < count; ++index) {
+      values.push_back(fromNapi(env, arkJS, arguments[index], 0));
+    }
+
+    (*static_cast<TypedPlatformValue::Callback *>(data))(std::move(values));
+    return arkJS.getUndefined();
+  } catch (const std::exception &error) {
+    throwNapiCallbackError(env, error.what());
+  } catch (...) {
+    throwNapiCallbackError(env, "Expo Modules could not invoke the JavaScript callback.");
+  }
+  return nullptr;
+}
+
+napi_value createNapiCallback(napi_env env, TypedPlatformValue::Callback body) {
+  auto data = std::make_unique<TypedPlatformValue::Callback>(std::move(body));
+  napi_value callback = nullptr;
+  requireNapiStatus(
+      napi_create_function(env, "expoTypedCallback", NAPI_AUTO_LENGTH, handleNapiCallback, data.get(), &callback),
+      "create a typed callback");
+  requireNapiStatus(
+      napi_add_finalizer(env, callback, data.get(), [](napi_env, void *data, void *) {
+        delete static_cast<TypedPlatformValue::Callback *>(data);
+      }, nullptr, nullptr),
+      "retain a typed callback");
+
+  (void)data.release();
+  return callback;
 }
 
 jsi::Value toJSI(jsi::Runtime &runtime, TypedPlatformValue value) {
@@ -781,6 +918,9 @@ jsi::Value toJSI(jsi::Runtime &runtime, TypedPlatformValue value) {
           return jsi::Value(stored);
         } else if constexpr (std::is_same_v<Value, std::string>) {
           return jsi::Value(jsi::String::createFromUtf8(runtime, stored));
+        } else if constexpr (std::is_same_v<Value, BigIntValue>) {
+          return runtime.global().getPropertyAsFunction(runtime, "BigInt")
+              .call(runtime, jsi::String::createFromUtf8(runtime, stored.decimal));
         } else if constexpr (std::is_same_v<Value, ArkTSErrorValue>) {
           CodedJSError error(runtime, CodedError(std::move(stored.code), std::move(stored.message), std::move(stored.path), codedCauseFromArkTS(stored.cause)));
 
@@ -1173,13 +1313,14 @@ public:
     std::vector<TypedPlatformValue> typedArguments;
     typedArguments.reserve(argumentCount);
     for (size_t index = 0; index < argumentCount; ++index) {
-      typedArguments.push_back(fromJSI(runtime, jsInvoker_, arguments[index], 0, &snapshots));
+      typedArguments.push_back(fromJSI(runtime, arguments[index], 0, &snapshots));
     }
-
     snapshots.materialize(runtime);
+
     TypedPlatformValue result(UndefinedValue{});
     napi_status writableStatus = napi_ok;
-    taskExecutor_->runSyncTask(
+    runRnohSyncTask(
+        *taskExecutor_,
         turboModuleThread_,
         [this, &methodName, &typedArguments, &result, &writableStatus]() mutable {
           ArkJS arkJS(env_);
@@ -1189,12 +1330,14 @@ public:
           for (auto &argument : typedArguments) {
             napiArguments.push_back(toNapi(env_, arkJS, std::move(argument), &buffers));
           }
+
           auto instance = arkJS.getReferenceValue(instanceRef_);
           auto napiResult = callNapiMethod(
               env_, instance, methodName, napiArguments);
           result = fromNapi(env_, arkJS, napiResult, 0);
           writableStatus = buffers.finish();
         });
+
     auto value = toJSI(runtime, std::move(result));
     // Let the caller decode the result even if closing the writable scope
     // failed. Its commit failure then rolls back any returned SharedObjects.
@@ -1220,7 +1363,7 @@ public:
     std::vector<TypedPlatformValue> typedArguments;
     typedArguments.reserve(argumentCount);
     for (size_t index = 0; index < argumentCount; ++index) {
-      typedArguments.push_back(fromJSI(runtime, jsInvoker_, arguments[index], 0));
+      typedArguments.push_back(fromJSI(runtime, arguments[index], 0));
     }
 
     // Copy the reference in the synchronous Promise executor for thread-safe release.

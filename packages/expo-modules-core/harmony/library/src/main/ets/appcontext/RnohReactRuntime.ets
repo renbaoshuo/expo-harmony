@@ -10,7 +10,7 @@ import { ExpoModuleError } from '../modules/ExpoModuleError';
 import { ReactNativeRuntime, ReactRuntimeListener } from '../interfaces/ReactNativeRuntime';
 import { ExpoReloadRegistry } from './ExpoReloadRegistry';
 import { RnohContextLifecycle } from './RnohContextLifecycle';
-import { hasLoadedRnohBundle, waitForRnohBundle } from './RnohBundle';
+import { hasLoadedRnohBundle, installRnohBundleBarrier, waitForRnohBundle } from './RnohBundle';
 
 export interface RnohReactRuntimeOptions {
   options?: RNInstanceOptions | (() => RNInstanceOptions);
@@ -26,7 +26,7 @@ interface Listener {
   preparation?: Promise<void>;
 }
 
-// RNApp 0.84.1 needs a provider URL to display an already loaded unmanaged instance.
+// RNApp needs a provider URL to display an already loaded unmanaged instance.
 class LoadedBundle extends JSBundleProvider {
   private readonly instance: RNInstance;
   constructor(instance: RNInstance) {
@@ -129,27 +129,43 @@ export class RnohReactRuntime implements ReactNativeRuntime {
         throw new ExpoModuleError('ERR_RELOAD_UNAVAILABLE', 'The external runtime owner did not provide a replacement operation.');
       }
 
+      const wasLoaded = this.loaded;
       this.replacing = true;
       this.loaded = false;
+
       try {
+        this.changed(undefined);
+
         if (this.options.replace !== undefined) {
           const next = await this.options.replace(reason);
-          if (previous !== undefined && (next === previous || next.getId() === previous.getId())) {
+          // RNOH may keep the same ID on reload for the debugger connection.
+          if (previous !== undefined && (next === previous || (next.getId() === previous.getId() && this.lifetime.owns(previous)))) {
             throw new ExpoModuleError('ERR_RELOAD_HOST_REPLACEMENT', 'The external owner must provide a new RNInstance.');
           }
           if (!this.lifetime.owns(next)) throw new ExpoModuleError('ERR_REACT_HOST_CONTEXT', 'The replacement belongs to another RNOH coordinator.');
-          this.changed(undefined);
+
           this.unbind();
           this.current = next;
         } else {
-          this.changed(undefined);
           if (previous !== undefined) await this.lifetime.destroyInstance(previous);
           this.unbind();
           this.current = undefined;
         }
-        this.loaded = false;
+
         this.core.devToolsController.dismissRNOHErrorDialog();
         await this.load();
+      } catch (error) {
+        if (previous !== undefined && this.current === previous && this.lifetime.owns(previous)) {
+          this.loaded = wasLoaded;
+          if (wasLoaded) this.changed(previous);
+        } else if (this.current === undefined || this.current === previous) {
+          this.unbind();
+          this.current = undefined;
+          this.provider = undefined;
+        }
+
+        if (error instanceof Error) throw error;
+        throw new Error(String(error));
       } finally {
         this.replacing = false;
       }
@@ -228,6 +244,7 @@ export class RnohReactRuntime implements ReactNativeRuntime {
 
   private async load(): Promise<void> {
     if (this.loaded) return;
+
     this.sourceProvider = undefined;
     if (this.current === undefined) {
       if (this.options.options === undefined) throw new ExpoModuleError('ERR_REACT_HOST_OWNER', 'The external runtime is no longer available.');
@@ -235,21 +252,27 @@ export class RnohReactRuntime implements ReactNativeRuntime {
       const options = typeof this.options.options === 'function' ? this.options.options() : this.options.options;
       this.current = await this.core.createAndRegisterRNInstance(options);
     }
+
     const instance = this.current;
+    installRnohBundleBarrier(instance);
     if (this.detach === undefined) this.bind(instance);
     await this.options.prepare(instance);
     for (const listener of this.listeners) await this.prepare(listener, instance);
 
-    if (!hasLoadedRnohBundle(instance)) {
+    const url = instance.getInitialBundleUrl();
+    const running = url !== undefined && instance.getBundleExecutionStatus(url) === 'RUNNING';
+    if (!hasLoadedRnohBundle(instance) && !running) {
       this.provider = this.options.bundle?.();
       this.sourceProvider = this.provider;
       if (this.provider !== undefined) await instance.runJSBundle(this.provider);
-      await waitForRnohBundle(instance);
     }
+    await waitForRnohBundle(instance);
+
     // Roots can join while the bundle is running; prepare them before publishing this instance.
     for (const listener of this.listeners) await this.prepare(listener, instance);
     if (this.current !== instance || this.closing)
       throw new ExpoModuleError('ERR_REACT_HOST_CONTEXT', 'The runtime was destroyed while its bundle was loading.');
+
     this.provider = new LoadedBundle(instance);
     this.loaded = true;
     this.changed(instance);
@@ -264,10 +287,11 @@ export class RnohReactRuntime implements ReactNativeRuntime {
     }
     this.detach = this.lifetime.observeDestroy(instance, (): void => {
       if (this.current !== instance) return;
+
       this.current = undefined;
       this.loaded = false;
-      this.changed(undefined);
       if (!this.replacing) {
+        this.changed(undefined);
         this.closing = true;
         this.tools?.();
         this.tools = undefined;

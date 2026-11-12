@@ -64,7 +64,7 @@ struct ExpoView {
         tag: this.tag,
         componentName: this.logicalComponentName,
       });
-      this.updateDescriptor(descriptor);
+      this.updateDescriptorFromSubscription(descriptor);
 
       // Store each disposer as soon as it is created.
       this.trackCleanup(

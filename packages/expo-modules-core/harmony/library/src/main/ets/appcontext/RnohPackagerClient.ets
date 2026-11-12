@@ -5,16 +5,18 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+const PACKAGER_CLIENT_STORAGE_KEY: string = 'jsPackagerClient';
+
 export class RnohPackagerClient {
-  private readonly client: ESObject = AppStorage.get('jsPackagerClient');
+  private readonly client: ESObject = AppStorage.get(PACKAGER_CLIENT_STORAGE_KEY);
 
   isCurrent(): boolean {
-    return this.client === AppStorage.get('jsPackagerClient');
+    return this.client === AppStorage.get(PACKAGER_CLIENT_STORAGE_KEY);
   }
 
   restore(): void {
-    if (this.client === undefined) AppStorage.delete('jsPackagerClient');
-    else AppStorage.setOrCreate('jsPackagerClient', this.client);
+    if (this.client === undefined) AppStorage.delete(PACKAGER_CLIENT_STORAGE_KEY);
+    else AppStorage.setOrCreate(PACKAGER_CLIENT_STORAGE_KEY, this.client);
   }
 
   destroy(release: () => void): void {
@@ -23,8 +25,8 @@ export class RnohPackagerClient {
     try {
       release();
     } finally {
-      // RNOH 0.84.1 destroys the global client instead of its coordinator's client.
-      if (previous.client === this.client) AppStorage.delete('jsPackagerClient');
+      // RNOH destroys the AppStorage client when it tears down a coordinator.
+      if (previous.client === this.client) AppStorage.delete(PACKAGER_CLIENT_STORAGE_KEY);
       else previous.restore();
     }
   }

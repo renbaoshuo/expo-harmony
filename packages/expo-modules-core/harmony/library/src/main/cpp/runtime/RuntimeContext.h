@@ -27,10 +27,10 @@
 #include <folly/dynamic.h>
 #include <react/bridging/LongLivedObject.h>
 
-#include "common/SharedObjectClassIdentity.h"
-#include "common/SharedObjectInvocationState.h"
-#include "common/SharedObjectObservationState.h"
-#include "common/SharedObjectWrapperState.h"
+#include "runtime/SharedObjectClassIdentity.h"
+#include "runtime/SharedObjectInvocationState.h"
+#include "runtime/SharedObjectObservationState.h"
+#include "runtime/SharedObjectWrapperState.h"
 #include "runtime/RuntimeIdentity.h"
 #include "runtime/RuntimeInvocationState.h"
 
@@ -53,6 +53,7 @@ class Promise;
 class RuntimeContext;
 class SynchronousBinaryWriteBack;
 struct ViewDefinition;
+struct ModuleDefinition;
 
 struct SharedObjectInvocationIdentity final {
   RuntimeEpoch runtimeEpoch{kInvalidRuntimeEpoch};
@@ -127,6 +128,12 @@ public:
   bool isRuntimeThread() const noexcept;
   RuntimeEpoch runtimeEpoch() const noexcept;
   std::string runtimeEpochString() const;
+  std::string bridgeRuntimeEpochString() const;
+  bool isWorkletContext() const noexcept;
+  void initializeWorkletModuleRegistry(
+      const std::shared_ptr<RuntimeContext> &owner,
+      std::vector<ModuleDefinition> definitions);
+  facebook::jsi::Value resolveWorkletSharedObject(long objectId);
   void assertRuntimeThread() const;
   void invalidate(std::function<void()> completion = {}) noexcept;
   void dispatchToJavaScript(std::function<void()> task);
@@ -256,10 +263,14 @@ private:
   std::atomic_bool acceptingTasks_{true};
   std::atomic_bool invalidating_{false};
   std::atomic_bool invalidationScheduled_{false};
-  std::atomic_long nextObjectId_{1};
+  static std::atomic_long nextObjectId_;
   std::thread::id runtimeThread_;
   mutable std::mutex mutex_;
   std::unique_ptr<ModuleRegistry> moduleRegistry_;
+  bool workletContext_{false};
+  std::weak_ptr<RuntimeContext> sharedObjectOwner_;
+  std::vector<std::weak_ptr<RuntimeContext>> workletContexts_;
+  std::shared_ptr<RuntimeContext> requireSharedObjectOwner() const;
   std::unordered_map<long, std::shared_ptr<facebook::jsi::WeakObject>> sharedObjects_;
   std::unordered_map<long, std::shared_ptr<facebook::jsi::Object>>
       deferredSharedObjectEmitters_;

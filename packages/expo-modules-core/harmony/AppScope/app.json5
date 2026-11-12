@@ -9,7 +9,7 @@
   "app": {
     "bundleName": "dev.expo.modulescore.build",
     "vendor": "expo-harmony",
-    "versionCode": 550026,
-    "versionName": "55.0.26-harmony.0"
+    "versionCode": 570023,
+    "versionName": "57.0.23-harmony.0"
   }
 }

@@ -2,12 +2,16 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-modules-core)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Modules Core 所需的原生运行时、HAR 和 C++ 开发入口，与官方同版本的 expo-modules-core 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo Modules Core 的原生实现，与官方同版本的 `expo-modules-core` 配套使用。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
 ```bash
-npm install @expo-harmony/expo-modules-core @react-native-oh/react-native-harmony@0.84.1 @react-native-ohos/react-native-worklets@1.0.1 expo-modules-core@55.0.25 'react-native-worklets@^0.7.4 || ^0.8.0'
+npm install --legacy-peer-deps @expo-harmony/expo-modules-core
 ```
 
 ## Author

@@ -31,6 +31,7 @@ import {
   ownedFunctionArity,
 } from '../modules/ExpoValueConverter';
 import { ExpoModuleError } from '../modules/ExpoModuleError';
+import { hasOwnExpoRecordKey } from '../modules/ExpoRecord';
 
 export type ExpoViewFactory<ViewType extends ExpoView> = (context: ExpoViewContext) => ViewType;
 type ExpoViewPropSetter<ViewType extends ExpoView> = (view: ViewType, value: ESObject) => void;
@@ -207,6 +208,7 @@ export class ExpoViewContext implements ExpoViewContentDelegate {
   }
 }
 
+// Fabric adds target and timestamp to the payload. Null cancels dispatch.
 function normalizeViewEventPayload(value: ESObject | void): ESObject {
   if (value === undefined || value === null) return {};
 
@@ -248,13 +250,24 @@ class MountedExpoView {
   readonly context: ExpoViewContext;
   readonly previousProps: Map<string, ESObject> = new Map<string, ESObject>();
   readonly dirtyProps: Set<string> = new Set<string>();
-  initialized: boolean = false;
   destroyed: boolean = false;
 
   constructor(view: ExpoView, context: ExpoViewContext) {
     this.view = view;
     this.context = context;
   }
+}
+
+// Descriptor props are acyclic values copied by RNOH. Compare their contents
+// because descriptor updates can recreate objects even when values are unchanged.
+function equalViewProps(left: ESObject, right: ESObject): boolean {
+  if (left === right) return true;
+  if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  if (Array.isArray(left) && left.length !== right.length) return false;
+  const keys: string[] = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every((key: string): boolean => hasOwnExpoRecordKey(right as Record<string, ESObject>, key) && equalViewProps(left[key], right[key]));
 }
 
 /** ArkTS-native View definition builder. */
@@ -531,14 +544,16 @@ export class ExpoViewDefinition<ViewType extends ExpoView = ExpoView> implements
 
       const dirty: boolean = mounted.dirtyProps.has(name);
       if (!hasValue) {
-        if (mounted.previousProps.has(name) || dirty || (!mounted.initialized && registration.hasDefaultValue)) {
+        if (mounted.previousProps.has(name) || dirty) {
           converted.set(name, registration.convert(registration.hasDefaultValue ? registration.defaultValue : null));
         }
-      } else if (dirty || !mounted.previousProps.has(name) || mounted.previousProps.get(name) !== props[name]) {
+      } else if (dirty || !mounted.previousProps.has(name) || !equalViewProps(mounted.previousProps.get(name), props[name])) {
         const rawValue: ESObject = props[name];
         converted.set(name, registration.convert(rawValue === null && registration.hasDefaultValue ? registration.defaultValue : rawValue));
       }
     });
+
+    if (converted.size === 0) return;
 
     converted.forEach((prop: ESObject, name: string): void => {
       this.moduleContextValue?.assertActive();
@@ -550,7 +565,7 @@ export class ExpoViewDefinition<ViewType extends ExpoView = ExpoView> implements
 
     // The update hook can also mutate unchanged managed fields before throwing.
     this.propValues.forEach((registration: ExpoViewPropRegistration<ViewType>, name: string): void => {
-      if (mounted.previousProps.has(name) || next.has(name) || registration.hasDefaultValue) {
+      if (mounted.previousProps.has(name) || next.has(name)) {
         mounted.dirtyProps.add(name);
       }
     });
@@ -564,7 +579,6 @@ export class ExpoViewDefinition<ViewType extends ExpoView = ExpoView> implements
     });
 
     mounted.dirtyProps.clear();
-    mounted.initialized = true;
   }
 
   async invokeAsync(value: ESObject, functionName: string, args: ESObject[]): Promise<ESObject | void> {

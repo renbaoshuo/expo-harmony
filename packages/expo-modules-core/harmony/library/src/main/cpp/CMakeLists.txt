@@ -47,10 +47,14 @@ if(NOT TARGET rnoh)
     "${CMAKE_CURRENT_BINARY_DIR}/rnoh")
 endif()
 
-set(EXPO_WORKLETS_ENABLED OFF)
-if(TARGET rnoh_worklets)
-  set(EXPO_WORKLETS_ENABLED ON)
-endif()
+function(expo_harmony_configure_worklets)
+  if(TARGET rnoh_worklets)
+    # Worklets 1.1.0-beta.1 also publishes its compiled sources as interface sources.
+    # Use the Worklets shared library so the process has one set of registries.
+    set_property(TARGET rnoh_worklets PROPERTY INTERFACE_SOURCES "")
+  endif()
+endfunction()
+cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL expo_harmony_configure_worklets)
 
 file(GLOB_RECURSE EXPO_COMMON_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/common/*.cpp")
@@ -72,24 +76,25 @@ add_library(expo_harmony__expo_modules_core SHARED
 
 target_compile_definitions(expo_harmony__expo_modules_core PUBLIC
   EXPO_MODULES_CORE_VERSION="${EXPO_MODULES_CORE_VERSION_VALUE}"
-  WORKLETS_ENABLED=$<BOOL:${EXPO_WORKLETS_ENABLED}>)
+  WORKLETS_ENABLED=$<TARGET_EXISTS:rnoh_worklets>)
 
 target_compile_definitions(expo_harmony__expo_modules_core PRIVATE
   EXPO_HARMONY=1
+  # RNOH 0.86 public renderer headers use libc++'s C++20 ranges support.
+  _LIBCPP_ENABLE_EXPERIMENTAL
   REACT_NATIVE_MINOR_VERSION=${EXPO_REACT_NATIVE_MINOR_VERSION})
 
 target_include_directories(expo_harmony__expo_modules_core PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}"
   "${CMAKE_CURRENT_SOURCE_DIR}/common"
   "${CMAKE_CURRENT_SOURCE_DIR}/common/JSI"
-  "${CMAKE_CURRENT_SOURCE_DIR}/common/fabric")
+  "${CMAKE_CURRENT_SOURCE_DIR}/common/fabric"
+  "${CMAKE_CURRENT_SOURCE_DIR}/package")
 
 target_link_libraries(expo_harmony__expo_modules_core PUBLIC
   rnoh
   libace_napi.z.so
   libhilog_ndk.z.so)
-
-if(EXPO_WORKLETS_ENABLED)
-  target_link_libraries(expo_harmony__expo_modules_core PRIVATE
-    rnoh_worklets)
-endif()
+target_link_libraries(expo_harmony__expo_modules_core PRIVATE
+  libohcrypto.so
+  $<$<TARGET_EXISTS:rnoh_worklets>:rnoh_worklets>)

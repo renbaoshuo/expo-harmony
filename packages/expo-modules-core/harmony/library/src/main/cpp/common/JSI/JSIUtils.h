@@ -77,6 +77,7 @@ void defineProperty(jsi::Runtime &runtime, jsi::Object *object, const char *name
  Calls `Object.defineProperty(object, name, descriptor)`.
  */
 void defineProperty(jsi::Runtime &runtime, jsi::Object *object, const char *name, jsi::Object descriptor);
+void defineProperty(jsi::Runtime &runtime, jsi::Object *object, const jsi::String &name, jsi::Object descriptor);
 
 } // namespace expo::common
 

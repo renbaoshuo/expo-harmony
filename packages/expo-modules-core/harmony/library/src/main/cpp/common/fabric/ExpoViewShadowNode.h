@@ -34,7 +34,8 @@ public:
   ExpoViewShadowNode(const facebook::react::ShadowNode &sourceShadowNode,
                      const facebook::react::ShadowNodeFragment &fragment);
 
-public:
+  void applySizeState(const ExpoViewState &state) const;
+
   static facebook::react::ShadowNodeTraits BaseTraits() {
     auto traits = ConcreteViewShadowNode::BaseTraits();
     return traits;

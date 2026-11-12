@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "common/SharedObjectClassIdentity.h"
+#include "runtime/SharedObjectClassIdentity.h"
 #include "modules/internal/ModuleDefinition.h"
 
 namespace expo::harmony {
@@ -26,6 +26,7 @@ public:
   ~ModuleRegistry();
 
   void initialize();
+  void initializeWorkletClasses(std::vector<ModuleDefinition> definitions);
   const ModuleDefinition *find(const std::string &name) const;
   const ViewDefinition *findView(const std::string &componentName) const;
   bool isSharedRefClass(

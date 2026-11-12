@@ -9,7 +9,7 @@
 
 #include <utility>
 
-namespace expo::harmony {
+namespace expo::SharedObject {
 
 SharedObjectReleaseState::SharedObjectReleaseState(
     long objectId,
@@ -40,4 +40,4 @@ bool SharedObjectReleaseState::isReleased() const noexcept {
   return released_.load(std::memory_order_acquire);
 }
 
-}  // namespace expo::harmony
+}  // namespace expo::SharedObject

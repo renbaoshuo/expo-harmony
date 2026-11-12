@@ -8,6 +8,8 @@
 // Copyright 2022-present 650 Industries. All rights reserved.
 
 #include <unordered_map>
+#include <cmath>
+#include <limits>
 #include "TypedArray.h"
 
 namespace expo {
@@ -30,6 +32,20 @@ TypedArrayKind getTypedArrayKindForName(const std::string &name) {
   return nameToKindMap.at(name);
 }
 
+namespace {
+size_t checkedByteCount(const jsi::Value &value) {
+  if (!value.isNumber()) throw std::runtime_error("TypedArray byte range must be numeric.");
+
+  const auto count = value.getNumber();
+  if (!std::isfinite(count) || count < 0 || std::trunc(count) != count ||
+      count > 9007199254740991.0 || count > static_cast<double>(std::numeric_limits<size_t>::max())) {
+    throw std::runtime_error("TypedArray byte range must be a non-negative safe integer.");
+  }
+
+  return static_cast<size_t>(count);
+}
+} // namespace
+
 TypedArray::TypedArray(jsi::Runtime &runtime, const jsi::Object &obj)
     : jsi::Object(jsi::Value(runtime, obj).asObject(runtime)) {}
 
@@ -42,11 +58,11 @@ TypedArrayKind TypedArray::getKind(jsi::Runtime &runtime) const {
 };
 
 size_t TypedArray::byteOffset(jsi::Runtime &runtime) const {
-  return static_cast<size_t>(getProperty(runtime, "byteOffset").asNumber());
+  return checkedByteCount(getProperty(runtime, "byteOffset"));
 }
 
 size_t TypedArray::byteLength(jsi::Runtime &runtime) const {
-  return static_cast<size_t>(getProperty(runtime, "byteLength").asNumber());
+  return checkedByteCount(getProperty(runtime, "byteLength"));
 }
 
 jsi::ArrayBuffer TypedArray::getBuffer(jsi::Runtime &runtime) const {
@@ -59,7 +75,33 @@ jsi::ArrayBuffer TypedArray::getBuffer(jsi::Runtime &runtime) const {
 }
 
 void* TypedArray::getRawPointer(jsi::Runtime &runtime) const {
-  return reinterpret_cast<void *>(getBuffer(runtime).data(runtime) + byteOffset(runtime));
+  auto buffer = getBuffer(runtime);
+  const auto offset = byteOffset(runtime);
+  const auto length = byteLength(runtime);
+
+  if (offset > buffer.size(runtime) || length > buffer.size(runtime) - offset) {
+    throw std::runtime_error("TypedArray view exceeds its backing buffer.");
+  }
+
+  auto data = buffer.data(runtime);
+  return offset == 0 ? data : data + offset;
+}
+
+jsi::ArrayBuffer TypedArray::getViewedBufferSlice(jsi::Runtime &runtime) const {
+  auto buffer = getBuffer(runtime);
+  const auto offset = byteOffset(runtime);
+  const auto length = byteLength(runtime);
+
+  if (offset > buffer.size(runtime) || length > buffer.size(runtime) - offset) {
+    throw std::runtime_error("TypedArray view exceeds its backing buffer.");
+  }
+  if (offset == 0 && length == buffer.size(runtime)) {
+    return buffer;
+  }
+
+  return buffer.getPropertyAsFunction(runtime, "slice")
+      .callWithThis(runtime, buffer, static_cast<double>(offset), static_cast<double>(offset + length))
+      .getObject(runtime).getArrayBuffer(runtime);
 }
 
 bool isTypedArray(jsi::Runtime &runtime, const jsi::Object &jsObj) {

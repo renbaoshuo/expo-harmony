@@ -74,7 +74,7 @@ public:
   bool isReleased() const noexcept;
 
 private:
-  expo::harmony::SharedObjectReleaseState releaseState_;
+  SharedObjectReleaseState releaseState_;
 }; // class NativeState
 
 } // namespace expo::SharedObject

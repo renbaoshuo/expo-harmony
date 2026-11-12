@@ -16,6 +16,17 @@ interface Release {
   listeners: Set<() => void>;
 }
 
+function requireRnohLifecycleRegistry(core: RNOHCoreContext) {
+  const registry = core._rnohCoreContextDeps?.rnInstanceRegistry as (typeof core._rnohCoreContextDeps.rnInstanceRegistry & {
+    destroyRNInstanceWorker(id: number): Promise<void>;
+  }) | undefined;
+  if (typeof registry?.destroyRNInstanceWorker !== 'function' || typeof registry.forEach !== 'function' ||
+      typeof core.createAndRegisterRNInstance !== 'function' || typeof core.reloadRNInstance !== 'function') {
+    throw new Error('This RNOH version does not expose the instance lifecycle required by Expo Harmony.');
+  }
+  return registry;
+}
+
 export class RnohContextLifecycle {
   private static readonly contexts = new WeakMap<RNOHCoreContext, RnohContextLifecycle>();
 
@@ -32,21 +43,24 @@ export class RnohContextLifecycle {
   private readonly workers = new Map<number, Promise<void>>();
   private readonly instances = new Map<number, RNInstance>();
   private readonly releases = new WeakMap<RNInstance, Release>();
+  private readonly instanceDestructions = new WeakMap<RNInstance, Promise<void>>();
+  private readonly registry: ReturnType<typeof requireRnohLifecycleRegistry>;
   private closing = false;
   private destruction?: Promise<void>;
 
   private constructor(private readonly core: RNOHCoreContext) {
-    const registry = core._rnohCoreContextDeps.rnInstanceRegistry as typeof core._rnohCoreContextDeps.rnInstanceRegistry & {
-      destroyRNInstanceWorker(id: number): Promise<void>;
-    };
+    const registry = requireRnohLifecycleRegistry(core);
+    this.registry = registry;
     const destroy = registry.destroyRNInstanceWorker.bind(registry);
-    // deleteInstance discards this Promise in RNOH 0.84.1; retain its worker ACK before closing the coordinator.
+    // RNOH's deleteInstance discards the worker teardown promise.
     registry.destroyRNInstanceWorker = (id: number): Promise<void> => {
       const instance = this.instances.get(id);
       const pending = destroy(id);
+
       this.workers.set(id, pending);
       pending.then(() => {
         if (this.workers.get(id) === pending) this.workers.delete(id);
+
         const release = instance === undefined ? undefined : this.releases.get(instance);
         if (release !== undefined && instance !== undefined) {
           release.worker = true;
@@ -81,9 +95,9 @@ export class RnohContextLifecycle {
   }
 
   owns(instance: RNInstance): boolean {
-    // RNOH 0.84.1 has no public instance ownership query.
+    // RNOH has no public instance ownership query.
     let registered = false;
-    this.core._rnohCoreContextDeps.rnInstanceRegistry.forEach(candidate => {
+    this.registry.forEach(candidate => {
       if (candidate === instance) registered = true;
     });
     return registered;
@@ -129,16 +143,37 @@ export class RnohContextLifecycle {
     release.listeners.clear();
   }
 
-  async destroyInstance(instance: RNInstance): Promise<void> {
-    await this.core.destroyAndUnregisterRNInstance(instance);
-    await this.workers.get(instance.getId());
+  destroyInstance(instance: RNInstance): Promise<void> {
+    const existing = this.instanceDestructions.get(instance);
+    if (existing !== undefined) return existing;
+
+    const pending = Promise.resolve().then(async (): Promise<void> => {
+      if (this.owns(instance)) await this.core.destroyAndUnregisterRNInstance(instance);
+
+      const id = instance.getId();
+      // A coordinator reload can give another object the same RNOH ID.
+      if (this.instances.get(id) === instance) await this.workers.get(id);
+    });
+
+    this.instanceDestructions.set(instance, pending);
+    pending.catch((): void => {
+      this.instanceDestructions.delete(instance);
+    });
+
+    return pending;
   }
 
   destroy(): Promise<void> {
     if (this.destruction === undefined) {
       this.closing = true;
-      this.destruction = this.drain();
+
+      const pending = this.drain();
+      this.destruction = pending;
+      pending.catch((): void => {
+        this.destruction = undefined;
+      });
     }
+
     return this.destruction;
   }
 
@@ -146,10 +181,12 @@ export class RnohContextLifecycle {
     await Promise.allSettled(Array.from(this.pending));
 
     const instances: RNInstance[] = [];
-    // RNOH 0.84.1 exposes no instance enumeration or awaited coordinator destruction.
+    // RNOH exposes no instance enumeration or awaited coordinator destruction.
     this.core._rnohCoreContextDeps.rnInstanceRegistry.forEach(instance => instances.push(instance));
-    const results = await Promise.allSettled(instances.map(instance => this.core.destroyAndUnregisterRNInstance(instance)));
+
+    const results = await Promise.allSettled(instances.map(instance => this.destroyInstance(instance)));
     const workers = await Promise.allSettled(Array.from(this.workers.values()));
+
     for (const result of [...results, ...workers]) {
       if (result.status === 'rejected') throw new Error(`Unable to finish RNOH instance destruction: ${String(result.reason)}`);
     }

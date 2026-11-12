@@ -7,7 +7,7 @@
 
 #pragma once
 
-#include <jsi/jsi.h>
+#include "JSIUtils.h"
 
 namespace expo::common {
 
@@ -24,9 +24,7 @@ inline void defineRecordProperty(
   descriptor.setProperty(runtime, "enumerable", true);
   descriptor.setProperty(runtime, "configurable", true);
 
-  auto constructor = runtime.global().getPropertyAsObject(runtime, "Object");
-  constructor.getPropertyAsFunction(runtime, "defineProperty")
-      .callWithThis(runtime, constructor, object, name, descriptor);
+  defineProperty(runtime, &object, name, std::move(descriptor));
 }
 
 }  // namespace expo::common

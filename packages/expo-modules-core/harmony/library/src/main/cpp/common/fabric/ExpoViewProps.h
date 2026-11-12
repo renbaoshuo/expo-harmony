@@ -22,13 +22,11 @@ public:
   ExpoViewProps() = default;
   ExpoViewProps(const facebook::react::PropsParserContext &context,
                 const ExpoViewProps &sourceProps,
-                const facebook::react::RawProps &rawProps);
+                const facebook::react::RawProps &rawProps,
+                const std::function<bool(const std::string &)> &filterObjectKeys = nullptr);
 
 #pragma mark - Props
 
-  /**
-   A map with props stored as `folly::dynamic` objects.
-   */
   std::unordered_map<std::string, folly::dynamic> propsMap;
 };
 

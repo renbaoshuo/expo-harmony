@@ -5,6 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+import { url } from '@kit.ArkTS';
 import type { ExpoModuleContext } from './ExpoModule';
 import type { ExpoRuntimeSession } from '../appcontext/ExpoRuntimeSession';
 import {
@@ -1384,13 +1385,15 @@ export class ExpoSharedObjectRegistry {
 
     if (value instanceof ExpoSharedObject) return this.encodeSharedObject(value, authorIds);
     if (value === null || value === undefined) return value;
+    if (value instanceof Date) return value.toISOString();
+    if (value instanceof url.URL) return value.toString();
 
     // Preserve TypedArrays across the private JSI/NAPI bridge.
     if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return value;
 
     const kind = typeof value;
 
-    if (kind === 'string' || kind === 'number' || kind === 'boolean') return value;
+    if (kind === 'string' || kind === 'number' || kind === 'boolean' || kind === 'bigint') return value;
 
     if (Array.isArray(value)) {
       return value.map((item: ESObject): ESObject => this.encodeValue(item, depth + 1, authorIds));
@@ -1474,7 +1477,7 @@ export class ExpoSharedObjectRegistry {
 
     const kind = typeof value;
 
-    if (kind === 'string' || kind === 'number' || kind === 'boolean' || kind === 'function') return value;
+    if (kind === 'string' || kind === 'number' || kind === 'boolean' || kind === 'bigint' || kind === 'function') return value;
 
     if (Array.isArray(value)) {
       return value.map((item: ESObject): ESObject => this.decodeValue(item, depth + 1));
@@ -1703,25 +1706,21 @@ export class ExpoSharedObjectRegistry {
     for (let depth = 0; depth < MAX_COPY_VALUE_DEPTH; depth += 1) {
       lineage.push(new ExpoSharedObjectClassIdentity(moduleName, className));
 
-      const definition = this.classes.get(sharedClassKey(moduleName, className));
-      if (definition === undefined) return lineage;
-
-      const descriptor = definition.descriptor();
-
-      if (descriptor.baseClassName === 'SharedObject' || descriptor.baseClassName === 'SharedRef') {
+      const baseClassName: string = this.requireClass(moduleName, className).baseClassNameValue();
+      if (baseClassName === 'SharedObject' || baseClassName === 'SharedRef') {
         return lineage;
       }
 
-      const separator = descriptor.baseClassName.indexOf('.');
+      const separator = baseClassName.indexOf('.');
 
-      if (separator < 0) className = descriptor.baseClassName;
+      if (separator < 0) className = baseClassName;
       else {
-        moduleName = descriptor.baseClassName.slice(0, separator);
-        className = descriptor.baseClassName.slice(separator + 1);
+        moduleName = baseClassName.slice(0, separator);
+        className = baseClassName.slice(separator + 1);
       }
     }
 
-    return lineage;
+    throw new Error('Expo SharedObject class inheritance exceeds the maximum depth.');
   }
 
   private decodeClassLineage(value: ESObject[], actualModule: string, actualClass: string): ExpoSharedObjectClassIdentity[] {

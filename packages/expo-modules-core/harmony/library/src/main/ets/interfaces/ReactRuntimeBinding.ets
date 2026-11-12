@@ -18,6 +18,7 @@ export interface ReactRuntimeContext {
   readonly core: RNOHCoreContext;
   /** Returns the actual bundle provider, or undefined for an externally loaded instance. */
   readonly getJSBundleProvider?: () => JSBundleProvider | undefined;
+  /** Reloads the owning runtime, including while it is replacing this instance. */
   readonly reload: (reason: string) => Promise<void>;
   /** Returns a development host to its native UI without leaving its app running. */
   readonly suspend: () => Promise<void>;

@@ -15,26 +15,24 @@ namespace react = facebook::react;
 
 namespace expo {
 
-/**
- Borrows the props map from the source props and applies the update given in the raw props.
- */
 std::unordered_map<std::string, folly::dynamic> propsMapFromProps(const ExpoViewProps &sourceProps, const react::RawProps &rawProps) {
-  std::unordered_map<std::string, folly::dynamic> propsMap = sourceProps.propsMap;
+  auto props = sourceProps.propsMap;
 
-  // Raw props contain only updated values.
-  const auto& dynamicRawProps = static_cast<folly::dynamic>(rawProps);
-  for (const auto& propsPair : dynamicRawProps.items()) {
-    const auto &propName = propsPair.first.getString();
-    propsMap[propName] = static_cast<folly::dynamic>(propsPair.second);
+  const auto &updates = static_cast<folly::dynamic>(rawProps);
+  for (const auto &entry : updates.items()) {
+    const auto &name = entry.first.getString();
+    props[name] = static_cast<folly::dynamic>(entry.second);
   }
 
-  return propsMap;
+  return props;
 }
 
+// RNOH's C++ HostPlatformViewProps has the three-argument ABI.
 ExpoViewProps::ExpoViewProps(const react::PropsParserContext &context,
                              const ExpoViewProps &sourceProps,
-                             const react::RawProps &rawProps)
-                             : react::ViewProps(context, sourceProps, rawProps),
-                               propsMap(propsMapFromProps(sourceProps, rawProps)) {}
+                             const react::RawProps &rawProps,
+                             [[maybe_unused]] const std::function<bool(const std::string &)> &filterObjectKeys)
+    : react::ViewProps(context, sourceProps, rawProps),
+      propsMap(propsMapFromProps(sourceProps, rawProps)) {}
 
 } // namespace expo

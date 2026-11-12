@@ -22,7 +22,7 @@
 
 #include <folly/dynamic.h>
 
-#include "common/SharedObjectBindingState.h"
+#include "runtime/SharedObjectBindingState.h"
 
 namespace expo::harmony {
 

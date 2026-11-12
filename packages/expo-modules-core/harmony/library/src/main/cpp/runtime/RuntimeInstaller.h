@@ -18,7 +18,7 @@ class RuntimeContext;
 class RuntimeInstaller final {
 public:
   static std::shared_ptr<RuntimeContext> installedContext(
-      facebook::jsi::Runtime &runtime);
+      facebook::jsi::Runtime &runtime, bool requireAcceptingTasks = true);
   static void uninstall(
       facebook::jsi::Runtime &runtime,
       const RuntimeContext *context);

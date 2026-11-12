@@ -9,9 +9,6 @@
 
 namespace expo::harmony::protocol {
 
-inline constexpr const char kBundleWait[] = "EXPO_BUNDLE_WAIT";
-inline constexpr const char kBundleCancel[] = "EXPO_BUNDLE_CANCEL";
-inline constexpr const char kBundleReady[] = "EXPO_BUNDLE_READY";
 inline constexpr const char kViewEvent[] = "EXPO_VIEW_EVENT";
 inline constexpr const char kLifecycleEvent[] = "EXPO_LIFECYCLE_EVENT";
 inline constexpr const char kLifecycleDestroyAck[] = "EXPO_LIFECYCLE_DESTROY_ACK";
@@ -19,6 +16,8 @@ inline constexpr const char kContentAppeared[] = "EXPO_CONTENT_APPEARED";
 inline constexpr const char kModuleEvent[] = "EXPO_MODULE_EVENT";
 inline constexpr const char kSharedObjectEvent[] = "EXPO_SHARED_OBJECT_EVENT";
 inline constexpr const char kSharedObjectMarker[] = "__expoHarmonySharedObject";
+inline constexpr const char kResolveSharedObjectInWorklet[] = "__resolveInWorklet";
+inline constexpr const char kViewComponentPrefix[] = "ViewManagerAdapter_";
 inline constexpr const char kViewComponentName[] = "ViewManagerAdapter_ExpoModulesCore";
 inline constexpr const char kViewModuleNameProp[] = "expoModuleName";
 inline constexpr const char kViewRevisionProp[] = "expoViewRevision";
@@ -29,5 +28,8 @@ inline constexpr const char kViewPhaseProps[] = "PROPS";
 inline constexpr const char kViewPhaseDestroy[] = "DESTROY";
 inline constexpr const char kLifecycleContentAppeared[] = "CONTENT_APPEARED";
 inline constexpr const char kLifecycleDestroy[] = "DESTROY";
+
+inline constexpr unsigned int kLogDomain = 0xD003900;
+inline constexpr const char kLogTag[] = "ExpoModulesCore";
 
 }  // namespace expo::harmony::protocol

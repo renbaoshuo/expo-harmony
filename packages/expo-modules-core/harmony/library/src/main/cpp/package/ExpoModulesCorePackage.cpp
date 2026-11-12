@@ -23,7 +23,7 @@
 
 #include "common/fabric/ExpoViewEventEmitter.h"
 #include "common/fabric/ExpoViewShadowNode.h"
-#include "fabric/ExpoViewComponentRegistry.h"
+#include "common/fabric/ExpoViewComponentDescriptor.h"
 #include "modules/ExpoModulesCoreTurboModule.h"
 #include "runtime/Protocol.h"
 
@@ -31,8 +31,6 @@ namespace expo::harmony {
 
 namespace {
 
-constexpr unsigned int kExpoModulesLogDomain = 0xD003900;
-constexpr const char *kExpoModulesLogTag = "ExpoModulesCore";
 
 std::string limitedDiagnostic(const char *message) {
   std::string result = message == nullptr ? "native error" : message;
@@ -87,12 +85,12 @@ public:
       return;
     }
 
+    // The executor is only exposed by RNInstanceInternal.
     auto instance = std::dynamic_pointer_cast<rnoh::RNInstanceInternal>(context.rnInstance.lock());
     if (!instance) {
       return;
     }
 
-    // RNOH 0.84 exposes its executor through RNInstanceInternal.
     instance->getTaskExecutor()->runTask(
         rnoh::TaskThread::JS,
         [weakInstance = context.rnInstance, appeared, requestId = requestId.asString()] {
@@ -139,8 +137,8 @@ public:
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Rejected Expo view event %{public}s for tag %{public}lld: %{private}s",
           context.eventName.c_str(),
           static_cast<long long>(context.tag),
@@ -149,8 +147,8 @@ public:
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Rejected Expo view event %{public}s for tag %{public}lld: unknown native exception",
           context.eventName.c_str(),
           static_cast<long long>(context.tag));
@@ -178,16 +176,16 @@ public:
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Rejected Expo view state update: %{private}s",
           diagnostic.c_str());
     } catch (...) {
       OH_LOG_Print(
           LOG_APP,
           LOG_ERROR,
-          kExpoModulesLogDomain,
-          kExpoModulesLogTag,
+          protocol::kLogDomain,
+          protocol::kLogTag,
           "Rejected Expo view state update: unknown native exception");
     }
   }
@@ -212,27 +210,18 @@ ExpoModulesCorePackage::createTurboModuleFactoryDelegate() {
 
 std::vector<facebook::react::ComponentDescriptorProvider>
 ExpoModulesCorePackage::createComponentDescriptorProviders() {
-  return ExpoViewComponentRegistry::descriptorProviders();
+  namespace react = facebook::react;
+  static const auto flavor = std::make_shared<const std::string>(protocol::kViewComponentName);
+  return {react::ComponentDescriptorProvider{
+      reinterpret_cast<react::ComponentHandle>(flavor->c_str()),
+      react::ComponentName{flavor->c_str()},
+      flavor,
+      &react::concreteComponentDescriptorConstructor<expo::ExpoViewComponentDescriptor>}};
 }
 
 rnoh::ComponentNapiBinderByString
 ExpoModulesCorePackage::createComponentNapiBinderByName() {
-  rnoh::ComponentNapiBinderByString result;
-  for (const auto &componentName :
-       ExpoViewComponentRegistry::componentNames()) {
-    result.emplace(
-        componentName, std::make_shared<ExpoViewComponentNapiBinder>());
-  }
-  return result;
-}
-
-rnoh::ComponentInstance::Shared ExpoModulesCorePackage::createComponentInstance(
-    const rnoh::ComponentInstance::Context &context) {
-  if (!ExpoViewComponentRegistry::contains(context.componentName)) {
-    return nullptr;
-  }
-  // Let RNOH create the fallback instance for ArkTS-wrapped builders.
-  return nullptr;
+  return {{protocol::kViewComponentName, std::make_shared<ExpoViewComponentNapiBinder>()}};
 }
 
 rnoh::EventEmitRequestHandlers
@@ -242,11 +231,7 @@ ExpoModulesCorePackage::createEventEmitRequestHandlers() {
 
 std::vector<rnoh::ArkTSMessageHandler::Shared>
 ExpoModulesCorePackage::createArkTSMessageHandlers() {
-  return {std::make_shared<ExpoLifecycleMessageHandler>(), createBundleHandler(bundle_)};
-}
-
-rnoh::GlobalJSIBinders ExpoModulesCorePackage::createGlobalJSIBinders(const rnoh::GlobalJSIBinder::Context &context) {
-  return createBundleBinders(context, bundle_);
+  return {std::make_shared<ExpoLifecycleMessageHandler>()};
 }
 
 }  // namespace expo::harmony

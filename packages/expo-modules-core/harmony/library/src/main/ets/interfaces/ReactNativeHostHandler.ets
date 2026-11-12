@@ -19,7 +19,11 @@ export interface ReactNativeHost {
     bundle?: JSBundleProvider,
     replace?: (reason: string) => Promise<RNInstance>,
   ): ReactNativeRuntime;
+
   createJSBundleProvider(context: common.Context, debug?: boolean): JSBundleProvider;
+  hasEmbeddedJSBundle?(context: common.Context): boolean;
+  createEmbeddedJSBundleProvider?(context: common.Context): JSBundleProvider;
+
   load(context: common.Context): Promise<void>;
   unload(): Promise<void>;
 }

@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-modules-core",
-  "version": "55.0.26-harmony.3",
+  "version": "57.0.23-harmony.0",
   "description": "HarmonyOS port of expo-modules-core",
   "keywords": [
     "react-native",
@@ -23,26 +23,25 @@
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
     "harmony:build": "expo-harmony-module prepare",
-    "prepack": "yarn harmony:build"
+    "prepack": "expo-harmony-module prepare"
   },
   "peerDependencies": {
-    "@react-native-oh/react-native-harmony": "0.84.1",
-    "@react-native-ohos/react-native-worklets": "1.0.1",
-    "expo-modules-core": "55.0.26",
-    "react-native-worklets": "^0.7.4 || ^0.8.0"
+    "expo-modules-core": "~57.0.23",
+    "react-native": "0.86.3",
+    "react-native-worklets": "0.11.4"
   },
   "devDependencies": {
     "@babel/core": "7.29.7",
     "@expo-harmony/expo-module-scripts": "workspace:*",
-    "@react-native-oh/react-native-harmony": "0.84.1",
-    "@react-native-ohos/react-native-worklets": "1.0.1",
-    "expo-modules-core": "55.0.26",
+    "@react-native/metro-config": "0.86.3",
+    "@types/node": "22.14.0",
+    "expo-modules-core": "57.0.23",
     "react": "19.2.3",
-    "react-native": "0.84.1",
-    "react-native-worklets": "0.7.4"
+    "react-native": "0.86.3",
+    "react-native-worklets": "0.11.4"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
   },
   "publishConfig": {
     "access": "public"
@@ -54,12 +53,13 @@
       "mainHarPath": "harmony",
       "ohPackageName": "@expo-harmony/expo-modules-core",
       "etsPackageClassName": "ExpoModulesCorePackage",
+      "etsPackageScope": "host",
       "cppPackageClassName": "ExpoModulesCorePackage",
       "cmakeLibraryTargetName": "expo_harmony__expo_modules_core"
     },
     "modules": {
       "@react-native-ohos/react-native-worklets": {
-        "version": "1.0.1",
+        "version": "1.1.0-beta.1",
         "mainHarPath": "harmony",
         "ohPackageName": "@react-native-ohos/react-native-worklets",
         "etsPackageClassName": "ReanimatedWorkletPackage",
@@ -68,5 +68,9 @@
         "cmakeLibraryTargetName": "rnoh_worklets"
       }
     }
+  },
+  "dependencies": {
+    "@react-native-oh/react-native-harmony": "0.86.1",
+    "@react-native-ohos/react-native-worklets": "1.1.0-beta.1"
   }
 }

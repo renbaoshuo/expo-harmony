@@ -13,7 +13,6 @@
 #include <unordered_set>
 
 #include "errors/CodedError.h"
-#include "fabric/ExpoViewComponentRegistry.h"
 #include "modules/ArkTSModuleAdapter.h"
 #include "modules/CoreModule.h"
 #include "modules/internal/ExpoModule.h"
@@ -29,7 +28,7 @@ std::vector<std::string> viewComponentNames(
     const ViewDefinition &view) {
   std::vector<std::string> names{view.componentName};
   if (view.defaultView) {
-    auto defaultName = "ViewManagerAdapter_" + module.name;
+    auto defaultName = protocol::kViewComponentPrefix + module.name;
     if (defaultName != view.componentName) {
       names.push_back(std::move(defaultName));
     }
@@ -167,7 +166,7 @@ void ModuleRegistry::registerModule(std::shared_ptr<ExpoModule> module) {
     const auto &nativeComponentName = view.usesGenericFabricComponent
                                         ? protocol::kViewComponentName
                                         : view.componentName;
-    if (!ExpoViewComponentRegistry::contains(nativeComponentName)) {
+    if (nativeComponentName != protocol::kViewComponentName) {
       throw CodedError(
           "ERR_VIEW_NOT_REGISTERED",
           "Fabric component '" + nativeComponentName + "' required by Expo module '" + retained->name + "' was not registered before React initialized its component registry.");
@@ -207,6 +206,32 @@ void ModuleRegistry::registerModule(std::shared_ptr<ExpoModule> module) {
   }
   // Preserve the original ordering slot when replacing a module.
   definitions_[name] = std::move(retained);
+}
+
+void ModuleRegistry::initializeWorkletClasses(std::vector<ModuleDefinition> definitions) {
+  for (auto &definition : definitions) {
+    // Worklets expose synchronous class APIs without creating module instances
+    // or running their lifecycle a second time.
+    ModuleDefinition classes;
+    classes.name = definition.name;
+    classes.classes = std::move(definition.classes);
+
+    for (auto &klass : classes.classes) {
+      klass.constructor = [](Invocation &) -> std::shared_ptr<NativeSharedObject> {
+        throw CodedError("ERR_WORKLET_CONSTRUCTOR", "Construct SharedObjects on the React Native runtime before passing them to a worklet.");
+      };
+      std::erase_if(klass.functions, [](const auto &function) { return function.async; });
+      std::erase_if(klass.staticFunctions, [](const auto &function) { return function.async; });
+      klass.events.clear();
+    }
+
+    auto name = classes.name;
+    names_.push_back(name);
+    definitions_.emplace(std::move(name), std::make_unique<ModuleDefinition>(std::move(classes)));
+  }
+
+  validateClassInheritanceGraph(definitions_);
+  initialized_ = true;
 }
 
 const ModuleDefinition *ModuleRegistry::find(const std::string &name) const {

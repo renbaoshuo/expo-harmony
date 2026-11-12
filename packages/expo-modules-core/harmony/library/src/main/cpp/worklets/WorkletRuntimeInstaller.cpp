@@ -7,16 +7,19 @@
 
 #include "WorkletRuntimeInstaller.h"
 
-#include <cstring>
-
 #if WORKLETS_ENABLED
 #include <ReactCommon/CallInvoker.h>
+#include <worklets/Compat/StableApi.h>
+#include <worklets/Compat/Holders.h>
 #include <worklets/WorkletRuntime/WorkletRuntime.h>
+#include <worklets/WorkletRuntime/RuntimeData.h>
 #endif
 
 #include "errors/CodedError.h"
 #if WORKLETS_ENABLED
 #include "modules/ExpoModulesCoreTurboModule.h"
+#include "runtime/ModuleRegistry.h"
+#include "runtime/RnohSyncTask.h"
 #include "runtime/RuntimeContext.h"
 #include "runtime/RuntimeInstaller.h"
 #endif
@@ -57,9 +60,8 @@ public:
             function(rt);
           });
     };
-    if (taskExecutor_ && !taskExecutor_->isOnTaskThread(rnoh::TaskThread::MAIN)) {
-      taskExecutor_->runSyncTask(
-          rnoh::TaskThread::MAIN, std::move(body));
+    if (taskExecutor_) {
+      runRnohSyncTask(*taskExecutor_, rnoh::TaskThread::MAIN, std::move(body));
       return;
     }
 
@@ -76,43 +78,33 @@ private:
 
 void WorkletRuntimeInstaller::install(
     jsi::Runtime &mainRuntime,
-    const std::shared_ptr<RuntimeContext> &mainContext) {
+    const std::shared_ptr<RuntimeContext> &mainContext,
+    const jsi::Value &runtimeHolder) {
 #if WORKLETS_ENABLED
-  auto holder = mainRuntime.global().getProperty(mainRuntime, "_WORKLET_RUNTIME");
-  if (!holder.isObject() || !holder.getObject(mainRuntime).isArrayBuffer(mainRuntime)) {
-    throw CodedError(
-        "ERR_WORKLET_RUNTIME_UNAVAILABLE",
-        "UI Runtime is not available. Install and import react-native-reanimated before calling installOnUIRuntime().");
-  }
-
-  auto buffer = holder.getObject(mainRuntime).getArrayBuffer(mainRuntime);
-  if (buffer.size(mainRuntime) != sizeof(jsi::Runtime *)) {
+  if (!runtimeHolder.isObject() ||
+      !runtimeHolder.getObject(mainRuntime).hasNativeState<worklets::WorkletRuntimeHolder>(mainRuntime)) {
     throw CodedError(
         "ERR_INVALID_WORKLET_RUNTIME",
-        "_WORKLET_RUNTIME must be an ArrayBuffer containing exactly one runtime pointer.");
+        "installOnUIRuntime() expects the result of react-native-worklets.getUIRuntimeHolder().");
   }
 
-  jsi::Runtime *uiRuntime = nullptr;
-  std::memcpy(&uiRuntime, buffer.data(mainRuntime), sizeof(uiRuntime));
-  if (uiRuntime == nullptr) {
+  auto workletRuntime = worklets::getWorkletRuntimeFromHolder(
+      mainRuntime, runtimeHolder.getObject(mainRuntime));
+  if (!workletRuntime) {
     throw CodedError(
         "ERR_INVALID_WORKLET_RUNTIME",
-        "_WORKLET_RUNTIME contains a null runtime pointer.");
+        "The supplied Worklets runtime holder is invalid or its runtime has been destroyed.");
+  }
+
+  auto *uiRuntime = &worklets::getJSIRuntimeFromWorkletRuntime(workletRuntime);
+  if (uiRuntime == &mainRuntime) {
+    throw CodedError(
+        "ERR_INVALID_WORKLET_RUNTIME",
+        "The Worklets runtime holder must identify a separate UI runtime.");
   }
 
   auto coreModule = mainContext->turboModule();
-  if (coreModule->hasRuntimeContext(uiRuntime)) {
-    return;
-  }
-
-  auto weakWorkletRuntime = worklets::WorkletRuntime::getWeakRuntimeFromJSIRuntime(*uiRuntime);
-  auto workletRuntime = weakWorkletRuntime.lock();
-  if (!workletRuntime) {
-    throw CodedError(
-        "ERR_WORKLET_RUNTIME_DESTROYED",
-        "The Worklets UI runtime has already been destroyed.");
-  }
-
+  auto weakWorkletRuntime = std::weak_ptr<worklets::WorkletRuntime>(workletRuntime);
   auto taskExecutor = mainContext->taskExecutor();
   if (!taskExecutor) {
     throw CodedError(
@@ -120,15 +112,41 @@ void WorkletRuntimeInstaller::install(
         "The RNOH main-thread executor is unavailable for the UI runtime.");
   }
 
-  taskExecutor->runSyncTask(
+  std::vector<ModuleDefinition> definitions;
+  for (const auto &name : mainContext->moduleRegistry().names()) {
+    const auto *definition = mainContext->moduleRegistry().find(name);
+    if (definition && !definition->classes.empty()) definitions.push_back(*definition);
+  }
+
+  runRnohSyncTask(
+      *taskExecutor,
       rnoh::TaskThread::MAIN,
-      [coreModule, weakWorkletRuntime, workletRuntime, taskExecutor]() {
+      [coreModule, mainContext, weakWorkletRuntime, workletRuntime, taskExecutor, definitions = std::move(definitions)]() mutable {
         workletRuntime->runSync(
-            [coreModule, weakWorkletRuntime, taskExecutor](jsi::Runtime &runtime) {
-              if (auto existing = RuntimeInstaller::installedContext(runtime)) {
-                existing->attachTurboModule(coreModule);
-                coreModule->registerRuntimeContext(runtime, existing);
-                return;
+            [coreModule, mainContext, weakWorkletRuntime, taskExecutor, definitions = std::move(definitions)](jsi::Runtime &runtime) mutable {
+              const auto kind = runtime.global().getProperty(runtime, worklets::RuntimeData::runtimeKindBindingName);
+              if (!kind.isNumber() || kind.getNumber() != static_cast<int>(worklets::RuntimeData::RuntimeKind::UI)) {
+                throw CodedError("ERR_INVALID_WORKLET_RUNTIME", "installOnUIRuntime() requires a Worklets UI runtime holder.");
+              }
+              if (!mainContext->isAlive() || !mainContext->isAcceptingTasks()) {
+                throw CodedError("ERR_RUNTIME_DESTROYED", "Cannot install a worklet context after its React Native runtime retired.");
+              }
+
+              if (auto existing = RuntimeInstaller::installedContext(runtime, false)) {
+                if (existing->isAcceptingTasks()) {
+                  if (!existing->isWorkletContext() || existing->bridgeRuntimeEpochString() != mainContext->runtimeEpochString()) {
+                    throw CodedError("ERR_WORKLET_RUNTIME_IN_USE", "This Worklets runtime belongs to another Expo AppContext.");
+                  }
+                  existing->attachTurboModule(coreModule);
+                  coreModule->registerRuntimeContext(runtime, existing);
+                  return;
+                }
+
+                // Reload can leave the UI runtime alive after its owner retired.
+                existing->invalidate();
+                if (RuntimeInstaller::installedContext(runtime, false)) {
+                  throw CodedError("ERR_WORKLET_RUNTIME_IN_USE", "The previous Expo worklet context is still being destroyed.");
+                }
               }
 
               auto uiContext = RuntimeContext::create(
@@ -137,6 +155,8 @@ void WorkletRuntimeInstaller::install(
                       weakWorkletRuntime, taskExecutor),
                   nullptr,
                   coreModule);
+              uiContext->initializeWorkletModuleRegistry(mainContext, std::move(definitions));
+
               if (RuntimeInstaller::install(runtime, uiContext, true)) {
                 coreModule->registerRuntimeContext(runtime, uiContext);
               } else {
@@ -150,10 +170,11 @@ void WorkletRuntimeInstaller::install(
 #else
   (void)mainRuntime;
   (void)mainContext;
+  (void)runtimeHolder;
   throw CodedError(
       "ERR_WORKLET_RUNTIME_UNAVAILABLE",
       "The optional Harmony Worklets integration is not compiled. Install "
-      "react-native-reanimated and its Harmony Worklets dependency, then rebuild the app.");
+      "react-native-worklets and its Harmony adapter, then rebuild the app.");
 #endif
 }
 

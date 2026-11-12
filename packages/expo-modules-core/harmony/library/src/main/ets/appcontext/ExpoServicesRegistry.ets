@@ -46,14 +46,16 @@ export class ExpoServiceKey<T extends Object> {
 }
 
 export class ExpoServiceContext {
+  readonly runtimeId?: number;
   private ability?: common.UIAbilityContext;
   private registry?: ExpoServicesRegistry;
   private owner?: ExpoRuntimeSession;
 
-  constructor(ability: common.UIAbilityContext, registry: ExpoServicesRegistry, session?: ExpoRuntimeSession) {
+  constructor(ability: common.UIAbilityContext, registry: ExpoServicesRegistry, session?: ExpoRuntimeSession, runtimeId?: number) {
     this.ability = ability;
     this.registry = registry;
     this.owner = session;
+    this.runtimeId = runtimeId;
   }
 
   get uiAbilityContext(): common.UIAbilityContext {
@@ -89,9 +91,9 @@ export class ExpoServicesRegistry {
   private readonly context: ExpoServiceContext;
   private valid: boolean = true;
 
-  constructor(context: common.UIAbilityContext, session?: ExpoRuntimeSession, isHeadless: boolean = false) {
+  constructor(context: common.UIAbilityContext, session?: ExpoRuntimeSession, isHeadless: boolean = false, runtimeId?: number) {
     this.isHeadless = isHeadless;
-    this.context = new ExpoServiceContext(context, this, session);
+    this.context = new ExpoServiceContext(context, this, session, runtimeId);
   }
 
   get isValid(): boolean {
