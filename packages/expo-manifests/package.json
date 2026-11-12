@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-manifests",
-  "version": "55.0.21-harmony.2",
+  "version": "57.0.2-harmony.0",
   "description": "HarmonyOS port of expo-manifests",
   "keywords": [
     "react-native",
@@ -26,21 +26,20 @@
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
-    "@react-native-oh/react-native-harmony": "0.84.1",
-    "expo": "55.0.31",
+    "expo": "57.0.31",
     "react": "19.2.3",
-    "react-native": "0.84.1"
+    "react-native": "0.86.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
   },
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
-    "expo-manifests": "55.0.21"
+    "expo-manifests": "57.0.2"
   },
   "peerDependencies": {
-    "expo": "55.0.31"
+    "expo": "57.0.31"
   }
 }

@@ -8,7 +8,7 @@
 {
   "modelVersion": "5.0.0",
   "name": "@expo-harmony-internal/expo-manifests",
-  "version": "55.0.21-harmony.2",
+  "version": "57.0.2-harmony.0",
   "description": "HarmonyOS port of expo-manifests",
   "keywords": [
     "react-native",
