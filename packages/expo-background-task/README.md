@@ -1,16 +1,24 @@
 # @expo-harmony/expo-background-task
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-background-task) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/background-task/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-background-task) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/background-task/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Background Task 的原生实现，与官方同版本的 `expo-background-task` 和 `expo-task-manager` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo Background Task 的原生实现，与官方同版本的 `expo-background-task` 配套使用。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
+安装时需同时添加本包、`expo-background-task` 和 `expo-task-manager`：
+
 ```bash
-npm install @expo-harmony/expo-background-task expo-background-task@55.0.22 expo-task-manager@~55.0.20
+npm install @expo-harmony/expo-background-task expo-background-task expo-task-manager
 ```
 
-使用前必须在 `app.json` 的 `plugins` 中传入 `@expo-harmony/expo-background-task`，并将其放在 `@expo-harmony/prebuild-config` 之前：
+## 项目配置
+
+使用 Expo Prebuild 生成 HarmonyOS 工程时，在 `app.json` 的 `plugins` 中加入 `@expo-harmony/expo-background-task`，并将它放在 `@expo-harmony/prebuild-config` 前面：
 
 ```json
 {
@@ -23,45 +31,35 @@ npm install @expo-harmony/expo-background-task expo-background-task@55.0.22 expo
 }
 ```
 
-HarmonyOS Work Scheduler 的周期任务最短间隔为 2 小时，实际执行时间还会受到系统电量、配额和应用活跃度影响。进程被系统强制终止时，过期监听器可能没有机会运行；延迟任务也不能用来绕过系统对后台相机、音频等能力的限制。只有宿主注册了可在无界面场景启动 RNOH 的 TaskManager runtime loader 时，本模块才会报告为可用；普通前台 RNOH Host 不能替代冷启动能力。
-
-最低支持 HarmonyOS 5.0.1（API 13），宿主应用的 `compatibleSdkVersion` 不能低于这个版本。
-
-本模块不申请权限，配置插件只注册一个非导出的 `workScheduler` 扩展。任务执行需要网络等能力时，由宿主应用声明对应权限。
-
 ## API 对照表
 
 ### Methods
 
-#### `BackgroundTask.getStatusAsync()`
+#### `getStatusAsync()`
 
-返回 `Promise<BackgroundTaskStatus>`。系统具备 Work Scheduler 能力、应用声明了对应的 workScheduler 扩展，且宿主注册了可在无界面场景启动 RNOH 的 TaskManager runtime loader 时返回 `Available`，任一条件不满足返回 `Restricted`。官方文档称原生平台返回 `Available`，HarmonyOS 上该值可能为 `Restricted`。
+返回 `Promise<BackgroundTaskStatus>`。WorkScheduler 可用、应用包含所需扩展且后台任务运行时可用时返回 `Available`，否则返回 `Restricted`。
 
-#### `BackgroundTask.registerTaskAsync(taskName, options)`
+#### `registerTaskAsync(taskName, options?)`
 
-注册名为 `taskName` 的周期任务，返回 `Promise<void>`。任务需先用 `TaskManager.defineTask` 定义，未定义或 `taskName` 不是非空字符串时抛出错误。注册信息持久化保存，应用退出后仍保留。应用重启后间隔不变时沿用已有的调度，周期的等待时间不会重新计算。任务已注册时直接返回，不更新选项，改动间隔要先注销再注册。
+注册名为 `taskName` 的周期任务，返回 `Promise<void>`。任务需先用 `TaskManager.defineTask` 定义，名称必须是非空字符串。若状态为 `Restricted`，调用会记录警告并跳过注册。
 
-`options` 默认 `{}`，只接受 `minimumInterval`，传入其他字段抛出错误。
+`options` 类型为 `BackgroundTaskOptions`，省略时默认为 `{}`。注册信息会保留，并在应用重新启动后恢复。同名任务已注册时调用不会更新选项；如需更改间隔，应先注销再注册。多个任务共用一个调度周期，采用最后注册任务的 `minimumInterval`。
 
-`minimumInterval` 单位为分钟，默认 12 小时。HarmonyOS Work Scheduler 的周期下限为 2 小时，小于 2 小时的值按 2 小时处理。多个任务共用一个调度周期，以当前注册列表中最后一个任务的选项为准，各自的 `minimumInterval` 不会分别生效。取值不是正数或超出 Work Scheduler 可表示的范围时抛出错误。
+任务的实际执行时间由系统决定，不保证按间隔准时运行；系统调度要求设备有可用网络。选项无效、WorkScheduler 不可用或调度失败时，调用会以对应错误拒绝。
 
-状态为 `Restricted` 时不做注册，只在控制台给出警告。实际执行时间由系统决定，会受电量、配额和应用活跃度影响而推迟。任务只在设备联网时执行，与 Android 和 iOS 平台的要求一致。系统对应用的延迟任务有数量和频率配额，本包的所有 BackgroundTask 共用一个系统任务，注册多个任务不会额外占用配额。
+#### `unregisterTaskAsync(taskName)`
 
-#### `BackgroundTask.unregisterTaskAsync(taskName)`
+注销名为 `taskName` 的任务，返回 `Promise<void>`。名称必须是非空字符串。任务未注册时直接返回；注销最后一个任务后，周期调度也会取消。
 
-注销任务，返回 `Promise<void>`。任务未注册时直接返回。取消最后一个任务后，对应的周期调度一并取消。
+#### `triggerTaskWorkerForTestingAsync()`
 
-#### `BackgroundTask.triggerTaskWorkerForTestingAsync()`
+在 Debug 构建中立即触发当前应用已注册的后台任务，返回 `Promise<boolean>`。有任务产生执行结果时返回 `true`，没有可执行任务时返回 `false`。调用不会改变周期调度。Release 构建中返回 `false`。
 
-公开的开发模式 API，返回 `Promise<boolean>`。Debug 构建通过 TaskManager 立即执行当前应用注册的全部 BackgroundTask，允许在前台调用，并等待任务完成；有任务完成返回 `true`，没有任务或执行被中止返回 `false`。任务仍使用正常的事件、结果回传和过期通知链路，不改变已有周期调度。
+### Event subscriptions
 
-Release 构建中，上游 JS API 直接返回 `false`；绕过 JS 直接调用原生方法会拒绝。
+#### `addExpirationListener(listener)`
 
-### Event Subscriptions
-
-#### `BackgroundTask.addExpirationListener(listener)`
-
-任务执行超过时限被中止时触发，回调没有参数，返回 `{ remove: () => void }` 用于取消订阅。单次后台执行约有 2 分钟时限。该接口官方标记为 iOS 专属，在 HarmonyOS 上可用。
+任务执行到期时触发 `listener`，回调不接收参数。返回 `{ remove: () => void }`，调用 `remove()` 可取消订阅。单次执行窗口约为 2 分钟；进程被系统强制终止时，监听器可能没有机会运行。
 
 ### Types
 
@@ -69,7 +67,7 @@ Release 构建中，上游 JS API 直接返回 `false`；绕过 JS 直接调用�
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
-| `minimumInterval` | `number` | 两次执行之间的不精确间隔，单位分钟，默认 12 小时，最小 2 小时 |
+| `minimumInterval` | `number` | 两次执行之间的最小间隔，单位为分钟，默认 12 小时。必须为正的有限数值；小于 2 小时的值按 2 小时处理，最大值约为 24.86 天 |
 
 ### Enums
 
@@ -77,7 +75,7 @@ Release 构建中，上游 JS API 直接返回 `false`；绕过 JS 直接调用�
 
 | 成员 | 值 | 含义 |
 | --- | --- | --- |
-| `Restricted` | `1` | 后台任务不可用 |
+| `Restricted` | `1` | 后台任务当前不可用 |
 | `Available` | `2` | 后台任务可用 |
 
 #### `BackgroundTaskResult`
@@ -87,11 +85,37 @@ Release 构建中，上游 JS API 直接返回 `false`；绕过 JS 直接调用�
 | `Success` | `1` | 任务执行成功 |
 | `Failed` | `2` | 任务执行失败 |
 
-任务返回值不影响后续调度，HarmonyOS 上仅作记录。
+任务函数可返回 `Success` 或 `Failed` 表示本次执行结果；后续执行时间由系统安排。
 
-## 原生初始化
+### Error codes
 
-不需要写原生初始化代码。模块在应用启动时自动向 TaskManager 注册，进程由后台任务冷启动、尚未打开界面时也一样。CNG 工程的入口由 prebuild 自动生成。升级已有的 Bare 工程时，需要在 `module.json5` 中登记 `module.srcEntry`，见 [接入说明](https://github.com/renbaoshuo/expo-harmony/blob/master/docs/BareInstallation.md)。
+#### `ERR_BACKGROUND_TASK_NOT_CONFIGURED`
+
+应用未配置可用的 HarmonyOS WorkScheduler 扩展时，无法安排后台任务。
+
+#### `ERR_BACKGROUND_TASK_UNAVAILABLE`
+
+WorkScheduler 或应用的后台启动能力不可用时，注册任务会失败。
+
+#### `ERR_BACKGROUND_TASK_INVALID_OPTIONS`
+
+`options` 不是对象，或包含 `minimumInterval` 以外的字段时抛出。
+
+#### `ERR_BACKGROUND_TASK_INVALID_INTERVAL`
+
+`minimumInterval` 不是正的有限数值，或超出 HarmonyOS 可接受的最大值时抛出。
+
+#### `ERR_BACKGROUND_TASK_SCHEDULER`
+
+HarmonyOS 无法读取、安排或取消后台调度时抛出。
+
+#### `ERR_BACKGROUND_TASK_WORK_ID`
+
+HarmonyOS 没有可用于后台调度的任务标识时抛出。
+
+### Permissions
+
+本包不申请权限。若任务需要访问网络等能力，应用需自行声明相应权限。
 
 ## Author
 

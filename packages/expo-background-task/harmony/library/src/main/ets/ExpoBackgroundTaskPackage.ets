@@ -43,6 +43,7 @@ import {
   WORK_ID_MINIMUM,
   WORK_SCHEDULER_CAPABILITY,
   WORK_SCHEDULER_EXTENSION_NAME,
+  WORK_SCHEDULER_MAXIMUM_INTERVAL_MS,
   WORK_SCHEDULER_MINIMUM_INTERVAL_MS,
 } from './BackgroundTaskConstants';
 import { BackgroundTaskRuntime } from './BackgroundTaskRuntime';
@@ -63,7 +64,10 @@ class ExpoBackgroundTaskConsumer implements ExpoTaskConsumer {
   readonly consumerId: string = OWNER_PARAMETER_VALUE;
   readonly consumerVersion: number = 1;
 
-  async onTasksChanged(context: ExpoModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
+  async onTasksChanged(context: ExpoModuleContext, tasks: ExpoTaskRecord[], restoring: boolean = false): Promise<void> {
+    // Restoring the runtime must not replace the running work that started it.
+    if (context.isHeadless && restoring) return;
+
     await BackgroundTaskRuntime.updateSchedule(context.uiAbilityContext, async (): Promise<void> => {
       await this.reconcile(context, tasks);
     });
@@ -110,14 +114,15 @@ class ExpoBackgroundTaskConsumer implements ExpoTaskConsumer {
     }
 
     const interval = intervalForTasks(tasks);
-    const current = owned.length > 0 ? owned[0] : undefined;
-    if (current !== undefined && workMatchesInterval(current, interval, ExpoTaskManagerRegistry.ownerKey(context))) {
-      for (let i = 1; i < owned.length; ++i) {
-        cancelWorkBestEffort(owned[i], context);
-      }
+    const ownerKey = ExpoTaskManagerRegistry.ownerKey(context);
+    const matching = owned.find((work: workScheduler.WorkInfo): boolean => workMatchesInterval(work, interval, ownerKey));
+    if (matching !== undefined) {
+      owned.filter((work: workScheduler.WorkInfo): boolean => work.workId !== matching.workId)
+        .forEach((work: workScheduler.WorkInfo): void => cancelWorkBestEffort(work, context));
       return;
     }
 
+    const current = owned[0];
     const id = allocateWorkId(context, works);
     const next = createWorkInfo(context, id, interval);
 
@@ -154,35 +159,52 @@ const BACKGROUND_TASK_OPTIONS_TYPE: ExpoValueType<BackgroundTaskOptions> = new E
   (value: BackgroundTaskOptions): ESObject => value,
 );
 
+class WorkCallback {
+  stopped: boolean = false;
+  request: Promise<string | undefined> | undefined = undefined;
+}
+
 export class ExpoBackgroundTaskWorkSchedulerExtension extends WorkSchedulerExtensionAbility {
-  private readonly requests: Map<string, Promise<string | undefined>[]> = new Map();
+  private readonly requests: Map<string, WorkCallback[]> = new Map();
 
   override onWorkStart(work: workScheduler.WorkInfo): void {
-    ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
+    const startedAt = Date.now();
+    console.info(`Expo BackgroundTask received WorkScheduler start for work ${work.workId}.`);
+    try {
+      work.parameters = ExpoTaskManagerWorkMetadata.parameters(work.parameters);
+      ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
 
-    const request = BackgroundTaskRuntime.start(
-      this.context,
-      work,
-      this.context.extensionAbilityInfo.bundleName,
-      this.context.extensionAbilityInfo.name,
-    );
-    const key = `${work.workId}:${work.parameters?.[SCHEDULER_GENERATION_PARAMETER] ?? ''}`;
-    const requests = this.requests.get(key) ?? [];
+      const callback = new WorkCallback();
+      callback.request = BackgroundTaskRuntime.start(
+        this.context,
+        work,
+        this.context.extensionAbilityInfo.bundleName,
+        this.context.extensionAbilityInfo.name,
+        startedAt,
+        (): boolean => callback.stopped,
+      );
+      const key = `${work.workId}:${work.parameters?.[SCHEDULER_GENERATION_PARAMETER] ?? ''}`;
+      const requests = this.requests.get(key) ?? [];
 
-    requests.push(request);
-    this.requests.set(key, requests);
+      requests.push(callback);
+      this.requests.set(key, requests);
+    } catch (error) {
+      console.error(`Unable to start Expo BackgroundTask WorkScheduler callback: ${String(error)}`);
+    }
   }
 
   override onWorkStop(work: workScheduler.WorkInfo): void {
+    work.parameters = ExpoTaskManagerWorkMetadata.parameters(work.parameters);
     ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
 
     const key = `${work.workId}:${work.parameters?.[SCHEDULER_GENERATION_PARAMETER] ?? ''}`;
     const requests = this.requests.get(key);
-    const request = requests?.shift();
+    const callback = requests?.shift();
+    if (callback !== undefined) callback.stopped = true;
 
     if (requests !== undefined && requests.length === 0) this.requests.delete(key);
 
-    BackgroundTaskRuntime.stop(this.context, work, this.context.extensionAbilityInfo.bundleName, this.context.extensionAbilityInfo.name, request);
+    BackgroundTaskRuntime.stop(this.context, work, this.context.extensionAbilityInfo.bundleName, this.context.extensionAbilityInfo.name, callback?.request);
   }
 }
 
@@ -219,6 +241,7 @@ export class ExpoBackgroundTaskModule extends ExpoModule {
           async (taskName: string, options: BackgroundTaskOptions): Promise<void> => {
             requireConfigured();
             requireAvailable(this.context);
+
             await ExpoTaskManagerRegistry.registerTask(this.context, requireTaskName(taskName), BACKGROUND_TASK_TYPE, options);
           },
         ),
@@ -312,7 +335,7 @@ function decodeOptions(value: ESObject): BackgroundTaskOptions {
   return result;
 }
 
-function minimumIntervalMilliseconds(options: ESObject): number {
+function minimumIntervalMilliseconds(options: ESObject, persisted: boolean = false): number {
   const input = options as BackgroundTaskOptionsInput;
   const value: ESObject = input.minimumInterval;
   if (value === undefined || value === null) return EXPO_DEFAULT_INTERVAL_MS;
@@ -324,19 +347,20 @@ function minimumIntervalMilliseconds(options: ESObject): number {
     );
   }
 
-  const interval = Math.ceil(value * MILLISECONDS_PER_MINUTE);
-  if (!Number.isSafeInteger(interval)) {
+  // SDK 55 accepted intervals that exceeded the Work Scheduler int32 range.
+  if (!persisted && value > WORK_SCHEDULER_MAXIMUM_INTERVAL_MS / MILLISECONDS_PER_MINUTE) {
     throw new ExpoBackgroundTaskError(
       'ERR_BACKGROUND_TASK_INVALID_INTERVAL',
       'BackgroundTask minimumInterval is too large for HarmonyOS WorkScheduler.',
     );
   }
 
-  return Math.max(WORK_SCHEDULER_MINIMUM_INTERVAL_MS, interval);
+  const interval = Math.ceil(value * MILLISECONDS_PER_MINUTE);
+  return Math.min(WORK_SCHEDULER_MAXIMUM_INTERVAL_MS, Math.max(WORK_SCHEDULER_MINIMUM_INTERVAL_MS, interval));
 }
 
 function intervalForTasks(tasks: ExpoTaskRecord[]): number {
-  return minimumIntervalMilliseconds(tasks[tasks.length - 1]?.options ?? {});
+  return minimumIntervalMilliseconds(tasks[tasks.length - 1]?.options ?? {}, true);
 }
 
 function createWorkInfo(context: ExpoModuleContext, id: number, interval: number): workScheduler.WorkInfo {

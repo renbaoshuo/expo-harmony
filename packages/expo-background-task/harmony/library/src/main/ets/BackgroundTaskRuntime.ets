@@ -12,7 +12,13 @@ import { util } from '@kit.ArkTS';
 import { workScheduler } from '@kit.BackgroundTasksKit';
 import { ExpoTaskManagerBackgroundQueue, ExpoTaskManagerWorkMetadata } from '@expo-harmony/expo-task-manager';
 
-import { BACKGROUND_TASK_TYPE, OWNER_PARAMETER, OWNER_PARAMETER_VALUE, SCHEDULER_GENERATION_PARAMETER } from './BackgroundTaskConstants';
+import {
+  BACKGROUND_TASK_TYPE,
+  OWNER_PARAMETER,
+  OWNER_PARAMETER_VALUE,
+  SCHEDULER_GENERATION_PARAMETER,
+  WORK_SCHEDULER_EXTENSION_NAME,
+} from './BackgroundTaskConstants';
 import {
   BackgroundTaskRuntimeDriver,
   BackgroundTaskRuntimeState,
@@ -20,6 +26,7 @@ import {
   PENDING_WORK_MAXIMUM_AGE_MS,
   ScheduledWork,
   StoredPendingWork,
+  WORK_SCHEDULER_EXECUTION_WINDOW_MS,
 } from './BackgroundTaskRuntimeState.ts';
 
 const PREFERENCES_NAME: string = 'ExpoBackgroundTask';
@@ -39,7 +46,7 @@ class PreferencesRuntimeDriver implements BackgroundTaskRuntimeDriver {
   }
 
   async read(): Promise<StoredPendingWork[]> {
-    return await readPendingWorks(this.store);
+    return await readPendingWorks(this.store, this.ownerKey);
   }
 
   async save(work: StoredPendingWork): Promise<void> {
@@ -60,8 +67,8 @@ class PreferencesRuntimeDriver implements BackgroundTaskRuntimeDriver {
     return await ExpoTaskManagerBackgroundQueue.expireRequest(this.context, this.ownerKey, BACKGROUND_TASK_TYPE, requestId);
   }
 
-  async stop(work: ScheduledWork): Promise<void> {
-    await finishWork(work);
+  async stop(work: StoredPendingWork): Promise<void> {
+    await finishWork(work, work.startedAt);
   }
 
   report(message: string): void {
@@ -76,30 +83,53 @@ export class BackgroundTaskRuntime {
     await BackgroundTaskRuntime.serialize(context, action);
   }
 
-  static async start(context: common.Context, work: workScheduler.WorkInfo, bundleName: string, abilityName: string): Promise<string | undefined> {
-    if (!isOwnedWork(work, bundleName, abilityName)) return undefined;
+  static async start(
+    context: common.Context,
+    work: workScheduler.WorkInfo,
+    bundleName: string,
+    abilityName: string,
+    startedAt: number,
+    wasStopped: () => boolean,
+  ): Promise<string | undefined> {
+    if (!isOwnedWork(work, bundleName, abilityName)) {
+      console.warn(`Expo BackgroundTask ignored WorkScheduler work ${work.workId} with invalid ownership metadata.`);
+      return undefined;
+    }
 
     let requestId: string | undefined;
+
     try {
       await BackgroundTaskRuntime.serialize(context, async (): Promise<void> => {
-        const works = await workScheduler.obtainAllWorks();
-        const current = works.some(
-          (value: workScheduler.WorkInfo): boolean =>
-            value.workId === work.workId &&
-            value.bundleName === work.bundleName &&
-            value.abilityName === work.abilityName &&
-            isOwnedWork(value, bundleName, abilityName) &&
-            schedulerGenerationFromWork(value) === schedulerGenerationFromWork(work),
-        );
-        if (!current) return;
+        if (wasStopped()) return;
 
-        const state = await createState(context, taskManagerOwnerFromWork(work));
-        const id = createRequestId(work);
+        try {
+          const works = await workScheduler.obtainAllWorks();
+          const current = works.some(
+            (value: workScheduler.WorkInfo): boolean =>
+              value.workId === work.workId &&
+              isOwnedWork(value, bundleName, abilityName) &&
+              schedulerGenerationFromWork(value) === schedulerGenerationFromWork(work),
+          );
+          if (wasStopped()) return;
+          if (!current) {
+            console.warn(`Expo BackgroundTask ignored replaced or removed WorkScheduler work ${work.workId}.`);
+            return;
+          }
+          // The system execution window includes the time spent waiting for the lock.
+          if (startedAt + PENDING_WORK_MAXIMUM_AGE_MS <= Date.now()) {
+            throw new Error('Expo BackgroundTask callback expired before it reached TaskManager.');
+          }
 
-        requestId = await state.start(toScheduledWork(work), id, Date.now());
+          const state = await createState(context, taskManagerOwnerFromWork(work));
+          const id = createRequestId(work);
+
+          requestId = await state.start(toScheduledWork(work), id, Date.now(), startedAt, wasStopped);
+        } catch (error) {
+          if (!wasStopped()) await finishWorkBestEffort(work, startedAt);
+          console.error(String(error));
+        }
       });
     } catch (error) {
-      await BackgroundTaskRuntime.serialize(context, async (): Promise<void> => finishWorkBestEffort(work));
       console.error(String(error));
     }
 
@@ -150,6 +180,7 @@ export class BackgroundTaskRuntime {
       .then(async (): Promise<void> => {
         const app = context.getApplicationContext();
         const file = await fs.open(`${app.filesDir}/ExpoBackgroundTask.lock`, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
+
         try {
           await file.lock(true);
           await preferences.removePreferencesFromCache(app, PREFERENCES_NAME);
@@ -171,14 +202,15 @@ async function createState(context: common.Context, ownerKey: string): Promise<B
 }
 
 function taskManagerOwnerFromWork(work: workScheduler.WorkInfo): string {
-  const value = ExpoTaskManagerWorkMetadata.owner(work.parameters, true);
-  if (value === undefined) {
+  const owner = ExpoTaskManagerWorkMetadata.owner(ExpoTaskManagerWorkMetadata.parameters(work.parameters), true);
+  if (owner === undefined) {
     throw new Error('Expo BackgroundTask work is missing its TaskManager owner.');
   }
-  return value;
+
+  return owner;
 }
 
-async function readPendingWorks(store: preferences.Preferences): Promise<StoredPendingWork[]> {
+async function readPendingWorks(store: preferences.Preferences, ownerKey: string): Promise<StoredPendingWork[]> {
   const raw = await store.getAll();
   const values = raw as Record<string, ESObject>;
   const works: StoredPendingWork[] = [];
@@ -188,8 +220,8 @@ async function readPendingWorks(store: preferences.Preferences): Promise<StoredP
     if (!key.startsWith(PENDING_WORK_KEY_PREFIX)) continue;
 
     const pending = decodePendingWork(values[key]);
-    if (pending !== undefined) {
-      works.push(pending);
+    if (pending !== undefined && key === pendingWorkKey(pending.requestId)) {
+      if (pending.bundleName === ownerKey && pending.abilityName === WORK_SCHEDULER_EXTENSION_NAME) works.push(pending);
       continue;
     }
 
@@ -228,13 +260,13 @@ function createRequestId(work: workScheduler.WorkInfo): string {
 }
 
 function isOwnedWork(work: workScheduler.WorkInfo, bundleName: string, abilityName: string): boolean {
-  const taskManagerOwner = ExpoTaskManagerWorkMetadata.owner(work.parameters, true);
+  const parameters = ExpoTaskManagerWorkMetadata.parameters(work.parameters);
+  const taskManagerOwner = ExpoTaskManagerWorkMetadata.owner(parameters, true);
   return (
     work.bundleName === bundleName &&
     work.abilityName === abilityName &&
-    work.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE &&
-    typeof taskManagerOwner === 'string' &&
-    taskManagerOwner.length > 0 &&
+    parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE &&
+    taskManagerOwner === bundleName &&
     schedulerGenerationFromWork(work).length > 0
   );
 }
@@ -244,33 +276,36 @@ function toScheduledWork(work: workScheduler.WorkInfo): ScheduledWork {
 }
 
 function schedulerGenerationFromWork(work: workScheduler.WorkInfo): string {
-  const value = work.parameters?.[SCHEDULER_GENERATION_PARAMETER];
+  const value = ExpoTaskManagerWorkMetadata.parameters(work.parameters)?.[SCHEDULER_GENERATION_PARAMETER];
 
   return typeof value === 'string' ? value : '';
 }
 
-async function finishWorkBestEffort(work: workScheduler.WorkInfo): Promise<void> {
+async function finishWorkBestEffort(work: workScheduler.WorkInfo, startedAt: number): Promise<void> {
   try {
-    await finishWork(toScheduledWork(work));
+    await finishWork(toScheduledWork(work), startedAt);
   } catch (error) {
     console.error(`Unable to finish Expo BackgroundTask execution: ${String(error)}`);
   }
 }
 
-async function finishWork(work: ScheduledWork): Promise<void> {
-  if (work.schedulerGeneration.length === 0) return;
+async function finishWork(work: ScheduledWork, startedAt: number): Promise<void> {
+  // After timeout, stopping this ID could stop a later run of the same periodic work.
+  if (work.schedulerGeneration.length === 0 || !isWithinExecutionWindow(startedAt)) return;
 
   const works = await workScheduler.obtainAllWorks();
   const current = works.find((value: workScheduler.WorkInfo): boolean => {
     return (
       value.workId === work.workId &&
-      value.bundleName === work.bundleName &&
-      value.abilityName === work.abilityName &&
-      value.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE &&
-      ExpoTaskManagerWorkMetadata.owner(value.parameters) === work.bundleName &&
+      isOwnedWork(value, work.bundleName, work.abilityName) &&
       schedulerGenerationFromWork(value) === work.schedulerGeneration
     );
   });
 
-  if (current !== undefined) workScheduler.stopWork(current, false);
+  if (current !== undefined && isWithinExecutionWindow(startedAt)) workScheduler.stopWork(current, false);
+}
+
+function isWithinExecutionWindow(startedAt: number): boolean {
+  const elapsed = Date.now() - startedAt;
+  return elapsed >= 0 && elapsed < WORK_SCHEDULER_EXECUTION_WINDOW_MS;
 }

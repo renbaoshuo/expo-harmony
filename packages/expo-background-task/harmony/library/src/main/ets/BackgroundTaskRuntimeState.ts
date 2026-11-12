@@ -6,7 +6,9 @@
  */
 
 const PENDING_WORK_SCHEMA_VERSION: number = 2;
-export const PENDING_WORK_MAXIMUM_AGE_MS: number = 2 * 60 * 1000;
+export const WORK_SCHEDULER_EXECUTION_WINDOW_MS: number = 2 * 60 * 1000;
+const WORK_SCHEDULER_CLEANUP_MARGIN_MS: number = 10 * 1000;
+export const PENDING_WORK_MAXIMUM_AGE_MS: number = WORK_SCHEDULER_EXECUTION_WINDOW_MS - WORK_SCHEDULER_CLEANUP_MARGIN_MS;
 
 const PENDING_PHASE_ENQUEUING: string = 'enqueuing';
 const PENDING_PHASE_QUEUED: string = 'queued';
@@ -55,7 +57,7 @@ export interface BackgroundTaskRuntimeDriver {
   remove(id: string): Promise<void>;
   enqueue(id: string, deadline: number): Promise<void>;
   requestExpiration(id: string): Promise<boolean>;
-  stop(work: ScheduledWork): Promise<void>;
+  stop(work: StoredPendingWork): Promise<void>;
   report(message: string): void;
 }
 
@@ -66,8 +68,15 @@ export class BackgroundTaskRuntimeState {
     this.driver = driver;
   }
 
-  async start(work: ScheduledWork, id: string, now: number): Promise<string> {
+  async start(
+    work: ScheduledWork,
+    id: string,
+    now: number,
+    startedAt: number,
+    wasStopped: () => boolean,
+  ): Promise<string | undefined> {
     const works = await this.driver.read();
+    if (wasStopped()) return undefined;
 
     let current: StoredPendingWork | undefined;
 
@@ -101,43 +110,42 @@ export class BackgroundTaskRuntimeState {
       await this.requestExpirationBestEffort(pending);
     }
 
-    if (current !== undefined) {
-      await this.driver.enqueue(current.requestId, current.startedAt + PENDING_WORK_MAXIMUM_AGE_MS);
+    if (wasStopped()) return undefined;
 
-      if (current.phase !== PENDING_PHASE_QUEUED) {
-        current.phase = PENDING_PHASE_QUEUED;
-
-        await this.driver.save(current);
-      }
-
-      return current.requestId;
-    }
-
-    const next = new StoredPendingWork(
+    const pending = current ?? new StoredPendingWork(
       id,
       work.workId,
       work.bundleName,
       work.abilityName,
-      now,
+      startedAt,
       PENDING_PHASE_ENQUEUING,
       work.schedulerGeneration,
     );
 
-    await this.driver.save(next);
+    if (current === undefined) await this.driver.save(pending);
+    if (wasStopped()) {
+      await this.requestExpirationBestEffort(pending);
+      return undefined;
+    }
 
     try {
-      await this.driver.enqueue(id, now + PENDING_WORK_MAXIMUM_AGE_MS);
-
-      next.phase = PENDING_PHASE_QUEUED;
-
-      await this.driver.save(next);
+      await this.driver.enqueue(pending.requestId, pending.startedAt + PENDING_WORK_MAXIMUM_AGE_MS);
     } catch (error) {
-      await this.stopAndRemove(next);
-
+      // Enqueue can fail after persisting a request. Expire it through TaskManager.
+      await this.requestExpirationBestEffort(pending);
       throw new Error(`Unable to enqueue Expo BackgroundTask execution: ${String(error)}`);
     }
 
-    return id;
+    if (pending.phase !== PENDING_PHASE_QUEUED) {
+      pending.phase = PENDING_PHASE_QUEUED;
+      try {
+        await this.driver.save(pending);
+      } catch (error) {
+        this.driver.report(`Unable to mark Expo BackgroundTask request '${pending.requestId}' queued: ${String(error)}`);
+      }
+    }
+
+    return pending.requestId;
   }
 
   async stop(work: ScheduledWork, id: string | undefined, now: number): Promise<void> {
@@ -223,6 +231,7 @@ export function decodePendingWork(raw: ESObject): StoredPendingWork | undefined 
   if (typeof raw !== 'string') return undefined;
 
   let value: ESObject;
+
   try {
     value = JSON.parse(raw);
   } catch (_) {

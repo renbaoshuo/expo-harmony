@@ -12,6 +12,8 @@ export const EXPIRATION_EVENT_NAME: string = 'onTasksExpired';
 export const WORK_SCHEDULER_EXTENSION_NAME: string = 'ExpoBackgroundTaskWorkScheduler';
 export const WORK_SCHEDULER_CAPABILITY: string = 'SystemCapability.ResourceSchedule.WorkScheduler';
 export const WORK_SCHEDULER_MINIMUM_INTERVAL_MS: number = 2 * 60 * 60 * 1000;
+// WorkScheduler reads repeatCycleTime as a signed 32-bit millisecond value.
+export const WORK_SCHEDULER_MAXIMUM_INTERVAL_MS: number = 0x7fffffff;
 export const EXPO_DEFAULT_INTERVAL_MS: number = 12 * 60 * 60 * 1000;
 export const MILLISECONDS_PER_MINUTE: number = 60 * 1000;
 
