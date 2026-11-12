@@ -5,15 +5,17 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ExpoModuleError, ExpoView, ExpoViewContext, ExpoViewContentContext } from '@expo-harmony/expo-modules-core';
-import { common } from '@kit.AbilityKit';
+import { ExpoAppLifecycleState, ExpoModuleContext, ExpoModuleError, ExpoView, ExpoViewContext, ExpoViewContentContext, ExpoWindowKeepAwake } from '@expo-harmony/expo-modules-core';
 import { window } from '@kit.ArkUI';
+import { VideoPictureInPicture } from './VideoPictureInPicture';
 import { VideoObserver, VideoPlayer } from './VideoPlayer';
 
 export interface FullscreenOptions {
   enable?: boolean;
   orientation?: string;
   autoExitOnRotate?: boolean;
+  // iOS-only; accepted for shared configurations, as on Android.
+  keepFullscreenOnPiPStop?: string;
 }
 
 export interface ButtonOptions {
@@ -33,46 +35,71 @@ export interface ContentPosition {
 }
 
 export class VideoScreenOn {
-  private holders: Set<VideoView> = new Set<VideoView>();
+  private readonly holders: Set<VideoView> = new Set<VideoView>();
   private tail: Promise<void> = Promise.resolve();
   private target?: window.Window;
-  private original: boolean = false;
+  private windowId?: number;
+  private foreground: boolean;
+  private destroyed: boolean = false;
   private retry: boolean = false;
-  private readonly context: common.UIAbilityContext;
+  private readonly context: ExpoModuleContext;
 
-  constructor(context: common.UIAbilityContext) {
+  constructor(context: ExpoModuleContext) {
     this.context = context;
+    this.foreground = context.appLifecycleState !== ExpoAppLifecycleState.BACKGROUND;
   }
 
   update(view: VideoView, enabled: boolean): void {
-    if (this.holders.has(view) === enabled && !this.retry) return;
+    if (this.destroyed || (this.holders.has(view) === enabled && !this.retry)) return;
 
-    this.retry = false;
     if (enabled) this.holders.add(view);
     else this.holders.delete(view);
+    this.refresh();
+  }
 
+  setForeground(foreground: boolean): void {
+    this.foreground = foreground;
+    this.refresh();
+  }
+
+  destroy(): Promise<void> {
+    this.destroyed = true;
+    this.holders.clear();
+    return this.refresh();
+  }
+
+  refresh(): Promise<void> {
     this.tail = this.tail
       .then(async (): Promise<void> => {
         this.retry = false;
-        if (this.holders.size > 0 && !this.target) {
-          const target = await window.getLastWindow(this.context);
-          const original = target.getWindowProperties().isKeepScreenOn;
-          this.target = target;
-          this.original = original;
+        if (this.destroyed || !this.foreground || this.holders.size === 0) {
+          await this.releaseTarget();
+          return;
         }
-        if (!this.target) return;
 
-        const held = this.holders.size > 0;
-        await this.target.setWindowKeepScreenOn(held || this.original);
+        const target = await this.context.getReactNativeWindow();
+        if (this.destroyed || !this.foreground || this.holders.size === 0) return;
 
-        // A holder may disappear during the await. Keep the window until the queued
-        // update has actually restored its original setting.
-        if (!held) this.target = undefined;
+        const id = target.getWindowProperties().id;
+        if (this.target !== undefined && this.windowId !== id) await this.releaseTarget();
+        if (this.destroyed || !this.foreground || this.holders.size === 0) return;
+
+        this.target = target;
+        this.windowId = id;
+        await ExpoWindowKeepAwake.acquire(target, this);
       })
       .catch((error: Error): void => {
         this.retry = true;
         console.warn(`ExpoVideo: keep-screen-on failed: ${error.message}`);
       });
+    return this.tail;
+  }
+
+  private async releaseTarget(): Promise<void> {
+    if (this.target === undefined) return;
+    await ExpoWindowKeepAwake.release(this.target, this);
+    this.target = undefined;
+    this.windowId = undefined;
   }
 }
 
@@ -88,13 +115,21 @@ export class VideoView extends ExpoView implements VideoObserver {
   showsTimecodes: boolean = true;
   fullscreen: boolean = false;
   playing: boolean = false;
+  playbackRequested: boolean = false;
   position: number = 0;
   duration: number = 0;
   isLive: boolean = false;
   subtitle: string = '';
   videoWidth: number = 0;
   videoHeight: number = 0;
+  frameReady: boolean = false;
+  surfaceRevision: number = 0;
   private surface?: string;
+  private surfaceController?: XComponentController;
+  private allowsPictureInPicture: boolean = false;
+  private startsPictureInPictureAutomatically: boolean = false;
+  private pictureInPictureActive: boolean = false;
+  private readonly pictureInPicture: VideoPictureInPicture;
   private destroyed: boolean = false;
   private announced: boolean = false;
   private readonly screen: VideoScreenOn;
@@ -102,15 +137,35 @@ export class VideoView extends ExpoView implements VideoObserver {
   constructor(context: ExpoViewContext, screen: VideoScreenOn) {
     super(context);
     this.screen = screen;
+    this.pictureInPicture = new VideoPictureInPicture(
+      context.moduleContext.uiAbilityContext,
+      (active: boolean, event?: string): void => {
+        if (this.destroyed) return;
+        this.pictureInPictureActive = active;
+        this.player?.setPictureInPictureActive(active);
+        if (event !== undefined) this.sendEvent(event);
+      },
+      (play: boolean): void => {
+        if (play) this.player?.play();
+        else this.player?.pause();
+      },
+    );
   }
 
   setPlayer(player: VideoPlayer | null): void {
-    if (player === this.player) return;
+    if (this.destroyed || player === this.player) return;
 
-    // Attaching can fail; keep the current player connected until it succeeds.
-    if (this.surface) player?.attachSurface(this, this.surface);
-    if (this.surface) this.player?.detachSurface(this, this.surface);
-    this.player?.removeObserver(this);
+    // Reserve the player before changing props. Each decoder receives a fresh surface so
+    // the outgoing decoder can finish detaching without competing for the new one.
+    player?.claimView(this);
+    const previous = this.player;
+    previous?.removeObserver(this);
+    previous?.setPictureInPictureActive(false);
+    previous?.releaseView(this);
+    this.surface = undefined;
+    this.surfaceController = undefined;
+    this.pictureInPictureActive = false;
+    this.surfaceRevision += 1;
     this.player = player;
     player?.addObserver(this);
 
@@ -121,30 +176,71 @@ export class VideoView extends ExpoView implements VideoObserver {
     if (this.destroyed) return;
 
     this.playing = this.player?.playing ?? false;
+    this.playbackRequested = this.player?.playbackRequested ?? false;
     this.position = this.player?.currentTime ?? 0;
     this.duration = this.player?.duration ?? 0;
     this.isLive = this.player?.isLive ?? false;
     this.subtitle = this.player?.subtitle ?? '';
     this.videoWidth = this.player?.width ?? 0;
     this.videoHeight = this.player?.height ?? 0;
+    this.frameReady = this.player?.hasRenderedFrame ?? false;
 
     this.screen.update(this, this.playing && (this.player?.keepScreenOnWhilePlaying ?? false));
+    this.updatePictureInPicture();
   }
 
   firstFrame(): void {
-    if (!this.destroyed) this.sendEvent('onFirstFrameRender');
+    if (!this.destroyed) {
+      this.update();
+      this.sendEvent('onFirstFrameRender');
+    }
   }
 
-  attach(surface: string): void {
-    if (this.destroyed) return;
+  attach(surface: string, controller: XComponentController): void {
+    if (this.destroyed || !surface || (this.surface === surface && this.surfaceController === controller)) return;
 
-    this.surface = surface;
     this.player?.attachSurface(this, surface);
+    this.surface = surface;
+    this.surfaceController = controller;
+    this.updatePictureInPicture();
   }
 
   detach(surface: string): void {
+    if (this.surface !== surface) return;
+
+    this.surface = undefined;
+    this.surfaceController = undefined;
     this.player?.detachSurface(this, surface);
-    if (this.surface === surface) this.surface = undefined;
+    this.updatePictureInPicture();
+  }
+
+  setAllowsPictureInPicture(allowed: boolean): void {
+    this.allowsPictureInPicture = allowed;
+    this.updatePictureInPicture();
+  }
+
+  setStartsPictureInPictureAutomatically(enabled: boolean): void {
+    this.startsPictureInPictureAutomatically = enabled;
+    this.updatePictureInPicture();
+  }
+
+  startPictureInPicture(): Promise<void> {
+    if (!this.allowsPictureInPicture) {
+      throw new ExpoModuleError('ERR_VIDEO_PIP_DISABLED', 'Enable allowsPictureInPicture before starting Picture in Picture.');
+    }
+    if (!this.frameReady) throw new ExpoModuleError('ERR_VIDEO_PIP_NOT_READY', 'Wait for the first video frame before starting Picture in Picture.');
+    return this.pictureInPicture.start();
+  }
+
+  stopPictureInPicture(): Promise<void> {
+    return this.pictureInPicture.stop();
+  }
+
+  private updatePictureInPicture(): void {
+    const enabled = this.allowsPictureInPicture || this.startsPictureInPictureAutomatically;
+    const autoStart = this.startsPictureInPictureAutomatically && this.frameReady && this.playbackRequested;
+    this.pictureInPicture.update(this.videoWidth, this.videoHeight, this.playing);
+    this.pictureInPicture.configure(enabled && this.player ? this.surfaceController : undefined, autoStart);
   }
 
   enterFullscreen(): void {
@@ -159,14 +255,13 @@ export class VideoView extends ExpoView implements VideoObserver {
   }
 
   didEnterFullscreen(): void {
-    if (this.destroyed || this.announced) return;
+    if (this.destroyed || !this.fullscreen || this.announced) return;
 
     this.announced = true;
     this.sendEvent('onFullscreenEnter');
   }
 
   didExitFullscreen(): void {
-    this.fullscreen = false;
     if (!this.announced) return;
     this.announced = false;
     if (!this.destroyed) this.sendEvent('onFullscreenExit');
@@ -195,8 +290,10 @@ export class VideoView extends ExpoView implements VideoObserver {
     if (this.destroyed) return;
 
     this.destroyed = true;
-    if (this.surface) this.player?.detachSurface(this, this.surface);
+    this.pictureInPicture.configure(undefined, false);
+    this.player?.setPictureInPictureActive(false);
     this.player?.removeObserver(this);
+    this.player?.releaseView(this);
     this.player = null;
     this.fullscreen = false;
 
@@ -212,16 +309,28 @@ export function buildVideoView(context: ExpoViewContentContext) {
 struct VideoViewContent {
   @ObjectLink state: VideoView;
 
+  @Builder surface(inFullscreen: boolean) {
+    ForEach(
+      [this.state.surfaceRevision],
+      (revision: number): void => {
+        VideoSurface({ state: this.state, revision, inFullscreen });
+      },
+      (revision: number): string => String(revision),
+    );
+  }
+
   @Builder fullscreenContent() {
-    VideoSurface({ state: this.state, inFullscreen: true })
-      .onAppear((): void => this.state.didEnterFullscreen())
-      .onDisAppear((): void => this.state.didExitFullscreen());
+    Stack() {
+      this.surface(true);
+    }
+    .width('100%')
+    .height('100%');
   }
 
   build() {
     Stack() {
       if (!this.state.fullscreen) {
-        VideoSurface({ state: this.state });
+        this.surface(false);
       }
     }
     .width('100%')
@@ -229,6 +338,7 @@ struct VideoViewContent {
     .backgroundColor(Color.Black)
     .bindContentCover(this.state.fullscreen, this.fullscreenContent, {
       modalTransition: ModalTransition.NONE,
+      onAppear: (): void => this.state.didEnterFullscreen(),
       onWillDismiss: (action: DismissContentCoverAction): void => {
         this.state.exitFullscreen();
         action.dismiss();
@@ -238,12 +348,37 @@ struct VideoViewContent {
   }
 }
 
+class VideoSurfaceController extends XComponentController {
+  private readonly view: VideoView;
+  private readonly revision: number;
+  private readonly fullscreen: boolean;
+
+  constructor(view: VideoView, revision: number, fullscreen: boolean) {
+    super();
+    this.view = view;
+    this.revision = revision;
+    this.fullscreen = fullscreen;
+  }
+
+  override onSurfaceChanged(surface: string, rect: SurfaceRect): void {
+    if (this.view.surfaceRevision !== this.revision || this.view.fullscreen !== this.fullscreen) return;
+
+    // An XComponent may exist before ArkUI gives its buffer queue a usable size.
+    if (rect.surfaceWidth > 0 && rect.surfaceHeight > 0) this.view.attach(surface, this);
+    else this.view.detach(surface);
+  }
+
+  override onSurfaceDestroyed(surface: string): void {
+    if (this.view.surfaceRevision === this.revision) this.view.detach(surface);
+  }
+}
+
 @Component
 struct VideoSurface {
   @ObjectLink state: VideoView;
+  revision: number = 0;
   inFullscreen: boolean = false;
-  private controller: XComponentController = new XComponentController();
-  private surface: string = '';
+  private controller?: VideoSurfaceController;
   @State areaWidth: number = 0;
   @State areaHeight: number = 0;
   @State seeking: boolean = false;
@@ -270,26 +405,30 @@ struct VideoSurface {
     return `${minutes}:${String(time % 60).padStart(2, '0')}`;
   }
 
-  aboutToDisappear(): void {
-    if (this.surface) this.state.detach(this.surface);
+  aboutToAppear(): void {
+    this.controller = new VideoSurfaceController(this.state, this.revision, this.inFullscreen);
   }
 
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
       Stack({ alignContent: Alignment.Center }) {
         XComponent({ type: XComponentType.SURFACE, controller: this.controller })
-          .width(this.surfaceWidth())
-          .height(this.surfaceHeight())
+          .width(this.areaWidth > 0 && this.areaHeight > 0 ? this.surfaceWidth() : '100%')
+          .height(this.areaWidth > 0 && this.areaHeight > 0 ? this.surfaceHeight() : '100%')
           .scale({
             x: this.state.contentFit === 'fill' && this.surfaceWidth() > 0 ? this.areaWidth / this.surfaceWidth() : 1,
             y: this.state.contentFit === 'fill' && this.surfaceHeight() > 0 ? this.areaHeight / this.surfaceHeight() : 1,
           })
-          .translate({ x: this.state.contentPosition.dx ?? 0, y: this.state.contentPosition.dy ?? 0 })
-          .onLoad((): void => {
-            this.surface = this.controller.getXComponentSurfaceId();
-            this.state.attach(this.surface);
-          })
-          .onDestroy((): void => this.state.detach(this.surface))
+          .translate({ x: this.state.contentPosition.dx ?? 0, y: this.state.contentPosition.dy ?? 0 });
+
+        if (!this.state.frameReady) {
+          // Keep the native surface visible so the decoder can produce the first frame.
+          Stack()
+            .width('100%')
+            .height('100%')
+            .backgroundColor(Color.Black)
+            .hitTestBehavior(HitTestMode.None);
+        }
       }
       .width('100%')
       .height('100%')
@@ -305,14 +444,14 @@ struct VideoSurface {
           .margin({ bottom: this.state.nativeControls ? 76 : 16 });
       }
 
-      if (this.state.nativeControls && (this.state.buttonOptions.showBottomBar !== false || this.inFullscreen)) {
+      if ((this.state.nativeControls && this.state.buttonOptions.showBottomBar !== false) || this.inFullscreen) {
         Column({ space: 4 }) {
           Row({ space: 12 }) {
             if (this.state.buttonOptions.showPlayPause !== false) {
-              Button(this.state.playing ? 'Ⅱ' : '▶')
-                .accessibilityText(this.state.playing ? 'Pause' : 'Play')
+              Button(this.state.playbackRequested ? 'Ⅱ' : '▶')
+                .accessibilityText(this.state.playbackRequested ? 'Pause' : 'Play')
                 .onClick((): void => {
-                  if (this.state.playing) this.state.player?.pause();
+                  if (this.state.playbackRequested) this.state.player?.pause();
                   else this.state.player?.play();
                 });
             }
@@ -329,7 +468,7 @@ struct VideoSurface {
                 .onClick((): void => this.state.player?.seekBy(this.state.player?.seekForwardIncrement ?? 10));
             }
             Blank()
-            if (this.state.fullscreenOptions.enable !== false) {
+            if (this.inFullscreen || this.state.fullscreenOptions.enable !== false) {
               Button(this.inFullscreen ? '↙' : '⛶')
                 .accessibilityText(this.inFullscreen ? 'Exit fullscreen' : 'Fullscreen')
                 .onClick((): void => {

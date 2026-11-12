@@ -10,8 +10,9 @@ import { VideoAudioParticipant, VideoAudioSession } from './VideoAudioSession';
 import { audio } from '@kit.AudioKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { media } from '@kit.MediaKit';
-import { isRemote, normalizeUri, openVideoFile, requireFinite, validateSource, VideoFile, VideoSource } from './VideoSource';
+import { isLocalHlsPlaylist, isRemote, normalizeUri, openVideoFile, requireFinite, validateSource, VideoFile, VideoSource } from './VideoSource';
 import { generateThumbnails, ThumbnailOptions, VideoThumbnail } from './VideoThumbnail';
+import { getVideoRanges, VideoRange } from './VideoRange';
 
 const LOAD_TIMEOUT_MS: number = 30_000;
 const MIN_BUFFER_SECONDS: number = 1;
@@ -63,6 +64,7 @@ export interface VideoTrack {
   averageBitrate: number | null;
   peakBitrate: number | null;
   frameRate: number | null;
+  videoRange: VideoRange;
 }
 
 export interface VideoObserver {
@@ -73,9 +75,14 @@ export interface VideoObserver {
 class VideoLoad {
   player?: media.AVPlayer;
   file?: VideoFile;
+  surface?: string;
+  sourceInitialized: boolean = false;
   prepared: boolean = false;
   preparing: boolean = false;
+  sourceLoaded: boolean = false;
   buffering: boolean = false;
+  firstFrameRendered: boolean = false;
+  videoRanges: Promise<Record<string, VideoRange>> = Promise.resolve<Record<string, VideoRange>>({});
   nativeError?: Error;
   disposal?: Promise<void>;
   disposed: boolean = false;
@@ -98,6 +105,8 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
   bufferedPosition: number = -1;
   timeUpdateEventInterval: number = 0;
   keepScreenOnWhilePlaying: boolean = true;
+  showNowPlayingNotification: boolean = false;
+  staysActiveInBackground: boolean = false;
   audioMixingMode: string = 'auto';
   bufferOptions: BufferOptions = {};
   seekTolerance: SeekTolerance = {};
@@ -116,6 +125,8 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
   private released: boolean = false;
   private intendedPlaying: boolean = false;
   private backgrounded: boolean = false;
+  private pictureInPictureActive: boolean = false;
+  private backgroundPlaybackAllowed: boolean = false;
   private interrupted: boolean = false;
   private ducked: boolean = false;
   private audioDisabled: boolean = false;
@@ -132,6 +143,7 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
 
   private readonly session: VideoAudioSession;
   private readonly onRelease: (player: VideoPlayer) => void;
+  private readonly onUpdate?: () => void;
 
   constructor(
     context: ExpoModuleContext,
@@ -139,9 +151,11 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
     options: PlayerBuilderOptions,
     session: VideoAudioSession,
     onRelease: (player: VideoPlayer) => void,
+    onUpdate?: () => void,
   ) {
     super(context);
     this.onRelease = onRelease;
+    this.onUpdate = onUpdate;
     this.session = session;
 
     validateSource(source);
@@ -169,6 +183,7 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
 
   private notify(): void {
     this.observers.forEach((observer: VideoObserver): void => observer.update());
+    this.onUpdate?.();
   }
 
   addObserver(observer: VideoObserver): void {
@@ -207,6 +222,7 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
     if (!this.active(load)) return;
 
     load.cancel?.(error);
+    load.firstFrameRendered = false;
     this.setPlaying(false);
     this.releaseAudioFocus();
     this.setStatus('error', error);
@@ -229,6 +245,7 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
   async replaceAsync(source: VideoSource | null): Promise<void> {
     validateSource(source);
     if (this.released) throw new ExpoModuleError('ERR_VIDEO_RELEASED', 'The video player has been released.');
+    if (source?.uri === undefined) source = null;
 
     const oldSource = this.source;
     const previous = this.load;
@@ -261,78 +278,86 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
   }
 
   private async initialize(load: VideoLoad, source: VideoSource): Promise<void> {
+    const cancelled = new Promise<void>((_resolve, reject): void => {
+      load.cancel = (error: Error): void => reject(error);
+    });
+
     try {
-      const player = await media.createAVPlayer();
-      load.player = player;
-      if (!this.active(load)) {
-        await this.dispose(load);
-        throw new ExpoModuleError('ERR_VIDEO_LOAD_CANCELLED', 'Video loading was cancelled.');
-      }
-
-      this.listen(load, player);
-      const ready = this.waitForInitialization(load);
-
-      // Attach rejection handling before assigning the source, which can throw synchronously.
-      ready.catch((): void => {});
-      if (isRemote(source.uri!)) {
-        await Promise.all([player.setMediaSource(media.createMediaSourceWithUrl(normalizeUri(source.uri!), source.headers)), ready]);
-      } else {
-        load.file = openVideoFile(this.context, source.uri!);
-        player.fdSrc = load.file.descriptor;
-      }
-
-      await ready;
+      await withLoadTimeout(
+        Promise.race([this.initializeSource(load, source), cancelled]),
+        'Video source initialization timed out.',
+      );
       if (!this.active(load)) throw new ExpoModuleError('ERR_VIDEO_LOAD_CANCELLED', 'Video loading was cancelled.');
 
-      player.audioRendererInfo = { usage: audio.StreamUsage.STREAM_USAGE_MOVIE, rendererFlags: 0 };
-
+      load.sourceInitialized = true;
       this.prepareIfAttached(load);
     } catch (error) {
       this.fail(load, error as Error);
-      await this.dispose(load);
+      void this.dispose(load);
 
       throw new ExpoModuleError(
         error instanceof ExpoModuleError ? error.code : 'ERR_VIDEO_LOAD',
         error instanceof Error ? error.message : String(error),
         error as Object,
       );
+    } finally {
+      load.cancel = undefined;
+      load.initialized?.();
+      load.initialized = undefined;
     }
   }
 
-  private waitForInitialization(load: VideoLoad): Promise<void> {
-    return new Promise<void>((resolve, reject): void => {
-      let timer: number | undefined;
-      let settled = false;
+  private async initializeSource(load: VideoLoad, source: VideoSource): Promise<void> {
+    const player = await media.createAVPlayer();
+    load.player = player;
+    if (!this.active(load)) {
+      void this.dispose(load);
+      return;
+    }
 
-      const finish = (error?: Error): void => {
-        if (settled) return;
-
-        settled = true;
-        if (timer !== undefined) clearTimeout(timer);
-        load.initialized = undefined;
-        load.cancel = undefined;
-
-        if (error) reject(error);
-        else resolve();
-      };
-
-      load.initialized = (): void => finish();
-      load.cancel = (error: Error): void => finish(error);
-      timer = setTimeout(
-        (): void => finish(new ExpoModuleError('ERR_VIDEO_LOAD_TIMEOUT', 'Video source initialization timed out.') as Error),
-        LOAD_TIMEOUT_MS,
-      );
+    this.listen(load, player);
+    const ready = new Promise<void>((resolve): void => {
+      load.initialized = resolve;
     });
+    if (isRemote(source.uri!)) {
+      await Promise.all([player.setMediaSource(media.createMediaSourceWithUrl(normalizeUri(source.uri!), source.headers)), ready]);
+    } else {
+      load.file = openVideoFile(this.context, source.uri!);
+      const descriptor = load.file.descriptor;
+      if (isLocalHlsPlaylist(source)) {
+        const url = `fd://${descriptor.fd}?offset=${descriptor.offset ?? 0}&size=${descriptor.length ?? 0}`;
+        const mediaSource = media.createMediaSourceWithUrl(url, source.headers);
+        mediaSource.setMimeType(media.AVMimeTypes.APPLICATION_M3U8);
+        await Promise.all([player.setMediaSource(mediaSource), ready]);
+      } else {
+        load.videoRanges = getVideoRanges(this.context, source);
+        player.fdSrc = descriptor;
+        await ready;
+      }
+    }
+
+    if (this.active(load)) player.audioRendererInfo = { usage: audio.StreamUsage.STREAM_USAGE_MOVIE, rendererFlags: 0 };
   }
 
-  attachSurface(owner: VideoObserver, surface: string): void {
+  claimView(owner: VideoObserver): void {
     if (this.released) throw new ExpoModuleError('ERR_VIDEO_RELEASED', 'The video player has been released.');
     if (this.owner !== undefined && this.owner !== owner) {
       throw new ExpoModuleError('ERR_VIDEO_SURFACE_IN_USE', 'A HarmonyOS VideoPlayer can be attached to only one VideoView at a time.');
     }
 
-    const previous = this.surface;
     this.owner = owner;
+  }
+
+  releaseView(owner: VideoObserver): void {
+    if (this.owner !== owner) return;
+    if (this.surface !== undefined) this.detachSurface(owner, this.surface);
+    this.owner = undefined;
+  }
+
+  attachSurface(owner: VideoObserver, surface: string): void {
+    if (this.owner !== owner || this.surface === surface) return;
+
+    const previous = this.surface;
     this.surface = surface;
 
     const load = this.load;
@@ -345,7 +370,10 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
 
     if (load.prepared && load.player) {
       this.schedule(load, async (player: media.AVPlayer): Promise<void> => {
-        if (this.surface === surface) player.surfaceId = surface;
+        if (this.surface !== surface) return;
+
+        player.surfaceId = surface;
+        load.surface = surface;
       });
       this.reconcilePlayback();
     } else this.prepareIfAttached(load);
@@ -355,7 +383,7 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
     if (this.owner !== owner || this.surface !== surface) return;
 
     this.surface = undefined;
-    this.owner = undefined;
+    this.notify();
 
     // Preserve play intent for reattachment. A preparing decoder must stop rendering its first
     // frame into the outgoing surface; AVPlayer does not document an empty/null surface setter.
@@ -365,7 +393,7 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
   }
 
   private restartPreparation(previous: VideoLoad): void {
-    if (!this.active(previous) || this.source === null) return;
+    if (this.released || this.load !== previous || this.source === null) return;
 
     const load = new VideoLoad();
 
@@ -378,13 +406,28 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
   }
 
   private prepareIfAttached(load: VideoLoad): void {
-    if (!this.active(load) || load.preparing || load.prepared || !this.surface || load.player?.state !== 'initialized') return;
+    if (!this.active(load) || !load.sourceInitialized || load.preparing || load.prepared || !this.surface ||
+        load.player?.state !== 'initialized') return;
 
     load.preparing = true;
     this.schedule(load, async (player: media.AVPlayer): Promise<void> => {
-      if (!this.surface) {
+      const surface = this.surface;
+      if (!surface) {
         load.preparing = false;
         return;
+      }
+
+      // Let the retiring decoder stop writing to this surface before a replacement prepares on it.
+      const retiring = Array.from(this.retired).filter((previous: VideoLoad): boolean => previous.surface === surface);
+      if (retiring.length > 0) {
+        await withLoadTimeout(
+          Promise.all(retiring.map((previous: VideoLoad): Promise<void> => this.dispose(previous))),
+          'Previous video surface release timed out.',
+        );
+        if (!this.active(load)) return;
+        if (retiring.some((previous: VideoLoad): boolean => previous.player !== undefined)) {
+          throw new ExpoModuleError('ERR_VIDEO_PLAYBACK', 'The previous video surface could not be released.');
+        }
       }
 
       const strategy: media.PlaybackStrategy = { showFirstFrameOnPrepare: true };
@@ -397,18 +440,16 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
         return;
       }
 
-      const surface = this.surface;
       player.surfaceId = surface;
+      load.surface = surface;
       await withLoadTimeout(player.prepare(), 'Video preparation timed out.');
       if (!this.active(load)) return;
-      if (this.surface && this.surface !== surface) player.surfaceId = this.surface;
 
       load.prepared = true;
       load.preparing = false;
-      this.duration = Math.max(0, player.duration / 1000);
-      this.isLive = player.duration < 0;
-      this.width = player.width;
-      this.height = player.height;
+      this.updateDuration(player.duration);
+      this.width = finiteNonnegative(player.width) ?? 0;
+      this.height = finiteNonnegative(player.height) ?? 0;
 
       if (!this.isLive) player.loop = this.loop;
       this.applyVolume(player);
@@ -420,6 +461,7 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
       await this.updateTracks(load, player);
       if (!this.active(load)) return;
 
+      load.sourceLoaded = true;
       this.setStatus(load.buffering ? 'loading' : 'readyToPlay');
       this.emit('sourceLoad', {
         videoSource: this.source,
@@ -458,46 +500,47 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
       if (!this.loop || this.isLive) {
         this.intendedPlaying = false;
         this.releaseAudioFocus();
+        this.notify();
       }
     });
 
     player.on('timeUpdate', (milliseconds: number): void => {
-      if (!this.active(load)) return;
+      if (!this.active(load) || !Number.isFinite(milliseconds) || milliseconds < 0) return;
 
-      this.currentTime = Math.max(0, milliseconds / 1000);
+      this.currentTime = milliseconds / 1000;
       if (milliseconds >= this.subtitleEnd) this.subtitle = '';
       this.notify();
     });
 
     player.on('seekDone', (milliseconds: number): void => {
-      if (!this.active(load)) return;
+      if (!this.active(load) || !Number.isFinite(milliseconds) || milliseconds < 0) return;
 
-      this.currentTime = Math.max(0, milliseconds / 1000);
+      this.currentTime = milliseconds / 1000;
       this.notify();
     });
 
     player.on('durationUpdate', (milliseconds: number): void => {
       if (!this.active(load)) return;
 
-      this.duration = Math.max(0, milliseconds / 1000);
-      this.isLive = milliseconds < 0;
+      this.updateDuration(milliseconds);
       this.notify();
     });
 
     player.on('bufferingUpdate', (kind: media.BufferingInfoType, value: number): void => {
       if (!this.active(load)) return;
+
       if (kind === media.BufferingInfoType.BUFFERING_START) {
         load.buffering = true;
         this.bufferedPosition = 0;
         this.setPlaying(false);
-        if (load.prepared) this.setStatus('loading');
+        if (load.sourceLoaded) this.setStatus('loading');
       }
       if (kind === media.BufferingInfoType.BUFFERING_END) {
         load.buffering = false;
         this.setPlaying(player.state === 'playing');
-        if (load.prepared) this.setStatus('readyToPlay');
+        if (load.sourceLoaded) this.setStatus('readyToPlay');
       }
-      if (kind === media.BufferingInfoType.CACHED_DURATION && !load.buffering) {
+      if (kind === media.BufferingInfoType.CACHED_DURATION && !load.buffering && Number.isFinite(value) && value >= 0) {
         this.bufferedPosition = this.currentTime + value / 1000;
         if (!this.isLive && this.duration > 0) this.bufferedPosition = Math.min(this.duration, this.bufferedPosition);
       }
@@ -506,13 +549,15 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
     player.on('videoSizeChange', (width: number, height: number): void => {
       if (!this.active(load)) return;
 
-      this.width = width;
-      this.height = height;
+      this.width = finiteNonnegative(width) ?? 0;
+      this.height = finiteNonnegative(height) ?? 0;
       this.notify();
     });
 
     player.on('startRenderFrame', (): void => {
-      if (this.active(load)) this.observers.forEach((observer: VideoObserver): void => observer.firstFrame());
+      if (!this.active(load)) return;
+      load.firstFrameRendered = true;
+      this.observers.forEach((observer: VideoObserver): void => observer.firstFrame());
     });
 
     player.on('subtitleUpdate', (info: media.SubtitleInfo): void => {
@@ -538,6 +583,7 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
       else if (event.hintType === audio.InterruptHint.INTERRUPT_HINT_STOP) {
         this.intendedPlaying = false;
         this.interrupted = false;
+        this.notify();
       } else if (event.hintType === audio.InterruptHint.INTERRUPT_HINT_DUCK && event.forceType === audio.InterruptForceType.INTERRUPT_SHARE)
         this.ducked = true;
       else if (event.hintType === audio.InterruptHint.INTERRUPT_HINT_UNDUCK) this.ducked = false;
@@ -548,14 +594,23 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
     });
   }
 
+  private updateDuration(milliseconds: number): void {
+    if (!Number.isFinite(milliseconds)) return;
+
+    this.duration = Math.max(0, milliseconds / 1000);
+    this.isLive = milliseconds < 0;
+  }
+
   play(): void {
     this.interrupted = false;
     this.intendedPlaying = true;
+    this.notify();
     this.reconcilePlayback();
   }
 
   pause(): void {
     this.intendedPlaying = false;
+    this.notify();
     this.reconcilePlayback();
   }
 
@@ -595,7 +650,55 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
   }
 
   setBackgrounded(value: boolean): void {
+    const returningToForeground = this.backgrounded && !value;
     this.backgrounded = value;
+    if (returningToForeground && this.status === 'error' && this.load && this.source !== null) {
+      // Like upstream's reloadIfFailed: rebuild the decoder, preserving position and play intent.
+      this.pendingSeek = this.isLive ? undefined : this.currentTime;
+      this.interrupted = false;
+      this.restartPreparation(this.load);
+      return;
+    }
+
+    this.reconcilePlayback();
+  }
+
+  get hasRenderedFrame(): boolean {
+    return !this.released && (this.load?.firstFrameRendered ?? false);
+  }
+
+  get playbackRequested(): boolean {
+    return this.intendedPlaying && !this.released;
+  }
+
+  get playbackPrepared(): boolean {
+    return this.surface !== undefined && (this.load?.sourceLoaded ?? false);
+  }
+
+  get isAvailable(): boolean {
+    return !this.released;
+  }
+
+  setNowPlayingNotification(enabled: boolean): void {
+    this.showNowPlayingNotification = enabled;
+    this.notify();
+  }
+
+  setStaysActiveInBackground(enabled: boolean): void {
+    this.staysActiveInBackground = enabled;
+    this.notify();
+    this.reconcilePlayback();
+  }
+
+  setBackgroundPlaybackAllowed(enabled: boolean): void {
+    if (this.backgroundPlaybackAllowed === enabled) return;
+    this.backgroundPlaybackAllowed = enabled;
+    this.reconcilePlayback();
+  }
+
+  setPictureInPictureActive(active: boolean): void {
+    if (this.pictureInPictureActive === active) return;
+    this.pictureInPictureActive = active;
     this.reconcilePlayback();
   }
 
@@ -606,10 +709,10 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
     this.schedule(load, async (player: media.AVPlayer): Promise<void> => {
       const play = this.shouldPlay();
       if (!play && player.state === 'playing') await player.pause();
-      if (!this.active(load)) return;
+      if (!this.active(load) || play !== this.shouldPlay()) return;
 
       try {
-        await this.session.update(this, play);
+        await this.session.update(this, play, this.interrupted && this.canRequestPlayback());
       } catch (error) {
         if (!this.active(load)) return;
         if (play) this.interrupted = this.intendedPlaying;
@@ -626,7 +729,13 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
   }
 
   private shouldPlay(): boolean {
-    return this.intendedPlaying && !this.backgrounded && !this.interrupted && this.surface !== undefined;
+    return !this.interrupted && this.canRequestPlayback();
+  }
+
+  private canRequestPlayback(): boolean {
+    return this.intendedPlaying && (!this.backgrounded || this.pictureInPictureActive ||
+      (this.staysActiveInBackground && this.backgroundPlaybackAllowed)) &&
+      this.surface !== undefined;
   }
 
   audioIsAudible(): boolean {
@@ -645,6 +754,7 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
     ) {
       this.intendedPlaying = false;
       this.interrupted = false;
+      this.notify();
     } else return;
 
     this.reconcilePlayback();
@@ -708,6 +818,7 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
     const load = this.load;
     if (load?.prepared) this.schedule(load, async (player: media.AVPlayer): Promise<void> => player.setPlaybackRate(value));
     this.emit('playbackRateChange', { playbackRate: value, oldPlaybackRate });
+    this.notify();
   }
 
   setInterval(seconds: number): void {
@@ -817,8 +928,8 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
       } else if (track === null && previous) await player.deselectTrack(Number(previous.id));
       else if (track) await player.selectTrack(Number(track.id));
 
-      if (subtitle) this.subtitle = '';
       if (!this.active(load)) return;
+      if (subtitle) this.subtitle = '';
       await this.updateTracks(load, player);
       this.reconcilePlayback();
     });
@@ -829,23 +940,37 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
   }
 
   private async updateTracks(load: VideoLoad, player: media.AVPlayer): Promise<void> {
-    if (!['prepared', 'playing', 'paused'].includes(player.state)) return;
+    if (!canReadTracks(player)) return;
 
-    const descriptions = await player.getTrackDescription();
-    if (!this.active(load) || !['prepared', 'playing', 'paused'].includes(player.state)) return;
-    const selected = await player.getSelectedTracks();
+    let descriptions: media.MediaDescription[];
+    let selected: number[];
+    try {
+      descriptions = await player.getTrackDescription();
+      if (!this.active(load) || !canReadTracks(player)) return;
+      selected = await player.getSelectedTracks();
+    } catch (error) {
+      // A short clip can finish while an adaptive track update is being queried.
+      if (!this.active(load) || !canReadTracks(player)) return;
+      throw error as Error;
+    }
+    if (!this.active(load) || !canReadTracks(player)) return;
+
+    const ranges = await load.videoRanges;
     if (!this.active(load)) return;
 
     const audios: MediaTrack[] = [],
       subtitles: MediaTrack[] = [],
       videos: VideoTrack[] = [];
+    const seen = new Set<number>();
     descriptions.forEach((entry: media.MediaDescription): void => {
-      const index = Number(entry[media.MediaDescriptionKey.MD_KEY_TRACK_INDEX]);
-      if (!Number.isSafeInteger(index) || index < 0) return;
-
-      const id = String(index);
+      const index = entry[media.MediaDescriptionKey.MD_KEY_TRACK_INDEX];
       const kind = entry[media.MediaDescriptionKey.MD_KEY_TRACK_TYPE];
-      const language = String(entry[media.MediaDescriptionKey.MD_KEY_LANGUAGE] ?? 'und');
+      if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || seen.has(index)) return;
+      if (kind !== media.MediaType.MEDIA_TYPE_AUD && kind !== media.MediaType.MEDIA_TYPE_SUBTITLE && kind !== media.MediaType.MEDIA_TYPE_VID) return;
+      seen.add(index);
+      const id = String(index);
+      const languageValue = entry[media.MediaDescriptionKey.MD_KEY_LANGUAGE];
+      const language = typeof languageValue === 'string' && languageValue.length > 0 ? languageValue : 'und';
       const name = entry[media.MediaDescriptionKey.MD_KEY_TRACK_NAME];
       const track: MediaTrack = { id, language, label: typeof name === 'string' ? name : language };
       if (typeof name === 'string') track.name = name;
@@ -856,15 +981,17 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
           id,
           url: null,
           size: {
-            width: Number(entry[media.MediaDescriptionKey.MD_KEY_WIDTH] ?? 0),
-            height: Number(entry[media.MediaDescriptionKey.MD_KEY_HEIGHT] ?? 0),
+            width: finiteNonnegative(entry[media.MediaDescriptionKey.MD_KEY_WIDTH]) ?? 0,
+            height: finiteNonnegative(entry[media.MediaDescriptionKey.MD_KEY_HEIGHT]) ?? 0,
           },
-          mimeType: String(entry[media.MediaDescriptionKey.MD_KEY_CODEC_MIME] ?? ''),
+          mimeType: typeof entry[media.MediaDescriptionKey.MD_KEY_CODEC_MIME] === 'string'
+            ? entry[media.MediaDescriptionKey.MD_KEY_CODEC_MIME] as string : null,
           isSupported: true,
-          bitrate: Number(entry[media.MediaDescriptionKey.MD_KEY_BITRATE]) || null,
+          bitrate: finiteNonnegative(entry[media.MediaDescriptionKey.MD_KEY_BITRATE]) || null,
           averageBitrate: null,
           peakBitrate: null,
-          frameRate: Number(entry[media.MediaDescriptionKey.MD_KEY_FRAME_RATE]) / 100 || null,
+          frameRate: (finiteNonnegative(entry[media.MediaDescriptionKey.MD_KEY_FRAME_RATE]) ?? 0) / 100 || null,
+          videoRange: ranges[id] ?? 'sdr',
         });
       }
     });
@@ -993,17 +1120,25 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
   }
 }
 
-async function withLoadTimeout(operation: Promise<void>, message: string): Promise<void> {
+async function withLoadTimeout<T>(operation: Promise<T>, message: string): Promise<T> {
   let timer: number | undefined;
 
   try {
-    await Promise.race([
+    return await Promise.race([
       operation,
-      new Promise<void>((_resolve, reject): void => {
+      new Promise<T>((_resolve, reject): void => {
         timer = setTimeout((): void => reject(new ExpoModuleError('ERR_VIDEO_LOAD_TIMEOUT', message)), LOAD_TIMEOUT_MS);
       }),
     ]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+function finiteNonnegative(value: ESObject): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function canReadTracks(player: media.AVPlayer): boolean {
+  return ['prepared', 'playing', 'paused'].includes(player.state);
 }

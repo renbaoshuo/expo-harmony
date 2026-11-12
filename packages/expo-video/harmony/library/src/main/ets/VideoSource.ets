@@ -5,9 +5,15 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ExpoModuleContext, ExpoModuleError, ExpoRecordShape, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
+import {
+  ExpoModuleContext, ExpoModuleError, ExpoRecordShape, ExpoValueTypes, isRnohRawfileResourceUri, rawResourcePathFromUri,
+} from '@expo-harmony/expo-modules-core';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { resourceManager } from '@kit.LocalizationKit';
 import { media } from '@kit.MediaKit';
+
+const RAW_RESOURCE_NOT_FOUND: number = 9001005;
 
 export interface VideoMetadata {
   title?: string;
@@ -65,7 +71,8 @@ export const VIDEO_SOURCE = ExpoValueTypes.shapedRecord<VideoSource>(
 ).nullable();
 
 export function validateSource(source: VideoSource | null): void {
-  if (source === null) return;
+  // Upstream treats a source record with no URI as an empty player.
+  if (source?.uri === undefined) return;
 
   if (!source.uri)
     throw new ExpoModuleError('ERR_VIDEO_INVALID_SOURCE', 'The source must contain a URI resolved by the official expo-video JS implementation.');
@@ -75,15 +82,21 @@ export function validateSource(source: VideoSource | null): void {
   if (source.contentType === 'smoothStreaming')
     throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'SmoothStreaming is not supported by expo-video on HarmonyOS.');
 
-  if (source.contentType && !['auto', 'progressive', 'hls', 'dash'].includes(source.contentType)) {
+  const contentType = source.contentType ?? 'auto';
+  if (!['auto', 'progressive', 'hls', 'dash'].includes(contentType)) {
     throw new ExpoModuleError('ERR_VIDEO_INVALID_SOURCE', 'Invalid video contentType.');
   }
-  if (source.contentType && source.contentType !== 'auto')
-    throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'Forcing a content type is not supported by expo-video on HarmonyOS; use auto detection.');
+  if (contentType !== 'auto' && !isLocalHlsPlaylist(source)) {
+    throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'HarmonyOS supports an explicit HLS type for local playlists. Use auto detection for other sources.');
+  }
 }
 
 export function isRemote(uri: string): boolean {
   return /^https?:\/\//i.test(uri);
+}
+
+export function isLocalHlsPlaylist(source: VideoSource): boolean {
+  return source.contentType === 'hls' && source.uri !== undefined && !isRemote(source.uri);
 }
 
 export function normalizeUri(uri: string): string {
@@ -110,22 +123,34 @@ export class VideoFile {
 }
 
 export function openVideoFile(context: ExpoModuleContext, uri: string): VideoFile {
-  const resource = /^(asset|rawfile):\/\/(.*)$/i.exec(uri);
-  if (resource !== null) {
-    let path: string;
+  if (isRnohRawfileResourceUri(uri) || /^(asset|rawfile):\/\//i.test(uri)) {
+    let name: string;
 
     try {
-      path = decodeURIComponent(resource[2].replace(/^\/+/, ''));
-    } catch (_) {
-      throw new ExpoModuleError('ERR_VIDEO_INVALID_SOURCE', 'Invalid percent encoding in the resource URI.');
-    }
-    if (path.split('/').some((part: string): boolean => !part || part === '.' || part === '..' || /[\\\0?#]/.test(part))) {
-      throw new ExpoModuleError('ERR_VIDEO_INVALID_SOURCE', 'Invalid packaged resource path.');
+      name = rawResourcePathFromUri(uri);
+    } catch (error) {
+      throw new ExpoModuleError('ERR_VIDEO_INVALID_SOURCE', String(error));
     }
 
-    const name = resource[1].toLowerCase() === 'asset' ? `assets/${path}` : path;
     const resources = context.uiAbilityContext.resourceManager;
-    const raw = resources.getRawFdSync(name);
+    let raw: resourceManager.RawFileDescriptor;
+    try {
+      raw = resources.getRawFdSync(name);
+    } catch (error) {
+      if (!/^asset:\/\//i.test(uri) || (error as BusinessError).code !== RAW_RESOURCE_NOT_FOUND) throw error as Error;
+
+      let fallback = name;
+      try {
+        fallback = rawResourcePathFromUri(uri, true);
+      } catch (_) {
+        // RNOH can use literal percent signs that are not valid URL escapes.
+      }
+      if (fallback === name) throw error as Error;
+
+      name = fallback;
+      raw = resources.getRawFdSync(name);
+    }
+
     let file: fs.File | undefined;
 
     try {
@@ -149,15 +174,12 @@ export function openVideoFile(context: ExpoModuleContext, uri: string): VideoFil
   }
 
   if (!uri.startsWith('/') && !/^file:\/\//i.test(uri)) {
-    throw new ExpoModuleError('ERR_VIDEO_INVALID_SOURCE', 'Use HTTP(S), a file URI, an absolute path, or a packaged asset/rawfile URI.');
+    throw new ExpoModuleError('ERR_VIDEO_INVALID_SOURCE', 'Use HTTP(S), a file URI, an absolute path, or a packaged resource URI.');
   }
 
-  const path = context.filePathForRead(normalizeUri(uri));
-  const file = fs.openSync(path, fs.OpenMode.READ_ONLY);
+  const file = context.openFileForRead(normalizeUri(uri));
 
   try {
-    context.assertFileAccess(file.path);
-
     const stat = fs.statSync(file.fd);
     if (!stat.isFile() || stat.size <= 0) throw new ExpoModuleError('ERR_VIDEO_INVALID_SOURCE', 'The video file is empty or is not a regular file.');
 

@@ -8,7 +8,7 @@
 import { ExpoModuleContext, ExpoModuleError, ExpoSharedRef } from '@expo-harmony/expo-modules-core';
 import { image } from '@kit.ImageKit';
 import { media } from '@kit.MediaKit';
-import { isRemote, normalizeUri, openVideoFile, requireFinite, VideoFile, VideoSource } from './VideoSource';
+import { isLocalHlsPlaylist, isRemote, normalizeUri, openVideoFile, requireFinite, VideoFile, VideoSource } from './VideoSource';
 
 export interface ThumbnailOptions {
   maxWidth?: number;
@@ -48,6 +48,10 @@ export async function generateThumbnails(
   options: ThumbnailOptions,
 ): Promise<VideoThumbnail[]> {
   if (!source?.uri) throw new ExpoModuleError('ERR_VIDEO_NO_SOURCE', 'A video source is required to generate thumbnails.');
+  if (isLocalHlsPlaylist(source)) {
+    throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'HarmonyOS Media Kit cannot extract thumbnails from HLS playlists.');
+  }
+
   times.forEach((time: number): void => {
     requireFinite(time, 'thumbnail time');
     if (!Number.isSafeInteger(Math.round(time * 1_000_000)))

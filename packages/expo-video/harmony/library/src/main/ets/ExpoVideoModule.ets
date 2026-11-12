@@ -6,6 +6,7 @@
  */
 
 import {
+  ExpoAppLifecycleState,
   ExpoFunction,
   ExpoModule,
   ExpoModuleContext,
@@ -19,8 +20,10 @@ import {
   ExpoViewDefinition,
 } from '@expo-harmony/expo-modules-core';
 import { VideoAudioSession } from './VideoAudioSession';
+import { isPictureInPictureSupported } from './VideoPictureInPicture';
 import { BufferOptions, MediaTrack, PlayerBuilderOptions, SeekTolerance, VideoPlayer } from './VideoPlayer';
 import { requireFinite, VIDEO_SOURCE, VideoSource } from './VideoSource';
+import { supportsBackgroundVideoPlayback, VideoSystemMedia } from './VideoSystemMedia';
 import { ThumbnailOptions, VideoThumbnail } from './VideoThumbnail';
 import { buildVideoView, ButtonOptions, ContentPosition, FullscreenOptions, VideoScreenOn, VideoView } from './VideoView';
 
@@ -68,7 +71,10 @@ const FULLSCREEN = record<FullscreenOptions>(
   new ExpoRecordShape()
     .field('enable', OPTIONAL_BOOLEAN)
     .field('orientation', ExpoValueTypes.string().optional())
-    .field('autoExitOnRotate', OPTIONAL_BOOLEAN),
+    .field('autoExitOnRotate', OPTIONAL_BOOLEAN)
+    .field('keepFullscreenOnPiPStop', ExpoValueTypes.enumerable<string>('KeepFullscreenOnPiPStopBehavior', {
+      always: 'always', autoEnter: 'autoEnter', never: 'never',
+    }).optional()),
 );
 const BUTTONS = record<ButtonOptions>(
   'ButtonOptions',
@@ -91,11 +97,14 @@ export class ExpoVideoModule extends ExpoModule {
   private readonly players: Set<VideoPlayer> = new Set<VideoPlayer>();
   private readonly session: VideoAudioSession = new VideoAudioSession();
   private readonly screen: VideoScreenOn;
-  private backgrounded: boolean = false;
+  private readonly systemMedia: VideoSystemMedia;
+  private backgrounded: boolean;
 
   constructor(context: ExpoModuleContext) {
     super(context);
-    this.screen = new VideoScreenOn(context.uiAbilityContext);
+    this.backgrounded = context.appLifecycleState === ExpoAppLifecycleState.BACKGROUND;
+    this.screen = new VideoScreenOn(context);
+    this.systemMedia = new VideoSystemMedia(context.uiAbilityContext);
   }
 
   override definition(): ExpoModuleDefinition {
@@ -114,7 +123,8 @@ export class ExpoVideoModule extends ExpoModule {
           (context: ExpoModuleContext, source: VideoSource | null, _synchronous?: boolean, options?: PlayerBuilderOptions | null): VideoPlayer => {
             const instance = new VideoPlayer(context, source, options ?? {}, this.session, (value: VideoPlayer): void => {
               this.players.delete(value);
-            });
+              this.systemMedia.update(this.players);
+            }, (): void => this.systemMedia.update(this.players));
             instance.setBackgrounded(this.backgrounded);
             this.players.add(instance);
 
@@ -234,17 +244,25 @@ export class ExpoVideoModule extends ExpoModule {
       .property(
         'showNowPlayingNotification',
         ExpoValueTypes.boolean(),
-        (): boolean => false,
-        (_player: VideoPlayer, value: boolean): void => {
-          if (value) throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'Now Playing notification is not supported by expo-video on HarmonyOS.');
+        (player: VideoPlayer): boolean => player.showNowPlayingNotification,
+        (player: VideoPlayer, value: boolean): void => {
+          if (value && !canIUse('SystemCapability.Multimedia.AVSession.Core')) {
+            throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'AVSession is unavailable on this device.');
+          }
+
+          player.setNowPlayingNotification(value);
         },
       )
       .property(
         'staysActiveInBackground',
         ExpoValueTypes.boolean(),
-        (): boolean => false,
-        (_player: VideoPlayer, value: boolean): void => {
-          if (value) throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'Background playback is not supported by expo-video on HarmonyOS.');
+        (player: VideoPlayer): boolean => player.staysActiveInBackground,
+        (player: VideoPlayer, value: boolean): void => {
+          if (value && !supportsBackgroundVideoPlayback()) {
+            throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'Background video playback needs HarmonyOS API 22 and AVSession.');
+          }
+
+          player.setStaysActiveInBackground(value);
         },
       )
       .property(
@@ -377,28 +395,20 @@ export class ExpoVideoModule extends ExpoModule {
       .prop(
         'allowsPictureInPicture',
         ExpoValueTypes.boolean(),
-        (_view: VideoView, value: boolean): void => {
-          if (value) throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'Picture in Picture is not supported by expo-video on HarmonyOS.');
-        },
+        (view: VideoView, value: boolean): void => view.setAllowsPictureInPicture(value),
         false,
       )
       .prop(
         'startsPictureInPictureAutomatically',
         ExpoValueTypes.boolean(),
-        (_view: VideoView, value: boolean): void => {
-          if (value) throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'Automatic Picture in Picture is not supported by expo-video on HarmonyOS.');
-        },
+        (view: VideoView, value: boolean): void => view.setStartsPictureInPictureAutomatically(value),
         false,
       )
       .events(['onPictureInPictureStart', 'onPictureInPictureStop', 'onFullscreenEnter', 'onFullscreenExit', 'onFirstFrameRender'])
       .asyncFunction('enterFullscreen', async (view: VideoView): Promise<void> => view.enterFullscreen())
       .asyncFunction('exitFullscreen', async (view: VideoView): Promise<void> => view.exitFullscreen())
-      .asyncFunction('startPictureInPicture', async (_view: VideoView): Promise<void> => {
-        throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'Picture in Picture is not supported by expo-video on HarmonyOS.');
-      })
-      .asyncFunction('stopPictureInPicture', async (_view: VideoView): Promise<void> => {
-        throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'Picture in Picture is not supported by expo-video on HarmonyOS.');
-      })
+      .asyncFunction('startPictureInPicture', async (view: VideoView): Promise<void> => view.startPictureInPicture())
+      .asyncFunction('stopPictureInPicture', async (view: VideoView): Promise<void> => view.stopPictureInPicture())
       .onDestroy((view: VideoView): void => view.destroy());
 
     return new ExpoModuleDefinition()
@@ -406,7 +416,7 @@ export class ExpoVideoModule extends ExpoModule {
       .sharedObjectClass(player)
       .sharedObjectClass(thumbnail)
       .view(view)
-      .syncFunction('isPictureInPictureSupported', (): boolean => false)
+      .syncFunction('isPictureInPictureSupported', (): boolean => isPictureInPictureSupported())
       .syncFunction('getCurrentVideoCacheSize', (): number => 0)
       .asyncFunction('clearVideoCacheAsync', async (): Promise<void> => this.assertNoPlayers())
       .asyncFunction(
@@ -420,13 +430,24 @@ export class ExpoVideoModule extends ExpoModule {
       )
       .onBackground((): void => {
         this.backgrounded = true;
+        this.screen.setForeground(false);
         this.players.forEach((player: VideoPlayer): void => player.setBackgrounded(true));
       })
       .onForeground((): void => {
         this.backgrounded = false;
+        this.screen.setForeground(true);
+        this.systemMedia.foreground();
         this.players.forEach((player: VideoPlayer): void => player.setBackgrounded(false));
+        this.systemMedia.update(this.players);
+      })
+      .onContentAppeared((): void => { this.screen.refresh(); })
+      .onPrepareForReload(async (): Promise<void> => {
+        await Promise.all([this.screen.destroy(), this.systemMedia.destroy(), this.session.destroy()]);
       })
       .onDestroy((): void => {
+        void this.screen.destroy();
+        void this.systemMedia.destroy();
+        void this.session.destroy();
         Array.from(this.players).forEach((player: VideoPlayer): void => player.sharedObjectWillRelease());
       });
   }
