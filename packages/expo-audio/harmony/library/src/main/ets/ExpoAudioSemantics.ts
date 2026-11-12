@@ -29,34 +29,6 @@ export function isPackagedAudioUri(uri: string): boolean {
   return scheme === 'asset' || scheme === 'rawfile';
 }
 
-export function packagedAudioResourceName(uri: string): string {
-  const scheme = uriScheme(uri);
-  const raw = uri
-    .replace(/^(?:asset|rawfile):\/\//i, '')
-    .replace(/^\/+/, '')
-    .split(/[?#]/, 1)[0];
-
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(raw).replace(/\\/g, '/');
-  } catch (_) {
-    throw new Error('The packaged audio URI contains invalid URL escaping.');
-  }
-
-  const parts = decoded.split('/');
-  if (
-    (scheme !== 'asset' && scheme !== 'rawfile') ||
-    parts.length === 0 ||
-    parts.some((part: string): boolean => part.length === 0 || part === '.' || part === '..' || part.includes('\0'))
-  ) {
-    throw new Error('The packaged audio URI path is invalid.');
-  }
-
-  const path = parts.join('/');
-
-  return scheme === 'asset' ? `assets/${path}` : path;
-}
-
 export function effectivePlaying(playing: boolean, buffering: boolean, intendedPlaying: boolean): boolean {
   return playing || (buffering && intendedPlaying);
 }

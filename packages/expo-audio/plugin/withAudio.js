@@ -21,7 +21,6 @@ const pkg = require('../package.json');
 const BACKGROUND_PERMISSION = 'ohos.permission.KEEP_BACKGROUND_RUNNING';
 const MICROPHONE_PERMISSION = 'ohos.permission.MICROPHONE';
 const MICROPHONE_REASON = '$string:expo_audio_default_microphone_permission_reason';
-const LEGACY_MICROPHONE_REASON = '$string:microphone_permission_reason';
 const CUSTOM_MICROPHONE_REASON = 'expo_audio_microphone_permission_reason';
 const PLAYBACK_MODE = 'audioPlayback';
 const RECORDING_MODE = 'audioRecording';
@@ -45,7 +44,6 @@ function microphoneDeclaration(permission, ability, reason) {
 
   const fallback = typeof current.reason === 'string'
     && !isPermissionReasonText(current.reason)
-    && current.reason !== LEGACY_MICROPHONE_REASON
     && current.reason !== `$string:${CUSTOM_MICROPHONE_REASON}`
     ? current.reason
     : MICROPHONE_REASON;
@@ -69,7 +67,7 @@ function microphoneDeclaration(permission, ability, reason) {
 }
 
 function upsertMicrophonePermission(permissions, ability, enabled, reason) {
-  if (!enabled) return permissions.filter(permission => permission?.name !== MICROPHONE_PERMISSION);
+  if (!enabled) return permissions;
 
   const index = permissions.findIndex(permission => permission?.name === MICROPHONE_PERMISSION);
   const declaration = microphoneDeclaration(index >= 0 ? permissions[index] : undefined, ability, reason);
@@ -80,8 +78,7 @@ function upsertMicrophonePermission(permissions, ability, enabled, reason) {
 }
 
 function addBackgroundPermission(permissions, enabled) {
-  if (!enabled) return permissions.filter(permission => permission?.name !== BACKGROUND_PERMISSION);
-  if (permissions.some(permission => permission?.name === BACKGROUND_PERMISSION)) return permissions;
+  if (!enabled || permissions.some(permission => permission?.name === BACKGROUND_PERMISSION)) return permissions;
 
   return [...permissions, { name: BACKGROUND_PERMISSION }];
 }
@@ -110,26 +107,23 @@ function updateManifest(json, options = {}) {
   const playback = options.enableBackgroundPlayback !== false;
   const recording = options.enableBackgroundRecording === true;
   const microphone = options.recordAudioAndroid !== false && options.microphonePermission !== false;
-  const ability = selectedAbilityName(module);
+  const name = selectedAbilityName(module);
+
   const current = Array.isArray(module.requestPermissions) ? module.requestPermissions : [];
   const permissions = addBackgroundPermission(
-    upsertMicrophonePermission(current, ability, microphone, options.microphonePermission),
+    upsertMicrophonePermission(current, name, microphone, options.microphonePermission),
     playback || recording
   );
-  const abilities = Array.isArray(module.abilities)
-    ? module.abilities.map((ability, index) => {
-        if (!ability || typeof ability !== 'object') return ability;
 
-        const selected = typeof module.mainElement === 'string' ? ability.name === module.mainElement : index === 0;
-        if (!selected) return ability;
+  const abilities = Array.isArray(module.abilities)
+    ? module.abilities.map((ability) => {
+        if (!ability || typeof ability !== 'object' || name === undefined || ability.name !== name) return ability;
 
         const modes = new Set(Array.isArray(ability.backgroundModes) ? ability.backgroundModes : []);
-        modes.delete(PLAYBACK_MODE);
-        modes.delete(RECORDING_MODE);
         if (playback) modes.add(PLAYBACK_MODE);
         if (recording) modes.add(RECORDING_MODE);
 
-        return { ...ability, backgroundModes: [...modes] };
+        return playback || recording ? { ...ability, backgroundModes: [...modes] } : ability;
       })
     : module.abilities;
 
@@ -147,6 +141,7 @@ function withHarmonyAudio(config, options = {}) {
 
   config = withModuleJson(config, (mod) => {
     mod.modResults = updateManifest(mod.modResults, options);
+
     return mod;
   });
 
