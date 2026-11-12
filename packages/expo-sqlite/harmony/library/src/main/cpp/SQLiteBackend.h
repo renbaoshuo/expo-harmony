@@ -5,11 +5,24 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+struct StatementState {
+  exsqlite3_stmt *stmt = nullptr;
+  // Empty or comment-only SQL prepares successfully without a sqlite3_stmt.
+  bool finalized = false;
+  bool finished = false;
+};
+
+struct SessionState {
+  exsqlite3_session *session = nullptr;
+};
+
 struct Connection : Resource, std::enable_shared_from_this<Connection> {
   sqlite3 *db = nullptr;
   std::recursive_mutex mutex;
-  std::vector<std::weak_ptr<Statement>> statements;
-  std::vector<std::weak_ptr<Session>> sessions;
+  // Track the native state independently of the wrappers. A wrapper's weak_ptr
+  // would already be expired if its destructor were waiting on this mutex.
+  std::unordered_set<std::shared_ptr<StatementState>> statements;
+  std::unordered_set<std::shared_ptr<SessionState>> sessions;
   std::shared_ptr<EventSink> eventSink;
   bool listen = false;
   ~Connection() override {
@@ -29,34 +42,33 @@ struct Connection : Resource, std::enable_shared_from_this<Connection> {
 
 struct Statement : Resource {
   std::shared_ptr<Connection> owner;
-  exsqlite3_stmt *stmt = nullptr;
-  // Successful prepare of empty/comment-only SQL has no SQLite statement.
-  // Its lifetime is still distinct from an explicitly finalized resource.
-  bool finalized = false;
+  std::shared_ptr<StatementState> state = std::make_shared<StatementState>();
   explicit Statement(std::shared_ptr<Connection> db) : owner(std::move(db)) {}
   ~Statement() override {
     std::lock_guard<std::recursive_mutex> lock(owner->mutex);
-    if (stmt) exsqlite3_finalize(stmt);
+    if (state->stmt) exsqlite3_finalize(state->stmt);
+    owner->statements.erase(state);
   }
   std::shared_ptr<Connection> connection() override { return owner; }
   void requireOpen() const {
     owner->requireOpen();
-    if (finalized) throw NativeError("ERR_ACCESS_CLOSED_RESOURCE", "Access to closed resource");
+    if (state->finalized) throw NativeError("ERR_ACCESS_CLOSED_RESOURCE", "Access to closed resource");
   }
 };
 
 struct Session : Resource {
   std::shared_ptr<Connection> owner;
-  exsqlite3_session *session = nullptr;
+  std::shared_ptr<SessionState> state = std::make_shared<SessionState>();
   explicit Session(std::shared_ptr<Connection> db) : owner(std::move(db)) {}
   ~Session() override {
     std::lock_guard<std::recursive_mutex> lock(owner->mutex);
-    if (session) exsqlite3session_delete(session);
+    if (state->session) exsqlite3session_delete(state->session);
+    owner->sessions.erase(state);
   }
   std::shared_ptr<Connection> connection() override { return owner; }
   void requireOpen() const {
     owner->requireOpen();
-    if (!session) throw NativeError("ERR_ACCESS_CLOSED_RESOURCE", "Access to closed resource");
+    if (!state->session) throw NativeError("ERR_ACCESS_CLOSED_RESOURCE", "Access to closed resource");
   }
 };
 
@@ -67,8 +79,6 @@ template <typename T> std::shared_ptr<T> resource(const Value &value) {
 
   return result;
 }
-
-const std::string &cstring(const Value &value) { return value.get<std::string>(); }
 
 int byteCount(size_t size) {
   if (size > static_cast<size_t>(std::numeric_limits<int>::max()))
@@ -132,7 +142,7 @@ Value::Array columnValues(exsqlite3_stmt *stmt) {
   return row;
 }
 
-void bind(Statement &statement, const Value::Record &params, bool array, bool blobs) {
+void bind(Connection &db, exsqlite3_stmt *statement, const Value::Record &params, bool array, bool blobs) {
   for (const auto &[key, value] : params) {
     int index = 0;
     if (array) {
@@ -144,33 +154,36 @@ void bind(Statement &statement, const Value::Record &params, bool array, bool bl
 
       index = static_cast<int>(number) + 1;
     } else {
-      index = exsqlite3_bind_parameter_index(statement.stmt, cstring(Value(key)).c_str());
+      if (key.find('\0') != std::string::npos) continue;
+      index = exsqlite3_bind_parameter_index(statement, key.c_str());
     }
+
     if (index == 0) continue; // Upstream ignores unknown named parameters.
 
     int status;
     if (blobs) {
       const auto &bytes = value.get<Bytes>();
-      status = bytes.empty() ? exsqlite3_bind_zeroblob(statement.stmt, index, 0)
-                             : exsqlite3_bind_blob(statement.stmt, index, bytes.data(), byteCount(bytes.size()),
+      status = bytes.empty() ? exsqlite3_bind_zeroblob(statement, index, 0)
+                             : exsqlite3_bind_blob(statement, index, bytes.data(), byteCount(bytes.size()),
                                                    SQLITE_TRANSIENT);
     } else if (value.isNull()) {
-      status = exsqlite3_bind_null(statement.stmt, index);
+      status = exsqlite3_bind_null(statement, index);
     } else if (const auto *boolean = std::get_if<bool>(&value.data)) {
-      status = exsqlite3_bind_int(statement.stmt, index, *boolean ? 1 : 0);
+      status = exsqlite3_bind_int(statement, index, *boolean ? 1 : 0);
     } else if (const auto *number = std::get_if<double>(&value.data)) {
-      if (std::isfinite(*number) && std::trunc(*number) == *number) {
-        status = exsqlite3_bind_int64(statement.stmt, index, integerValue(*number));
+      if (isInt64(*number)) {
+        status = exsqlite3_bind_int64(statement, index, static_cast<int64_t>(*number));
       } else {
-        status = exsqlite3_bind_double(statement.stmt, index, *number);
+        status = exsqlite3_bind_double(statement, index, *number);
       }
     } else {
       const auto &text = value.get<std::string>();
-      status = exsqlite3_bind_text(statement.stmt, index, text.data(), byteCount(text.size()), SQLITE_TRANSIENT);
+      status = exsqlite3_bind_text(statement, index, text.data(), byteCount(text.size()), SQLITE_TRANSIENT);
     }
 
-    // Upstream ignores sqlite3_bind_* errors (including SQLITE_RANGE).
-    (void)status;
+    // Keep accepting surplus parameters. A failed bind for an existing
+    // parameter (e.g. SQLITE_TOOBIG) must never execute with a different value.
+    if (status != SQLITE_RANGE) db.check(status);
   }
 }
 
@@ -186,7 +199,7 @@ Bytes copySQLiteBuffer(void *data, int size) {
 Bytes changeset(Session &session) {
   int size = 0;
   void *data = nullptr;
-  const int status = exsqlite3session_changeset(session.session, &size, &data);
+  const int status = exsqlite3session_changeset(session.state->session, &size, &data);
   auto bytes = copySQLiteBuffer(data, size);
   session.owner->check(status);
 
@@ -206,12 +219,11 @@ Bytes invert(const Bytes &bytes) {
 
 void close(Connection &db, bool finalize) {
   if (finalize) {
-    for (auto &weak : db.statements) {
-      if (auto statement = weak.lock()) {
-        statement->stmt = nullptr;
-        statement->finalized = true;
-      }
+    for (const auto &statement : db.statements) {
+      statement->stmt = nullptr;
+      statement->finalized = true;
     }
+    db.statements.clear();
     // Match upstream: extensions may also prepare statements on this connection.
     while (auto *statement = exsqlite3_next_stmt(db.db, nullptr))
       exsqlite3_finalize(statement);
@@ -219,15 +231,14 @@ void close(Connection &db, bool finalize) {
 
   // Keep the connection usable when close() fails with SQLITE_BUSY.
   if (exsqlite3_next_stmt(db.db, nullptr)) {
-    db.check(SQLITE_BUSY);
+    throw std::runtime_error("Error code " + std::to_string(SQLITE_BUSY) + ": unable to close due to unfinalized statements");
   }
 
-  for (auto &weak : db.sessions) {
-    if (auto session = weak.lock()) {
-      if (session->session) exsqlite3session_delete(session->session);
-      session->session = nullptr;
-    }
+  for (const auto &session : db.sessions) {
+    if (session->session) exsqlite3session_delete(session->session);
+    session->session = nullptr;
   }
+  db.sessions.clear();
 
   db.check(exsqlite3_close(db.db));
   db.db = nullptr;
@@ -276,43 +287,56 @@ Value execute(Task &task) {
   if (op >= Op::Run && op <= Op::Finalize) {
     auto statement = resource<Statement>(args[0]);
     auto &db = *statement->owner;
+    auto &state = *statement->state;
+    auto *stmt = state.stmt;
     if (op != Op::Columns && resource<Connection>(args[1]).get() != &db) {
       throw std::invalid_argument("Statement belongs to a different database");
     }
 
     // Empty SQL has no statement: step(NULL) fails, but clear_bindings(NULL) can crash.
-    if (!statement->stmt && (op == Op::Run || op == Op::Step)) {
+    if (!stmt && (op == Op::Run || op == Op::Step)) {
       throw std::runtime_error("Error code " + std::to_string(SQLITE_MISUSE) + ": " + exsqlite3_errstr(SQLITE_MISUSE));
     }
 
     switch (op) {
     case Op::Run: {
-      exsqlite3_reset(statement->stmt);
-      db.check(exsqlite3_clear_bindings(statement->stmt));
-      bind(*statement, args[2].get<Value::Record>(), args[4].get<bool>(), false);
-      bind(*statement, args[3].get<Value::Record>(), args[4].get<bool>(), true);
+      const bool hadActiveCursor = !state.finished;
+      state.finished = true;
+      const int reset = exsqlite3_reset(stmt);
+      // A pending RETURNING write can report a new failure on reset.
+      // A completed/failed cursor already reported its last step result.
+      if (hadActiveCursor) db.check(reset);
 
-      const int status = exsqlite3_step(statement->stmt);
+      db.check(exsqlite3_clear_bindings(stmt));
+      bind(db, stmt, args[2].get<Value::Record>(), args[4].get<bool>(), false);
+      bind(db, stmt, args[3].get<Value::Record>(), args[4].get<bool>(), true);
+
+      const int status = exsqlite3_step(stmt);
+      state.finished = status != SQLITE_ROW;
       if (status != SQLITE_ROW && status != SQLITE_DONE) db.check(status);
 
       return Value::Record{{"lastInsertRowId", static_cast<double>(exsqlite3_last_insert_rowid(db.db))},
                            {"changes", static_cast<double>(exsqlite3_changes(db.db))},
-                           {"firstRowValues", status == SQLITE_ROW ? columnValues(statement->stmt) : Value::Array{}}};
+                           {"firstRowValues", status == SQLITE_ROW ? columnValues(stmt) : Value::Array{}}};
     }
     case Op::Step: {
-      const int status = exsqlite3_step(statement->stmt);
-      if (status == SQLITE_ROW) return columnValues(statement->stmt);
+      // SQLite may implicitly reset and re-execute a finished statement.
+      if (state.finished) return {};
+      const int status = exsqlite3_step(stmt);
+      state.finished = status != SQLITE_ROW;
+      if (status == SQLITE_ROW) return columnValues(stmt);
       if (status != SQLITE_DONE) db.check(status);
 
       return {};
     }
     case Op::Reset:
-      db.check(exsqlite3_reset(statement->stmt));
+      state.finished = false;
+      db.check(exsqlite3_reset(stmt));
       return {};
     case Op::Columns: {
       Value::Array names;
-      for (int i = 0; i < exsqlite3_column_count(statement->stmt); ++i) {
-        const char *name = exsqlite3_column_name(statement->stmt, i);
+      for (int i = 0; i < exsqlite3_column_count(stmt); ++i) {
+        const char *name = exsqlite3_column_name(stmt, i);
         if (!name) throw std::bad_alloc();
 
         names.emplace_back(std::string(name));
@@ -321,9 +345,10 @@ Value execute(Task &task) {
       return names;
     }
     case Op::Finalize: {
-      const int status = exsqlite3_finalize(statement->stmt);
-      statement->stmt = nullptr; // finalize destroys the statement even on failure.
-      statement->finalized = true;
+      const int status = exsqlite3_finalize(stmt);
+      state.stmt = nullptr; // finalize destroys the statement even on failure.
+      state.finalized = true;
+      db.statements.erase(statement->state);
 
       db.check(status);
 
@@ -337,18 +362,20 @@ Value execute(Task &task) {
   if (op >= Op::Attach) {
     auto session = resource<Session>(args[0]);
     auto &db = *session->owner;
+    auto &state = *session->state;
     if (resource<Connection>(args[1]).get() != &db) throw std::invalid_argument("Session belongs to a different database");
 
     switch (op) {
     case Op::Attach:
-      db.check(exsqlite3session_attach(session->session, args[2].isNull() ? nullptr : cstring(args[2]).c_str()));
+      db.check(exsqlite3session_attach(state.session, args[2].isNull() ? nullptr : cstring(args[2]).c_str()));
       return {};
     case Op::Enable:
-      exsqlite3session_enable(session->session, args[2].get<bool>());
+      exsqlite3session_enable(state.session, args[2].get<bool>());
       return {};
     case Op::CloseSession:
-      exsqlite3session_delete(session->session);
-      session->session = nullptr;
+      exsqlite3session_delete(state.session);
+      state.session = nullptr;
+      db.sessions.erase(session->state);
       return {};
     case Op::Changeset:
       return changeset(*session);
@@ -396,32 +423,26 @@ Value execute(Task &task) {
   }
   case Op::Prepare: {
     auto statement = std::make_shared<Statement>(db);
-    db->check(exsqlite3_prepare_v2(db->db, cstring(args[1]).c_str(), -1, &statement->stmt, nullptr));
-
-    db->statements.erase(
-        std::remove_if(db->statements.begin(), db->statements.end(), [](const auto &s) { return s.expired(); }),
-        db->statements.end());
-    db->statements.emplace_back(statement);
+    db->check(exsqlite3_prepare_v2(db->db, cstring(args[1]).c_str(), -1, &statement->state->stmt, nullptr));
+    db->statements.insert(statement->state);
 
     return Handle(statement);
   }
   case Op::CreateSession: {
     auto session = std::make_shared<Session>(db);
-    db->check(exsqlite3session_create(db->db, cstring(args[1]).c_str(), &session->session));
-
-    db->sessions.erase(
-        std::remove_if(db->sessions.begin(), db->sessions.end(), [](const auto &s) { return s.expired(); }),
-        db->sessions.end());
-    db->sessions.emplace_back(session);
+    db->check(exsqlite3session_create(db->db, cstring(args[1]).c_str(), &session->state->session));
+    db->sessions.insert(session->state);
 
     return Handle(session);
   }
   case Op::LoadExtension: {
-    db->check(exsqlite3_enable_load_extension(db->db, 1));
+    const auto &path = cstring(args[1]);
+    const char *entry = args[2].isNull() || cstring(args[2]).empty() ? nullptr : cstring(args[2]).c_str();
+    // Enable only SQLite's C API. SQL source must not gain load_extension().
+    db->check(exsqlite3_db_config(db->db, SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 1, static_cast<int *>(nullptr)));
 
     char *message = nullptr;
-    const char *entry = args[2].isNull() || cstring(args[2]).empty() ? nullptr : cstring(args[2]).c_str();
-    const int status = exsqlite3_load_extension(db->db, cstring(args[1]).c_str(), entry, &message);
+    const int status = exsqlite3_load_extension(db->db, path.c_str(), entry, &message);
     std::unique_ptr<void, decltype(&exsqlite3_free)> buffer(message, exsqlite3_free);
     if (status != SQLITE_OK) throw std::runtime_error(message ? message : exsqlite3_errmsg(db->db));
 
@@ -434,6 +455,7 @@ Value execute(Task &task) {
 
     const int step = exsqlite3_backup_step(backup, -1);
     const int finish = exsqlite3_backup_finish(backup);
+
     if (step != SQLITE_DONE) db->check(step);
     db->check(finish);
 

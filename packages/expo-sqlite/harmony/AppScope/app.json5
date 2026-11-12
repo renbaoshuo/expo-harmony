@@ -9,7 +9,7 @@
   "app": {
     "bundleName": "dev.expo.sqlite.build",
     "vendor": "expo-harmony",
-    "versionCode": 550020,
-    "versionName": "55.0.20-harmony.0"
+    "versionCode": 570004,
+    "versionName": "57.0.4-harmony.0"
   }
 }

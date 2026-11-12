@@ -5,6 +5,10 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+// The pinned libSQL archive includes its own SQLite parser. The C binding
+// exposes single-statement execution even when the connection is remote-only.
+extern "C" int sqlite3_complete(const char *sql);
+
 struct LibSQLCall {
   const char *error = nullptr;
   ~LibSQLCall() {
@@ -36,6 +40,9 @@ struct Statement : Resource {
   std::shared_ptr<Connection> owner;
   libsql_stmt_t stmt = nullptr;
   libsql_rows_t rows = nullptr;
+  bool finished = false;
+  std::optional<Value::Array> columnNames;
+  Value::Array bindings;
   explicit Statement(std::shared_ptr<Connection> owner) : owner(std::move(owner)) {}
   ~Statement() override {
     std::lock_guard<std::recursive_mutex> lock(owner->mutex);
@@ -55,6 +62,7 @@ struct Statement : Resource {
   void reset() {
     if (rows) libsql_free_rows(rows);
     rows = nullptr;
+    finished = false;
 
     LibSQLCall call;
     call.check(libsql_reset_stmt(stmt, &call.error));
@@ -86,49 +94,71 @@ void close(Connection &db) {
   db.conn = nullptr;
   if (db.db) libsql_close(db.db);
   db.db = nullptr;
+
   if (db.eventSink) db.eventSink->stop(napi_tsfn_release);
 }
 
-void bind(Statement &statement, const Value::Record &params, bool array, bool blobs) {
+void collectBindings(Value::Array &bindings, const Value::Record &params, bool array) {
   if (!array && !params.empty()) {
     throw NativeError("ERR_UNSUPPORTED_OPERATION", "Named parameter binding is not supported in libSQL mode");
   }
 
   for (const auto &[key, value] : params) {
     size_t end = 0;
-    auto number = std::stoll(key, &end);
-    if (end != key.size() || number < 0 || number >= std::numeric_limits<int>::max()) {
+    const auto index = std::stoll(key, &end);
+    // The pinned libSQL build uses SQLite's default variable limit. The C
+    // binding allocates up to the requested index before validating the query.
+    if (end != key.size() || index < 0 || index >= 32766) {
       throw NativeError("ERR_INVALID_BIND_PARAMETER", "Invalid bind parameter");
     }
 
-    int index = static_cast<int>(number) + 1;
+    if (bindings.size() <= static_cast<size_t>(index)) bindings.resize(index + 1);
+    bindings[index] = value;
+  }
+}
+
+void bind(Statement &statement, const Value::Array &bindings) {
+  for (size_t i = 0; i < bindings.size(); ++i) {
+    const auto &value = bindings[i];
+    const int index = static_cast<int>(i) + 1;
     LibSQLCall call;
-    if (blobs) {
-      const auto &bytes = value.get<Bytes>();
-      if (bytes.size() > std::numeric_limits<int>::max()) throw std::length_error("BLOB exceeds INT_MAX bytes");
+    if (auto bytes = std::get_if<Bytes>(&value.data)) {
+      if (bytes->size() > std::numeric_limits<int>::max()) throw std::length_error("BLOB exceeds INT_MAX bytes");
 
       // Rust slice::from_raw_parts requires non-null even for a zero-length slice.
       const unsigned char empty = 0;
       call.check(
-          libsql_bind_blob(statement.stmt, index, bytes.empty() ? &empty : bytes.data(), bytes.size(), &call.error));
+          libsql_bind_blob(statement.stmt, index, bytes->empty() ? &empty : bytes->data(), bytes->size(), &call.error));
     } else if (value.isNull()) call.check(libsql_bind_null(statement.stmt, index, &call.error));
     else if (auto boolean = std::get_if<bool>(&value.data))
       call.check(libsql_bind_int(statement.stmt, index, *boolean, &call.error));
     else if (auto number = std::get_if<double>(&value.data)) {
-      if (std::isfinite(*number) && std::trunc(*number) == *number) {
-        call.check(libsql_bind_int(statement.stmt, index, integerValue(*number), &call.error));
+      if (isInt64(*number)) {
+        call.check(libsql_bind_int(statement.stmt, index, static_cast<int64_t>(*number), &call.error));
       } else call.check(libsql_bind_float(statement.stmt, index, *number, &call.error));
-    } else call.check(libsql_bind_string(statement.stmt, index, value.get<std::string>().c_str(), &call.error));
+    } else {
+      const auto &text = value.get<std::string>();
+      if (text.find('\0') != std::string::npos) {
+        throw NativeError("ERR_INVALID_BIND_PARAMETER", "libSQL TEXT parameters cannot contain a NUL byte");
+      }
+
+      call.check(libsql_bind_string(statement.stmt, index, text.c_str(), &call.error));
+    }
   }
 }
 
 Value step(Statement &statement) {
+  if (statement.finished) return {};
+
+  // A failed or exhausted cursor must not implicitly replay the statement.
+  statement.finished = true;
   auto rows = statement.getRows();
   libsql_row_t raw = nullptr;
   LibSQLCall call;
   call.check(libsql_next_row(rows, &raw, &call.error));
   std::unique_ptr<const libsql_row, decltype(&libsql_free_row)> row(raw, libsql_free_row);
   if (!raw) return {};
+  statement.finished = false;
 
   Value::Array result;
   for (int i = 0; i < libsql_column_count(rows); ++i) {
@@ -180,6 +210,57 @@ Value step(Statement &statement) {
   return result;
 }
 
+Value::Array getColumnNames(libsql_rows_t rows) {
+  Value::Array names;
+  for (int i = 0; i < libsql_column_count(rows); ++i) {
+    const char *name = nullptr;
+    LibSQLCall call;
+    call.check(libsql_column_name(rows, i, &name, &call.error));
+    std::unique_ptr<const char, decltype(&libsql_free_string)> text(name, libsql_free_string);
+    names.emplace_back(std::string(name ? name : ""));
+  }
+
+  return names;
+}
+
+bool hasStatement(const std::string &sql) {
+  size_t i = 0;
+  while (i < sql.size()) {
+    if (std::isspace(static_cast<unsigned char>(sql[i])) || sql[i] == ';') {
+      ++i;
+    } else if (sql.compare(i, 2, "--") == 0) {
+      const size_t end = sql.find('\n', i + 2);
+      if (end == std::string::npos) return false;
+      i = end + 1;
+    } else if (sql.compare(i, 2, "/*") == 0) {
+      const size_t end = sql.find("*/", i + 2);
+      if (end == std::string::npos) return false;
+      i = end + 2;
+    } else {
+      return true;
+    }
+  }
+  return false;
+}
+
+void exec(Connection &db, const std::string &sql) {
+  const auto executeStatement = [&](const std::string &statement) {
+    if (!hasStatement(statement)) return;
+    LibSQLCall call;
+    call.check(libsql_execute(db.conn, statement.c_str(), &call.error));
+  };
+
+  size_t start = 0;
+  for (size_t end = sql.find(';'); end != std::string::npos; end = sql.find(';', end + 1)) {
+    const auto statement = sql.substr(start, end - start + 1);
+    // Semicolons inside strings, comments and trigger bodies are not separators.
+    if (!sqlite3_complete(statement.c_str())) continue;
+    executeStatement(statement);
+    start = end + 1;
+  }
+  executeStatement(sql.substr(start));
+}
+
 Value execute(Task &task) {
   const auto &args = task.args;
   const auto op = task.spec->op;
@@ -197,21 +278,22 @@ Value execute(Task &task) {
     if (!args[2].isNull()) throw NativeError("ERR_UNSUPPORTED_OPERATION", "Unsupported operation in libSQL mode");
 
     const auto &options = args[1].get<Value::Record>();
+    if (options.at("enableChangeListener").get<bool>()) {
+      throw NativeError("ERR_UNSUPPORTED_OPERATION", "Database change notifications are not supported in libSQL mode");
+    }
     const auto &url = options.at("libSQLUrl"), &token = options.at("libSQLAuthToken");
     if (url.isNull() || token.isNull())
       throw NativeError("ERR_INVALID_ARGUMENTS", "libSQLUrl and libSQLAuthToken must be provided");
 
     auto db = std::make_shared<Connection>();
-    db->listen = options.at("enableChangeListener").get<bool>();
     LibSQLCall call;
     if (options.at("libSQLRemoteOnly").get<bool>()) {
-      call.check(libsql_open_remote_with_webpki(url.get<std::string>().c_str(), token.get<std::string>().c_str(),
-                                                &db->db, &call.error));
+      call.check(libsql_open_remote_with_webpki(cstring(url).c_str(), cstring(token).c_str(), &db->db, &call.error));
     } else {
       libsql_config config{};
-      config.db_path = args[0].get<std::string>().c_str();
-      config.primary_url = url.get<std::string>().c_str();
-      config.auth_token = token.get<std::string>().c_str();
+      config.db_path = cstring(args[0]).c_str();
+      config.primary_url = cstring(url).c_str();
+      config.auth_token = cstring(token).c_str();
       config.read_your_writes = 1;
       config.with_webpki = 1;
       config.offline = 1;
@@ -232,9 +314,19 @@ Value execute(Task &task) {
     switch (op) {
     case Op::Run: {
       stmt->reset();
-      bind(*stmt, args[2].get<Value::Record>(), args[4].get<bool>(), false);
-      bind(*stmt, args[3].get<Value::Record>(), args[4].get<bool>(), true);
+      stmt->columnNames.reset();
+      stmt->finished = true;
+      // Clear previously bound slots omitted on this run. Reset clears
+      // libSQL's parameter vector, but the local SQLite bindings can persist.
+      Value::Array bindings(stmt->bindings.size());
+      const bool array = args[4].get<bool>();
+      collectBindings(bindings, args[2].get<Value::Record>(), array);
+      collectBindings(bindings, args[3].get<Value::Record>(), array);
 
+      bind(*stmt, bindings);
+      stmt->bindings = std::move(bindings);
+
+      stmt->finished = false;
       auto row = step(*stmt);
 
       return Value::Record{{"lastInsertRowId", static_cast<double>(libsql_last_insert_rowid(db->conn))},
@@ -244,23 +336,22 @@ Value execute(Task &task) {
     case Op::Step:
       return step(*stmt);
     case Op::Reset:
+      if (stmt->rows && !stmt->columnNames) stmt->columnNames = getColumnNames(stmt->rows);
       stmt->reset();
+      stmt->finished = true;
+      bind(*stmt, stmt->bindings);
+      stmt->finished = false;
       return {};
     case Op::Finalize:
       stmt->finalize();
       return {};
     case Op::Columns: {
-      auto rows = stmt->getRows();
-      Value::Array names;
-      for (int i = 0; i < libsql_column_count(rows); ++i) {
-        const char *name = nullptr;
-        LibSQLCall call;
-        call.check(libsql_column_name(rows, i, &name, &call.error));
-        std::unique_ptr<const char, decltype(&libsql_free_string)> text(name, libsql_free_string);
-        names.emplace_back(std::string(name ? name : ""));
-      }
-
-      return names;
+      // libsql_query_stmt executes SQL. Metadata lookup must never execute a
+      // write, even on a statement that has not run or has been reset.
+      if (!stmt->columnNames && stmt->rows) stmt->columnNames = getColumnNames(stmt->rows);
+      if (!stmt->columnNames)
+        throw NativeError("ERR_UNSUPPORTED_OPERATION", "libSQL column names are only available after execution");
+      return *stmt->columnNames;
     }
     default:
       break;
@@ -273,7 +364,6 @@ Value execute(Task &task) {
   LibSQLCall call;
   switch (op) {
   case Op::Init:
-    if (db->listen) throw NativeError("ERR_UNSUPPORTED_OPERATION", "Unsupported operation in libSQL mode");
     return {};
   case Op::Close:
     close(*db);
@@ -282,11 +372,11 @@ Value execute(Task &task) {
     call.check(libsql_sync(db->db, &call.error));
     return {};
   case Op::Exec:
-    call.check(libsql_execute(db->conn, args[1].get<std::string>().c_str(), &call.error));
+    exec(*db, cstring(args[1]));
     return {};
   case Op::Prepare: {
     auto stmt = std::make_shared<Statement>(db);
-    call.check(libsql_prepare(db->conn, args[1].get<std::string>().c_str(), &stmt->stmt, &call.error));
+    call.check(libsql_prepare(db->conn, cstring(args[1]).c_str(), &stmt->stmt, &call.error));
 
     db->statements.erase(
         std::remove_if(db->statements.begin(), db->statements.end(), [](auto &s) { return s.expired(); }),

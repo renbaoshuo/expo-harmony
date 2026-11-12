@@ -14,14 +14,17 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -100,11 +103,19 @@ struct NativeError : std::runtime_error {
   NativeError(std::string code, std::string message) : std::runtime_error(std::move(message)), code(std::move(code)) {}
 };
 
-int64_t integerValue(double value) {
-  if (value <= static_cast<double>(std::numeric_limits<int64_t>::min())) return std::numeric_limits<int64_t>::min();
-  if (value >= static_cast<double>(std::numeric_limits<int64_t>::max())) return std::numeric_limits<int64_t>::max();
+bool isInt64(double value) {
+  // INT64_MAX rounds up to 2^63 as a double. Use an exclusive upper bound.
+  constexpr double limit = -static_cast<double>(std::numeric_limits<int64_t>::min());
+  return value >= -limit && value < limit && std::trunc(value) == value;
+}
 
-  return static_cast<int64_t>(value);
+const std::string &cstring(const Value &value) {
+  const auto &text = value.get<std::string>();
+  if (text.find('\0') != std::string::npos) {
+    throw NativeError("ERR_INVALID_ARGUMENTS", "SQLite C string argument contains a NUL byte");
+  }
+
+  return text;
 }
 
 struct EventSink {
@@ -141,23 +152,23 @@ struct EventSink {
 #else
 #include "SQLiteBackend.h"
 #endif
+
 void perform(Task &task) noexcept {
   try {
     std::vector<std::shared_ptr<Connection>> connections;
     for (const auto &arg : task.args) {
       if (auto *handle = std::get_if<Handle>(&arg.data)) connections.push_back((*handle)->connection());
     }
+
     std::sort(connections.begin(), connections.end(),
               [](const auto &a, const auto &b) { return std::less<Connection *>{}(a.get(), b.get()); });
     connections.erase(std::unique(connections.begin(), connections.end()), connections.end());
 
-    auto locked = [&](Task &operation) {
-      std::vector<std::unique_lock<std::recursive_mutex>> locks;
-      for (auto &connection : connections)
-        locks.emplace_back(connection->mutex);
-
-      return execute(operation);
-    };
+    // Hold the connection locks for the whole operation, including every row of
+    // getAll. Another run/reset/finalize must not take over its statement cursor.
+    std::vector<std::unique_lock<std::recursive_mutex>> locks;
+    for (auto &connection : connections)
+      locks.emplace_back(connection->mutex);
 
     if (task.spec->op == Op::GetAll) {
       const Spec spec{"step", Op::Step, 2, false};
@@ -166,15 +177,14 @@ void perform(Task &task) noexcept {
       step.args = task.args;
       Value::Array rows;
       for (;;) {
-        // Protect each step plus its column reads; let other operations run between rows.
-        auto row = locked(step);
+        auto row = execute(step);
         if (row.isNull()) break;
 
         rows.push_back(std::move(row));
       }
 
       task.value = std::move(rows);
-    } else task.value = locked(task);
+    } else task.value = execute(task);
   } catch (const NativeError &error) {
     task.error = error.what();
     task.errorCode = error.code;
@@ -233,6 +243,19 @@ Value fromNapi(napi_env env, napi_value value, unsigned depth = 0) {
       return *static_cast<Handle *>(wrapped);
     }
 
+    bool arrayBuffer = false;
+    checkNapi(napi_is_arraybuffer(env, value, &arrayBuffer));
+    if (arrayBuffer) {
+      size_t size;
+      void *data;
+      checkNapi(napi_get_arraybuffer_info(env, value, &data, &size));
+      if (size && !data) throw std::invalid_argument("Invalid ArrayBuffer data");
+
+      // Own the bytes before queuing work; ArkTS memory stays on its JS thread.
+      auto *bytes = static_cast<unsigned char *>(data);
+      return size ? Bytes(bytes, bytes + size) : Bytes{};
+    }
+
     bool typed = false;
     checkNapi(napi_is_typedarray(env, value, &typed));
     if (typed) {
@@ -242,6 +265,7 @@ Value fromNapi(napi_env env, napi_value value, unsigned depth = 0) {
       napi_value buffer;
       checkNapi(napi_get_typedarray_info(env, value, &kind, &size, &data, &buffer, &offset));
       if (kind != napi_uint8_array) throw std::invalid_argument("Expected Uint8Array");
+      if (size && !data) throw std::invalid_argument("Invalid Uint8Array data");
 
       auto *bytes = static_cast<unsigned char *>(data);
       return size ? Bytes(bytes, bytes + size) : Bytes{};
@@ -270,7 +294,7 @@ Value fromNapi(napi_env env, napi_value value, unsigned depth = 0) {
   }
 }
 
-napi_value toNapi(napi_env env, const Value &value) {
+napi_value toNapi(napi_env env, const Value &value, bool bytesAsArrayBuffer = true) {
   napi_value result;
   if (value.isNull()) checkNapi(napi_get_null(env, &result));
   else if (auto *item = std::get_if<bool>(&value.data)) checkNapi(napi_get_boolean(env, *item, &result));
@@ -282,15 +306,16 @@ napi_value toNapi(napi_env env, const Value &value) {
     napi_value buffer;
     checkNapi(napi_create_arraybuffer(env, item->size(), &data, &buffer));
     if (!item->empty()) std::memcpy(data, item->data(), item->size());
-    checkNapi(napi_create_typedarray(env, napi_uint8_array, item->size(), buffer, 0, &result));
+    if (bytesAsArrayBuffer) result = buffer;
+    else checkNapi(napi_create_typedarray(env, napi_uint8_array, item->size(), buffer, 0, &result));
   } else if (auto *item = std::get_if<Value::Array>(&value.data)) {
     checkNapi(napi_create_array_with_length(env, item->size(), &result));
     for (size_t i = 0; i < item->size(); ++i)
-      checkNapi(napi_set_element(env, result, i, toNapi(env, (*item)[i])));
+      checkNapi(napi_set_element(env, result, i, toNapi(env, (*item)[i], bytesAsArrayBuffer)));
   } else if (auto *item = std::get_if<Value::Record>(&value.data)) {
     checkNapi(napi_create_object(env, &result));
     for (const auto &[key, item] : *item)
-      checkNapi(napi_set_named_property(env, result, key.c_str(), toNapi(env, item)));
+      checkNapi(napi_set_named_property(env, result, key.c_str(), toNapi(env, item, bytesAsArrayBuffer)));
   } else {
     auto holder = std::make_unique<Handle>(value.get<Handle>());
     checkNapi(napi_create_object(env, &result));
@@ -329,7 +354,15 @@ napi_value observe(napi_env env, napi_callback_info info) {
     bool listening;
     checkNapi(napi_get_value_bool(env, args[2], &listening));
 
-    if (!db->eventSink) {
+    napi_value result;
+    checkNapi(napi_get_undefined(env, &result));
+    if (!db->listen) return result;
+
+    // The ArkTS side can still observe a handle while an async close completes.
+    std::lock_guard<std::recursive_mutex> lock(db->mutex);
+    if (!db->db) return result;
+
+    if (!db->eventSink && listening) {
       auto sink = std::make_shared<EventSink>();
       checkNapi(napi_create_threadsafe_function(
           env, args[1], nullptr, toNapi(env, std::string("ExpoSQLite.onDatabaseChange")), 0, 1, nullptr, nullptr,
@@ -353,10 +386,7 @@ napi_value observe(napi_env env, napi_callback_info info) {
       db->eventSink = std::move(sink);
     }
 
-    db->eventSink->listening.store(listening);
-
-    napi_value result;
-    checkNapi(napi_get_undefined(env, &result));
+    if (db->eventSink) db->eventSink->listening.store(listening);
 
     return result;
   } catch (const std::exception &error) {
@@ -368,7 +398,9 @@ napi_value observe(napi_env env, napi_callback_info info) {
 napi_value outcome(napi_env env, const Task &task) {
   napi_value result;
   checkNapi(napi_create_object(env, &result));
-  checkNapi(napi_set_named_property(env, result, "value", toNapi(env, task.value)));
+  // SDK 57 returns BLOB columns and session changesets as ArrayBuffer. Database
+  // serialization still returns Uint8Array in the upstream native contract.
+  checkNapi(napi_set_named_property(env, result, "value", toNapi(env, task.value, task.spec->op != Op::Serialize)));
   checkNapi(napi_set_named_property(env, result, "errorCode", toNapi(env, task.errorCode)));
   checkNapi(napi_set_named_property(env, result, "error", toNapi(env, task.error)));
 
@@ -447,6 +479,7 @@ napi_value invoke(napi_env env, napi_callback_info info) {
     bool pending = false;
     napi_is_exception_pending(env, &pending);
     if (!pending) napi_throw_error(env, "ERR_INTERNAL_SQLITE_ERROR", error.what());
+
     return nullptr;
   } catch (...) {
     napi_throw_error(env, "ERR_INTERNAL_SQLITE_ERROR", "Unknown SQLite bridge failure");

@@ -23,10 +23,15 @@ run(process.execPath, [path.join(__dirname, 'prepare-native.cjs')]);
 
 const generated = path.join(root, 'harmony/generated');
 const manifest = JSON.parse(fs.readFileSync(path.join(generated, 'manifest.json'), 'utf8'));
-const required = ['vendor/sqlite3.c', 'vendor/sqlite3.h', 'vendor/sqlcipher/sqlite3.c',
-  'vendor/sqlcipher/sqlite3.h', 'vendor/libsql/libsql.h', 'vendor/sqlite-vec/sqlite-vec.c',
-  'vendor/sqlite-vec/sqlite-vec.h', 'vendor/sqlite-vec/sqlite3.h', 'vendor/sqlite-vec/sqlite3ext.h',
-  'licenses/libsql-dependencies/index.json'];
+
+const required = [
+  'vendor/sqlite3.c', 'vendor/sqlite3.h',
+  'vendor/sqlcipher/sqlite3.c', 'vendor/sqlcipher/sqlite3.h',
+  'vendor/libsql/libsql.h',
+  'vendor/sqlite-vec/sqlite-vec.c', 'vendor/sqlite-vec/sqlite-vec.h',
+  'vendor/sqlite-vec/sqlite3.h', 'vendor/sqlite-vec/sqlite3ext.h',
+  'licenses/libsql-dependencies/index.json',
+];
 
 for (const abi of ['arm64-v8a', 'x86_64']) {
   required.push(`prebuilt/${abi}/libsql_experimental.a`, `prebuilt/${abi}/openssl/lib/libcrypto.a`);
@@ -43,5 +48,3 @@ for (const [relative, expected] of Object.entries(manifest.files)) {
   const actual = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   if (actual !== expected) throw new Error(`Generated checksum mismatch: ${relative}. Rebuild native inputs.`);
 }
-
-run(process.execPath, [require.resolve('@expo-harmony/expo-module-scripts/bin/expo-harmony-module.js'), 'prepack']);

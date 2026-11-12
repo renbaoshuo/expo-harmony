@@ -22,10 +22,12 @@ import { BIND_VALUE, OPEN_OPTIONS, OpenOptions } from './SQLiteOptions';
 import { NativeDatabase, NativeSession, NativeStatement, SQLiteHost } from './SQLiteObjects';
 
 const MEMORY_DATABASE = ':memory:';
+const FILE_NOT_FOUND = 13900002;
 const FILE_ALREADY_EXISTS = 13900015;
 
 export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
   private databases: NativeDatabase[] = [];
+  private importing: Set<string> = new Set<string>();
   private destroyed: boolean = false;
   private hasListeners: boolean = false;
 
@@ -53,6 +55,7 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
     const sessionType = session.valueType();
     const stringType = ExpoValueTypes.string();
     const bytesType = ExpoValueTypes.uint8Array();
+    const bufferType = ExpoValueTypes.arrayBuffer();
     const boolType = ExpoValueTypes.boolean();
 
     database.construct(
@@ -177,13 +180,13 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
       ExpoFunction.ownedTyped4(
         dbType,
         ExpoValueTypes.record(BIND_VALUE),
-        ExpoValueTypes.record(bytesType),
+        ExpoValueTypes.record(bufferType),
         boolType,
         (
           stmt: NativeStatement,
           db: NativeDatabase,
           params: Record<string, BindValue>,
-          blobs: Record<string, Uint8Array>,
+          blobs: Record<string, ArrayBuffer>,
           array: boolean,
         ): ESObject => {
           return this.complete(sqlite.runSync(stmt.handle, db.handle, params, blobs, array));
@@ -195,13 +198,13 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
       ExpoFunction.ownedTyped4(
         dbType,
         ExpoValueTypes.record(BIND_VALUE),
-        ExpoValueTypes.record(bytesType),
+        ExpoValueTypes.record(bufferType),
         boolType,
         async (
           stmt: NativeStatement,
           db: NativeDatabase,
           params: Record<string, BindValue>,
-          blobs: Record<string, Uint8Array>,
+          blobs: Record<string, ArrayBuffer>,
           array: boolean,
         ): Promise<ESObject> => {
           return this.complete(await sqlite.runAsync(stmt.handle, db.handle, params, blobs, array));
@@ -334,25 +337,25 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
     );
     session.syncFunction(
       'applyChangesetSync',
-      ExpoFunction.ownedTyped2(dbType, bytesType, (value: NativeSession, db: NativeDatabase, changeset: Uint8Array): void => {
+      ExpoFunction.ownedTyped2(dbType, bufferType, (value: NativeSession, db: NativeDatabase, changeset: ArrayBuffer): void => {
         this.complete(sqlite.applyChangesetSync(value.handle, db.handle, changeset));
       }),
     );
     session.asyncFunction(
       'applyChangesetAsync',
-      ExpoFunction.ownedTyped2(dbType, bytesType, async (value: NativeSession, db: NativeDatabase, changeset: Uint8Array): Promise<void> => {
+      ExpoFunction.ownedTyped2(dbType, bufferType, async (value: NativeSession, db: NativeDatabase, changeset: ArrayBuffer): Promise<void> => {
         this.complete(await sqlite.applyChangesetAsync(value.handle, db.handle, changeset));
       }),
     );
     session.syncFunction(
       'invertChangesetSync',
-      ExpoFunction.ownedTyped2(dbType, bytesType, (value: NativeSession, db: NativeDatabase, changeset: Uint8Array): ESObject => {
+      ExpoFunction.ownedTyped2(dbType, bufferType, (value: NativeSession, db: NativeDatabase, changeset: ArrayBuffer): ESObject => {
         return this.complete(sqlite.invertChangesetSync(value.handle, db.handle, changeset));
       }),
     );
     session.asyncFunction(
       'invertChangesetAsync',
-      ExpoFunction.ownedTyped2(dbType, bytesType, async (value: NativeSession, db: NativeDatabase, changeset: Uint8Array): Promise<ESObject> => {
+      ExpoFunction.ownedTyped2(dbType, bufferType, async (value: NativeSession, db: NativeDatabase, changeset: ArrayBuffer): Promise<ESObject> => {
         return this.complete(await sqlite.invertChangesetAsync(value.handle, db.handle, changeset));
       }),
     );
@@ -436,6 +439,13 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
       throw new ExpoModuleError('E_SQLITE_OPEN_DATABASE', 'Database module is destroyed.');
     }
 
+    const localFile = bytes == null && file !== MEMORY_DATABASE && (!sqlite.useLibSQL || !options.libSQLRemoteOnly)
+      ? fileIdentity(file)
+      : null;
+    if (localFile !== null && this.importing.has(localFile)) {
+      throw new ExpoModuleError('E_SQLITE_OPEN_DATABASE', `Cannot open a database while importing it: ${path}`);
+    }
+
     if (bytes == null) {
       for (const db of this.databases) {
         if (db.matches(path, options)) {
@@ -448,7 +458,7 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
       if (!sqlite.useLibSQL || !options.libSQLRemoteOnly) this.ensurePathSync(file);
     }
 
-    const db = new NativeDatabase(context, this, path, file, options, bytes);
+    const db = new NativeDatabase(context, this, path, file, localFile, options, bytes);
     this.observeDatabase(db);
     this.databases.push(db);
 
@@ -493,40 +503,41 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
     }
   }
 
-  private assertDeletable(path: string): void {
-    if (this.databases.some((db: NativeDatabase): boolean => db.isCached && db.path === path)) {
-      throw new ExpoModuleError('E_SQLITE_DELETE_DATABASE', `Cannot delete an open database: ${path}`);
+  private assertFileIdle(path: string, identity: string, errorCode: string): void {
+    if (this.importing.has(identity)) {
+      throw new ExpoModuleError(errorCode, `Database import is in progress: ${path}`);
+    }
+    // Connections remain here through an async close and after a failed close.
+    if (this.databases.some((db: NativeDatabase): boolean => db.localFile === identity)) {
+      throw new ExpoModuleError(errorCode, `Database is open: ${path}`);
     }
   }
 
   private deleteDatabaseSync(source: string): void {
-    this.assertDeletable(source);
-
     const path = localPath(source);
     if (path === MEMORY_DATABASE) return;
 
     this.ensurePathSync(path);
-    if (!fs.accessSync(path)) throw new ExpoModuleError('E_SQLITE_DELETE_DATABASE', `Database ${path} not found`);
-
-    try {
-      fs.unlinkSync(path);
-    } catch (_) {
-      throw new ExpoModuleError('E_SQLITE_DELETE_DATABASE', `Unable to delete the database file for ${path}`);
-    }
+    this.unlinkDatabase(path);
   }
 
   private async deleteDatabaseAsync(source: string): Promise<void> {
-    this.assertDeletable(source);
-
     const path = localPath(source);
     if (path === MEMORY_DATABASE) return;
 
     await this.ensurePathAsync(path);
-    if (!(await fs.access(path))) throw new ExpoModuleError('E_SQLITE_DELETE_DATABASE', `Database ${path} not found`);
+    this.unlinkDatabase(path);
+  }
 
+  private unlinkDatabase(path: string): void {
+    // Keep the open check and unlink in the same JS turn.
+    this.assertFileIdle(path, fileIdentity(path), 'E_SQLITE_DELETE_DATABASE');
     try {
-      await fs.unlink(path);
-    } catch (_) {
+      fs.unlinkSync(path);
+    } catch (error) {
+      if ((error as BusinessError).code === FILE_NOT_FOUND) {
+        throw new ExpoModuleError('E_SQLITE_DELETE_DATABASE', `Database ${path} not found`);
+      }
       throw new ExpoModuleError('E_SQLITE_DELETE_DATABASE', `Unable to delete the database file for ${path}`);
     }
   }
@@ -536,11 +547,53 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
       throw new ExpoModuleError('E_SQLITE_INVALID_PATH', 'Asset import requires file-backed database paths.');
     }
 
-    await this.ensurePathAsync(path);
-    if (!overwrite && (await fs.access(path))) return;
-    if (!(await fs.access(asset))) throw new ExpoModuleError('E_SQLITE_DELETE_DATABASE', `Database ${asset} not found`);
+    if (!overwrite && databaseFileExists(path)) return;
 
-    await fs.copyFile(asset, path);
+    const identity = fileIdentity(path);
+    this.assertFileIdle(path, identity, 'E_SQLITE_OPEN_DATABASE');
+
+    this.importing.add(identity);
+
+    let directory: string | null = null;
+    let temp: string | null = null;
+
+    try {
+      await this.ensurePathAsync(path);
+
+      let regular: boolean;
+      try {
+        regular = (await fs.stat(asset)).isFile();
+      } catch (error) {
+        throw new ExpoModuleError('E_SQLITE_OPEN_DATABASE', (error as BusinessError).message);
+      }
+      if (!regular) {
+        throw new ExpoModuleError('E_SQLITE_OPEN_DATABASE', `Asset database is not a regular file: ${asset}`);
+      }
+
+      directory = await fs.mkdtemp(`${parentDirectory(path)}/.expo-sqlite-`);
+      temp = `${directory}/database`;
+      assertStandaloneDatabaseFile(asset);
+
+      await fs.copyFile(asset, temp);
+
+      // Publish only after a complete copy. Check again for files created
+      // by another module while copying.
+      if (overwrite || !databaseFileExists(path)) {
+        assertStandaloneDatabaseFile(asset);
+        assertStandaloneDatabaseFile(path);
+
+        fs.renameSync(temp, path);
+        temp = null;
+      }
+    } finally {
+      if (temp !== null) {
+        try { fs.unlinkSync(temp); } catch (_) {}
+      }
+      if (directory !== null) {
+        try { fs.rmdirSync(directory); } catch (_) {}
+      }
+      this.importing.delete(identity);
+    }
   }
 
   private observeDatabase(db: NativeDatabase): void {
@@ -577,4 +630,39 @@ function localPath(path: string): string {
 function parentDirectory(path: string): string {
   const slash = path.lastIndexOf('/');
   return slash < 0 ? '.' : path.substring(0, slash) || '/';
+}
+
+function fileIdentity(path: string): string {
+  const absolute = path.startsWith('/');
+  const segments: string[] = [];
+  for (const part of path.split('/')) {
+    if (!part.length || part === '.') continue;
+    if (part === '..' && segments.length && segments[segments.length - 1] !== '..') {
+      segments.pop();
+    } else if (part !== '..' || !absolute) {
+      segments.push(part);
+    }
+  }
+
+  return (absolute ? '/' : '') + segments.join('/');
+}
+
+function databaseFileExists(path: string): boolean {
+  try {
+    return fs.accessSync(path);
+  } catch (error) {
+    const failure = error as BusinessError;
+    if (failure.code === FILE_NOT_FOUND) return false;
+    throw new ExpoModuleError('E_SQLITE_OPEN_DATABASE', failure.message);
+  }
+}
+
+function assertStandaloneDatabaseFile(path: string): void {
+  // A journal belongs to the original main file. Copying only the asset's
+  // main file or leaving a destination journal in place can replay stale pages.
+  for (const suffix of ['-journal', '-wal']) {
+    if (databaseFileExists(path + suffix)) {
+      throw new ExpoModuleError('E_SQLITE_OPEN_DATABASE', `Cannot import a database while its recovery file exists: ${path}${suffix}`);
+    }
+  }
 }

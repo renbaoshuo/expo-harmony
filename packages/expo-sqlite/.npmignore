@@ -10,10 +10,13 @@ harmony/library/.hvigor/
 harmony/library/.cxx/
 harmony/library/build/
 harmony/library/oh-package-lock.json5
+scripts/*.cjs
 scripts/__pycache__/
 !harmony/library.har
 harmony/library/BuildProfile.ets
+harmony/library/CHANGELOG.md
 harmony/library/LICENSE
+harmony/library/README.md
 third-party/
 patches/
 !harmony/generated/

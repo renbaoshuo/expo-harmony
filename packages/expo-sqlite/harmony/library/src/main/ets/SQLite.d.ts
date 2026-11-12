@@ -50,8 +50,8 @@ declare module 'libexpo_sqlite.so' {
     loadExtensionAsync(database: Object, path: string, entry: string | null): Promise<NativeResult>;
     backupSync(destination: Object, destinationSchema: string, source: Object, sourceSchema: string): NativeResult;
     backupAsync(destination: Object, destinationSchema: string, source: Object, sourceSchema: string): Promise<NativeResult>;
-    runSync(statement: Object, database: Object, params: Record<string, BindValue>, blobs: Record<string, Uint8Array>, array: boolean): NativeResult;
-    runAsync(statement: Object, database: Object, params: Record<string, BindValue>, blobs: Record<string, Uint8Array>, array: boolean): Promise<NativeResult>;
+    runSync(statement: Object, database: Object, params: Record<string, BindValue>, blobs: Record<string, ArrayBuffer>, array: boolean): NativeResult;
+    runAsync(statement: Object, database: Object, params: Record<string, BindValue>, blobs: Record<string, ArrayBuffer>, array: boolean): Promise<NativeResult>;
     stepSync(statement: Object, database: Object): NativeResult;
     stepAsync(statement: Object, database: Object): Promise<NativeResult>;
     getAllSync(statement: Object, database: Object): NativeResult;
@@ -72,10 +72,10 @@ declare module 'libexpo_sqlite.so' {
     createChangesetAsync(session: Object, database: Object): Promise<NativeResult>;
     createInvertedChangesetSync(session: Object, database: Object): NativeResult;
     createInvertedChangesetAsync(session: Object, database: Object): Promise<NativeResult>;
-    applyChangesetSync(session: Object, database: Object, changeset: Uint8Array): NativeResult;
-    applyChangesetAsync(session: Object, database: Object, changeset: Uint8Array): Promise<NativeResult>;
-    invertChangesetSync(session: Object, database: Object, changeset: Uint8Array): NativeResult;
-    invertChangesetAsync(session: Object, database: Object, changeset: Uint8Array): Promise<NativeResult>;
+    applyChangesetSync(session: Object, database: Object, changeset: ArrayBuffer): NativeResult;
+    applyChangesetAsync(session: Object, database: Object, changeset: ArrayBuffer): Promise<NativeResult>;
+    invertChangesetSync(session: Object, database: Object, changeset: ArrayBuffer): NativeResult;
+    invertChangesetAsync(session: Object, database: Object, changeset: ArrayBuffer): Promise<NativeResult>;
   };
   export default sqlite;
 }

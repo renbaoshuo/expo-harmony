@@ -16,17 +16,19 @@ export interface SQLiteHost {
 
 export class NativeDatabase extends ExpoSharedObject {
   readonly path: string;
+  readonly localFile: string | null;
   readonly options: OpenOptions;
   readonly host: SQLiteHost;
   private readonly native: Object;
   private refs: number = 1;
   private closed: boolean = false;
 
-  constructor(context: ExpoModuleContext, host: SQLiteHost, path: string, file: string, options: OpenOptions, data?: Uint8Array | null) {
+  constructor(context: ExpoModuleContext, host: SQLiteHost, path: string, file: string, localFile: string | null, options: OpenOptions, data?: Uint8Array | null) {
     super(context);
 
     this.host = host;
     this.path = path;
+    this.localFile = localFile;
     this.options = options;
 
     this.native = host.complete(sqlite.open(file, options, data ?? null)) as Object;
@@ -59,10 +61,6 @@ export class NativeDatabase extends ExpoSharedObject {
 
   observe(listening: boolean, callback: (event: DatabaseChangeEvent) => void): void {
     if (!this.closed) sqlite.observe(this.native, callback, listening);
-  }
-
-  get isCached(): boolean {
-    return this.refs > 0;
   }
 
   closeSync(): void {
