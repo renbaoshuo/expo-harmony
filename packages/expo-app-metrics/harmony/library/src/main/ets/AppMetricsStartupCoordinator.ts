@@ -20,6 +20,7 @@ import {
   processStartTimestampMs,
   shouldRecordBundleLoad,
 } from './AppMetricsSemantics.ts';
+import { mergeAttributes } from './AppMetricsLogging.ts';
 
 export interface StartupMetricsStorage {
   createSessionId(): string;
@@ -30,7 +31,6 @@ export interface StartupMetricsStorage {
     metadata: Promise<AppMetadata>
   ): Promise<void>;
 }
-
 export interface StartupFrameRecorder {
   start(): boolean;
   stop(): FrameMetricsRecord;
@@ -101,7 +101,7 @@ export class StartupCoordinator {
   private readonly storage: StartupMetricsStorage;
   private readonly frameRecorder: StartupFrameRecorder;
   private readonly processClock: ProcessClock;
-  private readonly metadata: () => Promise<AppMetadata>;
+  private readonly metadata: Promise<AppMetadata>;
   private readonly now: () => number | undefined;
   private readonly warn: (message: string) => void;
   private readonly metrics: Metric[] = [];
@@ -109,6 +109,7 @@ export class StartupCoordinator {
   private readonly foregroundClients: Set<number> = new Set<number>();
   private nextClientId: number = 1;
   private launchMs?: number;
+  private launchTimestamp?: number;
   private finalFrames: FrameMetricsRecord = new FrameMetricsRecord();
   private bundleRecorded: boolean = false;
   private renderRecorded: boolean = false;
@@ -116,19 +117,23 @@ export class StartupCoordinator {
   private foregroundSeen: boolean = false;
   private interrupted: boolean = false;
   private shutdown: boolean = false;
-  private savedCount: number = -1;
-  private savedClockRevision: number = -1;
-  private saveRequested: boolean = false;
-  private saving: boolean = false;
+  private scheduledCount: number = -1;
+  private scheduledClockRevision: number = -1;
 
   constructor(options: StartupCoordinatorOptions) {
     this.storage = options.storage;
     this.frameRecorder = options.frameRecorder;
     this.processClock = options.processClock;
-    this.metadata = options.metadata;
+    this.metadata = options.metadata();
     this.now = options.now;
     this.warn = options.warn;
     this.appSessionId = this.storage.createSessionId();
+    // SDK 57 creates the per-launch main session eagerly, even without a TTI mark.
+    this.saveStartupMetricsIfNeeded();
+  }
+
+  getAppSessionStartTimestamp(): string {
+    return this.processClock.getTimestamp();
   }
 
   retain(): number {
@@ -169,6 +174,7 @@ export class StartupCoordinator {
 
     this.foregroundSeen = true;
     this.launchMs = ageMs;
+    this.launchTimestamp = Date.now();
     this.ensureFrameRecorderStarted();
     if (timestampChanged) this.saveStartupMetricsIfNeeded();
   }
@@ -179,7 +185,7 @@ export class StartupCoordinator {
     this.foregroundClients.delete(id);
     if (this.foregroundClients.size > 0) return;
 
-    this.requestStartupMetricsSave();
+    this.saveStartupMetricsIfNeeded();
     if (this.interactiveRecorded || this.interrupted) return;
 
     this.interrupted = true;
@@ -219,13 +225,17 @@ export class StartupCoordinator {
     this.addStartupMetric(FIRST_RENDER_METRIC, value);
   }
 
-  markInteractive(attributes: StartupMetricAttributes): void {
+  markInteractive(
+    attributes: StartupMetricAttributes,
+    readSystemParams?: (start: number, end: number) => Record<string, ESObject>,
+  ): void {
     if (this.interrupted || this.interactiveRecorded) return;
 
     this.ensureFrameRecorderStarted();
 
     const launchMs = this.launchMs;
-    if (launchMs === undefined) return;
+    const launchTimestamp = this.launchTimestamp;
+    if (launchMs === undefined || launchTimestamp === undefined) return;
 
     const nowMs = this.now();
     if (nowMs === undefined) return;
@@ -233,14 +243,16 @@ export class StartupCoordinator {
     const value = elapsedSeconds(launchMs, nowMs);
     if (value === undefined) return;
 
+    const markedAt = Date.now();
+
     this.interactiveRecorded = true;
     this.finalFrames = this.frameRecorder.stop();
 
     const frames = frameRateMetricParams(this.finalFrames);
-    const params = mergeMetricParams(attributes.params, frames);
+    const system = readSystemParams?.(launchTimestamp, markedAt);
+    const params = mergeAttributes(mergeAttributes(attributes.params, system), frames);
 
-    this.addStartupMetric(INTERACTIVE_METRIC, value, attributes.routeName, params);
-    this.requestStartupMetricsSave();
+    this.addStartupMetric(INTERACTIVE_METRIC, value, attributes.routeName, Object.keys(params).length > 0 ? params : undefined);
   }
 
   getAppStartupTimes(): Record<string, number> {
@@ -282,7 +294,7 @@ export class StartupCoordinator {
       this.interrupted = true;
       this.finalFrames = this.frameRecorder.stop();
     }
-    this.requestStartupMetricsSave();
+    this.saveStartupMetricsIfNeeded();
 
     return true;
   }
@@ -311,55 +323,29 @@ export class StartupCoordinator {
       routeName,
       params
     ));
-  }
-
-  private requestStartupMetricsSave(): void {
-    this.saveRequested = true;
-
     this.saveStartupMetricsIfNeeded();
   }
 
   private saveStartupMetricsIfNeeded(): void {
-    if (!this.saveRequested || this.saving) return;
-
+    const count = this.metrics.length;
     const revision = this.processClock.getRevision();
-    if (this.savedCount === this.metrics.length && this.savedClockRevision === revision) return;
+    if (this.scheduledCount === count && this.scheduledClockRevision === revision) return;
+    this.scheduledCount = count;
+    this.scheduledClockRevision = revision;
 
-    const metrics = this.metrics.slice();
-    const timestamp = this.processClock.getTimestamp();
-
-    this.saving = true;
-
+    // Storage serializes transactions. Enqueue here so callers reading the
+    // session immediately after a mark also wait for that mark to be stored.
     this.storage.scheduleStartupSession(
       this.appSessionId,
-      timestamp,
-      metrics,
-      this.metadata()
-    ).then((): void => {
-      this.savedCount = metrics.length;
-      this.savedClockRevision = revision;
-      this.saving = false;
-
-      this.saveStartupMetricsIfNeeded();
-    }).catch((error: unknown): void => {
-      this.saving = false;
+      this.processClock.getTimestamp(),
+      this.metrics.slice(),
+      this.metadata
+    ).catch((error: unknown): void => {
+      if (this.scheduledCount === count && this.scheduledClockRevision === revision) {
+        this.scheduledCount = -1;
+        this.scheduledClockRevision = -1;
+      }
       this.warn(`Unable to save Expo App Metrics startup data: ${String(error)}`);
     });
   }
-}
-
-function mergeMetricParams(
-  params: Record<string, ESObject> | undefined,
-  frames: Record<string, number>
-): Record<string, ESObject> | undefined {
-  if (params === undefined && Object.keys(frames).length === 0) return undefined;
-
-  const json = params === undefined ? '{}' : JSON.stringify(params);
-  const result: Record<string, ESObject> = JSON.parse(json) as Record<string, ESObject>;
-
-  Object.keys(frames).forEach((key: string): void => {
-    result[key] = frames[key];
-  });
-
-  return result;
 }

@@ -9,6 +9,7 @@
   "module": {
     "name": "expo_app_metrics",
     "type": "har",
-    "deviceTypes": ["default", "tablet", "2in1"]
+    "deviceTypes": ["default", "tablet", "2in1"],
+    "requestPermissions": [{ "name": "ohos.permission.GET_NETWORK_INFO" }]
   }
 }

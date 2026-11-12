@@ -34,14 +34,6 @@ export function elapsedSeconds(startMs: number, endMs: number): number | undefin
   return Number.isFinite(duration) && duration >= 0 ? duration / 1000 : undefined;
 }
 
-export function processUptimeMilliseconds(seconds: number): number | undefined {
-  if (!Number.isFinite(seconds) || seconds < 0) return undefined;
-
-  const ms = seconds * 1000;
-
-  return Number.isFinite(ms) ? ms : undefined;
-}
-
 export function processAgeMilliseconds(
   systemUptimeMs: number,
   processStartRealtimeMs: number
@@ -89,7 +81,8 @@ export function frameIntervalMilliseconds(
 
   let actualMs = (timestampNs - previousTimestampNs) / 1_000_000;
   const previousExpectedMs = (previousTargetTimestampNs - previousTimestampNs) / 1_000_000;
-  const expectedMs = (targetTimestampNs - previousTargetTimestampNs) / 1_000_000;
+  const expectedMs = (targetTimestampNs - timestampNs) / 1_000_000;
+
   if (
     !Number.isFinite(actualMs)
     || !Number.isFinite(expectedMs)
@@ -156,9 +149,9 @@ export function frameRateMetricParams(record: FrameMetricsRecord): Record<string
   if (record.expectedFrames === 0) return {};
 
   return {
-    'frameRate.slowFrames': record.slowFrames,
-    'frameRate.frozenFrames': record.frozenFrames,
-    'frameRate.totalDelay': record.freezeTimeMs / 1000,
+    'expo.frameRate.slowFrames': record.slowFrames,
+    'expo.frameRate.frozenFrames': record.frozenFrames,
+    'expo.frameRate.totalDelay': record.freezeTimeMs / 1000,
   };
 }
 

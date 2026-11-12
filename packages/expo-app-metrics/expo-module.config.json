@@ -11,6 +11,9 @@
     ],
     "abilityLifecycleSubscribers": [
       "ExpoAppMetricsAbilityLifecycleSubscriber"
+    ],
+    "runtimeBindings": [
+      "ExpoAppMetricsNetworkBinding"
     ]
   }
 }

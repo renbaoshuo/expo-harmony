@@ -5,15 +5,19 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { Metric, Session, SessionWithMetrics } from './AppMetricsModels.ts';
+import { LogRecord, Metric, Session, SessionWithMetrics } from './AppMetricsModels.ts';
+import { CrashReport, decodeCrashReport } from './AppMetricsCrashReport.ts';
 
 const OPTIONAL_SESSION_FIELDS: string[] = [
+  'type',
+  'endTimestamp',
   'environment',
   'appName',
   'appIdentifier',
   'appVersion',
   'appBuildNumber',
   'appUpdateId',
+  'appUpdateRuntimeVersion',
   'appEasBuildId',
   'deviceOs',
   'deviceOsVersion',
@@ -57,11 +61,15 @@ export function decodeEntry(value: ESObject): DecodedEntryResult | undefined {
 
   const session = new Session(id, timestamp, optionalString(sessionInput['environment']));
   session.isActive = active;
+  session.type = optionalString(sessionInput['type']) ?? 'unknown';
+  session.endTimestamp = optionalString(sessionInput['endTimestamp']);
   session.appName = optionalString(sessionInput['appName']);
   session.appIdentifier = optionalString(sessionInput['appIdentifier']);
   session.appVersion = optionalString(sessionInput['appVersion']);
   session.appBuildNumber = optionalString(sessionInput['appBuildNumber']);
   session.appUpdateId = optionalString(sessionInput['appUpdateId']);
+  session.appUpdateRuntimeVersion = optionalString(sessionInput['appUpdateRuntimeVersion']);
+  session.appUpdateRequestHeaders = decodeRequestHeaders(sessionInput['appUpdateRequestHeaders']);
   session.appEasBuildId = optionalString(sessionInput['appEasBuildId']);
   session.deviceOs = optionalString(sessionInput['deviceOs']);
   session.deviceOsVersion = optionalString(sessionInput['deviceOsVersion']);
@@ -87,18 +95,32 @@ export function decodeEntry(value: ESObject): DecodedEntryResult | undefined {
     metrics.push(metric);
   });
 
-  return new DecodedEntryResult(new SessionWithMetrics(session, metrics), discarded);
+  const entry = new SessionWithMetrics(session, metrics);
+  const logsInput: ESObject = input['logs'] as ESObject;
+  if (Array.isArray(logsInput)) {
+    (logsInput as ESObject[]).forEach((raw: ESObject): void => {
+      const log = decodeLogRecord(raw);
+      if (log !== undefined) entry.logs.push(log);
+      else discarded = true;
+    });
+  }
+
+  return new DecodedEntryResult(entry, discarded);
 }
 
 export function copyEntry(entry: SessionWithMetrics): SessionWithMetrics {
   const source = entry.session;
   const session = new Session(source.id, source.startTimestamp, source.environment);
   session.isActive = source.isActive;
+  session.type = source.type;
+  session.endTimestamp = source.endTimestamp;
   session.appName = source.appName;
   session.appIdentifier = source.appIdentifier;
   session.appVersion = source.appVersion;
   session.appBuildNumber = source.appBuildNumber;
   session.appUpdateId = source.appUpdateId;
+  session.appUpdateRuntimeVersion = source.appUpdateRuntimeVersion;
+  session.appUpdateRequestHeaders = decodeRequestHeaders(source.appUpdateRequestHeaders);
   session.appEasBuildId = source.appEasBuildId;
   session.deviceOs = source.deviceOs;
   session.deviceOsVersion = source.deviceOsVersion;
@@ -109,23 +131,23 @@ export function copyEntry(entry: SessionWithMetrics): SessionWithMetrics {
   session.clientVersion = source.clientVersion;
   session.languageTag = source.languageTag;
 
-  const metrics = entry.metrics.map((item: Metric): Metric => {
-    const metric = new Metric(
-      item.metricId,
-      item.sessionId,
-      item.timestamp,
-      item.category,
-      item.name,
-      item.value,
-      item.routeName,
-      copyParams(item.params)
-    );
-    metric.updateId = item.updateId;
+  const copy = new SessionWithMetrics(session, entry.metrics.map(copyMetric));
+  copy.logs = entry.logs.map((log: LogRecord): LogRecord => copyLogRecord(log));
 
-    return metric;
-  });
+  return copy;
+}
 
-  return new SessionWithMetrics(session, metrics);
+function decodeRequestHeaders(value: ESObject): Record<string, string> | undefined {
+  const input = asRecord(value);
+  if (input === undefined || Object.keys(input).some((key: string): boolean => typeof input[key] !== 'string')) return undefined;
+  return JSON.parse(JSON.stringify(input)) as Record<string, string>;
+}
+
+export function copyMetric(item: Metric): Metric {
+  const metric = new Metric(item.metricId, item.sessionId, item.timestamp, item.category, item.name,
+    item.value, item.routeName, copyParams(item.params));
+  metric.updateId = item.updateId;
+  return metric;
 }
 
 function decodeMetric(value: ESObject, sessionId: string): Metric | undefined {
@@ -204,4 +226,54 @@ function optionalString(value: ESObject): string | undefined {
 
 function isOptionalString(value: ESObject): boolean {
   return value === undefined || value === null || typeof value === 'string';
+}
+
+export function copyLogRecord(source: LogRecord): LogRecord {
+  const copy = new LogRecord(source.timestamp, source.name, source.severity, source.body, copyParams(source.attributes));
+  copy.recordId = source.recordId;
+  copy.droppedAttributesCount = source.droppedAttributesCount;
+  return copy;
+}
+
+export function decodeLogRecord(value: ESObject): LogRecord | undefined {
+  const input = asRecord(value);
+  if (input === undefined) return undefined;
+
+  const timestamp = requiredNonEmptyString(input['timestamp']);
+  const name = requiredNonEmptyString(input['name']);
+  const severity = requiredNonEmptyString(input['severity']);
+  if (timestamp === undefined || !Number.isFinite(Date.parse(timestamp)) || name === undefined || severity === undefined
+    || !['trace', 'debug', 'info', 'warn', 'error', 'fatal'].includes(severity)
+    || !isOptionalString(input['body']) || !isOptionalRecord(input['attributes'])) return undefined;
+
+  const log = new LogRecord(timestamp, name, severity, optionalString(input['body']), optionalRecord(input['attributes']));
+  log.recordId = optionalString(input['recordId']);
+  const count: ESObject = input['droppedAttributesCount'] as ESObject;
+  if (typeof count === 'number' && Number.isSafeInteger(count) && count >= 0) log.droppedAttributesCount = count;
+
+  return log;
+}
+
+export class MetricsStoragePayload {
+  sessions: ESObject[];
+  crashReports: CrashReport[];
+  constructor(sessions: ESObject[], crashReports: CrashReport[]) {
+    this.sessions = sessions;
+    this.crashReports = crashReports;
+  }
+}
+
+export function decodeStoredMetricsPayload(value: ESObject): MetricsStoragePayload | undefined {
+  // Upgrade the SDK 55 sessions-only record in place without discarding history.
+  if (Array.isArray(value)) return new MetricsStoragePayload(value as ESObject[], []);
+  const input = asRecord(value);
+  if (input === undefined || !Array.isArray(input['sessions']) || !Array.isArray(input['crashReports'])) return undefined;
+
+  const reports: CrashReport[] = [];
+  (input['crashReports'] as ESObject[]).forEach((raw: ESObject): void => {
+    const report = decodeCrashReport(raw);
+    if (report !== undefined && !reports.some((stored: CrashReport): boolean => stored.eventId === report.eventId)) reports.push(report);
+  });
+
+  return new MetricsStoragePayload(input['sessions'] as ESObject[], reports);
 }
