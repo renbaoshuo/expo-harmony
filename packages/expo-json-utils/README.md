@@ -2,114 +2,87 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-json-utils)
 
-为 HarmonyOS 原生 Expo 包提供 JSON 字段读取工具，与官方同版本的 `expo-json-utils` 配套使用。工具按字段类型读取 JSON 对象中的值，区分必填和可空两种情况。
+为 HarmonyOS 上的 React Native 应用提供 Expo JSON Utils 的原生实现，与官方同版本的 `expo-json-utils` 配套使用。
 
 ## 安装
+
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
 
 ```bash
 npm install @expo-harmony/expo-json-utils
 ```
 
-本包适配 Expo SDK 55 的 `expo-json-utils`，最低支持 HarmonyOS 5.0.1（API 13），宿主应用的 `compatibleSdkVersion` 不能低于这个版本。包内没有 React Native JavaScript 接口，JavaScript 侧导入得到 `null`，读取工具从原生 HAR 导入。
-
-原生模块在自己的 `oh-package.json5` 中声明依赖：
-
-```json
-{
-  "dependencies": {
-    "@expo-harmony/expo-json-utils": "55.0.2-harmony.0"
-  }
-}
-```
-
-原生 ArkTS 从 HAR 导入工具：
-
-```ts
-import { JSONObject, JSONObjectUtils } from '@expo-harmony/expo-json-utils';
-
-const data = JSON.parse('{"name":"HarmonyOS","enabled":"TRUE"}') as JSONObject;
-const name = JSONObjectUtils.requireString(data, 'name');
-const enabled = JSONObjectUtils.requireBoolean(data, 'enabled');
-const extra = JSONObjectUtils.getNullableObject(data, 'extra');
-```
-
 ## API 对照表
 
-### Classes
+### Methods
 
-#### `JSONObjectUtils`
+#### `JSONObjectUtils.hasValue(json, key)`
 
-按字段类型提供六组读取方法，每组有必填和可空两个版本。必填版本在字段缺失或类型无法转换时抛出 `JSONUtilsError`，可空版本只在字段缺失时返回 `null`，字段存在但类型不对时同样抛出错误。
+接收 JSON 对象 `json` 和字段名 `key`，返回 `boolean`。只检查对象自身的字段；字段值为 `null` 或 `undefined` 时仍返回 `true`。
 
-##### `JSONObjectUtils.hasValue(json, key)`
+#### `JSONObjectUtils.require(json, key)`
 
-返回 `boolean`，字段是否存在。字段值为 `null` 时同样返回 `true`。
+接收 JSON 对象 `json` 和字段名 `key`，返回对应的 `JSONValue`。字段不存在时抛出 `JSONUtilsError`；字段值为 `undefined` 时返回 `undefined`。
 
-##### `JSONObjectUtils.require(json, key)`
+#### `JSONObjectUtils.getNullable(json, key)`
 
-返回字段值本身。字段缺失时抛出 `JSONUtilsError`。
+接收 JSON 对象 `json` 和字段名 `key`，返回对应的 `JSONValue`。字段不存在时返回 `null`；字段存在且值为 `undefined` 时返回 `undefined`。
 
-##### `JSONObjectUtils.getNullable(json, key)`
+#### `JSONObjectUtils.requireString(json, key)`
 
-返回字段值本身，字段缺失时返回 `null`。
+接收 JSON 对象 `json` 和字段名 `key`，返回 `string`。字符串原样返回；`null` 转为 `"null"`；布尔值和有限数值转为文本；数组和普通对象序列化为 JSON 文本。其他值或无法序列化的数组、对象会抛出 `JSONUtilsError`。
 
-##### `JSONObjectUtils.requireString(json, key)`
+#### `JSONObjectUtils.getNullableString(json, key)`
 
-返回 `string`。字符串原样返回，`null` 转成 `"null"`，布尔值和有限数值转成文本，数组和对象序列化为 JSON 文本，其余类型抛出 `JSONUtilsError`。
+接收 JSON 对象 `json` 和字段名 `key`，返回 `string | null`。字段不存在时返回 `null`；字段存在时按 `requireString()` 的规则转换。
 
-##### `JSONObjectUtils.getNullableString(json, key)`
+#### `JSONObjectUtils.requireNumber(json, key)`
 
-返回 `string | null`，转换规则与 `requireString()` 相同。
+接收 JSON 对象 `json` 和字段名 `key`，返回 `number`。数值原样返回，包括 `NaN` 和正负无穷。字符串去除首尾空白后，可包含十进制数、指数、`NaN` 或 `Infinity`，并可带正负号；十进制数字末尾也可带 `f`、`F`、`d` 或 `D`。其他字符串和值会抛出 `JSONUtilsError`。数值超过 JavaScript 安全整数范围时可能丢失精度。
 
-##### `JSONObjectUtils.requireNumber(json, key)`
+#### `JSONObjectUtils.getNullableNumber(json, key)`
 
-返回 `number`。数值原样返回，包括 `NaN` 和正负无穷。字符串去掉首尾空白后要能解析为十进制数字（可含小数点和指数）、`NaN` 或 `Infinity`，均可带正负号，十进制数字末尾允许 `f`、`F`、`d`、`D`，其余情况抛出 `JSONUtilsError`。
+接收 JSON 对象 `json` 和字段名 `key`，返回 `number | null`。字段不存在时返回 `null`；字段存在时按 `requireNumber()` 的规则转换。
 
-数值都用 `number` 表示，没有整数类型的截断和溢出行为，也不支持十六进制浮点格式的字符串。超出 JavaScript 安全整数范围的值可能丢失精度，需要保留原文时改用字符串。
+#### `JSONObjectUtils.requireBoolean(json, key)`
 
-##### `JSONObjectUtils.getNullableNumber(json, key)`
+接收 JSON 对象 `json` 和字段名 `key`，返回 `boolean`。布尔值原样返回；忽略大小写的字符串 `"true"` 和 `"false"` 分别转为 `true` 和 `false`。其他字符串和值会抛出 `JSONUtilsError`。
 
-返回 `number | null`，转换规则与 `requireNumber()` 相同。
+#### `JSONObjectUtils.getNullableBoolean(json, key)`
 
-##### `JSONObjectUtils.requireBoolean(json, key)`
+接收 JSON 对象 `json` 和字段名 `key`，返回 `boolean | null`。字段不存在时返回 `null`；字段存在时按 `requireBoolean()` 的规则转换。
 
-返回 `boolean`。布尔值原样返回，字符串 `"true"` 和 `"false"` 忽略大小写后转换，其余类型抛出 `JSONUtilsError`。
+#### `JSONObjectUtils.requireArray(json, key)`
 
-##### `JSONObjectUtils.getNullableBoolean(json, key)`
+接收 JSON 对象 `json` 和字段名 `key`，返回 `JSONValue[]`。字段值不是数组时抛出 `JSONUtilsError`。
 
-返回 `boolean | null`，转换规则与 `requireBoolean()` 相同。
+#### `JSONObjectUtils.getNullableArray(json, key)`
 
-##### `JSONObjectUtils.requireArray(json, key)`
+接收 JSON 对象 `json` 和字段名 `key`，返回 `JSONValue[] | null`。字段不存在时返回 `null`；字段存在但不是数组时抛出 `JSONUtilsError`。
 
-返回 `JSONValue[]`，不复制内容，直接返回原有引用。字段不是数组时抛出 `JSONUtilsError`。
+#### `JSONObjectUtils.requireObject(json, key)`
 
-##### `JSONObjectUtils.getNullableArray(json, key)`
+接收 JSON 对象 `json` 和字段名 `key`，返回 `JSONObject`。字段值不是普通对象时抛出 `JSONUtilsError`；数组和 `null` 不视为普通对象。
 
-返回 `JSONValue[] | null`。
+#### `JSONObjectUtils.getNullableObject(json, key)`
 
-##### `JSONObjectUtils.requireObject(json, key)`
-
-返回 `JSONObject`，不复制内容，直接返回原有引用。字段不是 JSON 对象时抛出 `JSONUtilsError`。
-
-##### `JSONObjectUtils.getNullableObject(json, key)`
-
-返回 `JSONObject | null`。
-
-#### `JSONUtilsError`
-
-读取失败时抛出的错误，继承自 `Error`，`name` 为 `'JSONUtilsError'`。
+接收 JSON 对象 `json` 和字段名 `key`，返回 `JSONObject | null`。字段不存在时返回 `null`；字段存在但不是普通对象时抛出 `JSONUtilsError`。
 
 ### Types
 
 #### `JSONValue`
 
-`Object | null | undefined`。
+`Object | null | undefined`，表示字段可读取的 JSON 值；字段值为 `undefined` 时仍视为已设置。
 
 #### `JSONObject`
 
-`Record<string, JSONValue>`。
+`Record<string, JSONValue>`，以字符串字段名映射到 JSON 值的对象。
 
-容器里存放的值应当是 JSON 数据。访问器、自定义 `toJSON`、类实例、稀疏数组和循环引用都不支持，用作字符串序列化时会抛出 `JSONUtilsError`。序列化遵循 ECMAScript 的数字格式、键顺序和字符转义，输出文本可能与 Android 不同，不要依赖它跨平台逐字一致或用于签名。字段显式取 `undefined` 时仍视为存在，`require()` 和 `getNullable()` 原样返回 `undefined`，带类型的读取抛出错误。
+#### `JSONUtilsError`
+
+继承自 `Error`，读取失败时抛出，`name` 为 `'JSONUtilsError'`。
 
 ## Author
 

@@ -21,11 +21,16 @@ export class JSONObjectUtils {
   }
 
   static require(json: JSONObject, key: string): JSONValue {
-    if (!JSONObjectUtils.hasValue(json, key)) {
+    const field = Object.getOwnPropertyDescriptor(json, key);
+
+    if (field === undefined) {
       throw new JSONUtilsError(`No value for ${key}`);
     }
+    if (!Object.prototype.hasOwnProperty.call(field, 'value')) {
+      throw new JSONUtilsError(`Value for ${key} must be a data property`);
+    }
 
-    return json[key];
+    return field.value;
   }
 
   static getNullable(json: JSONObject, key: string): JSONValue {
@@ -65,11 +70,10 @@ export class JSONObjectUtils {
     if (typeof value === 'number') return value;
 
     if (typeof value === 'string') {
-      // eslint-disable-next-line no-control-regex -- Match Java String.trim(), including U+0000.
-      const text = value.replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '');
-
-      if (/^[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[fFdD]?|NaN|Infinity)$/.test(text)) {
-        return Number(text.replace(/[fFdD]$/, ''));
+      // eslint-disable-next-line no-control-regex -- Match Java's trim range in the anchored match.
+      const match = /^[\x00-\x20]*([+-]?(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[fFdD]?|NaN|Infinity))[\x00-\x20]*$/.exec(value);
+      if (match) {
+        return Number(match[1].replace(/[fFdD]$/, ''));
       }
     }
 
@@ -86,8 +90,8 @@ export class JSONObjectUtils {
     if (typeof value === 'boolean') return value;
 
     if (typeof value === 'string') {
-      if (value.toLowerCase() === 'true') return true;
-      if (value.toLowerCase() === 'false') return false;
+      if (/^true$/iu.test(value)) return true;
+      if (/^false$/iu.test(value)) return false;
     }
 
     throw new JSONUtilsError(`Value for ${key} cannot be converted to boolean`);
@@ -147,21 +151,32 @@ function validateJSON(root: unknown, key: string): void {
     if (seen.has(value)) continue;
     seen.add(value);
 
+    // Inspect descriptors without invoking getters or inherited toJSON hooks.
+    let prototype = Object.getPrototypeOf(value);
+    while (prototype !== null) {
+      if (Object.getOwnPropertyDescriptor(prototype, 'toJSON') !== undefined) {
+        throw new JSONUtilsError(`Value for ${key} cannot be converted to JSON value`);
+      }
+      prototype = Object.getPrototypeOf(prototype);
+    }
+
     const fields = Object.getOwnPropertyDescriptors(value);
+    if (Object.getOwnPropertySymbols(fields).length !== 0) {
+      throw new JSONUtilsError(`Value for ${key} cannot be converted to JSON value`);
+    }
 
     if (Array.isArray(value)) {
       if (Object.getPrototypeOf(value) !== Array.prototype) {
         throw new JSONUtilsError(`Value for ${key} cannot be converted to JSON array`);
       }
 
-      for (let index = 0; index < value.length; index++) {
-        if (!Object.prototype.hasOwnProperty.call(fields, index)) {
+      for (let i = 0; i < value.length; i++) {
+        if (!Object.prototype.hasOwnProperty.call(fields, i)) {
           throw new JSONUtilsError(`Value for ${key} cannot be converted to JSON array`);
         }
       }
     }
 
-    // Descriptors reject getters and toJSON before the platform serializer can execute them.
     for (const field of Object.values(fields)) {
       if (!Object.prototype.hasOwnProperty.call(field, 'value')) {
         throw new JSONUtilsError(`Value for ${key} cannot be converted to JSON value`);

@@ -5,4 +5,6 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-export {};
+declare const jsonUtils: null;
+
+export = jsonUtils;

@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-json-utils",
-  "version": "55.0.2-harmony.4",
+  "version": "57.0.2-harmony.0",
   "description": "HarmonyOS port of expo-json-utils",
   "keywords": [
     "react-native",
@@ -34,6 +34,6 @@
     "access": "public"
   },
   "dependencies": {
-    "expo-json-utils": "55.0.2"
+    "expo-json-utils": "57.0.2"
   }
 }
