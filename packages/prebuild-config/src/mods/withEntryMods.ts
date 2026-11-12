@@ -20,6 +20,8 @@ import {
   withModuleJson,
   withProfiles,
   withStrings,
+  type HarmonyConfigPluginOwnership,
+  type HarmonyMediaDescriptor,
 } from '@expo-harmony/config-plugins';
 import { getHarmonyConfigPlugins } from '@expo-harmony/config-plugins/internal';
 
@@ -29,6 +31,7 @@ import {
 } from '../buildDescriptor';
 import { readTemplateSource, resolveTemplateFile } from '../dependencies';
 import { HarmonyPrebuildError } from '../errors';
+import { reconcileModuleList, reconcileModulePermissions } from '../moduleConfig';
 import {
   appendUnique,
   readRecord,
@@ -38,48 +41,81 @@ import {
 import * as render from '../renderers';
 import { removeStaleExtensionAbilities, removeStaleResources } from '../stale';
 
-function replaceMediaBase(files, base, descriptor?) {
+interface IconFile {
+  extension: string;
+  media: HarmonyMediaDescriptor;
+}
+
+const IconExtensionByMimeType: Readonly<Record<string, string>> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/svg+xml': '.svg',
+  'image/webp': '.webp',
+};
+
+function replaceMediaBase(files: Record<string, HarmonyMediaDescriptor>, base: string, icon?: IconFile) {
   for (const name of Object.keys(files)) {
     if (path.parse(name).name === base) delete files[name];
   }
 
-  if (descriptor) {
-    files[descriptor.name] = { source: descriptor.source, replaceBase: true };
+  if (icon) {
+    files[`${base}${icon.extension}`] = { ...icon.media, replaceBase: true };
   }
 }
 
-function reconcileRuntimeMetadata(items) {
-  const names = new Set([
-    'OPTLazyForEach',
-    'can_preview_text',
-    'halfLeading',
-  ]);
-
-  return (Array.isArray(items) ? items : [])
-    .filter(item => !names.has(item?.name))
-    .concat([
-      { name: 'OPTLazyForEach', value: 'true' },
-      { name: 'can_preview_text', value: 'true' },
-      { name: 'halfLeading', value: 'true' },
-    ]);
+function reconcileAbilityValue(
+  value: unknown,
+  fallback: string,
+  field: keyof NonNullable<HarmonyConfigPluginOwnership['ability']>,
+  previous: readonly HarmonyConfigPluginOwnership[],
+  current: readonly HarmonyConfigPluginOwnership[]
+) {
+  if (typeof value !== 'string' || !value) return fallback;
+  const removed = previous.some(plugin => plugin.ability?.[field] === value)
+    && !current.some(plugin => plugin.ability?.[field] === value);
+  return removed ? fallback : value;
 }
 
-function isAbilityValueClaimed(plugins, field, value) {
-  return plugins.some(plugin => plugin.ability?.[field] === value);
-}
-
-function getSourceExtension(value) {
-  const extension = path.extname(value || '').toLowerCase();
+function getSourceExtension(value: string, source: string = value) {
+  const extension = path.extname(value).toLowerCase();
 
   if (!['.png', '.jpg', '.jpeg', '.svg', '.webp'].includes(extension)) {
     throw new HarmonyPrebuildError(
       'ERR_HARMONY_CONFIG_INVALID',
       `Unsupported Harmony icon format: ${extension || '(none)'}`,
-      { file: value, operation: 'render-icons' }
+      { file: source, operation: 'render-icons' }
     );
   }
 
   return extension;
+}
+
+function createLocalIcon(source: string): IconFile {
+  return { extension: getSourceExtension(source), media: { source } };
+}
+
+async function resolveIcon(root: string, source: string): Promise<IconFile> {
+  if (!/^https?:\/\//iu.test(source)) return createLocalIcon(resolveInputFile(root, source));
+
+  try {
+    const response = await fetch(source);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const mime = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
+    const extension = mime && Object.hasOwn(IconExtensionByMimeType, mime)
+      ? IconExtensionByMimeType[mime]
+      : getSourceExtension(new URL(response.url || source).pathname, source);
+    const content = new Uint8Array(await response.arrayBuffer());
+
+    return { extension, media: { content } };
+  } catch (cause) {
+    if (cause instanceof HarmonyPrebuildError) throw cause;
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_CONFIG_INVALID',
+      `Cannot download the Harmony icon: ${source}`,
+      { cause, file: source, operation: 'render-icons' }
+    );
+  }
 }
 
 function resolveInputFile(root, value) {
@@ -167,10 +203,11 @@ function withEntryMods(config) {
 
   config = withModuleJson(config, (mod) => {
     const harmony = normalizeHarmonyConfig(mod.modRawConfig);
-    const home = {
+    const legacyHome = {
       entities: ['entity.system.home'],
       actions: ['action.system.home'],
     };
+    const home = { ...legacyHome, actions: [...legacyHome.actions, 'ohos.want.action.home'] };
     const module = removeStaleExtensionAbilities(
       readRecord(mod.modResults.module),
       HarmonyPaths.toPosixRelative(
@@ -180,7 +217,21 @@ function withEntryMods(config) {
       mod._internal?.harmonyStalePluginFiles || []
     );
     const previous = mod._internal?.harmonyPreviousManagedIdentity;
+    const previousConfig = mod._internal?.harmonyPreviousManagedModuleConfig;
+    const previousPlugins = mod._internal?.harmonyPreviousConfigPlugins ?? [];
     const plugins = getHarmonyConfigPlugins(mod);
+    const permissions = reconcileModulePermissions(
+      module.requestPermissions, previousConfig?.permissions ?? [], harmony.permissions
+    );
+    const querySchemes = reconcileModuleList(
+      module.querySchemes, previousConfig?.querySchemes ?? [], harmony.querySchemes
+    );
+    const currentAbility = Array.isArray(module.abilities)
+      ? module.abilities.find(ability => ability?.name === (previous?.abilityName ?? 'EntryAbility'))
+      : undefined;
+    const skills = reconcileModuleList(currentAbility?.skills, [
+      ...(previousConfig?.skills ?? []), legacyHome,
+    ], [home, ...harmony.skills]);
 
     const abilities = upsertManagedNamed(
       module.abilities,
@@ -194,29 +245,20 @@ function withEntryMods(config) {
         description: '$string:expo_harmony_ability_desc',
         icon: '$media:app_icon',
         label: '$string:expo_harmony_ability_label',
-        startWindowIcon: isAbilityValueClaimed(
-          plugins,
-          'startWindowIcon',
-          existing.startWindowIcon
-        )
-          ? existing.startWindowIcon
-          : '$media:app_icon',
-        startWindowBackground: isAbilityValueClaimed(
-          plugins,
-          'startWindowBackground',
-          existing.startWindowBackground
-        )
-          ? existing.startWindowBackground
-          : '$color:expo_harmony_start_window_background',
+        startWindowIcon: reconcileAbilityValue(
+          existing.startWindowIcon, '$media:app_icon', 'startWindowIcon', previousPlugins, plugins
+        ),
+        startWindowBackground: reconcileAbilityValue(
+          existing.startWindowBackground, '$color:expo_harmony_start_window_background', 'startWindowBackground',
+          previousPlugins, plugins
+        ),
         exported: true,
         visible: true,
         orientation: harmony.nativeOrientation,
-        skills: appendUnique([home], harmony.skills),
+        skills: skills.values,
       }),
       'abilityName'
     );
-    const metadata = reconcileRuntimeMetadata(module.metadata);
-
     mod.modResults = {
       ...mod.modResults,
       module: {
@@ -230,12 +272,17 @@ function withEntryMods(config) {
         deliveryWithInstall: true,
         installationFree: false,
         pages: '$profile:main_pages',
-        requestPermissions: harmony.permissions,
-        querySchemes: harmony.querySchemes,
-        metadata,
+        requestPermissions: permissions.values,
+        querySchemes: querySchemes.values,
         abilities,
       },
     };
+    mod._internal ??= {};
+    Object.assign(mod._internal.harmonyManagedModuleConfig ??= {}, structuredClone({
+      permissions: permissions.managed,
+      querySchemes: querySchemes.managed,
+      skills: skills.managed,
+    }));
 
     return mod;
   });
@@ -246,7 +293,8 @@ function withEntryMods(config) {
     mod.modResults = removeStaleResources(
       mod.modResults,
       'strings',
-      mod._internal?.harmonyStaleConfigPlugins || []
+      mod._internal?.harmonyStaleConfigPlugins || [],
+      getHarmonyConfigPlugins(mod)
     );
 
     const app = mod.modResults.app ??= {};
@@ -268,7 +316,8 @@ function withEntryMods(config) {
     mod.modResults = removeStaleResources(
       mod.modResults,
       'colors',
-      mod._internal?.harmonyStaleConfigPlugins || []
+      mod._internal?.harmonyStaleConfigPlugins || [],
+      getHarmonyConfigPlugins(mod)
     );
 
     const entry = mod.modResults.entry ??= {};
@@ -281,31 +330,29 @@ function withEntryMods(config) {
     return mod;
   });
 
-  config = withMedia(config, (mod) => {
+  config = withMedia(config, async (mod) => {
     const harmony = normalizeHarmonyConfig(mod.modRawConfig);
 
     mod.modResults = removeStaleResources(
       mod.modResults,
       'media',
-      mod._internal?.harmonyStaleConfigPlugins || []
+      mod._internal?.harmonyStaleConfigPlugins || [],
+      getHarmonyConfigPlugins(mod)
     );
 
     const icon = harmony.icon
-      ? resolveInputFile(mod.modRequest.projectRoot, harmony.icon)
+      ? await resolveIcon(mod.modRequest.projectRoot, harmony.icon)
       : null;
-    const sources = icon
+    const icons = icon
       ? { app: icon, entry: icon }
       : {
-          app: resolveTemplateFile(`${HarmonyPlatformDirectory}/${HarmonyPaths.RESOURCE_PATHS.media.app}/app_icon.svg`),
-          entry: resolveTemplateFile(`${HarmonyPlatformDirectory}/${HarmonyPaths.RESOURCE_PATHS.media.entry}/app_icon.svg`),
+          app: createLocalIcon(resolveTemplateFile(`${HarmonyPlatformDirectory}/${HarmonyPaths.RESOURCE_PATHS.media.app}/app_icon.svg`)),
+          entry: createLocalIcon(resolveTemplateFile(`${HarmonyPlatformDirectory}/${HarmonyPaths.RESOURCE_PATHS.media.entry}/app_icon.svg`)),
         };
 
-    for (const [scope, source] of Object.entries(sources)) {
+    for (const [scope, file] of Object.entries(icons)) {
       mod.modResults[scope] ??= {};
-      replaceMediaBase(mod.modResults[scope], 'app_icon', {
-        name: `app_icon${getSourceExtension(source)}`,
-        source,
-      });
+      replaceMediaBase(mod.modResults[scope], 'app_icon', file);
       replaceMediaBase(mod.modResults[scope], 'app_icon_round');
     }
 

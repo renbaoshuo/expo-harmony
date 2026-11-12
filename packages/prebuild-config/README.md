@@ -1,156 +1,156 @@
 # @expo-harmony/prebuild-config
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/prebuild-config)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/prebuild-config) | [Expo 配置插件文档](https://docs.expo.dev/config-plugins/introduction/)
 
-为 Expo 项目生成 HarmonyOS 原生工程。读取 `expo.harmony` 配置，写入 AppScope、Entry 模块、资源、Hvigor 配置、CMake 和 RNOH 宿主代码，并完成原生模块自动链接。
+本包读取 Expo 项目配置，并在运行 `expo-harmony prebuild` 时生成 HarmonyOS 原生工程。
 
 ## 安装
+
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 20（HarmonyOS 6.0.0）。
 
 ```sh
 npm install @expo-harmony/prebuild-config
 ```
 
-应用还需要 `@react-native-oh/react-native-harmony` 和 `@react-native-oh/react-native-harmony-cli`，以及用来运行和构建的 `@expo-harmony/cli`。
+## 配置项目
 
-## 快速开始
-
-在 `app.json` 里注册插件：
+在 `app.json` 中注册配置插件，并在 `harmony` 字段设置应用的 `bundleName`：
 
 ```json
 {
   "expo": {
     "name": "Example",
     "slug": "example",
-    "version": "1.0.0",
-    "platforms": ["ios", "android", "harmony"],
+    "platforms": ["harmony"],
+    "experiments": {
+      "outOfTreePlatforms": true
+    },
     "plugins": ["@expo-harmony/prebuild-config"],
     "harmony": {
-      "bundleName": "com.example.app",
-      "versionCode": 1,
-      "deviceTypes": ["phone", "tablet"]
+      "bundleName": "com.example.app"
     }
   }
 }
 ```
 
-`bundleName` 必填，其余字段有默认值。完整列表见 `@expo-harmony/config-plugins` 的 README。
+`bundleName` 必填，至少由三段以点分隔的标识符组成，例如 `com.example.app`。`versionCode` 默认为 `1`，`deviceTypes` 默认为 `phone` 和 `tablet`。
 
-生成或更新原生工程：
+## 生成 HarmonyOS 工程
+
+配置完成后，在项目目录运行：
 
 ```sh
 npx expo-harmony prebuild
 ```
 
-工程写入项目根目录下的 `harmony`。`--clean` 先删除再重新生成，`--check` 只比较差异，不修改文件。
+工程会生成在项目根目录的 `harmony/` 下。修改了应用配置后，再次运行该命令以更新工程；需要先清理现有工程时，可使用 `npx expo-harmony prebuild --clean`。
 
-## 生成内容
+## 设置应用图标和权限
 
-| 文件                                   | 内容                                                |
-| -------------------------------------- | --------------------------------------------------- |
-| `AppScope/app.json5`                   | 包名、版本号、vendor、应用名和图标引用              |
-| `build-profile.json5`                  | product、module、SDK 版本、原生编译器和签名配置     |
-| `entry/build-profile.json5`            | Entry 模块的 CMake 路径和 ABI                       |
-| `entry/src/main/module.json5`          | module、Ability、设备类型、权限和 querySchemes      |
-| `entry/src/main/resources/`            | 字符串、颜色和 media 资源                           |
-| `oh-package.json5`                     | RNOH 运行时依赖                                     |
-| `hvigor/hvigor-config.json5`           | RNOH Hvigor 插件依赖                                |
-| `hvigorfile.ts`、`entry/hvigorfile.ts` | Hvigor 构建脚本                                     |
-| `entry/src/main/ets/`                  | EntryAbility、Index 页面、Worker 和 PackageProvider |
-| `entry/src/main/cpp/`                  | PackageProvider.cpp 和 CMakeLists.txt               |
-| `react-native.config.js`               | RNOH 的 link-harmony 命令                           |
+可以在 `harmony` 字段中指定应用图标和需要声明的权限：
 
-## 应用图标
+```json
+{
+  "icon": "./assets/app-icon.png",
+  "permissions": [
+    {
+      "name": "ohos.permission.CAMERA",
+      "usedScene": {
+        "abilities": ["EntryAbility"],
+        "when": "inuse"
+      }
+    }
+  ]
+}
+```
 
-`harmony.icon` 指定图标文件，支持 PNG、JPG、SVG 和 WebP。文件写入 AppScope 和 Entry 模块的 media 资源，替换同基本名的 `app_icon`。不设置时用模板自带的图标。
+将这些选项放在前面示例的 `harmony` 字段中。需要填写权限用途说明时，可以通过 `reason` 引用字符串资源，例如 `$string:camera_permission_reason`，并提供对应资源。申请受限权限前，请先按[华为文档](https://developer.huawei.com/consumer/cn/doc/app/agc-help-apply-acl-0000002394212138/)提交申请，并在获批后声明。
 
-## 权限
+`harmony.icon` 支持 PNG、JPG、SVG 和 WebP；省略时使用 Expo 配置中的 `icon`。
 
-`harmony.permissions` 里的权限写入 `module.json5` 的 `requestPermissions`，权限名用 `ohos.permission.*`。同名权限合并 `usedScene.abilities`，后写入的 `reason` 覆盖旧值。`reason` 写成 `$string:...` 引用，文案放在字符串资源里。
+## 选择原生模块构建类型
 
-## 自动链接
+如果需要选择原生模块的构建类型，将 `plugins` 配置写成下面的形式：
 
-prebuild 发现项目里支持 Harmony 的 Expo 模块，把模块信息和依赖写进工程，构建时由 Hvigor 和 CMake 链接。`buildType` 选项选择自动链接的构建模式：
+```json
+{
+  "plugins": [
+    [
+      "@expo-harmony/prebuild-config",
+      {
+        "buildType": "release"
+      }
+    ]
+  ]
+}
+```
+
+`buildType` 可设为 `debug` 或 `release`。省略时读取 `EXPO_HARMONY_BUILD_TYPE`；该环境变量未设置时使用 `debug`。HarmonyOS 工程使用 Hermes，通常不需要设置 `harmony.jsEngine`。
+
+## 配置签名
+
+需要签名时，将 JSON5 文件路径加入前面 `app.json` 的 `expo.harmony` 对象，例如：
 
 ```json
 {
   "expo": {
-    "plugins": [["@expo-harmony/prebuild-config", { "buildType": "release" }]]
+    "name": "Example",
+    "slug": "example",
+    "platforms": ["harmony"],
+    "experiments": {
+      "outOfTreePlatforms": true
+    },
+    "plugins": ["@expo-harmony/prebuild-config"],
+    "harmony": {
+      "bundleName": "com.example.app",
+      "signingConfigFile": "./signing/harmony-signing.json5"
+    }
   }
 }
 ```
 
-未指定时读取 `EXPO_HARMONY_BUILD_TYPE`，默认 `debug`。自动链接始终启用。
-
-## 签名配置
-
-`harmony.signingConfigFile` 指向一个 JSON5 文件，内容是一个签名配置对象，或一个 `signingConfigs` 数组。数组有多项时，其中一项要命名为 `default`。
+签名文件可以包含一个签名配置对象：
 
 ```json5
 {
   name: 'default',
   type: 'HarmonyOS',
   material: {
-    certpath: './signing/app.cer',
+    certpath: './app.cer',
     storePassword: '...',
     keyAlias: '...',
     keyPassword: '...',
-    profile: './signing/app.p7b',
+    profile: './app.p7b',
     signAlg: 'SHA256withECDSA',
-    storeFile: './signing/app.p12',
+    storeFile: './app.p12',
   },
 }
 ```
 
-`material` 的七个字段都是必填的非空字符串，`signAlg` 固定为 `SHA256withECDSA`，`certpath`、`profile` 和 `storeFile` 指向真实文件。这些文件和签名配置文件本身要放在 `harmony` 目录之外，否则 `prebuild --clean` 会删掉它们。配置里的相对路径按签名配置文件所在目录解析。生成的 `build-profile.json5` 引用配置的 `name`，没有配置时不写签名。
+`material` 中的字段都需要填写，`signAlg` 使用 `SHA256withECDSA`。`certpath`、`profile` 和 `storeFile` 相对于签名文件所在目录解析。签名文件及证书应放在 `harmony/` 目录之外，以免运行 `prebuild --clean` 时被删除。
 
-## 插件顺序
+## 读取项目配置
 
-默认配置在执行阶段读取最终的 app config，其他 Harmony 配置插件可以放在本包前面或后面。要覆盖默认值，把本包放到插件列表最后：
-
-```json
-{
-  "expo": {
-    "plugins": [
-      "@expo-harmony/expo-font",
-      [
-        "@expo-harmony/expo-splash-screen",
-        {
-          "image": "./assets/splash.png",
-          "backgroundColor": "#FFFFFF"
-        }
-      ],
-      "@expo-harmony/expo-system-ui",
-      "@expo-harmony/prebuild-config"
-    ]
-  }
-}
-```
-
-默认导出和具名导出 `withHarmonyPrebuildConfig` 是同一个插件，重复注册只生效一次。
-
-## 文件清理
-
-再次 prebuild 时，插件不再声明的文件会被删除；卸载插件后，它管理的文件也会清理。
-
-## 原生补丁
-
-用 [`@expo-harmony/patch-project`](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/patch-project) 保存原生修改，并在 prebuild 时自动恢复。
-
-## 读取配置
-
-`getPrebuildConfigAsync(projectRoot)` 读取静态或动态 app config，执行已声明的配置插件，返回 `HarmonyProjectConfig`。它不生成原生工程。
+`getPrebuildConfigAsync` 会读取项目的 Expo 配置，并返回处理后的 HarmonyOS 预构建配置。它不会生成 `harmony/` 工程：
 
 ```ts
 import { getPrebuildConfigAsync } from '@expo-harmony/prebuild-config';
 
-const project = await getPrebuildConfigAsync(projectRoot);
+async function main() {
+  const project = await getPrebuildConfigAsync(process.cwd());
+  console.log(project.exp.harmony);
+}
+
+main();
 ```
 
-`withHarmonyPrebuildConfig` 是插件本身，可以带 `HarmonyPrebuildOptions` 手动组合。`HarmonyPrebuildError` 带有 `code`、`operation` 和 `file`，用于识别预构建失败的原因。
+需要读取 development 或 production 配置时，可以将 `'development'` 或 `'production'` 作为第二个参数传入。
 
-## 与上游 Expo 的分工
+## 与其他配置插件组合
 
-HarmonyOS 的工程生成由本包负责，iOS 和 Android 仍使用 Expo 上游的预构建。此外，上游面向旧版应用的自动插件列表不适用于 HarmonyOS，模块插件要在应用里显式声明。
+如果其他配置插件也会修改 HarmonyOS 配置，可根据需要调整插件顺序。希望本包的设置最后生效时，将 `@expo-harmony/prebuild-config` 放在 `plugins` 列表末尾。
 
 ## Author
 

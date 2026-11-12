@@ -6,7 +6,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { promises as fs, realpathSync } from 'node:fs';
 import path from 'node:path';
 
 import { HarmonyPaths, stableHarmonyJson } from '@expo-harmony/config-plugins';
@@ -15,6 +15,8 @@ import type {
   HarmonyConfigPluginOwnership,
   NormalizedHarmonyConfig,
 } from '@expo-harmony/config-plugins';
+import { isManagedBuildProperties, type ManagedBuildProperties } from '@expo-harmony/expo-build-properties/internal';
+import { ManifestArtifact } from '@expo-harmony/expo-modules-autolinking';
 import JSON5 from 'json5';
 
 import { HarmonyPrebuildError } from './errors';
@@ -23,6 +25,7 @@ import {
   validateHarmonyBuildDescriptor,
   type HarmonyBuildDescriptor,
 } from './buildDescriptor';
+import { isManagedModuleConfig, type ManagedModuleConfig } from './moduleConfig';
 import { PackageMetadata } from './packageMetadata';
 
 const GeneratorVersion = PackageMetadata.version;
@@ -33,6 +36,7 @@ const Sha256Pattern = /^[a-f0-9]{64}$/u;
 interface ManagedFile {
   owner: string;
   path: string;
+  sha256?: string;
 }
 
 interface CngManifest {
@@ -48,12 +52,14 @@ interface CngManifest {
     configHash: string;
   };
   managedFiles: Array<ManagedFile & { sha256: string }>;
+  managedBuildProperties?: ManagedBuildProperties;
   managedIdentity: {
     abilityName: string;
     moduleName: string;
     productName: string;
     targetName: string;
   };
+  managedModuleConfig?: ManagedModuleConfig;
   modules: Array<{ packageName: string; packageVersion: string }>;
   schemaVersion: 2;
   signingConfigName: string | null;
@@ -238,12 +244,43 @@ function validateCngManifest(manifest: unknown, options: ValidateCngManifestOpti
       { file, operation: 'validate-manifest' }
     );
   }
+  if (manifest.managedModuleConfig !== undefined && !isManagedModuleConfig(manifest.managedModuleConfig)) {
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_MANIFEST_INVALID',
+      'Harmony CNG manifest has invalid module configuration ownership.',
+      { file, operation: 'validate-manifest' }
+    );
+  }
+  if (manifest.managedBuildProperties !== undefined && !isManagedBuildProperties(manifest.managedBuildProperties)) {
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_MANIFEST_INVALID',
+      'Harmony CNG manifest has invalid build properties ownership.',
+      { file, operation: 'validate-manifest' }
+    );
+  }
 
   return manifest as unknown as CngManifest;
 }
 
 function hashSha256(value: string | Uint8Array) {
   return createHash('sha256').update(value).digest('hex');
+}
+
+function hashHarmonyConfig(root: string, config: NormalizedHarmonyConfig): string {
+  // Dynamic app config can resolve its project-local inputs to absolute paths.
+  // Those inputs refer to the same files when evaluated in the check mirror.
+  const roots = [root, realpathSync(root)];
+  const projectRelative = (file?: string) => {
+    if (!file || !path.isAbsolute(file)) return file;
+    const base = roots.find(candidate => HarmonyPaths.isInside(candidate, file));
+    return base ? HarmonyPaths.toPosixRelative(base, file) : file;
+  };
+
+  return hashSha256(stableHarmonyJson({
+    ...config,
+    icon: projectRelative(config.icon),
+    signingConfigFile: projectRelative(config.signingConfigFile),
+  }));
 }
 
 async function hashFile(file: string) {
@@ -256,7 +293,8 @@ async function createCngManifest(
   managed: readonly ManagedFile[],
   modules: ReadonlyArray<{ packageName: string; packageVersion: string }> = [],
   signing: string | null = null,
-  plugins: readonly HarmonyConfigPluginOwnership[] = []
+  plugins: readonly HarmonyConfigPluginOwnership[] = [],
+  ownership: { moduleConfig?: ManagedModuleConfig; buildProperties?: ManagedBuildProperties } = {}
 ): Promise<CngManifest> {
   const file = path.join(root, 'harmony', HarmonyPaths.HARMONY_PATHS.projectBuildProfile);
   const profile = JSON5.parse(await fs.readFile(file, 'utf8'));
@@ -265,6 +303,10 @@ async function createCngManifest(
   const files = [];
 
   for (const item of managed) {
+    if (item.sha256 !== undefined) {
+      files.push({ owner: item.owner, path: item.path, sha256: item.sha256 });
+      continue;
+    }
     const target = path.join(root, ...item.path.split('/'));
 
     try {
@@ -282,7 +324,7 @@ async function createCngManifest(
 
   files.sort((left, right) => left.path.localeCompare(right.path, 'en'));
 
-  const autolinking = path.join(root, '.expo/harmony/autolinking.json');
+  const autolinking = path.join(root, ManifestArtifact);
   const hash = await hashFile(autolinking).catch((cause) => {
     if (cause.code === 'ENOENT') return hashSha256('');
 
@@ -300,7 +342,7 @@ async function createCngManifest(
     generator: { package: '@expo-harmony/prebuild-config', version: GeneratorVersion },
     inputs: {
       autolinkingHash: hash,
-      configHash: hashSha256(stableHarmonyJson(config)),
+      configHash: hashHarmonyConfig(root, config),
     },
     managedFiles: files,
     managedIdentity: {
@@ -309,6 +351,10 @@ async function createCngManifest(
       productName: build.identity.productName,
       targetName: build.identity.targetName,
     },
+    ...(ownership.moduleConfig ? { managedModuleConfig: ownership.moduleConfig } : {}),
+    ...(ownership.buildProperties && Object.keys(ownership.buildProperties).length
+      ? { managedBuildProperties: ownership.buildProperties }
+      : {}),
     modules: modules.map(module => ({ packageName: module.packageName, packageVersion: module.packageVersion })),
     schemaVersion: ManifestSchemaVersion,
     signingConfigName: signing,
@@ -317,6 +363,7 @@ async function createCngManifest(
 
 export {
   CngManifestPath,
+  hashHarmonyConfig,
   ManifestSchemaVersion,
   createCngManifest,
   hashFile,

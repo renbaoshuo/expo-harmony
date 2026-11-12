@@ -5,8 +5,9 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { getConfig, type ProjectConfig } from '@expo/config';
+import type { ProjectConfig } from '@expo/config';
 import { normalizeHarmonyConfig, type ExpoConfigWithHarmony } from '@expo-harmony/config-plugins';
+import { getHarmonyProjectConfig, type EnvMode } from '@expo-harmony/expo__config/internal/project-config';
 
 import { withHarmonyPrebuildConfig } from './withHarmonyPrebuildConfig';
 
@@ -14,11 +15,11 @@ export type HarmonyProjectConfig = Omit<ProjectConfig, 'exp'> & {
   exp: ExpoConfigWithHarmony;
 };
 
-export async function getPrebuildConfigAsync(root: string): Promise<HarmonyProjectConfig> {
-  const project = getConfig(root, {
+export async function getPrebuildConfigAsync(root: string, mode?: EnvMode): Promise<HarmonyProjectConfig> {
+  const project = getHarmonyProjectConfig(root, {
     skipSDKVersionRequirement: true,
     isModdedConfig: true,
-  });
+  }, mode);
   const config = withHarmonyPrebuildConfig(project.exp);
 
   normalizeHarmonyConfig(config);

@@ -12,6 +12,7 @@ import { HarmonyPaths } from '@expo-harmony/config-plugins';
 import JSON5 from 'json5';
 
 import { HarmonyPlatformDirectory } from './buildDescriptor';
+import { mirrorHarmonyCheckPath } from './checkPath';
 import { HarmonyPrebuildError } from './errors';
 
 const MaterialFields = [
@@ -40,21 +41,12 @@ interface HarmonySigningConfig {
   type: 'HarmonyOS';
 }
 
-function mirrorAbsolutePath(temp, source) {
-  const absolute = path.resolve(source);
-  const parsed = path.parse(absolute);
-  const volume = parsed.root.replace(/[^A-Za-z0-9]+/gu, '') || 'root';
-  const segments = absolute.slice(parsed.root.length).split(path.sep).filter(Boolean);
-
-  return path.join(temp, 'filesystem', volume, ...segments);
-}
-
 function resolveSigningPath(base, reference) {
   const resolved = path.resolve(base, reference);
   const mirror = process.env.EXPO_HARMONY_CHECK_MIRROR_ROOT;
 
   return mirror && path.isAbsolute(reference)
-    ? mirrorAbsolutePath(path.resolve(mirror), resolved)
+    ? mirrorHarmonyCheckPath(mirror, resolved)
     : resolved;
 }
 
@@ -85,6 +77,7 @@ function selectSigningConfig(parsed, file) {
 }
 
 async function readSigningConfigFile(root: string, reference: string): Promise<SigningFile> {
+  root = await fs.realpath(root);
   const file = resolveSigningPath(root, reference);
   const native = path.resolve(root, HarmonyPlatformDirectory);
   const harmony = await fs.realpath(native).catch((cause) => {

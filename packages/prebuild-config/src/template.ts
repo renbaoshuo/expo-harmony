@@ -23,6 +23,7 @@ const TEMPLATE_PLACEHOLDERS = Object.freeze({
   appLabel: '__EXPO_HARMONY_APP_LABEL__',
   bundlePath: '__EXPO_HARMONY_BUNDLE_PATH__',
 });
+const MODULE_NAME_PLACEHOLDER = '__EXPO_HARMONY_MODULE_NAME__';
 const resolveModule = createRequire(__filename).resolve;
 
 interface Template {
@@ -170,6 +171,7 @@ function resolve(): Template {
 }
 
 export {
+  MODULE_NAME_PLACEHOLDER,
   ROOT_ENV,
   TEMPLATE_PLACEHOLDERS,
   TEMPLATE_SCHEMA_VERSION,

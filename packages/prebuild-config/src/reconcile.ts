@@ -19,12 +19,12 @@ function appendUnique(items, values) {
 
 function upsertNamed(items, name, create) {
   const values = Array.isArray(items) ? items : [];
-  const existing = values.find(item => item?.name === name);
-  const remaining = values.filter(item => item?.name !== name);
-
-  remaining.push(create(existing && typeof existing === 'object' ? existing : {}));
-
-  return remaining;
+  const index = values.findIndex(item => item?.name === name);
+  if (index === -1) return [...values, create({})];
+  return values.flatMap((item, current) => {
+    if (current === index) return [create(item && typeof item === 'object' ? item : {})];
+    return item?.name === name ? [] : [item];
+  });
 }
 
 function upsertManagedNamed(items, name, previousName, placeholderName, create, field) {

@@ -5,8 +5,10 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 
+import { getPackageJson } from '@expo/config';
 import {
   normalizeHarmonyConfig, withAppJson,
   withHvigorConfig,
@@ -25,8 +27,8 @@ import {
 } from '../buildDescriptor';
 import {
   readTemplateSource,
-  resolvePackageVersion,
   resolveRnohHvigorPlugin,
+  resolveRnohRuntimeVersion,
   toRelativeDependency,
 } from '../dependencies';
 import { HarmonyPrebuildError } from '../errors';
@@ -54,7 +56,7 @@ export function withProjectMods(config) {
   config = withReactNativeConfig(config, async (mod) => {
     const { projectRoot: root, modFile: file, modFileExists: exists } = mod.modRequest;
 
-    if (exists) {
+    if (exists && !render.isGeneratedReactNativeConfig(mod.modResults)) {
       if (!hasRnohLinkCommand(await loadReactNativeConfigAsync(root, file))) {
         throw new HarmonyPrebuildError(
           'ERR_HARMONY_CONFIG_INVALID',
@@ -66,7 +68,9 @@ export function withProjectMods(config) {
       return mod;
     }
 
-    mod.modResults = render.renderReactNativeConfig();
+    const extension = path.extname(file);
+    const esm = extension === '.mjs' || (extension === '.js' && getPackageJson(root).type === 'module');
+    mod.modResults = render.renderReactNativeConfig(esm);
 
     return mod;
   });
@@ -187,10 +191,7 @@ export function withProjectMods(config) {
 
   config = withRootOhPackage(config, (mod) => {
     const harmony = normalizeHarmonyConfig(mod.modRawConfig);
-    const version = resolvePackageVersion(
-      mod.modRequest.projectRoot,
-      '@react-native-oh/react-native-harmony'
-    );
+    const version = resolveRnohRuntimeVersion(mod.modRequest.projectRoot);
     const dependencies = { ...readRecord(mod.modResults.dependencies) };
     const overrides = { ...readRecord(mod.modResults.overrides) };
 
@@ -239,10 +240,10 @@ export function withProjectMods(config) {
 
   config = withHvigorConfig(config, (mod) => {
     const harmony = normalizeHarmonyConfig(mod.modRawConfig);
-    const root = mod.modRequest.projectRoot;
+    const root = realpathSync(mod.modRequest.projectRoot);
     const build = createHarmonyBuildDescriptor(harmony, mod._internal?.harmonySigningConfig?.name ?? null);
     const directory = path.dirname(resolveHarmonyBuildPath(root, build.projectFiles.hvigorConfig));
-    const plugin = toRelativeDependency(directory, resolveRnohHvigorPlugin(root));
+    const plugin = toRelativeDependency(directory, resolveRnohHvigorPlugin());
 
     mod.modResults = {
       ...mod.modResults,

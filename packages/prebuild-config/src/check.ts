@@ -9,23 +9,28 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
-import { HarmonyPaths, normalizeHarmonyConfig, stableHarmonyJson } from '@expo-harmony/config-plugins';
-import { canonicalizeAutolinkingArtifacts } from '@expo-harmony/expo-modules-autolinking';
+import {
+  HarmonyPaths, normalizeHarmonyConfig, stableHarmonyJson, type NormalizedHarmonyConfig,
+} from '@expo-harmony/config-plugins';
+import { canonicalizeAutolinkingArtifacts, ManifestArtifact } from '@expo-harmony/expo-modules-autolinking';
+import type { EnvMode } from '@expo-harmony/expo__config/internal/project-config';
 import JSON5 from 'json5';
 
-import { HarmonyPrebuildError } from './errors';
-import { getPrebuildConfigAsync } from './getPrebuildConfig';
 import {
   createHarmonyBuildDescriptor,
   resolveHarmonyBuildPath,
 } from './buildDescriptor';
+import { mirrorHarmonyCheckPath } from './checkPath';
+import { HarmonyPrebuildError } from './errors';
+import { getPrebuildConfigAsync } from './getPrebuildConfig';
 import {
   CngManifestPath,
+  hashHarmonyConfig,
   hashSha256,
   validateCngManifest,
   type CngManifest,
 } from './manifest';
-import { validateHarmonySigningConfigFile } from './signing';
+import { validateHarmonySigningConfigFile, type HarmonySigningConfig } from './signing';
 
 interface Change {
   path: string;
@@ -38,17 +43,8 @@ interface Result {
   expected: CngManifest;
 }
 
-function mirrorPath(temp: string, source: string): string {
-  const absolute = path.resolve(source);
-  const parsed = path.parse(absolute);
-  const volume = parsed.root.replace(/[^A-Za-z0-9]+/gu, '') || 'root';
-  const segments = absolute.slice(parsed.root.length).split(path.sep).filter(Boolean);
-
-  return path.join(temp, 'filesystem', volume, ...segments);
-}
-
 async function stageAutolinkingAsync(project: string, target: string): Promise<void> {
-  const source = path.join(project, '.expo/harmony/autolinking.json');
+  const source = path.join(project, ManifestArtifact);
 
   let stat;
 
@@ -66,7 +62,7 @@ async function stageAutolinkingAsync(project: string, target: string): Promise<v
   if (!stat.isFile() || stat.isSymbolicLink()) return;
 
   const content = await fs.promises.readFile(source, 'utf8');
-  const file = path.join(target, '.expo/harmony/autolinking.json');
+  const file = path.join(target, ManifestArtifact);
 
   await fs.promises.mkdir(path.dirname(file), { recursive: true });
   await fs.promises.writeFile(file, content);
@@ -158,7 +154,9 @@ async function readManifestAsync(project: string): Promise<CngManifest> {
   return manifest;
 }
 
-async function stageManifestAsync(project: string, target: string): Promise<void> {
+async function stageManifestAsync(
+  project: string, target: string, harmony: NormalizedHarmonyConfig, signingConfig: HarmonySigningConfig | null
+): Promise<void> {
   const source = resolveHarmonyBuildPath(project, CngManifestPath);
 
   let stat;
@@ -190,10 +188,7 @@ async function stageManifestAsync(project: string, target: string): Promise<void
     );
   }
 
-  const { exp: config } = await getPrebuildConfigAsync(project);
-
-  const harmony = normalizeHarmonyConfig(config);
-  const hash = hashSha256(stableHarmonyJson(harmony));
+  const hash = hashHarmonyConfig(project, harmony);
   let identity = cng.managedIdentity;
   let build = cng.build;
   let signing = cng.signingConfigName;
@@ -201,9 +196,7 @@ async function stageManifestAsync(project: string, target: string): Promise<void
   if (hash === cng.inputs.configHash) {
     // Reconstruct mutable re-entry state from authoritative inputs so a corrupt
     // manifest cannot make isolated prebuild overwrite user-owned identities.
-    signing = harmony.signingConfigFile
-      ? (await validateHarmonySigningConfigFile(project, harmony.signingConfigFile)).name
-      : null;
+    signing = signingConfig?.name ?? null;
     build = createHarmonyBuildDescriptor(harmony, signing);
     identity = {
       abilityName: build.identity.abilityName,
@@ -232,23 +225,17 @@ async function stageManifestAsync(project: string, target: string): Promise<void
 
 async function stageSigningAsync(
   project: string,
-  temp: string
+  temp: string,
+  signing: HarmonySigningConfig | null
 ): Promise<void> {
-  const { exp: config } = await getPrebuildConfigAsync(project);
+  if (!signing) return;
 
-  const reference = (config as typeof config & {
-    harmony?: { signingConfigFile?: string };
-  }).harmony?.signingConfigFile;
-
-  if (!reference) return;
-
-  const signing = await validateHarmonySigningConfigFile(project, reference);
   const inputs = [signing.file, ...Object.values(signing.materialFiles)];
 
   for (const source of inputs) {
     if (HarmonyPaths.isInside(project, source)) continue;
 
-    const target = mirrorPath(temp, source);
+    const target = mirrorHarmonyCheckPath(temp, source);
 
     if (!HarmonyPaths.isInside(temp, target)) {
       throw new HarmonyPrebuildError(
@@ -266,11 +253,18 @@ async function stageSigningAsync(
 async function stageAsync(
   project: string,
   expected: string,
-  temp: string
+  temp: string,
+  mode?: EnvMode
 ): Promise<void> {
-  await stageManifestAsync(project, expected);
+  const { exp: config } = await getPrebuildConfigAsync(project, mode);
+  const harmony = normalizeHarmonyConfig(config);
+  const signing = harmony.signingConfigFile
+    ? await validateHarmonySigningConfigFile(project, harmony.signingConfigFile)
+    : null;
+
+  await stageManifestAsync(project, expected, harmony, signing);
   await stageAutolinkingAsync(project, expected);
-  await stageSigningAsync(project, temp);
+  await stageSigningAsync(project, temp, signing);
 }
 
 async function canonicalizeAutolinkingAsync(
@@ -278,7 +272,7 @@ async function canonicalizeAutolinkingAsync(
   project: string,
   cng: CngManifest
 ): Promise<void> {
-  const manifestFile = path.join(expected, '.expo/harmony/autolinking.json');
+  const manifestFile = path.join(expected, ManifestArtifact);
   const ohpmPath = cng.build.nativeInputs.manifest;
   const ohpmFile = resolveHarmonyBuildPath(expected, ohpmPath);
 
@@ -304,7 +298,7 @@ async function canonicalizeAutolinkingAsync(
     cng.inputs.autolinkingHash = manifestHash;
 
     const manifestEntry = cng.managedFiles.find(
-      item => item.path === '.expo/harmony/autolinking.json'
+      item => item.path === ManifestArtifact
     );
     const ohpmEntry = cng.managedFiles.find(
       item => item.path === ohpmPath

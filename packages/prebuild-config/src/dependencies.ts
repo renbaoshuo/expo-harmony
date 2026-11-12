@@ -9,43 +9,29 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
+import { resolveRnohCliPackageJsonPath } from '@expo-harmony/expo-modules-autolinking';
+import { HarmonyPaths } from '@expo-harmony/config-plugins';
+
+import { mirrorHarmonyCheckPath } from './checkPath';
 import { HarmonyPrebuildError } from './errors';
 import { resolve as resolveTemplate } from './template';
 
-const resolveModule = createRequire(__filename).resolve;
-
-function resolvePackageFile(root, name, relative) {
-  const logical = path.join(root, 'node_modules', ...name.split('/'), relative);
-
-  if (fs.existsSync(logical)) return logical;
-
-  let json;
+function resolveRnohRuntimeVersion(root: string): string {
+  const name = '@react-native-oh/react-native-harmony';
+  const requireProject = createRequire(path.join(root, 'package.json'));
+  let json: string;
 
   try {
-    json = resolveModule(`${name}/package.json`, { paths: [root] });
+    // Core owns the SDK's RNOH archive, even when an app has an older RNOH installed.
+    const core = requireProject.resolve('@expo-harmony/expo-modules-core/package.json');
+    json = createRequire(core).resolve(`${name}/package.json`);
   } catch (cause) {
     throw new HarmonyPrebuildError(
       'ERR_HARMONY_DEPENDENCY_MISSING',
-      `Unable to resolve ${name} from the project.`,
+      `Unable to resolve ${name} from the project's @expo-harmony/expo-modules-core.`,
       { cause, operation: 'resolve-dependency' }
     );
   }
-
-  const resolved = path.join(path.dirname(json), relative);
-
-  if (!fs.existsSync(resolved)) {
-    throw new HarmonyPrebuildError(
-      'ERR_HARMONY_DEPENDENCY_MISSING',
-      `${name} is missing ${relative}.`,
-      { file: resolved, operation: 'resolve-dependency' }
-    );
-  }
-
-  return resolved;
-}
-
-function resolvePackageVersion(root, name) {
-  const json = resolvePackageFile(root, name, 'package.json');
 
   let version;
 
@@ -88,8 +74,17 @@ async function readTemplateSource(relative) {
   return fs.promises.readFile(resolveTemplateFile(`harmony/${relative}`), 'utf8');
 }
 
-function resolveRnohHvigorPlugin(root) {
-  const json = resolvePackageFile(root, '@react-native-oh/react-native-harmony-cli', 'package.json');
+function resolveRnohHvigorPlugin() {
+  let json: string;
+  try {
+    json = resolveRnohCliPackageJsonPath();
+  } catch (cause) {
+    throw new HarmonyPrebuildError(
+      'ERR_HARMONY_DEPENDENCY_MISSING',
+      'Unable to resolve @react-native-oh/react-native-harmony-cli from @expo-harmony/expo-modules-autolinking.',
+      { cause, operation: 'resolve-dependency' }
+    );
+  }
   const harmony = path.join(path.dirname(json), 'harmony');
 
   let candidates;
@@ -118,13 +113,19 @@ function resolveRnohHvigorPlugin(root) {
 }
 
 function toRelativeDependency(directory, file) {
+  const mirror = process.env.EXPO_HARMONY_CHECK_MIRROR_ROOT;
+  if (mirror && HarmonyPaths.isInside(mirror, directory)) {
+    // Match the check command's filesystem mirror when rendering external tools.
+    file = mirrorHarmonyCheckPath(mirror, file);
+  }
+
   return path.relative(directory, file).split(path.sep).join('/');
 }
 
 export {
   readTemplateSource,
-  resolvePackageVersion,
   resolveRnohHvigorPlugin,
+  resolveRnohRuntimeVersion,
   resolveTemplateFile,
   toRelativeDependency,
 };

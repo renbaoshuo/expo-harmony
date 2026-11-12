@@ -8,10 +8,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { linkPreparedModulesAsync, prepareModulesAsync } from '@expo-harmony/expo-modules-autolinking';
-import type { LinkOptions } from '@expo-harmony/expo-modules-autolinking';
-import { normalizeHarmonyConfig, recordManagedFile, stableHarmonyJson, withHarmonyAutolinking } from '@expo-harmony/config-plugins';
-import { getHarmonyConfigPlugins, withCngManifest } from '@expo-harmony/config-plugins/internal';
+import {
+  atomicWrite, normalizeHarmonyConfig, recordManagedFile, stableHarmonyJson, withHarmonyAutolinking,
+} from '@expo-harmony/config-plugins';
+import { getHarmonyConfigPlugins, withCngManifest, type ManagedManifestConfig } from '@expo-harmony/config-plugins/internal';
+import {
+  linkPreparedModulesAsync, ModuleBuildOptionsArtifact, prepareModulesAsync, type LinkOptions,
+} from '@expo-harmony/expo-modules-autolinking';
 
 import { HarmonyPrebuildError } from '../errors';
 import {
@@ -19,6 +22,7 @@ import {
   resolveHarmonyBuildPath,
 } from '../buildDescriptor';
 import { CngManifestPath, createCngManifest } from '../manifest';
+import { reconcileDeferredPluginFilesAsync } from '../stale';
 import type { HarmonyPrebuildOptions } from '../withHarmonyPrebuildConfig';
 
 function formatAutolinkingDiagnostics(cause) {
@@ -52,12 +56,13 @@ export function withAutolinkingMods(config, options: HarmonyPrebuildOptions) {
         targetSdkVersion: harmony.targetSdkVersionString,
         abiFilters: harmony.abiFilters,
       };
-      // Normal CLI/DevEco builds relink without evaluating Expo config; retain these inputs.
-      const inputs = path.join(project, '.expo/harmony/module-build-options.json');
+      // Keep configured module builds available to subsequent CLI and DevEco relinks.
+      const inputs = path.join(root, ModuleBuildOptionsArtifact);
 
       const linkOptions: LinkOptions = {
         moduleBuilds,
         moduleBuildSettings,
+        expoInlineModules: mod.experiments?.inlineModules ?? null,
         projectRoot: project,
         harmonyProjectPath: platform,
         buildType: mode,
@@ -97,7 +102,10 @@ export function withAutolinkingMods(config, options: HarmonyPrebuildOptions) {
     if (mod.modRequest.introspect) return mod;
 
     const harmony = normalizeHarmonyConfig(mod.modRawConfig);
-    const managed = mod._internal?.harmonyManagedFiles || [];
+    const retained = await reconcileDeferredPluginFilesAsync(mod);
+    const managed = [...(mod._internal?.harmonyManagedFiles || []), ...retained];
+    const moduleConfig = mod._internal?.harmonyManagedModuleConfig;
+    const pluginChanges: ManagedManifestConfig[] | undefined = mod._internal?.harmonyManagedManifestConfig;
 
     const manifest = await createCngManifest(
       mod.modRequest.projectRoot,
@@ -105,12 +113,16 @@ export function withAutolinkingMods(config, options: HarmonyPrebuildOptions) {
       managed,
       mod._internal?.harmonyAutolinkingModules || [],
       mod._internal?.harmonySigningConfig?.name ?? null,
-      getHarmonyConfigPlugins(mod)
+      getHarmonyConfigPlugins(mod),
+      {
+        moduleConfig: pluginChanges?.length ? { ...moduleConfig, pluginChanges } : moduleConfig,
+        buildProperties: mod._internal?.harmonyManagedBuildProperties,
+      }
     );
     const file = resolveHarmonyBuildPath(mod.modRequest.projectRoot, CngManifestPath);
 
-    await fs.promises.mkdir(path.dirname(file), { recursive: true });
-    await fs.promises.writeFile(file, stableHarmonyJson(manifest));
+    await atomicWrite(file, stableHarmonyJson(manifest));
+    await mod._internal?.harmonyFinishJsonOwnershipJournal?.();
 
     mod._internal ??= {};
     mod._internal.harmonyCngManifest = manifest;
