@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
+import { ExpoModuleError, tryAcquireUserAuthPrompt } from '@expo-harmony/expo-modules-core';
 import { asset } from '@kit.AssetStoreKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { userAuth } from '@kit.UserAuthenticationKit';
@@ -16,36 +16,45 @@ import { encode, sha256 } from './SecureStoreOptions';
 const BIOMETRIC_TYPES: userAuth.UserAuthType[] = [userAuth.UserAuthType.FACE, userAuth.UserAuthType.FINGERPRINT];
 const TRUST_LEVEL: userAuth.AuthTrustLevel = userAuth.AuthTrustLevel.ATL3;
 const MAX_PROMPT_LENGTH: number = 500;
+const INVALID_NATIVE_PARAMETER: number = 401;
 
-export function availableBiometrics(): userAuth.UserAuthType[] {
-  const available: userAuth.UserAuthType[] = [];
+export function availableBiometric(): userAuth.UserAuthType | undefined {
+  let lockout: BusinessError | undefined;
 
   for (const type of BIOMETRIC_TYPES) {
     try {
       userAuth.getAvailableStatus(type, TRUST_LEVEL);
-      available.push(type);
+      return type;
     } catch (error) {
-      const code = (error as BusinessError).code;
-
-      if (
-        code !== userAuth.UserAuthResultCode.TYPE_NOT_SUPPORT &&
-        code !== userAuth.UserAuthResultCode.TRUST_LEVEL_NOT_SUPPORT &&
-        code !== userAuth.UserAuthResultCode.NOT_ENROLLED
-      )
-        throw new ExpoSecureStoreError(error as Object);
+      const status = error as BusinessError;
+      switch (status.code) {
+        case userAuth.UserAuthResultCode.LOCKED:
+          lockout = status;
+          break;
+        case userAuth.UserAuthResultCode.TYPE_NOT_SUPPORT:
+        case userAuth.UserAuthResultCode.TRUST_LEVEL_NOT_SUPPORT:
+        case userAuth.UserAuthResultCode.NOT_ENROLLED:
+          break;
+        default:
+          throw new ExpoSecureStoreError(status);
+      }
     }
   }
 
-  return available;
+  if (lockout !== undefined) {
+    throw new ExpoModuleError('ERR_SECURE_STORE_AUTH_FAILED', 'Biometric authentication is locked.', lockout);
+  }
+
+  return undefined;
 }
 
-export function assertBiometricsAvailable(): userAuth.UserAuthType[] {
-  const types = availableBiometrics();
-  if (types.length === 0) {
+export function requireAvailableBiometric(): userAuth.UserAuthType {
+  const type = availableBiometric();
+  if (type === undefined) {
     throw new ExpoModuleError('ERR_SECURE_STORE_AUTH_UNAVAILABLE', 'No enrolled biometric authenticator supports ATL3.');
   }
 
-  return types;
+  return type;
 }
 
 export function credentialSnapshot(): Uint8Array {
@@ -79,36 +88,50 @@ export function credentialsMatch(item: asset.AssetMap): boolean {
 }
 
 export class SecureStoreAuthentication {
-  private readonly cancellations: Set<() => void> = new Set();
+  private cancelPending?: () => void;
 
   authenticate(challenge: Uint8Array, prompt: string): Promise<Uint8Array> {
-    if (prompt.length === 0 || prompt.length > MAX_PROMPT_LENGTH) {
+    const tooLong = prompt.length > MAX_PROMPT_LENGTH &&
+      (prompt.length > MAX_PROMPT_LENGTH * 2 || Array.from(prompt).length > MAX_PROMPT_LENGTH);
+    if (prompt.length === 0 || tooLong) {
       throw new ExpoModuleError('ERR_SECURE_STORE_INVALID_ARGUMENT', `authenticationPrompt must contain 1 to ${MAX_PROMPT_LENGTH} characters.`);
     }
 
-    const instance = userAuth.getUserAuthInstance(
-      {
-        challenge,
-        authType: assertBiometricsAvailable(),
-        authTrustLevel: TRUST_LEVEL,
-      },
-      { title: prompt },
-    );
+    const release = tryAcquireUserAuthPrompt();
+    if (release === undefined) {
+      throw new ExpoModuleError('ERR_SECURE_STORE_AUTH_FAILED', 'Another authentication prompt is already in progress.');
+    }
+
+    let instance: userAuth.UserAuthInstance;
+
+    try {
+      instance = userAuth.getUserAuthInstance(
+        {
+          challenge,
+          // A biometric-only system widget can use one method on API 13.
+          authType: [requireAvailableBiometric()],
+          authTrustLevel: TRUST_LEVEL,
+        },
+        { title: prompt },
+      );
+    } catch (error) {
+      release();
+      const native = error as BusinessError;
+      if (native.code === INVALID_NATIVE_PARAMETER) {
+        throw new ExpoModuleError('ERR_SECURE_STORE_INVALID_ARGUMENT', 'The system rejected the authentication widget parameters.', native);
+      }
+      throw error as Error;
+    }
 
     return new Promise<Uint8Array>((resolve, reject): void => {
       let settled = false;
+      let retired = false;
 
       const finish = (token?: Uint8Array, failure?: Object): void => {
         if (settled) return;
 
         settled = true;
-        this.cancellations.delete(cancel);
-
-        try {
-          instance.off('result', callback);
-        } catch (error) {
-          console.warn(`Unable to detach SecureStore authentication listener: ${(error as BusinessError).code}`);
-        }
+        this.cancelPending = undefined;
 
         if (failure !== undefined) reject(failure);
         else if (token !== undefined && token.length > 0) resolve(token);
@@ -117,9 +140,23 @@ export class SecureStoreAuthentication {
 
       const callback: userAuth.IAuthCallback = {
         onResult: (result: userAuth.UserAuthResult): void => {
+          retire();
           if (result.result === userAuth.UserAuthResultCode.SUCCESS) finish(result.token);
           else finish(undefined, new ExpoModuleError('ERR_SECURE_STORE_AUTH_FAILED', `Biometric authentication failed (${result.result}).`));
         },
+      };
+
+      const retire = (): void => {
+        if (retired) return;
+
+        retired = true;
+        release();
+
+        try {
+          instance.off('result', callback);
+        } catch (error) {
+          console.warn(`Unable to detach SecureStore authentication listener: ${(error as BusinessError).code}`);
+        }
       };
 
       const cancel = (): void => {
@@ -128,30 +165,25 @@ export class SecureStoreAuthentication {
 
         try {
           instance.cancel();
+          retire();
         } catch (error) {
           console.warn(`Unable to cancel SecureStore authentication: ${(error as BusinessError).code}`);
         }
       };
 
-      this.cancellations.add(cancel);
+      this.cancelPending = cancel;
 
       try {
         instance.on('result', callback);
         instance.start();
       } catch (error) {
         finish(undefined, error as Object);
-
-        try {
-          instance.cancel();
-        } catch (failure) {
-          console.warn(`Unable to cancel failed SecureStore authentication: ${(failure as BusinessError).code}`);
-        }
+        retire();
       }
     });
   }
 
-  cancelAll(): void {
-    this.cancellations.forEach((cancel: () => void): void => cancel());
-    this.cancellations.clear();
+  cancel(): void {
+    this.cancelPending?.();
   }
 }

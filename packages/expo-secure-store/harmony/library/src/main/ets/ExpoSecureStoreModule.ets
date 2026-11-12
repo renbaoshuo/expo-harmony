@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ExpoFunction, ExpoModule, ExpoModuleDefinition, ExpoModuleError, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
+import { ExpoAppLifecycleState, ExpoFunction, ExpoModule, ExpoModuleDefinition, ExpoModuleError, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
 import { asset } from '@kit.AssetStoreKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
@@ -21,10 +21,10 @@ import {
   SecureStoreOptions,
 } from './SecureStoreOptions';
 import {
-  assertBiometricsAvailable,
-  availableBiometrics,
+  availableBiometric,
   credentialSnapshot,
   credentialsMatch,
+  requireAvailableBiometric,
   SecureStoreAuthentication,
 } from './SecureStoreAuthentication';
 
@@ -104,7 +104,7 @@ export class ExpoSecureStoreModule extends ExpoModule {
       )
       .syncFunction('canUseBiometricAuthentication', (): boolean => {
         try {
-          return availableBiometrics().length > 0;
+          return availableBiometric() !== undefined;
         } catch (_) {
           return false;
         }
@@ -177,7 +177,7 @@ export class ExpoSecureStoreModule extends ExpoModule {
     const item = await query(alias, asset.ReturnType.ATTRIBUTES);
 
     this.assertActive();
-    if (options.requireAuthentication) assertBiometricsAvailable();
+    if (options.requireAuthentication) requireAvailableBiometric();
 
     if (item !== undefined && requiresAuthentication(item) === options.requireAuthentication) {
       if (!options.requireAuthentication) {
@@ -210,7 +210,7 @@ export class ExpoSecureStoreModule extends ExpoModule {
 
     const item = querySync(alias, asset.ReturnType.ATTRIBUTES);
 
-    if (options.requireAuthentication) assertBiometricsAvailable();
+    if (options.requireAuthentication) requireAvailableBiometric();
 
     if (item !== undefined && requiresAuthentication(item) === options.requireAuthentication) {
       if (!options.requireAuthentication) {
@@ -230,6 +230,8 @@ export class ExpoSecureStoreModule extends ExpoModule {
   }
 
   private async queryAuthenticated(alias: Uint8Array, prompt: string): Promise<asset.AssetMap | undefined> {
+    this.assertAuthenticationForeground();
+
     let challenge: Uint8Array;
     try {
       challenge = await asset.preQuery(aliasQuery(alias));
@@ -240,8 +242,9 @@ export class ExpoSecureStoreModule extends ExpoModule {
     }
 
     let failure: Object | undefined;
+
     try {
-      this.assertActive();
+      this.assertAuthenticationForeground();
 
       const token = await this.authentication.authenticate(challenge, prompt);
 
@@ -329,9 +332,16 @@ export class ExpoSecureStoreModule extends ExpoModule {
     if (this.destroyed) throw new ExpoModuleError('ERR_SECURE_STORE_DESTROYED', 'The SecureStore runtime has been destroyed.');
   }
 
+  private assertAuthenticationForeground(): void {
+    this.assertActive();
+    if (this.context.isHeadless || this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) {
+      throw new ExpoModuleError('ERR_SECURE_STORE_AUTH_FAILED', 'Biometric authentication requires a foreground application.');
+    }
+  }
+
   private destroy(): void {
     this.destroyed = true;
-    this.authentication.cancelAll();
+    this.authentication.cancel();
   }
 }
 
@@ -407,6 +417,7 @@ function singleResult(items: asset.AssetMap[]): asset.AssetMap {
 
 async function remove(alias: Uint8Array): Promise<void> {
   try {
+    // Always reach durable storage, including on retries after a failed delete (SDK 57).
     await asset.remove(aliasQuery(alias));
   } catch (error) {
     if (!isNotFound(error as Object)) throw new ExpoSecureStoreError(error as Object);
