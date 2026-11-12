@@ -8,7 +8,7 @@
 {
   "modelVersion": "5.0.0",
   "name": "@expo-harmony-internal/expo__dom-webview",
-  "version": "55.0.6-harmony.3",
+  "version": "57.0.1-harmony.0",
   "description": "HarmonyOS port of @expo/dom-webview",
   "keywords": [
     "react-native",
@@ -25,12 +25,10 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@expo-harmony/expo__dom-webview": "./library",
-    "@expo-harmony/expo-modules-core": "55.0.26-harmony.3",
-    "@rnoh/react-native-openharmony": "0.84.1"
+    "@expo-harmony/expo__dom-webview": "./library"
   },
   "overrides": {
-    "@expo-harmony/expo-modules-core": "55.0.26-harmony.3",
-    "@rnoh/react-native-openharmony": "0.84.1"
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
+    "@rnoh/react-native-openharmony": "0.86.1"
   }
 }

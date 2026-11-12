@@ -32,7 +32,7 @@ export class ExpoDomWebViewModule extends ExpoModule {
       },
       wrapBuilder(buildDomWebView),
     )
-      .events(['onMessage'])
+      .events(['onMessage', 'onRenderProcessGone', 'onContentProcessDidTerminate'])
       .prop('source', SOURCE, (view: DomWebView, source: Record<string, ESObject>): void => {
         view.source = (source['uri'] as string | null | undefined) ?? null;
       })
@@ -43,6 +43,38 @@ export class ExpoDomWebViewModule extends ExpoModule {
           view.script = script;
         },
         '',
+      )
+      .prop(
+        'injectedJavaScript',
+        ExpoValueTypes.string(),
+        (view: DomWebView, script: string): void => {
+          view.endScript = script;
+        },
+        '',
+      )
+      .prop(
+        'injectedJavaScriptObject',
+        ExpoValueTypes.string(),
+        (view: DomWebView, source: string): void => {
+          view.injectedObjectJson = source;
+        },
+        '{}',
+      )
+      .prop(
+        'useExpoModulesBridge',
+        ExpoValueTypes.boolean(),
+        (view: DomWebView, enabled: boolean): void => {
+          view.setExpoModulesBridge(enabled);
+        },
+        false,
+      )
+      .prop(
+        'mediaPlaybackRequiresUserAction',
+        ExpoValueTypes.boolean(),
+        (view: DomWebView, enabled: boolean): void => {
+          view.mediaPlaybackRequiresUserAction = enabled;
+        },
+        true,
       )
       .prop(
         'webviewDebuggingEnabled',
@@ -79,6 +111,10 @@ export class ExpoDomWebViewModule extends ExpoModule {
       .asyncFunction(
         'injectJavaScript',
         ExpoFunction.ownedTyped1(ExpoValueTypes.string(), (view: DomWebView, script: string): Promise<void> => view.injectJavaScript(script)),
+      )
+      .asyncFunction(
+        'reload',
+        ExpoFunction.ownedTyped0((view: DomWebView): Promise<void> => view.reload()),
       )
       .asyncFunction(
         'scrollTo',
