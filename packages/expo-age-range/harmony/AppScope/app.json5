@@ -9,7 +9,7 @@
   "app": {
     "bundleName": "dev.expo.agerange.build",
     "vendor": "expo-harmony",
-    "versionCode": 221,
-    "versionName": "0.2.21-harmony.0"
+    "versionCode": 570005,
+    "versionName": "57.0.5-harmony.0"
   }
 }
