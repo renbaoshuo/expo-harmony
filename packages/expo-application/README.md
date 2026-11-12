@@ -1,16 +1,18 @@
 # @expo-harmony/expo-application
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-application) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/application/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-application) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/application/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Application 的原生实现，与官方同版本的 `expo-application` 配套使用。支持读取应用名称、应用 ID、原生版本、构建版本以及安装和最后更新时间。
+为 HarmonyOS 上的 React Native 应用提供 Expo Application 的原生实现，与官方同版本的 `expo-application` 配套使用。
 
 ## 安装
 
-```bash
-npm install @expo-harmony/expo-application expo-application@55.0.19
-```
+本包适配 Expo SDK 57。
 
-本包适配 Expo SDK 55 的 `expo-application`，业务代码继续从官方包导入。原生模块由 Expo Harmony 自动链接。最低支持 HarmonyOS 5.0.1（API 13），宿主应用的 `compatibleSdkVersion` 不能低于这个版本。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
+```bash
+npm install @expo-harmony/expo-application expo-application
+```
 
 ## API 对照表
 
@@ -20,59 +22,96 @@ npm install @expo-harmony/expo-application expo-application@55.0.19
 
 类型：`string | null`
 
-应用包名。空值按 `null` 返回。
+HarmonyOS 应用包名。无法读取或值为空时返回 `null`。
 
 #### `Application.applicationName`
 
 类型：`string | null`
 
-应用显示名称，从应用的名称资源配置解析。名称配置为资源引用而非文本时返回 `null`。
-
-API 20 起系统在部分查询接口上直接返回用户可见名称，本模块不受这一变更影响。
+HarmonyOS 应用显示名称。系统无法解析名称时返回 `null`。
 
 #### `Application.nativeApplicationVersion`
 
 类型：`string | null`
 
-商店展示版本。
+HarmonyOS 应用版本号。系统未提供非空版本号时返回 `null`。
 
 #### `Application.nativeBuildVersion`
 
 类型：`string | null`
 
-内部构建版本，以字符串返回，与官方的类型一致。
+HarmonyOS 应用构建版本号，以字符串返回。系统未提供有效版本号时返回 `null`。
 
 ### Methods
 
 #### `Application.getInstallationTimeAsync()`
 
-返回 `Promise<Date>`，安装时间。取值来源随 HarmonyOS SDK 版本变化：
+参数：无。
 
-- API 18 及以上使用首次安装时间，符合官方不计入后续更新的语义。预置应用返回固定的初始安装时间。
-- API 13–17 没有首次安装时间，使用应用包的安装时间，覆盖安装后怎么取值由系统决定。
+返回：`Promise<Date>`，应用安装时间。
 
-设备首次开机时若还没拿到系统时间，安装时间从 Unix 纪元开始计时，返回值会远小于真实安装时间。时间戳缺失或不合法时拒绝。
+- HarmonyOS SDK API 18 及以上使用系统提供的首次安装时间；系统未提供时使用应用包安装时间。覆盖更新通常不会改变首次安装时间。
+- HarmonyOS SDK API 13–17 使用应用包安装时间；覆盖更新后该时间是否变化由系统决定。
+- 系统尚未同步准确时间时，返回的时间可能早于实际安装时间。
+
+系统无法提供有效时间戳时，Promise 会以 `ERR_APPLICATION_INSTALLATION_TIME` 拒绝。
 
 #### `Application.getLastUpdateTimeAsync()`
 
-返回 `Promise<Date>`，应用包的最后更新时间。官方文档说的是 Google Play 的更新时间，这里与分发渠道无关。该方法是官方标记的 Android 专属接口，在 HarmonyOS 上可用。
+参数：无。
 
-> **未实现的内容**
->
-> - `getAndroidId()`、`getInstallReferrerAsync()`：Android 专属接口，HarmonyOS 上调用抛出 `UnavailabilityError`。
-> - `getIosApplicationReleaseTypeAsync()`、`getIosIdForVendorAsync()`、`getIosPushNotificationServiceEnvironmentAsync()`：iOS 专属接口，HarmonyOS 上调用抛出 `UnavailabilityError`。
+返回：`Promise<Date>`，应用包最近更新时间。
+
+系统无法提供有效时间戳时，Promise 会以 `ERR_APPLICATION_LAST_UPDATE_TIME` 拒绝。
+
+#### `Application.getAndroidId()`
+
+参数：无。
+
+- HarmonyOS 不提供此 API 所需的设备标识。
+
+#### `Application.getInstallReferrerAsync()`
+
+参数：无。
+
+- HarmonyOS 不提供此 API 所需的安装来源信息。
+
+#### `Application.getIosApplicationReleaseTypeAsync()`
+
+参数：无。
+
+- HarmonyOS 没有此 API 对应的应用发行类型。
+
+#### `Application.getIosIdForVendorAsync()`
+
+参数：无。
+
+- HarmonyOS 不提供此 API 对应的 vendor 标识。
+
+#### `Application.getIosPushNotificationServiceEnvironmentAsync()`
+
+参数：无。
+
+- HarmonyOS 不提供此 API 对应的推送服务环境信息。
 
 ### Types
 
-> **未实现的内容**
->
-> - `PushNotificationServiceEnvironment`：iOS 专属类型，HarmonyOS 上没有取值来源。
+#### `PushNotificationServiceEnvironment`
+
+- HarmonyOS 上没有接口返回此类型的值，系统不提供对应的推送服务环境信息。
 
 ### Enums
 
-> **未实现的内容**
->
-> - `ApplicationReleaseType`：iOS 专属枚举，HarmonyOS 上没有取值来源。
+#### `ApplicationReleaseType`
+
+- HarmonyOS 上没有接口返回此枚举值，系统没有对应的应用发行类别。
+
+### Error codes
+
+| 错误码 | 触发条件 |
+| --- | --- |
+| `ERR_APPLICATION_INSTALLATION_TIME` | 无法读取应用包信息，或系统返回的安装时间戳无效。 |
+| `ERR_APPLICATION_LAST_UPDATE_TIME` | 无法读取应用包信息，或系统返回的更新时间戳无效。 |
 
 ## Author
 

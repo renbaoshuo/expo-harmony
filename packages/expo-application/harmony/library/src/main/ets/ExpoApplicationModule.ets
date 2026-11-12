@@ -59,16 +59,17 @@ export class ExpoApplicationModule extends ExpoModule {
   }
 
   private async readBundleInfo(code: string, label: string): Promise<bundleManager.BundleInfo> {
-    try {
-      if (this.pending === undefined) {
-        this.pending = bundleManager.getBundleInfoForSelf(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
-      }
+    let pending: Promise<bundleManager.BundleInfo> | undefined;
 
-      return await this.pending;
+    try {
+      pending = this.pending ?? bundleManager.getBundleInfoForSelf(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT);
+      this.pending = pending;
+
+      return await pending;
     } catch (error) {
       throw new ExpoModuleError(code, `Unable to read the running Harmony application's ${label}: ${String(error)}`, error as Object);
     } finally {
-      this.pending = undefined;
+      if (this.pending === pending) this.pending = undefined;
     }
   }
 }
@@ -99,51 +100,39 @@ function checkedTimestamp(time: number, kind: string, code: string): number {
 }
 
 function literalApplicationLabel(label: string): string | null {
-  return label.length === 0 || /^\$string:[A-Za-z_][A-Za-z0-9_]*$/.test(label) ? null : label;
+  return label.length === 0 || /^\$string:[A-Za-z0-9_]+$/.test(label) ? null : label;
 }
 
 function resolveApplicationName(context: ExpoModuleContext, info: bundleManager.BundleInfo): string | null {
-  const ability = context.uiAbilityContext;
   const resource = info.appInfo.labelResource;
-  const local = resource.moduleName.length === 0 || resource.moduleName === ability.currentHapModuleInfo.name;
+  const local = (resource.bundleName.length === 0 || resource.bundleName === info.name)
+    && (resource.moduleName.length === 0 || resource.moduleName === context.uiAbilityContext.currentHapModuleInfo.name);
 
-  try {
-    // Cross-module IDs need their Resource scope. The recommended replacement,
-    // application.createModuleContext, is async and cannot serve a sync constant.
-    const name = local ? ability.resourceManager.getStringSync(resource.id) : ability.resourceManager.getStringSync(resource);
-
-    if (name.length > 0) return name;
-  } catch (error) {
-    if (!isMissingResource(error)) {
-      throw new ExpoModuleError(
-        'ERR_APPLICATION_NAME',
-        `Unable to resolve the running Harmony application's name: ${String(error)}`,
-        error as Object,
-      );
-    }
+  if (Number.isSafeInteger(resource.id) && resource.id > 0) {
+    // A cross-module ID needs its Resource scope for a synchronous lookup.
+    const name = readApplicationNameResource(context, local ? resource.id : resource);
+    if (name !== null) return name;
   }
 
   const id = info.appInfo.labelId;
-  if (local && Number.isSafeInteger(id) && id > 0) {
-    try {
-      const name = ability.resourceManager.getStringSync(id);
-
-      if (name.length > 0) return name;
-    } catch (error) {
-      if (!isMissingResource(error)) {
-        throw new ExpoModuleError(
-          'ERR_APPLICATION_NAME',
-          `Unable to resolve the running Harmony application's name: ${String(error)}`,
-          error as Object,
-        );
-      }
-    }
+  if (local && id !== resource.id && Number.isSafeInteger(id) && id > 0) {
+    const name = readApplicationNameResource(context, id);
+    if (name !== null) return name;
   }
 
   return literalApplicationLabel(info.appInfo.label);
 }
 
-function isMissingResource(error: Object): boolean {
-  const code = (error as BusinessError).code;
-  return code === RESOURCE_INVALID_ID || code === RESOURCE_NOT_FOUND;
+function readApplicationNameResource(context: ExpoModuleContext, resource: number | Resource): string | null {
+  try {
+    const manager = context.uiAbilityContext.resourceManager;
+    return nonEmptyOrNull(typeof resource === 'number' ? manager.getStringSync(resource) : manager.getStringSync(resource));
+  } catch (error) {
+    const code = (error as BusinessError).code;
+    if (code !== RESOURCE_INVALID_ID && code !== RESOURCE_NOT_FOUND) {
+      context.logger.warn(`Unable to resolve the running Harmony application's name: ${String(error)}`);
+    }
+
+    return null;
+  }
 }
