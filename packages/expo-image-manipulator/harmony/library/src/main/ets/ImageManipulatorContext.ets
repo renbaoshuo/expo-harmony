@@ -129,6 +129,12 @@ export class ImageManipulatorContext extends ExpoSharedObject {
       }
 
       await pixel.scale(width / size.width, height / size.height, image.AntiAliasingLevel.LOW);
+
+      const resized = pixel.getImageInfoSync().size;
+      // Older Image Kit versions can resolve scale() even if the transform failed internally.
+      if (resized.width !== width || resized.height !== height) {
+        throw new ExpoModuleError('ERR_IMAGE_MANIPULATOR', `Could not resize the image to ${width} × ${height} pixels.`);
+      }
     });
 
     return this;
@@ -137,7 +143,18 @@ export class ImageManipulatorContext extends ExpoSharedObject {
   rotate(degrees: number): ImageManipulatorContext {
     this.task.transform(async (pixel: image.PixelMap): Promise<void> => {
       const angle = ((degrees % 360) + 360) % 360;
-      if (angle !== 0) await pixel.rotate(angle);
+      if (angle === 0) return;
+
+      const size = angle === 90 || angle === 270 ? pixel.getImageInfoSync().size : undefined;
+      await pixel.rotate(angle);
+
+      // Older Image Kit versions can resolve rotate() even if the transform failed internally.
+      if (size !== undefined) {
+        const rotated = pixel.getImageInfoSync().size;
+        if (rotated.width !== size.height || rotated.height !== size.width) {
+          throw new ExpoModuleError('ERR_IMAGE_MANIPULATOR', `Could not rotate the image by ${degrees} degrees.`);
+        }
+      }
     });
 
     return this;
