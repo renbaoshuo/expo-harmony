@@ -5,6 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+import { deviceInfo } from '@kit.BasicServicesKit';
 import {
   ExpoFunction,
   ExpoModule,
@@ -35,6 +36,7 @@ const CONTENT_FIT_VALUES: Record<string, ContentFit> = { 'contain': ContentFit.C
 const CONTENT_FIT_TYPE = ExpoValueTypes.enumerable<ContentFit>('ContentFit', CONTENT_FIT_VALUES);
 const PLAYBACK_STYLE_VALUES: Record<string, PlaybackStyle> = { 'full': PlaybackStyle.Full, 'hint': PlaybackStyle.Hint };
 const PLAYBACK_STYLE_TYPE = ExpoValueTypes.enumerable<PlaybackStyle>('PlaybackStyle', PLAYBACK_STYLE_VALUES);
+const MOVING_PHOTO_PREPARED_API = 20;
 
 export class ExpoLivePhotoModule extends ExpoModule {
   constructor(context: ExpoModuleContext) {
@@ -74,7 +76,8 @@ export class ExpoLivePhotoModule extends ExpoModule {
 
     return new ExpoModuleDefinition()
       .name('ExpoLivePhoto')
-      .syncFunction('isAvailable', (): boolean => canIUse('SystemCapability.FileManagement.PhotoAccessHelper.Core'))
+      .syncFunction('isAvailable', (): boolean =>
+        deviceInfo.sdkApiVersion >= MOVING_PHOTO_PREPARED_API && canIUse('SystemCapability.FileManagement.PhotoAccessHelper.Core'))
       .view(view);
   }
 }

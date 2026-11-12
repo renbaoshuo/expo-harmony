@@ -5,9 +5,8 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ExpoView, ExpoViewContext } from '@expo-harmony/expo-modules-core';
+import { ExpoView, ExpoViewContext, filePathFromUri } from '@expo-harmony/expo-modules-core';
 import type { ExpoViewContentContext } from '@expo-harmony/expo-modules-core';
-import { url } from '@kit.ArkTS';
 import { fileUri } from '@kit.CoreFileKit';
 import { MovingPhotoView, MovingPhotoViewAttribute, MovingPhotoViewController, photoAccessHelper } from '@kit.MediaLibraryKit';
 
@@ -64,6 +63,7 @@ export class LivePhotoView extends ExpoView {
   private loadId: number = 0;
   private renderId: number = 0;
   private destroyed: boolean = false;
+  private loadFailed: boolean = false;
   private previewSent: boolean = false;
   private completeSent: boolean = false;
   private hintWarned: boolean = false;
@@ -73,11 +73,11 @@ export class LivePhotoView extends ExpoView {
   }
 
   setSource(source: LivePhotoAsset | null): void {
-    if (
-      source === this.source ||
-      (source !== null && this.source !== null && source.photoUri === this.source.photoUri && source.pairedVideoUri === this.source.pairedVideoUri)
-    )
-      return;
+    const unchanged = source === this.source || (
+      source !== null && this.source !== null &&
+      source.photoUri === this.source.photoUri && source.pairedVideoUri === this.source.pairedVideoUri
+    );
+    if (unchanged && !this.loadFailed) return;
 
     this.source = source;
     this.sourceDirty = true;
@@ -176,7 +176,19 @@ export class LivePhotoView extends ExpoView {
   onError(item: RenderedPhoto): void {
     if (!this.isCurrent(item)) return;
 
-    this.failLoad(this.loadId, new Error('HarmonyOS MovingPhotoView failed to load or play the live photo.'));
+    if (!item.previewLoaded || !item.prepared) {
+      this.failLoad(this.loadId, new Error('HarmonyOS MovingPhotoView failed to load the live photo.'));
+      return;
+    }
+
+    // Expo exposes load errors only. Preserve the loaded preview on playback failure.
+    this.onStop(item);
+    try {
+      item.controller.stopPlayback();
+    } catch (error) {
+      console.warn(`ExpoLivePhoto: failed to stop playback after an error: ${error}`);
+    }
+    console.warn('ExpoLivePhoto: HarmonyOS MovingPhotoView failed to play the loaded live photo.');
   }
 
   destroy(): void {
@@ -193,6 +205,7 @@ export class LivePhotoView extends ExpoView {
     const id = ++this.loadId;
     this.clearRenderedPhoto();
 
+    this.loadFailed = false;
     this.previewSent = false;
     this.completeSent = false;
 
@@ -202,10 +215,12 @@ export class LivePhotoView extends ExpoView {
     this.sendEvent('onLoadStart');
 
     try {
-      const image = localFileUri(source.photoUri, 'photoUri');
-      const video = localFileUri(source.pairedVideoUri, 'pairedVideoUri');
+      const context = this.context.rnComponentContext.uiAbilityContext;
+      const bundleName = context.abilityInfo.bundleName;
+      const image = localFileUri(source.photoUri, 'photoUri', bundleName);
+      const video = localFileUri(source.pairedVideoUri, 'pairedVideoUri', bundleName);
 
-      const photo = await photoAccessHelper.MediaAssetManager.loadMovingPhoto(this.context.rnComponentContext.uiAbilityContext, image, video);
+      const photo = await photoAccessHelper.MediaAssetManager.loadMovingPhoto(context, image, video);
 
       if (!this.destroyed && id === this.loadId) this.renderPhoto(photo);
     } catch (error) {
@@ -243,6 +258,7 @@ export class LivePhotoView extends ExpoView {
   private failLoad(id: number, error: Object): void {
     if (this.destroyed || id !== this.loadId) return;
 
+    this.loadFailed = true;
     this.clearRenderedPhoto();
 
     const message = (error as Error).message || String(error);
@@ -255,29 +271,27 @@ export class LivePhotoView extends ExpoView {
   }
 }
 
-function localFileUri(value: string | null | undefined, field: string): string {
+function localFileUri(value: string | null | undefined, field: string, bundleName: string): string {
   if (!value) throw new Error(`Provided source is not a valid LivePhotoAsset: the \`${field}\` has to be provided.`);
 
+  if (value.includes('\0')) {
+    throw new Error(`Provided source is not a valid LivePhotoAsset: \`${field}\` must not contain a NUL character.`);
+  }
   if (value.startsWith('/')) return fileUri.getUriFromPath(value);
 
-  let uri: url.URL;
-  try {
-    uri = url.URL.parseURL(value);
-  } catch (error) {
-    throw new Error(`Provided source is not a valid LivePhotoAsset: \`${field}\` is not a valid URI: ${(error as Error).message}`);
-  }
-
-  if (uri.protocol !== 'file:') {
+  const match = /^file:(?:\/\/([^/?#]*)(\/[^?#]*)|(\/(?!\/)[^?#]*))$/i.exec(value);
+  if (match === null) {
     throw new Error(`Provided source is not a valid LivePhotoAsset: \`${field}\` must be an application sandbox file URI.`);
   }
-  if (uri.search || uri.hash) {
-    throw new Error(`Provided source is not a valid LivePhotoAsset: \`${field}\` must not contain a query or fragment.`);
+
+  const authority = (match[1] ?? '').toLowerCase();
+  if (authority && authority !== 'localhost' && authority !== bundleName.toLowerCase()) {
+    throw new Error(`Provided source is not a valid LivePhotoAsset: \`${field}\` must refer to the application sandbox.`);
   }
 
-  if (uri.hostname && uri.hostname !== 'localhost') return value;
-
-  // Decode file:/// paths once before the system adds the app authority and re-encodes them.
-  return fileUri.getUriFromPath(decodeURIComponent(uri.pathname));
+  // Expo uses authority-free URIs. Media Library Kit needs a system file URI.
+  const path = filePathFromUri(`file://${match[2] ?? match[3]}`);
+  return fileUri.getUriFromPath(path);
 }
 
 @Component
