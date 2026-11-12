@@ -7,6 +7,7 @@
 
 import { ExpoFunction, ExpoModule, ExpoModuleDefinition, ExpoModuleError, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
 import { util } from '@kit.ArkTS';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { textToSpeech } from '@kit.CoreSpeechKit';
 import { i18n } from '@kit.LocalizationKit';
 import { SPEECH_OPTIONS, SpeechOptions } from './SpeechOptions';
@@ -16,6 +17,7 @@ const SPEAKING_BOUNDARY = 'Exponent.speakingWillSayNextString';
 const SPEAKING_DONE = 'Exponent.speakingDone';
 const SPEAKING_STOPPED = 'Exponent.speakingStopped';
 const SPEAKING_ERROR = 'Exponent.speakingError';
+const ERR_SPEECH_UNAVAILABLE = 'ERR_SPEECH_UNAVAILABLE';
 
 const MAX_SPEECH_INPUT_LENGTH = 10000;
 const OFFLINE_MODE = 1;
@@ -50,7 +52,7 @@ export class ExpoSpeechModule extends ExpoModule {
   private voice?: string;
   private queue: Utterance[] = [];
   private current?: Utterance;
-  private preparing?: Promise<void>;
+  private creatingEngine?: Promise<void>;
   private destroyed: boolean = false;
 
   definition(): ExpoModuleDefinition {
@@ -73,7 +75,17 @@ export class ExpoSpeechModule extends ExpoModule {
         ),
       )
       .asyncFunction('getVoices', async (): Promise<Voice[]> => {
-        const voices = await this.getNativeVoices();
+        let voices: textToSpeech.VoiceInfo[];
+        try {
+          voices = await this.getNativeVoices();
+        } catch (error) {
+          this.assertActive();
+
+          // Match Android's empty list for unavailable TTS and keep catalog failures observable.
+          if (error instanceof ExpoModuleError && error.code === ERR_SPEECH_UNAVAILABLE) return [];
+
+          throw new ExpoModuleError('ERR_SPEECH_UNABLE_TO_GET_VOICES', `Unable to get voices: ${describeError(error)}`);
+        }
 
         return voices.map(
           (voice: textToSpeech.VoiceInfo): Voice => ({
@@ -92,7 +104,7 @@ export class ExpoSpeechModule extends ExpoModule {
       .asyncFunction('stop', async (): Promise<void> => this.stop())
       .onPrepareForReload(async (): Promise<void> => {
         this.destroy();
-        await this.preparing;
+        await this.creatingEngine;
       })
       .onAbilityDestroy((): void => this.destroy())
       .onDestroy((): void => this.destroy());
@@ -101,7 +113,7 @@ export class ExpoSpeechModule extends ExpoModule {
   private async getNativeVoices(): Promise<textToSpeech.VoiceInfo[]> {
     this.assertActive();
     if (!canIUse('SystemCapability.AI.TextToSpeech')) {
-      throw new ExpoModuleError('ERR_SPEECH_UNAVAILABLE', 'This device does not support Core Speech Kit text-to-speech.');
+      throw new ExpoModuleError(ERR_SPEECH_UNAVAILABLE, 'This device does not support Core Speech Kit text-to-speech.');
     }
 
     const voices = await textToSpeech.listVoices({
@@ -115,31 +127,28 @@ export class ExpoSpeechModule extends ExpoModule {
   }
 
   private startNext(): void {
-    if (this.destroyed || this.current !== undefined || this.preparing !== undefined) return;
+    if (this.destroyed || this.current !== undefined || this.creatingEngine !== undefined) return;
 
     const item = this.queue.shift();
     if (item === undefined) return;
 
     this.current = item;
-    this.preparing = Promise.resolve()
-      .then((): Promise<void> => this.prepare(item))
-      .finally((): void => {
-        this.preparing = undefined;
-        this.startNext();
-      });
+    void Promise.resolve().then((): Promise<void> => this.prepare(item));
   }
 
   private async prepare(item: Utterance): Promise<void> {
     try {
       if (!this.isCurrent(item.request)) return;
-      validateUtterance(item);
+
+      const textLength = item.text.trim().length;
+      validateUtterance(item.options, textLength);
 
       const voices = await this.getNativeVoices();
 
       if (!this.isCurrent(item.request)) return;
 
       const voice = selectVoice(voices, item.options);
-      if (item.text.length === 0) {
+      if (textLength === 0) {
         this.started(item.request);
         this.finish(item.request, SPEAKING_DONE);
 
@@ -149,53 +158,61 @@ export class ExpoSpeechModule extends ExpoModule {
       const identifier = voiceIdentifier(voice);
 
       if (this.voice !== identifier) {
-        this.releaseEngine();
-
-        const engine = await textToSpeech.createEngine({
-          language: voice.language,
-          person: voice.person,
-          online: OFFLINE_MODE,
-          extraParams: { style: voice.style },
+        // Voice queries only read catalog data. Only engine creation needs to hold the queue after stop().
+        this.creatingEngine = this.createEngine(item.request, voice, identifier).finally((): void => {
+          this.creatingEngine = undefined;
+          this.startNext();
         });
-
-        this.engine = engine;
-        if (!this.isCurrent(item.request)) {
-          this.releaseEngine();
-
-          return;
-        }
-
-        engine.setListener({
-          onStart: (request: string, _response: textToSpeech.StartResponse): void => this.started(request),
-          onComplete: (request: string, response: textToSpeech.CompleteResponse): void => {
-            if (response.type === PLAYBACK_COMPLETE) this.finish(request, SPEAKING_DONE);
-          },
-          onStop: (request: string, _response: textToSpeech.StopResponse): void => this.finish(request, SPEAKING_STOPPED),
-          onError: (request: string, code: number, message: string): void => {
-            this.finish(request, SPEAKING_ERROR, `${message} (${code})`);
-          },
-        });
-        this.voice = identifier;
+        await this.creatingEngine;
+        if (!this.isCurrent(item.request)) return;
       }
 
       const options = item.options;
+      const params: Record<string, Object> = {};
+      params['speed'] = options.rate;
+      params['pitch'] = options.pitch;
+      params['volume'] = Math.min(1, Math.max(0, options.volume));
+      // Core Speech Kit defaults to zh-CN for numerals and only accepts zh-CN or en-US here.
+      if (normalizeLanguage(voice.language) === 'en-US') params['languageContext'] = 'en-US';
 
-      this.engine!.speak(item.text, {
-        requestId: item.request,
-        extraParams: {
-          speed: options.rate,
-          pitch: options.pitch,
-          volume: Math.min(1, Math.max(0, options.volume)),
-          // Override the default zh-CN numeric pronunciation to match the selected voice.
-          languageContext: normalizeLanguage(voice.language),
-        },
-      });
+      this.engine!.speak(item.text, { requestId: item.request, extraParams: params });
     } catch (error) {
       // Upstream JS wraps this event's error string in Error, so retain our code in its message.
-      const message = error instanceof ExpoModuleError ? `${error.code}: ${error.message}` : String(error);
-
-      this.finish(item.request, SPEAKING_ERROR, message);
+      this.finish(item.request, SPEAKING_ERROR, describeError(error));
     }
+  }
+
+  private async createEngine(request: string, voice: textToSpeech.VoiceInfo, identifier: string): Promise<void> {
+    this.releaseEngine();
+
+    const engine = await textToSpeech.createEngine({
+      language: voice.language,
+      person: voice.person,
+      online: OFFLINE_MODE,
+      extraParams: { style: voice.style },
+    });
+
+    this.engine = engine;
+    if (!this.isCurrent(request)) {
+      try {
+        this.releaseEngine();
+      } catch (error) {
+        console.warn(`ExpoSpeech: failed to shut down the cancelled speech engine: ${describeError(error)}`);
+      }
+      return;
+    }
+
+    engine.setListener({
+      onStart: (request: string, _response: textToSpeech.StartResponse): void => this.started(request),
+      onComplete: (request: string, response: textToSpeech.CompleteResponse): void => {
+        if (response.type === PLAYBACK_COMPLETE) this.finish(request, SPEAKING_DONE);
+      },
+      onStop: (request: string, _response: textToSpeech.StopResponse): void => this.finish(request, SPEAKING_STOPPED),
+      onError: (request: string, code: number, message: string): void => {
+        this.finish(request, SPEAKING_ERROR, `${message} (${code})`);
+      },
+    });
+    this.voice = identifier;
   }
 
   private started(request: string): void {
@@ -230,9 +247,10 @@ export class ExpoSpeechModule extends ExpoModule {
         this.releaseEngine();
       }
     } catch (error) {
-      cancelled.forEach((item: Utterance): void => this.publish(SPEAKING_ERROR, item.id, String(error)));
+      const message = describeError(error);
+      cancelled.forEach((item: Utterance): void => this.publish(SPEAKING_ERROR, item.id, message));
 
-      throw new ExpoModuleError('ERR_SPEECH_STOP', `Unable to stop speech: ${String(error)}`);
+      throw new ExpoModuleError('ERR_SPEECH_STOP', `Unable to stop speech: ${message}`);
     }
 
     cancelled.forEach((item: Utterance): void => this.publish(SPEAKING_STOPPED, item.id));
@@ -268,7 +286,7 @@ export class ExpoSpeechModule extends ExpoModule {
         this.releaseEngine();
       }
     } catch (error) {
-      console.warn(`ExpoSpeech: failed to stop or shut down the speech engine: ${String(error)}`);
+      console.warn(`ExpoSpeech: failed to stop or shut down the speech engine: ${describeError(error)}`);
     }
   }
 
@@ -279,13 +297,33 @@ export class ExpoSpeechModule extends ExpoModule {
   }
 }
 
+function describeError(error: ESObject): string {
+  if (error instanceof ExpoModuleError) return `${error.code}: ${error.message}`;
+
+  const native = error as BusinessError;
+  if (typeof native?.code === 'number' && typeof native.message === 'string') {
+    return `${native.message} (${native.code})`;
+  }
+
+  return String(error);
+}
+
 function createRequestId(): string {
   // Core Speech Kit accepts letters/digits, but RFC 4122 UUIDs also contain hyphens.
   return util.generateRandomUUID().replace(/-/g, '');
 }
 
 function normalizeLanguage(language: string): string {
-  return new Intl.Locale(language.replace(/_/g, '-')).baseName;
+  return parseLanguage(language)?.baseName ?? language.replace(/_/g, '-');
+}
+
+function parseLanguage(language: string): Intl.Locale | undefined {
+  try {
+    return new Intl.Locale(language.replace(/_/g, '-'));
+  } catch {
+    // Like SDK 57 Android, preserve non-standard engine locales instead of failing the whole voice list.
+    return undefined;
+  }
 }
 
 function voiceIdentifier(voice: textToSpeech.VoiceInfo): string {
@@ -293,16 +331,12 @@ function voiceIdentifier(voice: textToSpeech.VoiceInfo): string {
 }
 
 function voiceForLanguage(voices: textToSpeech.VoiceInfo[], language: string): textToSpeech.VoiceInfo | undefined {
-  let locale: Intl.Locale;
-  try {
-    locale = new Intl.Locale(language.replace(/_/g, '-'));
-  } catch {
-    return undefined;
-  }
+  const locale = parseLanguage(language);
+  if (locale === undefined) return undefined;
 
   return (
     voices.find((voice: textToSpeech.VoiceInfo): boolean => normalizeLanguage(voice.language) === locale.baseName) ??
-    voices.find((voice: textToSpeech.VoiceInfo): boolean => new Intl.Locale(normalizeLanguage(voice.language)).language === locale.language)
+    voices.find((voice: textToSpeech.VoiceInfo): boolean => parseLanguage(voice.language)?.language === locale.language)
   );
 }
 
@@ -321,12 +355,10 @@ function selectVoice(voices: textToSpeech.VoiceInfo[], options: SpeechOptions): 
   return requested ?? voiceForLanguage(voices, i18n.System.getSystemLanguage()) ?? voices[0];
 }
 
-function validateUtterance(item: Utterance): void {
-  if (item.text.length > MAX_SPEECH_INPUT_LENGTH) {
+function validateUtterance(options: SpeechOptions, textLength: number): void {
+  if (textLength > MAX_SPEECH_INPUT_LENGTH) {
     throw new ExpoModuleError('ERR_SPEECH_INPUT_IS_TOO_LONG', `Speech input text is too long! Limit of input length is: ${MAX_SPEECH_INPUT_LENGTH}`);
   }
-
-  const options = item.options;
 
   if (!Number.isFinite(options.volume)) throw new ExpoModuleError('ERR_SPEECH_INVALID_OPTIONS', 'volume must be finite.');
   if (
