@@ -33,6 +33,8 @@ export default {
         cppOutputPath: './entry/src/main/cpp/rnoh_codegen/generated',
       },
       autolinking: null,
+      // The CLI forwards Metro to the selected device when running the app.
+      metro: null,
     }),
   ],
 };

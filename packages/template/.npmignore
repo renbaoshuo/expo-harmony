@@ -1,5 +1,7 @@
 test/
+**/.expo/
 **/.hvigor/
+**/.cxx/
 **/build/
 **/oh_modules/
 **/oh-package-lock.json5
@@ -7,6 +9,19 @@ test/
 **/*.app
 **/*.hsp
 **/*.har
+**/*.cer
+**/*.key
+**/*.p7b
+**/*.p12
+**/*.pem
 harmony/local.properties
+harmony/entry/src/main/cpp/autolinking.cmake
+harmony/entry/src/main/cpp/RNOHPackagesFactory.h
+harmony/entry/src/main/cpp/rnoh_codegen/
+harmony/entry/src/main/ets/generated/
+harmony/entry/src/main/ets/RNOHPackagesFactory.ets
+harmony/entry/src/main/ets/RNOHWorkerPackagesFactory.ets
+harmony/entry/src/main/resources/rawfile/expo-harmony-runtime.json
+harmony/entry/src/main/resources/rawfile/expo-updates/
 harmony/entry/src/main/resources/rawfile/*.hbc
 harmony/entry/src/main/resources/rawfile/*.map

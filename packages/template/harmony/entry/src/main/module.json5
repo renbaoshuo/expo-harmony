@@ -16,6 +16,11 @@
     "deliveryWithInstall": true,
     "installationFree": false,
     "pages": "$profile:main_pages",
+    "metadata": [
+      { "name": "OPTLazyForEach", "value": "true" },
+      { "name": "can_preview_text", "value": "true" },
+      { "name": "halfLeading", "value": "true" }
+    ],
     "requestPermissions": [
       {
         "name": "ohos.permission.INTERNET"
@@ -36,7 +41,7 @@
         "skills": [
           {
             "entities": ["entity.system.home"],
-            "actions": ["action.system.home"]
+            "actions": ["action.system.home", "ohos.want.action.home"]
           }
         ]
       }

@@ -1,5 +1,6 @@
 oh_modules/
 .hvigor/
+.cxx/
 build/
 **/build/
 local.properties
@@ -8,5 +9,8 @@ oh-package-lock.json5
 *.app
 *.hsp
 *.har
+entry/src/main/ets/generated/inline/
+entry/src/main/resources/rawfile/expo-harmony-runtime.json
+entry/src/main/resources/rawfile/expo-updates/
 entry/src/main/resources/rawfile/*.hbc
 entry/src/main/resources/rawfile/*.map
