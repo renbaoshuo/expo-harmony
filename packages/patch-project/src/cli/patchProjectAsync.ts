@@ -15,8 +15,8 @@ import { HarmonyPatchError } from '../errors';
 import { generatePatchAsync } from '../gitPatch';
 import { getPatchFilesAsync } from '../patches';
 
-export async function patchProjectAsync(root: string, options: { clean?: boolean } = {}) {
-  return withHarmonyProjectLockAsync(root, 'patch-project', async () => {
+export async function patchProjectAsync(projectRoot: string, options: { clean?: boolean } = {}) {
+  return withHarmonyProjectLockAsync(projectRoot, 'patch-project', async (root) => {
     const native = await HarmonyPaths.resolveHarmonyPath(root, 'harmony');
     let stat;
     try {
@@ -33,6 +33,14 @@ export async function patchProjectAsync(root: string, options: { clean?: boolean
     if (options.clean) await assertSafeCleanTarget(root);
 
     const directory = await HarmonyPaths.resolveHarmonyPath(root, 'cng-patches');
+    const outputRoot = await fs.realpath(directory).catch((cause) => {
+      if (cause.code !== 'ENOENT') throw cause;
+      return directory;
+    });
+    if (HarmonyPaths.isInside(native, outputRoot)) {
+      throw new HarmonyPatchError('ERR_HARMONY_PATCH_FAILED', `Patch output directory must be outside the Harmony native project: ${directory}.`);
+    }
+
     const previous = await getPatchFilesAsync(directory);
     const result = await withGeneratedProjectAsync(
       root, { clean: true, skipPatches: true }, async (expected, checksum) => ({
@@ -41,14 +49,23 @@ export async function patchProjectAsync(root: string, options: { clean?: boolean
       })
     );
 
-    if (result.patch.trim()) await atomicWrite(result.file, result.patch);
+    if (result.patch.length) {
+      const stat = await fs.lstat(result.file).catch((cause) => {
+        if (cause.code !== 'ENOENT') throw cause;
+      });
+      if (stat && !stat.isFile()) {
+        throw new HarmonyPatchError('ERR_HARMONY_PATCH_FAILED', `Patch output must be a regular file: ${result.file}.`);
+      }
+
+      await atomicWrite(result.file, result.patch);
+    }
     for (const name of previous) {
-      const file = await HarmonyPaths.resolveHarmonyPath(directory, name);
-      if (!result.patch.trim() || file !== result.file) await fs.rm(file);
+      const file = path.join(directory, name);
+      if (!result.patch.length || file !== result.file) await fs.rm(file, { force: true });
     }
 
     if (options.clean) await fs.rm(native, { recursive: true });
 
-    return result.patch.trim() ? result.file : null;
+    return result.patch.length ? result.file : null;
   });
 }

@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/patch-project",
-  "version": "55.1.27-harmony.10",
+  "version": "57.0.27-harmony.0",
   "keywords": [
     "react-native",
     "expo",
@@ -40,18 +40,17 @@
     "@expo-harmony/cli": "workspace:*",
     "@expo-harmony/config-plugins": "workspace:*",
     "@expo-harmony/expo-modules-autolinking": "workspace:*",
-    "@expo/config": "55.0.17",
-    "@expo/config-plugins": "55.0.11"
+    "@expo/config-plugins": "57.0.11"
   },
   "peerDependencies": {
-    "expo": "55.0.31"
+    "expo": "57.0.31"
   },
   "devDependencies": {
-    "@types/node": "18.19.0",
+    "@types/node": "22.14.0",
     "typescript": "6.0.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
   },
   "publishConfig": {
     "access": "public"

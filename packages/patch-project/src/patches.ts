@@ -9,9 +9,15 @@ import fs from 'node:fs/promises';
 
 import { HarmonyPatchError } from './errors';
 
-export async function getPatchFilesAsync(root: string): Promise<string[]> {
+export async function getPatchFilesAsync(root: string, includeSymlinks = false): Promise<string[]> {
   try {
-    return (await fs.readdir(root)).filter(name => name.startsWith('harmony') && name.endsWith('.patch')).sort();
+    const entries = await fs.readdir(root, { withFileTypes: true });
+
+    return entries
+      .filter(entry => (entry.isFile() || (includeSymlinks && entry.isSymbolicLink()))
+        && /^harmony\+[a-f0-9]{32}\.patch$/u.test(entry.name))
+      .map(entry => entry.name)
+      .sort();
   } catch (cause) {
     if (cause.code === 'ENOENT') return [];
 

@@ -9,11 +9,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { createRunOncePlugin, HarmonyPaths, recordManagedFile, registerHarmonyConfigPlugin, type HarmonyConfigPlugin } from '@expo-harmony/config-plugins';
-import { withProjectPatch } from '@expo-harmony/config-plugins/internal';
+import { getHarmonyConfigPlugins, withProjectPatch } from '@expo-harmony/config-plugins/internal';
 import { WarningAggregator, type ModPlatform } from '@expo/config-plugins';
 
 import { HarmonyPatchError } from './errors';
-import { applyPatchAsync, getPatchChangedLinesAsync } from './gitPatch';
+import { applyPatchAsync } from './gitPatch';
 import { getPatchFilesAsync } from './patches';
 
 export interface PatchPluginProps {
@@ -22,6 +22,12 @@ export interface PatchPluginProps {
 }
 
 const owner = '@expo-harmony/patch-project';
+
+interface DeferredPluginFile {
+  owner: string;
+  path: string;
+  sha256: string;
+}
 
 const withPatchPlugin: HarmonyConfigPlugin<PatchPluginProps | void> = (config, props) => {
   const options = props || {};
@@ -38,8 +44,11 @@ const withPatchPlugin: HarmonyConfigPlugin<PatchPluginProps | void> = (config, p
 
     const root = mod.modRequest.projectRoot;
     const directory = await HarmonyPaths.resolveHarmonyPath(root, options.patchRoot ?? 'cng-patches');
-    const files = await getPatchFilesAsync(directory);
-    if (!files.length) return mod;
+    const files = await getPatchFilesAsync(directory, true);
+    if (!files.length) {
+      registerHarmonyConfigPlugin(mod, owner, { files: [] });
+      return mod;
+    }
 
     const checksum = mod._internal?.templateChecksum;
     const name = `harmony+${checksum}.patch`;
@@ -53,20 +62,41 @@ const withPatchPlugin: HarmonyConfigPlugin<PatchPluginProps | void> = (config, p
     }
 
     const file = await HarmonyPaths.resolveHarmonyPath(directory, name);
-    const source = await fs.readFile(file, 'utf8');
-    if (!source.trim()) return mod;
+    if (!(await fs.stat(file)).isFile()) {
+      throw new HarmonyPatchError('ERR_HARMONY_PATCH_FAILED', `Patch input must point to a regular file: ${file}.`);
+    }
 
-    const changed = await getPatchChangedLinesAsync(file);
+    const source = await fs.readFile(file);
+    const managed: readonly { owner: string; path: string }[] = mod._internal?.harmonyManagedFiles ?? [];
+    const deferred: readonly DeferredPluginFile[] = mod._internal?.harmonyDeferredPluginFiles ?? [];
+    const otherClaims = new Set([
+      ...managed.filter(file => file.owner !== owner).map(file => file.path),
+      ...getHarmonyConfigPlugins(mod)
+        .filter(plugin => plugin.owner !== owner)
+        .flatMap(plugin => (plugin.files ?? []).map(file => `harmony/${file}`)),
+    ]);
+    const previous = new Map(deferred
+      .filter(file => file.owner === owner && !otherClaims.has(file.path))
+      .map(file => [file.path, file.sha256]));
+    const claims = { ...mod, _internal: { ...mod._internal } };
+    const result = await applyPatchAsync(root, source, previous, (created) => {
+      for (const file of created) {
+        if (otherClaims.has(`harmony/${file}`)) {
+          throw new HarmonyPatchError('ERR_HARMONY_PATCH_FAILED', `Patch cannot claim a managed file: harmony/${file}.`);
+        }
+      }
+      registerHarmonyConfigPlugin(claims, owner, { files: created });
+    });
+    const changed = result.changedLines;
     if (changed > limit) {
       WarningAggregator.addWarningForPlatform('harmony' as ModPlatform, owner, `${name} has ${changed} changed lines, exceeding the warning limit of ${limit}. Consider a config plugin for larger changes.`);
     }
 
-    const result = await applyPatchAsync(root, source);
-    registerHarmonyConfigPlugin(mod, owner, { files: result.created });
+    mod._internal.harmonyConfigPlugins = claims._internal.harmonyConfigPlugins;
     for (const relative of result.files) {
       const file = path.join(mod.modRequest.platformProjectRoot, relative);
-      const managed = mod._internal?.harmonyManagedFiles?.find(item => item.path === `harmony/${relative}`);
-      recordManagedFile(mod, file, managed?.owner ?? (result.created.includes(relative) ? owner : 'patch'));
+      const entry = managed.find(item => item.path === `harmony/${relative}`);
+      recordManagedFile(mod, file, entry?.owner ?? (result.created.includes(relative) ? owner : 'patch'));
     }
 
     return mod;
