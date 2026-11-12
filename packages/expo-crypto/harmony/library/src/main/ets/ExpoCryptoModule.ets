@@ -276,7 +276,6 @@ class SealedDataObject extends ExpoSharedObject {
 
   constructor(context: ExpoModuleContext, iv: Uint8Array, ciphertext: Uint8Array, tag: Uint8Array) {
     super(context);
-    requireNonce(iv);
     requireTagLength(tag.byteLength, 'ERR_CRYPTO_INVALID_SEALED_DATA');
 
     this.nonceBytes = copyBytes(iv);
@@ -342,6 +341,7 @@ export class ExpoCryptoAESModule extends ExpoModule {
 
             let native: cryptoFramework.SymKey | undefined = undefined;
             let bytes: Uint8Array | undefined = undefined;
+
             try {
               native = await cryptoFramework.createSymKeyGenerator(`AES${resolved}`).generateSymKey();
               bytes = native.getEncoded().data;
@@ -373,8 +373,7 @@ export class ExpoCryptoAESModule extends ExpoModule {
                   requireHexKeyTextLength(input.text);
                   bytes = hexDecode(input.text);
                 } else if (encoding === 'base64') {
-                  requireBase64KeyTextLength(input.text);
-                  bytes = base64Decode(input.text);
+                  bytes = base64Decode(input.text, MAXIMUM_BASE64_KEY_LENGTH);
                 } else {
                   throw new CryptoError('ERR_CRYPTO_INVALID_KEY', "Key encoding must be 'hex' or 'base64'.");
                 }
@@ -591,8 +590,7 @@ function decodeEncryptOptions(value: ESObject, path: string): EncryptOptions {
     if (typeof nonce === 'number') result.nonceLength = requireSize(nonce, `${path}.nonce`);
     else result.nonce = binaryInput(nonce, `${path}.nonce`);
   }
-  if (result.nonce !== undefined) requireNonce(result.nonce);
-  else requireNonceLength(result.nonceLength);
+  requireNonceLength(result.nonce?.byteLength ?? result.nonceLength);
 
   const aad: ESObject = input['additionalData'];
   if (aad !== undefined && aad !== null) {
@@ -622,7 +620,6 @@ function decodeSealedConfig(value: ESObject, path: string): SealedDataConfig {
   result.ivLength = optionalSize(input['ivLength'], `${path}.ivLength`) ?? DEFAULT_IV_LENGTH;
   result.tagLength = optionalSize(input['tagLength'], `${path}.tagLength`) ?? DEFAULT_TAG_LENGTH;
 
-  requireNonceLength(result.ivLength);
   requireTagLength(result.tagLength, 'ERR_CRYPTO_INVALID_SEALED_DATA');
 
   return result;
@@ -758,6 +755,7 @@ async function encodedDigestAsync(algorithm: string, data: Uint8Array, encoding:
 async function encryptAesGcm(plaintext: Uint8Array, key: EncryptionKeyObject, options: EncryptOptions): Promise<SealedDataObject> {
   let native: cryptoFramework.SymKey | undefined = undefined;
   let bytes: Uint8Array | undefined = undefined;
+
   try {
     bytes = key.bytes();
     const nonce = options.nonce === undefined ? await randomBytesAsync(options.nonceLength) : copyBytes(options.nonce);
@@ -799,11 +797,13 @@ async function encryptAesGcm(plaintext: Uint8Array, key: EncryptionKeyObject, op
 }
 
 async function decryptAesGcm(sealed: SealedDataObject, key: EncryptionKeyObject, aad: Uint8Array): Promise<Uint8Array> {
+  requireNonceLength(sealed.ivSize);
   requireTagLength(sealed.tagSize, 'ERR_CRYPTO_UNSUPPORTED_TAG_LENGTH');
   requirePlatformTagLength(sealed.tagSize);
 
   let native: cryptoFramework.SymKey | undefined = undefined;
   let bytes: Uint8Array | undefined = undefined;
+
   try {
     bytes = key.bytes();
     native = await cryptoFramework.createSymKeyGenerator(`AES${key.size}`).convertKey({ data: bytes });
@@ -844,10 +844,7 @@ async function decryptAesGcm(sealed: SealedDataObject, key: EncryptionKeyObject,
 }
 
 function sealedFromCombined(context: ExpoModuleContext, combined: Uint8Array, config: SealedDataConfig): SealedDataObject {
-  if (combined.byteLength < config.ivLength || combined.byteLength - config.ivLength < config.tagLength) {
-    throw new CryptoError('ERR_CRYPTO_INVALID_SEALED_DATA', 'Invalid SealedData configuration.');
-  }
-
+  requireSealedDataLength(combined.byteLength, config.ivLength, config.tagLength);
   const offset = combined.byteLength - config.tagLength;
   return new SealedDataObject(context, combined.subarray(0, config.ivLength), combined.subarray(config.ivLength, offset), combined.subarray(offset));
 }
@@ -859,12 +856,19 @@ function sealedFromParts(context: ExpoModuleContext, iv: Uint8Array, ciphertext:
 
   const tagLength = tag?.length ?? DEFAULT_TAG_LENGTH;
   requireTagLength(tagLength, 'ERR_CRYPTO_INVALID_SEALED_DATA');
-  if (ciphertext.byteLength < tagLength) {
-    throw new CryptoError('ERR_CRYPTO_INVALID_SEALED_DATA', 'Invalid SealedData tag length.');
-  }
+  requireSealedDataLength(iv.byteLength + ciphertext.byteLength, iv.byteLength, tagLength);
 
   const offset = ciphertext.byteLength - tagLength;
   return new SealedDataObject(context, iv, ciphertext.subarray(0, offset), ciphertext.subarray(offset));
+}
+
+function requireSealedDataLength(length: number, ivLength: number, tagLength: number): void {
+  if (length < ivLength + tagLength) {
+    throw new CryptoError(
+      'ERR_INVALID_SEALED_DATA_CONFIG',
+      `Sealed data is ${length} bytes, which is too short to hold a ${ivLength}-byte IV and a ${tagLength}-byte authentication tag.`,
+    );
+  }
 }
 
 function requireKeySize(size: number): void {
@@ -877,10 +881,6 @@ function requireKeyLength(length: number): void {
   if (length !== 16 && length !== 24 && length !== 32) {
     throw new CryptoError('ERR_CRYPTO_INVALID_KEY', `Invalid AES key byte length '${length}'.`);
   }
-}
-
-function requireNonce(bytes: Uint8Array): void {
-  requireNonceLength(bytes.byteLength);
 }
 
 function requireNonceLength(length: number): void {
@@ -914,12 +914,6 @@ function requireHexKeyTextLength(value: string): void {
   const prefix = value.startsWith('0x') || value.startsWith('0X') ? 2 : 0;
   if (value.length - prefix > MAXIMUM_HEX_KEY_LENGTH) {
     throw new CryptoError('ERR_CRYPTO_INVALID_KEY', 'The hexadecimal AES key string is too long.');
-  }
-}
-
-function requireBase64KeyTextLength(value: string): void {
-  if (value.length > MAXIMUM_BASE64_KEY_LENGTH) {
-    throw new CryptoError('ERR_CRYPTO_INVALID_KEY', 'The base64 AES key string is too long.');
   }
 }
 
@@ -959,11 +953,23 @@ function base64Encode(bytes: Uint8Array): string {
   return new util.Base64Helper().encodeToStringSync(bytes);
 }
 
-function base64Decode(text: string): Uint8Array {
-  if (text.length === 0) return new Uint8Array(0);
+function base64Decode(text: string, maximumLength?: number): Uint8Array {
+  const compact = text.replace(/[\t\n\f\r ]/g, '');
+  if (compact.length === 0) return new Uint8Array(0);
+  if (maximumLength !== undefined && compact.length > maximumLength) {
+    throw new CryptoError('ERR_CRYPTO_INVALID_KEY', 'The base64 AES key string is too long.');
+  }
+
+  // The system decoder expects complete quartets and can silently truncate an incomplete one.
+  const remainder = compact.length % 4;
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compact) || remainder === 1 || (remainder !== 0 && compact.endsWith('='))) {
+    throw new CryptoError('ERR_CRYPTO_INVALID_BASE64', 'Invalid base64 string.');
+  }
+
+  const padded = remainder === 0 ? compact : compact.padEnd(compact.length + 4 - remainder, '=');
 
   try {
-    return new util.Base64Helper().decodeSync(text);
+    return new util.Base64Helper().decodeSync(padded);
   } catch (error) {
     throw new CryptoError('ERR_CRYPTO_INVALID_BASE64', 'Invalid base64 string.', error as Object);
   }
