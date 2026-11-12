@@ -2,158 +2,152 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-updates-interface)
 
-为 HarmonyOS 原生模块提供 Updates 控制器、开发启动器和状态订阅的接口定义，宿主和开发工具通过它们访问已注册的 Updates 实现。
+为 HarmonyOS 上的 React Native 应用提供 Expo Updates 状态接口的原生实现，与官方同版本的 `expo-updates-interface` 配套使用。
 
 ## 安装
+
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
 
 ```bash
 npm install @expo-harmony/expo-updates-interface
 ```
 
-本包适配 Expo SDK 55 的 `expo-updates-interface`，只有原生接口，没有 JavaScript API。安装 `@expo-harmony/expo-updates` 时会自动带上这个包；单独安装是为了在自己的 ArkTS 模块里读取更新状态。最低支持 HarmonyOS 5.0.1（API 13），宿主的 `compatibleSdkVersion` 也要满足这一要求。
-
-模块在自己的 `oh-package.json5` 中声明依赖：
-
-```json
-{
-  "dependencies": {
-    "@expo-harmony/expo-updates-interface": "55.1.6-harmony.0"
-  }
-}
-```
-
-运行时从注册表拿到当前控制器，再读取属性或订阅状态变化：
-
-```ts
-import { UpdatesControllerRegistry } from '@expo-harmony/expo-updates-interface';
-
-const controller = UpdatesControllerRegistry.controller;
-const subscription = controller?.subscribeToUpdatesStateChanges({
-  updatesStateDidChange: (event) => console.info(JSON.stringify(event)),
-});
-const context = subscription?.getContext();
-subscription?.remove();
-```
-
-HAR 没有其他依赖，不依赖 expo-modules-core 和 RNOH，任何 ArkTS 模块都能直接使用。应用侧的更新流程请使用 `expo-updates` 的 JavaScript 接口。
-
 ## API 对照表
 
-### Classes
+### Methods
 
-#### `UpdatesControllerRegistry`
+#### `UpdatesControllerRegistry.requestDevelopmentLauncherInitialization(bundleName)`
 
-持有当前 Updates 控制器的注册表，成员都是静态的，每个进程一份。
+登记 `bundleName` 对应应用包的开发启动器初始化请求。返回 `void`。
 
-`UpdatesControllerRegistry.controller` 的类型是 `UpdatesInterface | undefined`。应用装了 `@expo-harmony/expo-updates` 时，控制器在 Updates 初始化时注册进来；没有任何实现时读取得到 `undefined`。注册表用弱引用保存控制器，控制器的生命周期由注册方管理，控制器被回收后读取也得到 `undefined`。
+#### `UpdatesControllerRegistry.isDevelopmentLauncherInitializationRequested(bundleName)`
 
-### Interfaces
+查询 `bundleName` 对应应用包是否有待处理的开发启动器初始化请求。返回 `boolean`。
 
-#### `UpdatesInterface`
+#### `UpdatesControllerRegistry.completeDevelopmentLauncherInitialization(bundleName)`
 
-Updates 控制器的接口，所有控制器（启用、停用和开发启动器）都实现它。
+完成 `bundleName` 对应应用包的开发启动器初始化请求。返回 `void`。
 
-| 成员                                       | 类型                             | 说明                                            |
-| ------------------------------------------ | -------------------------------- | ----------------------------------------------- |
-| `isEnabled`                                | `boolean`                        | 更新功能是否启用                                |
-| `runtimeVersion`                           | `string \| null`                 | 运行时版本，未启用更新时为 `null`               |
-| `updateUrl`                                | `string \| null`                 | 更新服务地址，未启用更新时为 `null`             |
-| `launchedUpdateId`                         | `string \| null`                 | 正在运行的更新 ID，未启用更新时为 `null`        |
-| `embeddedUpdateId`                         | `string \| null`                 | 随应用打包的更新 ID，未启用更新时为 `null`      |
-| `launchAssetPath`                          | `string \| null`                 | 当前 JS 包在本机上的路径，未启用更新时为 `null` |
-| `subscribeToUpdatesStateChanges(listener)` | `UpdatesStateChangeSubscription` | 订阅更新状态机变化，`listener` 见下文           |
+#### `UpdatesDevLauncherInterface.reset()`
 
-> **未实现的内容**
->
-> - `requestHeaders`：官方接口的更新请求头属性，鸿蒙实现不通过接口公开请求头。
+清除当前选中的开发更新。返回 `void`。
 
-#### `UpdatesStateChangeListener`
+#### `UpdatesDevLauncherInterface.isValidUpdatesConfiguration(configuration)`
 
-状态变化监听器，由使用方实现。
+检查 `configuration: Record<string, ESObject>` 是否可用于获取开发更新。返回 `boolean`。
 
-| 成员                           | 说明                                                                                       |
-| ------------------------------ | ------------------------------------------------------------------------------------------ |
-| `updatesStateDidChange(event)` | 状态机每次变化时调用。`event` 带 `type` 字段标明发生的动作，其余字段是事件负载 |
+#### `UpdatesDevLauncherInterface.fetchUpdateWithConfiguration(configuration, callback, deferActivation?)`
 
-#### `UpdatesStateChangeSubscription`
+按 `configuration: Record<string, ESObject>` 获取开发更新，通过 `callback: UpdatesDevLauncherCallback` 报告清单、进度和结果。`deferActivation` 默认为 `false`；设为 `true` 时，收到成功结果后可调用其 `activate()` 确认选用该更新。返回 `void`。
 
-`subscribeToUpdatesStateChanges()` 返回的订阅。
+### Event subscriptions
 
-`remove()` 取消订阅，之后不再收到事件，重复调用没有副作用。
+#### `UpdatesInterface.subscribeToUpdatesStateChanges(listener)`
 
-`getContext()` 返回 `UpdatesNativeInterfaceStateContext | null`，是当前状态的一份独立快照，时间字段都是 `Date`。监听器注册前发生的状态变化也能从这里读到。控制器未激活时返回 `null`。
+订阅更新状态变化，`listener` 类型为 `UpdatesStateChangeListener`。返回 `UpdatesStateChangeSubscription`。只有活动的更新控制器会发送状态事件；控制器未活动时不会发送事件，订阅的 `getContext()` 返回 `null`。
 
-#### `UpdatesInterfaceCallbacks`
+#### `UpdatesStateChangeListener.updatesStateDidChange(event)`
 
-宿主实现的重载回调接口。
+更新状态变化时调用。`event` 类型为 `Record<string, ESObject>`，包含本次事件的数据。返回 `void`。
 
-| 成员                  | 说明                                     |
-| --------------------- | ---------------------------------------- |
-| `onRequestRelaunch()` | 开发启动器请求重载应用以让更新生效时调用 |
+#### `UpdatesStateChangeSubscription.remove()`
 
-#### `UpdatesDevLauncherInterface`
+取消订阅，之后不再收到状态事件。返回 `void`；重复调用无副作用。
 
-开发启动器专用的控制器接口，在 `UpdatesInterface` 基础上增加开发流程需要的方法，由开发客户端的控制器实现。
+#### `UpdatesStateChangeSubscription.getContext()`
 
-| 成员                                                    | 类型                                     | 说明                                                                 |
-| ------------------------------------------------------- | ---------------------------------------- | -------------------------------------------------------------------- |
-| `updatesInterfaceCallbacks`                             | `UpdatesInterfaceCallbacks \| undefined` | 宿主注册的重载回调，开发启动器通过它请求重载                         |
-| `reset()`                                               |                                          | 丢弃当前的开发更新会话，回到初始状态                                 |
-| `fetchUpdateWithConfiguration(configuration, callback)` |                                          | 按配置拉取开发更新，进度和结果通过 `UpdatesDevLauncherCallback` 返回 |
-| `isValidUpdatesConfiguration(configuration)`            | `boolean`                                | 校验开发更新配置是否合法                                             |
-
-> **未实现的内容**
->
-> - `setIsUsingEmbeddedAssets()`：官方接口的方法，开发更新在鸿蒙上没有对应的开关。
-
-#### `UpdatesDevLauncherCallback`
-
-开发更新拉取过程的回调，由调用方实现。
-
-| 成员                                    | 说明                                                                                   |
-| --------------------------------------- | -------------------------------------------------------------------------------------- |
-| `onManifestLoaded(manifest)`            | 清单下载完成时调用，返回 `false` 中止下载该清单描述的更新，`onSuccess` 随即收到 `null` |
-| `onProgress(successful, failed, total)` | 资源下载进度，三个参数分别是成功、失败和总数                                           |
-| `onSuccess(update)`                     | 拉取结束，`update` 是 `UpdatesDevLauncherResult \| null`                               |
-| `onFailure(error)`                      | 拉取失败，`error` 是 `Error \| null`                                                   |
+读取当前状态快照，返回 `UpdatesNativeInterfaceStateContext | null`。快照时间字段为 `Date`；控制器未活动时返回 `null`。
 
 ### Types
 
+#### `UpdatesControllerRegistry`
+
+`controller` 是可读写属性，类型为 `UpdatesInterface | undefined`。读取当前控制器；没有可用控制器时为 `undefined`。可将实现 `UpdatesInterface` 的控制器设为当前控制器。
+
+#### `UpdatesInterface`
+
+更新控制器提供的属性如下：
+
+| 属性 | 类型 | 说明 |
+| --- | --- | --- |
+| `isEnabled` | `boolean` | 更新功能是否启用。 |
+| `runtimeVersion` | `string \| null` | 当前更新配置的运行时版本；无可用配置时为 `null`。 |
+| `updateUrl` | `string \| null` | 当前更新配置的服务地址；无可用配置时为 `null`。HarmonyOS 上以字符串表示。 |
+| `requestHeaders` | `Record<string, string> \| null` | 当前配置的请求头副本；无可用配置时为 `null`。 |
+| `launchedUpdateId` | `string \| null` | 当前运行更新的 ID；没有时为 `null`。 |
+| `embeddedUpdateId` | `string \| null` | 随应用打包的更新 ID；没有时为 `null`。 |
+| `launchAssetPath` | `string \| null` | 当前更新启动资源在本机上的路径；没有时为 `null`。 |
+
+#### `UpdatesDevLauncherInterface`
+
+开发启动器控制器在 `UpdatesInterface` 基础上提供以下属性：
+
+| 属性 | 类型 | 说明 |
+| --- | --- | --- |
+| `configuredUpdateUrl` | `string \| null \| undefined` | 应用打包时配置的更新服务地址；不可用时为 `null`，实现也可省略此属性。 |
+| `updatesInterfaceCallbacks` | `UpdatesInterfaceCallbacks \| undefined` | 接收开发启动器重载请求的回调；未设置时为 `undefined`。 |
+
+#### `UpdatesInterfaceCallbacks`
+
+宿主重载回调：
+
+| 方法 | 说明 |
+| --- | --- |
+| `onRequestRelaunch()` | 开发启动器请求重载应用时调用。返回 `void`。 |
+
+#### `UpdatesDevLauncherCallback`
+
+开发更新获取过程的回调：
+
+| 方法 | 参数及返回值 | 说明 |
+| --- | --- | --- |
+| `onManifestLoaded(manifest)` | `manifest: Record<string, ESObject>`；返回 `boolean` | 清单加载后调用。返回 `false` 会中止该更新，随后 `onSuccess` 收到 `null`。 |
+| `onProgress(successful, failed, total)` | 三个参数均为 `number`；返回 `void` | 报告成功、失败和总资源数。 |
+| `onSuccess(update)` | `update: UpdatesDevLauncherResult \| null`；返回 `void` | 更新获取结束；没有可用更新或清单回调中止下载时，`update` 为 `null`。 |
+| `onFailure(error)` | `error: Error \| null`；返回 `void` | 更新获取失败时调用。 |
+
 #### `UpdatesDevLauncherResult`
 
-| 属性              | 类型                       | 说明                |
-| ----------------- | -------------------------- | ------------------- |
-| `manifest`        | `Record<string, ESObject>` | 拉到的更新清单      |
-| `launchAssetPath` | `string`                   | JS 包在本机上的路径 |
+开发更新获取成功后的结果：
+
+| 属性 | 类型 | 说明 |
+| --- | --- | --- |
+| `manifest` | `Record<string, ESObject>` | 更新清单。 |
+| `launchAssetPath` | `string` | 启动资源在本机上的路径。 |
+| `activate` | `(() => void) \| undefined` | `deferActivation` 为 `true` 时用于选用该更新；最多调用一次。重置或选用另一更新后，该回调失效。 |
 
 #### `UpdatesNativeInterfaceStateContext`
 
-更新状态机的状态快照，从 `UpdatesStateChangeSubscription` 的 `getContext()` 取得。
+由 `UpdatesStateChangeSubscription.getContext()` 返回的状态快照：
 
-| 属性                     | 类型                               | 说明                                 |
-| ------------------------ | ---------------------------------- | ------------------------------------ |
-| `isUpdateAvailable`      | `boolean`                          | 检查到有可用更新                     |
-| `isUpdatePending`        | `boolean`                          | 已下载的更新在等重载生效             |
-| `isChecking`             | `boolean`                          | 正在检查更新                         |
-| `isDownloading`          | `boolean`                          | 正在下载更新                         |
-| `isRestarting`           | `boolean`                          | 正在重载应用                         |
-| `restartCount`           | `number`                           | 本次会话内重载的次数                 |
-| `latestManifest`         | `Record<string, ESObject> \| null` | 最近一次拿到的清单                   |
-| `downloadedManifest`     | `Record<string, ESObject> \| null` | 已下载更新的清单                     |
-| `rollback`               | `UpdatesRollback \| null`          | 回滚信息，没有时为 `null`            |
-| `checkError`             | `Record<string, string> \| null`   | 检查失败的错误信息，没有时为 `null`  |
-| `downloadError`          | `Record<string, string> \| null`   | 下载失败的错误信息，没有时为 `null`  |
-| `downloadProgress`       | `number`                           | 下载进度，0 到 1                     |
-| `lastCheckForUpdateTime` | `Date \| null`                     | 上次检查更新的时间                   |
-| `sequenceNumber`         | `number`                           | 状态变化的序号，每次变化递增         |
-| `downloadStartTime`      | `Date \| null`                     | 下载开始的时间，一次下载完成后才有值 |
-| `downloadFinishTime`     | `Date \| null`                     | 下载结束的时间，一次下载完成后才有值 |
+| 属性 | 类型 | 说明 |
+| --- | --- | --- |
+| `isUpdateAvailable` | `boolean` | 是否有可用更新。 |
+| `isUpdatePending` | `boolean` | 是否有已下载并等待重载生效的更新。 |
+| `isChecking` | `boolean` | 是否正在检查更新。 |
+| `isDownloading` | `boolean` | 是否正在下载更新。 |
+| `isRestarting` | `boolean` | 应用是否正在重载。 |
+| `restartCount` | `number` | 本次会话内重载次数。 |
+| `latestManifest` | `Record<string, ESObject> \| null` | 最近一次获取的更新清单；没有时为 `null`。 |
+| `downloadedManifest` | `Record<string, ESObject> \| null` | 已下载更新的清单；没有时为 `null`。 |
+| `rollback` | `UpdatesRollback \| null` | 回滚信息；没有时为 `null`。 |
+| `checkError` | `Record<string, string> \| null` | 最近一次检查更新的错误信息；没有时为 `null`。 |
+| `downloadError` | `Record<string, string> \| null` | 最近一次下载更新的错误信息；没有时为 `null`。 |
+| `downloadProgress` | `number` | 当前下载进度，范围为 `0` 到 `1`。 |
+| `lastCheckForUpdateTime` | `Date \| null` | 最近一次检查更新的时间；尚未检查时为 `null`。 |
+| `sequenceNumber` | `number` | 状态变化序号，每次变化递增。 |
+| `downloadStartTime` | `Date \| null` | 最近一次下载开始时间；下载开始后有值。 |
+| `downloadFinishTime` | `Date \| null` | 最近一次下载完成时间；下载完成后有值。 |
 
 #### `UpdatesRollback`
 
-| 属性         | 类型   | 说明           |
-| ------------ | ------ | -------------- |
-| `commitTime` | `Date` | 回滚发生的时间 |
+回滚信息：
+
+| 属性 | 类型 | 说明 |
+| --- | --- | --- |
+| `commitTime` | `Date` | 回滚提交时间。 |
 
 ## Author
 

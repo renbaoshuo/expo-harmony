@@ -18,6 +18,7 @@ export interface UpdatesInterface {
   readonly isEnabled: boolean;
   readonly runtimeVersion: string | null;
   readonly updateUrl: string | null;
+  readonly requestHeaders: Record<string, string> | null;
   readonly launchedUpdateId: string | null;
   readonly embeddedUpdateId: string | null;
   readonly launchAssetPath: string | null;
@@ -27,6 +28,8 @@ export interface UpdatesInterface {
 export interface UpdatesDevLauncherResult {
   manifest: Record<string, ESObject>;
   launchAssetPath: string;
+  /** Commits a deferred update once. Reset or another activation invalidates it. */
+  activate?: () => void;
 }
 
 export interface UpdatesDevLauncherCallback {
@@ -41,9 +44,16 @@ export interface UpdatesInterfaceCallbacks {
 }
 
 export interface UpdatesDevLauncherInterface extends UpdatesInterface {
+  /** URL packaged with the app. Implementations can omit this if unavailable. */
+  readonly configuredUpdateUrl?: string | null;
   updatesInterfaceCallbacks?: UpdatesInterfaceCallbacks;
   reset(): void;
-  fetchUpdateWithConfiguration(configuration: Record<string, ESObject>, callback: UpdatesDevLauncherCallback): void;
+  /** By default the update is selected before onSuccess. Pass true to defer selection to result.activate. */
+  fetchUpdateWithConfiguration(
+    configuration: Record<string, ESObject>,
+    callback: UpdatesDevLauncherCallback,
+    deferActivation?: boolean,
+  ): void;
   isValidUpdatesConfiguration(configuration: Record<string, ESObject>): boolean;
 }
 
