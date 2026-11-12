@@ -5,14 +5,18 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ExpoFunction, ExpoModule, ExpoModuleDefinition, ExpoModuleError, fileUriFromPath } from '@expo-harmony/expo-modules-core';
+import { ExpoFunction, ExpoModule, ExpoModuleDefinition, ExpoModuleError, fileUriFromPath, resolveFileReadSource } from '@expo-harmony/expo-modules-core';
+import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
-import { BusinessError } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { DOCUMENT_PICKER_OPTIONS, DocumentPickerOptions } from './DocumentPickerOptions';
 import { filenameExtension, mimeTypeForName, suffixFilters } from './DocumentPickerTypes';
 
 const MILLISECONDS_PER_SECOND: number = 1000;
+const NANOSECONDS_PER_MILLISECOND: bigint = 1000000n;
+// The system picker can outlive a React Native runtime in the same ability.
+const activePickers: WeakSet<common.UIAbilityContext> = new WeakSet();
 
 interface DocumentPickerAsset {
   uri: string;
@@ -27,8 +31,29 @@ interface DocumentPickerResult {
   assets: DocumentPickerAsset[] | null;
 }
 
+function lastModifiedMilliseconds(stat: fileIo.Stat): number {
+  let modified = Date.now();
+  try {
+    const time = Math.trunc(stat.mtime * MILLISECONDS_PER_SECOND);
+    if (Number.isSafeInteger(time)) modified = time;
+  } catch (_) {}
+
+  if (deviceInfo.sdkApiVersion >= 15) {
+    try {
+      const nanoseconds = stat.mtimeNs;
+      if (nanoseconds !== undefined) {
+        // The native getter exposes pre-epoch timestamps as unsigned 64-bit values.
+        const signed = modified < 0 ? BigInt.asIntN(64, nanoseconds) : nanoseconds;
+        const time = Number(signed / NANOSECONDS_PER_MILLISECOND);
+        if (Number.isSafeInteger(time)) modified = time;
+      }
+    } catch (_) {}
+  }
+
+  return modified;
+}
+
 export class ExpoDocumentPickerModule extends ExpoModule {
-  private picking: boolean = false;
   private destroyed: boolean = false;
 
   definition(): ExpoModuleDefinition {
@@ -43,22 +68,27 @@ export class ExpoDocumentPickerModule extends ExpoModule {
       })
       .onDestroy((): void => {
         this.destroyed = true;
+      })
+      .onAbilityDestroy((): void => {
+        this.destroyed = true;
       });
   }
 
   private async pick(options: DocumentPickerOptions): Promise<DocumentPickerResult> {
     this.assertActive();
-    if (this.picking) {
+
+    const ability = this.context.isHeadless ? undefined : this.context.uiAbilityContext;
+    if (ability !== undefined && activePickers.has(ability)) {
       throw new ExpoModuleError('ERR_PICKING_IN_PROGRESS', 'Different document picking in progress. Await other document picking first.');
     }
     if (options.type.length === 0) {
       throw new ExpoModuleError('ERR_DOCUMENT_PICKER_OPTIONS_EMPTY_LIST', "The 'type' argument must be a non-empty array.");
     }
-    if (this.context.isHeadless) {
+    if (ability === undefined) {
       throw new ExpoModuleError('ERR_DOCUMENT_PICKER_UNAVAILABLE', 'Document picking requires a UIAbility.');
     }
 
-    this.picking = true;
+    activePickers.add(ability);
     let directory: string | undefined;
 
     try {
@@ -67,8 +97,9 @@ export class ExpoDocumentPickerModule extends ExpoModule {
       selection.fileSuffixFilters = suffixFilters(options.type);
 
       let uris: string[];
+
       try {
-        uris = await new picker.DocumentViewPicker(this.context.uiAbilityContext).select(selection);
+        uris = await new picker.DocumentViewPicker(ability).select(selection);
       } catch (error) {
         this.assertActive();
 
@@ -86,11 +117,15 @@ export class ExpoDocumentPickerModule extends ExpoModule {
         }
 
         const assets: DocumentPickerAsset[] = [];
+        const grants = new Set<string>();
         const selected = options.multiple ? uris : uris.slice(0, 1);
+
         for (const uri of selected) {
-          assets.push(await this.readAsset(uri, directory));
+          assets.push(await this.readAsset(uri, grants, directory));
           this.assertActive();
         }
+
+        for (const source of grants) this.context.grantFileAccess(source, false, false);
 
         return { canceled: false, assets };
       } catch (error) {
@@ -111,14 +146,14 @@ export class ExpoDocumentPickerModule extends ExpoModule {
 
       throw new ExpoModuleError('ERR_DOCUMENT_PICKER_FAILED', 'Unable to prepare the HarmonyOS document picker.', error);
     } finally {
-      this.picking = false;
+      activePickers.delete(ability);
     }
   }
 
-  private async readAsset(uri: string, directory?: string): Promise<DocumentPickerAsset> {
+  private async readAsset(uri: string, grants: Set<string>, directory?: string): Promise<DocumentPickerAsset> {
     this.assertActive();
 
-    const file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
+    const file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
 
     try {
       this.assertActive();
@@ -131,29 +166,23 @@ export class ExpoDocumentPickerModule extends ExpoModule {
         throw new ExpoModuleError('ERR_FAILED_TO_READ_DOCUMENT', 'The selected document has an invalid filename.');
       }
 
-      let modified = Date.now();
-      try {
-        const time = Math.trunc(stat.mtime * MILLISECONDS_PER_SECOND);
-        if (Number.isSafeInteger(time)) modified = time;
-      } catch (_) {}
-
       this.assertActive();
 
       let target = uri;
+      let size = documentSize(stat);
       if (directory !== undefined) {
         const path = `${directory}/${util.generateRandomUUID()}${filenameExtension(name)}`;
 
         await fileIo.copyFile(file.fd, path);
+        // Providers can materialize or change a file after the first fstat.
+        size = documentSize(await fileIo.stat(path));
         target = fileUriFromPath(path);
       } else {
-        this.context.grantFileAccess(file.path, false, false);
+        grants.add(resolveFileReadSource(uri, this.context.uiAbilityContext.cacheDir));
       }
 
-      const asset: DocumentPickerAsset = { uri: target, name, lastModified: modified };
-      try {
-        const size = stat.size;
-        if (Number.isSafeInteger(size) && size >= 0) asset.size = size;
-      } catch (_) {}
+      const asset: DocumentPickerAsset = { uri: target, name, lastModified: lastModifiedMilliseconds(stat) };
+      if (size !== undefined) asset.size = size;
 
       const mime = mimeTypeForName(name);
       if (mime !== undefined) asset.mimeType = mime;
@@ -173,4 +202,12 @@ export class ExpoDocumentPickerModule extends ExpoModule {
       throw new ExpoModuleError('ERR_DOCUMENT_PICKER_DESTROYED', 'The document picker runtime has been destroyed.');
     }
   }
+}
+
+function documentSize(stat: fileIo.Stat): number | undefined {
+  try {
+    const size = stat.size;
+    if (Number.isSafeInteger(size) && size >= 0) return size;
+  } catch (_) {}
+  return undefined;
 }

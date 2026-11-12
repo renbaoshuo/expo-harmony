@@ -6,15 +6,16 @@
  */
 
 import { uniformTypeDescriptor } from '@kit.ArkData';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
 
 export function filenameExtension(name: string): string {
   const dot = name.lastIndexOf('.');
-  return dot > 0 && dot < name.length - 1 ? name.slice(dot).toLowerCase() : '';
+  return dot > 0 && dot < name.length - 1 ? name.slice(dot) : '';
 }
 
 export function mimeTypeForName(name: string): string | undefined {
-  const extension = filenameExtension(name);
+  const extension = filenameExtension(name).toLowerCase();
   if (extension.length === 0) return undefined;
 
   try {
@@ -47,7 +48,16 @@ export function suffixFilters(types: string[]): string[] | undefined {
 function extensionsForMimeType(mime: string): string[] {
   const wildcard = mime.endsWith('/*');
   const prefix = mime.slice(0, -1);
-  const ids: string[] = wildcard ? Object.values(uniformTypeDescriptor.UniformDataType) : uniformTypeDescriptor.getUniformDataTypesByMIMEType(mime);
+  let ids: string[];
+
+  try {
+    ids = wildcard ? Object.values(uniformTypeDescriptor.UniformDataType) : uniformTypeDescriptor.getUniformDataTypesByMIMEType(mime);
+  } catch (error) {
+    if ((error as BusinessError).code === 401) return [];
+
+    throw new ExpoModuleError('ERR_DOCUMENT_PICKER_FAILED', 'Unable to query the HarmonyOS MIME type registry.', error);
+  }
+
   const extensions: string[] = [];
 
   for (const id of ids) {
