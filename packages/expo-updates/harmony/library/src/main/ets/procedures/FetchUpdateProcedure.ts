@@ -29,7 +29,7 @@ export class FetchUpdateProcedure implements StateMachineProcedure<Json> {
       const { response, result } = await host.loader.check(configuration, host.policy, launched, embedded, true);
       const value = await host.loader.fetch(response, result, configuration, launched, embedded,
         progress => context.process({ type: 'downloadProgress', progress }));
-      if (value.isRollBackToEmbedded) context.process({ type: 'downloadCompleteWithRollback' });
+      if (value.isRollBackToEmbedded) context.process({ type: 'downloadCompleteWithRollback', commitTime: result.time });
       else if (value.isNew) context.process({ type: 'downloadCompleteWithUpdate', manifest: value.manifest });
       else context.process({ type: 'downloadComplete' });
 

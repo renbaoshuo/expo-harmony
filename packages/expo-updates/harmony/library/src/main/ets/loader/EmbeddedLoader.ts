@@ -19,7 +19,8 @@ export class EmbeddedLoader {
   get update(): UpdateRecord | undefined { return this.loaded; }
 
   async load(config: UpdatesConfiguration): Promise<UpdateRecord | undefined> {
-    if (!config.embedded || this.loaded) return this.loaded;
+    if (!config.embedded) return undefined;
+    if (this.loaded) return this.loaded;
 
     const manifest = JSON.parse(decode(await this.context.resourceManager.getRawFileContent('expo-updates/manifest.json')));
     const update = parseEmbeddedUpdate(manifest, this.original.scope, this.original.runtime, this.original.url, this.original.headers);

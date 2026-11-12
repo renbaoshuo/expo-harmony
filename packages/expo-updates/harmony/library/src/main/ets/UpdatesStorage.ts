@@ -5,20 +5,24 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+/// <reference path="./UpdatesNative.d.ts" />
+
 import relationalStore from '@ohos.data.relationalStore';
 import { isCorrupt } from './db/DatabaseError';
 import type common from '@ohos.app.ability.common';
 import fs from '@ohos.file.fs';
 import crypto from '@ohos.security.cryptoFramework';
 import util from '@ohos.util';
-import { ExpoUpdatesError, Json, UpdateAsset, UpdateRecord } from './UpdatesProtocol';
+import { ExpoUpdatesManifest } from '@expo-harmony/expo-manifests';
+import { linkAsset } from 'libexpo_updates.so';
+import { DomAsset, ExpoUpdatesError, Json, UpdateAsset, UpdateRecord, parseDomAssetLayout, parseRemoteAssets } from './UpdatesProtocol';
 import { assertIntegrity, migrate, DATABASE_VERSION } from './db/DatabaseSchema';
 import { AssetsDao, UpdatesDao, JSONDataDao } from './db/Daos';
 import { DatabaseHolder } from './db/DatabaseHolder';
 import { DatabaseIntegrityCheck } from './db/DatabaseIntegrityCheck';
 import { Reaper } from './db/Reaper';
 import { UpdatesLogger } from './logging/UpdatesLogger';
-import { isAssetPath } from './UpdatesAssetPaths';
+import { assetFileUrl, domBundleDirectory, isAssetPath, isUpdateId } from './UpdatesAssetPaths';
 
 export function encode(value: string): Uint8Array { return new util.TextEncoder().encode(value); }
 export function decode(value: Uint8Array): string { return new util.TextDecoder('utf-8', { fatal: true }).decodeToString(value); }
@@ -56,6 +60,36 @@ export function hashFile(path: string): string {
   }
 }
 
+export function isVerifiedAsset(directory: string, asset: UpdateAsset, expected: string | undefined = asset.hash?.replace(/=+$/, '')): boolean {
+  if (!asset.path || !asset.digest || (expected !== undefined && asset.digest !== expected) || !isAssetPath(directory, asset.path)) return false;
+
+  try { return fs.lstatSync(asset.path).isFile() && hashFile(asset.path) === asset.digest; }
+  catch (_) { return false; }
+}
+
+function verifyDomLayout(root: string, entries: DomAsset[]): boolean {
+  try {
+    if (!fs.lstatSync(root).isDirectory()) return false;
+
+    const expected = new Map(entries.map(entry => [entry.filename, entry.hash]));
+    const directories = [''];
+
+    while (directories.length) {
+      const directory = directories.pop()!;
+      for (const name of fs.listFileSync(root + '/' + directory)) {
+        const relative = directory + name;
+        const path = root + '/' + relative;
+        const info = fs.lstatSync(path);
+        if (info.isDirectory()) directories.push(relative + '/');
+        else if (info.isFile() && expected.has(relative) && expected.get(relative) === hashFile(path)) expected.delete(relative);
+        else return false;
+      }
+    }
+
+    return expected.size === 0;
+  } catch (_) { return false; }
+}
+
 interface Database {
   store: relationalStore.RdbStore;
   holder: DatabaseHolder;
@@ -64,6 +98,7 @@ interface Database {
 export class UpdatesStorage {
   readonly directory: string;
   readonly temporary: string;
+  private readonly domDirectory: string;
   readonly logger: UpdatesLogger;
   private database?: Database;
   private opening?: Promise<void>;
@@ -71,6 +106,7 @@ export class UpdatesStorage {
   constructor(private readonly context: common.ApplicationContext) {
     this.directory = context.filesDir + '/expo-updates';
     this.temporary = this.directory + '/temporary';
+    this.domDirectory = this.directory + '/dom';
     this.logger = new UpdatesLogger(context);
   }
 
@@ -121,8 +157,76 @@ export class UpdatesStorage {
     }
 
     for (const file of fs.listFileSync(this.temporary)) {
-      try { fs.unlinkSync(this.temporary + '/' + file); }
-      catch (error) { this.logger.log(`Unable to remove temporary file: ${String(error)}`, 'Unknown', 'warn'); }
+      this.removeTree(this.temporary + '/' + file);
+    }
+  }
+
+  private removeTree(path: string): void {
+    try {
+      if (fs.lstatSync(path).isDirectory()) fs.rmdirSync(path);
+      else fs.unlinkSync(path);
+    } catch (error) { this.logger.log(`Unable to remove an Updates file or directory: ${String(error)}`, 'Unknown', 'warn'); }
+  }
+
+  prepareDomAssets(update: UpdateRecord): void {
+    const layout = parseDomAssetLayout(update.manifest);
+    if (!layout.length) return;
+    if (!isUpdateId(update.id)) throw new ExpoUpdatesError('ERR_UPDATES_ASSET', 'Invalid DOM update ID.');
+
+    const sources = new Map(update.assets.map(asset => [asset.key, asset]));
+    const entries = layout.map(entry => {
+      const hash = entry.hash ?? sources.get(entry.key)?.digest;
+      if (!hash) throw new ExpoUpdatesError('ERR_UPDATES_ASSET', `Missing verified DOM asset ${entry.key}.`);
+      return { ...entry, hash };
+    });
+    if (!exists(this.domDirectory)) fs.mkdirSync(this.domDirectory);
+    if (!fs.lstatSync(this.domDirectory).isDirectory()) throw new ExpoUpdatesError('ERR_UPDATES_ASSET', 'Invalid DOM storage directory.');
+
+    const root = this.domDirectory + '/' + update.id;
+    if (!verifyDomLayout(root, entries)) this.publishDomAssets(sources, root, entries);
+    update.domAssets = {
+      baseUrl: assetFileUrl(root + '/' + domBundleDirectory),
+      files: new Map(entries.map(entry => [entry.key, root + '/' + entry.filename])),
+    };
+  }
+
+  private publishDomAssets(sources: Map<string | null, UpdateAsset>, root: string, entries: DomAsset[]): void {
+    const stage = this.temporary + '/' + util.generateRandomUUID();
+    const previous = this.temporary + '/' + util.generateRandomUUID();
+    let displaced = false;
+
+    try {
+      fs.mkdirSync(stage);
+
+      for (const entry of entries) {
+        const asset = sources.get(entry.key);
+        if (!asset?.path || asset.digest !== entry.hash || !isAssetPath(this.directory, asset.path) || !fs.lstatSync(asset.path).isFile()) {
+          throw new ExpoUpdatesError('ERR_UPDATES_ASSET', `Missing verified DOM asset ${entry.key}.`);
+        }
+
+        const destination = stage + '/' + entry.filename;
+        const directory = destination.slice(0, destination.lastIndexOf('/'));
+        if (!exists(directory)) fs.mkdirSync(directory, true);
+        if (!linkAsset(asset.path, destination)) fs.copyFileSync(asset.path, destination);
+      }
+
+      if (!verifyDomLayout(stage, entries)) throw new ExpoUpdatesError('ERR_UPDATES_ASSET_HASH', 'DOM assets failed SHA-256 verification.');
+
+      if (exists(root)) {
+        fs.renameSync(root, previous);
+        displaced = true;
+      }
+
+      try {
+        fs.renameSync(stage, root);
+      } catch (error) {
+        if (displaced) fs.renameSync(previous, root);
+        throw error;
+      }
+
+      if (displaced) this.removeTree(previous);
+    } finally {
+      if (exists(stage)) this.removeTree(stage);
     }
   }
 
@@ -152,27 +256,41 @@ export class UpdatesStorage {
   async insert(update: UpdateRecord): Promise<void> {
     if (update.assets.filter(asset => asset.launch).length !== 1) throw new ExpoUpdatesError('ERR_UPDATES_DATABASE', 'An update must have exactly one launch asset.');
 
-    const ids = await this.write((_a, updates) => {
+    await this.write((_a, updates) => {
       const stored = updates.get(update.id);
       if (stored) {
-        if (stored.scope !== update.scope) updates.setScope(update.id, update.scope);
+        if (JSON.stringify(parseDomAssetLayout(stored.manifest)) !== JSON.stringify(parseDomAssetLayout(update.manifest))) {
+          throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'A cached update ID cannot change its DOM asset layout.');
+        }
+        if (stored.status === 'embedded' || typeof stored.manifest.launchAsset?.packagerHash === 'string') {
+          throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'A remote update cannot reuse the embedded update ID.');
+        }
+
+        const assets = parseRemoteAssets(new ExpoUpdatesManifest(stored.manifest), {});
+        const received = new Map(update.assets.map(asset => [asset.key, asset]));
+        if (update.runtime !== stored.runtime || received.size !== assets.length || assets.some(asset => {
+          const replacement = received.get(asset.key);
+          return replacement === undefined || replacement.launch !== asset.launch
+            || replacement.hash?.replace(/=+$/, '') !== asset.hash?.replace(/=+$/, '')
+            || (!asset.hash && replacement.url !== asset.url);
+        })) {
+          throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'A cached update ID cannot change its runtime or asset identities.');
+        }
         if (stored.status === 'ready' && !stored.assets.some(asset => asset.launch)) updates.setStatus(update.id, 'pending');
 
-        return undefined;
+        return;
       }
 
       updates.insert(update);
-
-      return update.assets.map((asset, ordinal) => updates.associate(update.id, asset, ordinal));
     });
-
-    ids?.forEach((id, index) => { update.assets[index].id = id; });
   }
 
   async finish(update: UpdateRecord): Promise<void> {
     if (update.assets.filter(asset => asset.launch).length !== 1 || update.assets.some(asset => !asset.path || !asset.digest)) {
       throw new ExpoUpdatesError('ERR_UPDATES_DATABASE', 'Cannot finish an update without its downloaded assets and launch asset.');
     }
+
+    this.prepareDomAssets(update);
 
     const ids = await this.write((_a, updates) => {
       const stored = updates.get(update.id);
@@ -236,13 +354,19 @@ export class UpdatesStorage {
     return this.db.holder.transaction(db => new DatabaseIntegrityCheck(exists).run(db, embedded));
   }
 
-  delete(records: UpdateRecord[]): Promise<void> {
-    return new Reaper(this.db.holder, path => {
+  async delete(records: UpdateRecord[]): Promise<void> {
+    await new Reaper(this.db.holder, path => {
       if (!isAssetPath(this.directory, path)) throw new ExpoUpdatesError('ERR_UPDATES_ASSET', `Refusing to delete asset at unsafe path ${path}.`);
 
       if (exists(path)) fs.unlinkSync(path);
     },
       (message, asset) => this.logger.log(message, 'Unknown', 'warn', undefined, asset)).run(records);
+    if (!exists(this.domDirectory) || !fs.lstatSync(this.domDirectory).isDirectory()) return;
+
+    const live = new Set((await this.updates()).map(update => update.id));
+    for (const name of fs.listFileSync(this.domDirectory)) {
+      if (isUpdateId(name) && !live.has(name)) this.removeTree(this.domDirectory + '/' + name);
+    }
   }
 
 }

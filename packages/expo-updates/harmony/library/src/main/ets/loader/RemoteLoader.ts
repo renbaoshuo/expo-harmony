@@ -29,6 +29,7 @@ export class RemoteLoader {
     if (launched) headers['expo-current-update-id'] = launched.id;
     if (embedded && config.embedded) headers['expo-embedded-update-id'] = embedded.id;
     if (requested) headers['expo-requested-update-id'] = requested.id;
+    if (config.runtime) headers['expo-runtime-version'] = config.runtime;
 
     return headers;
   }
@@ -39,7 +40,6 @@ export class RemoteLoader {
       ...await this.assetHeaders(config, launched, embedded),
       accept: 'multipart/mixed,application/expo+json,application/json', 'expo-json-error': 'true',
     };
-    if (config.runtime) headers['expo-runtime-version'] = config.runtime;
     const extra = await this.storage.metadata(config.scope, 'extra') as Json | null;
     if (extra && Object.keys(extra).length) headers['expo-extra-params'] = serializeHeaders(extra);
     const failed = await this.storage.failed();
@@ -83,7 +83,7 @@ export class RemoteLoader {
       } else reason = 'rollbackRejectedBySelectionPolicy';
     } else if (directive?.type !== 'noUpdateAvailable' && response.update) {
       const update = response.update;
-      if (!policy.shouldLoad(update, launched, filters)) reason = 'updateRejectedBySelectionPolicy';
+      if (update.runtime !== config.runtime || !policy.shouldLoad(update, launched, filters)) reason = 'updateRejectedBySelectionPolicy';
       else if (!forFetch && ((await this.storage.update(update.id))?.failed ?? 0) > 0) reason = 'updatePreviouslyFailed';
       else return { response, result: { isAvailable: true, isRollBackToEmbedded: false, manifest: update.manifest } };
     }
@@ -114,8 +114,6 @@ export class RemoteLoader {
     headers: Headers, report: DownloadProgress, status: UpdateRecord['status'] = 'ready',
     count?: (successful: number, failed: number, total: number) => void): Promise<UpdateRecord> {
     await this.storage.insert(update);
-    const stored = await this.storage.update(update.id);
-    if (stored?.status === 'ready' && stored.assets.some(asset => asset.launch)) return stored;
 
     const progress = new Array(update.assets.length).fill(0);
     const results = await Promise.allSettled(update.assets.map(async (asset, index) => {
@@ -125,7 +123,7 @@ export class RemoteLoader {
       }, {
         base,
         requested: update.id,
-        patch: asset.launch && config.raw.enableBsdiffPatchSupport === true,
+        patch: asset.launch && config.enableBsdiffPatchSupport,
         headers: config.headers,
         timeout: Math.max(config.wait, 10000),
       });
@@ -137,6 +135,7 @@ export class RemoteLoader {
     const failures: Error[] = [];
     let successful = 0;
     let failed = 0;
+
     for (let index = 0; index < results.length; index++) {
       const result = results[index];
       if (result.status === 'rejected') {

@@ -42,6 +42,7 @@ export class LoaderTask {
 
   async start(delegate: LoaderTaskDelegate): Promise<void> {
     if (this.started) throw new ExpoUpdatesError('ERR_UPDATES_STARTUP', 'The startup loader task can only run once.');
+
     this.started = true;
     this.running = true;
     const started = Date.now();
@@ -52,6 +53,7 @@ export class LoaderTask {
       const check = await this.shouldCheck();
       let cached: UpdateRecord | undefined;
       let failure: Error | undefined;
+
       try {
         await this.host.loadEmbedded();
         await this.host.storage.integrity(this.host.embedded?.id);
@@ -77,6 +79,7 @@ export class LoaderTask {
           selected = await candidate;
         }
       }
+
       if (!selected) throw new ExpoUpdatesError('ERR_UPDATES_LAUNCH', 'No compatible update is available to launch.', failure);
 
       selected.accessed = Date.now();
@@ -95,6 +98,7 @@ export class LoaderTask {
 
   private async fetch(delegate: LoaderTaskDelegate, launched?: UpdateRecord): Promise<RemoteResult> {
     delegate.process({ type: 'check' });
+
     try {
       const host = this.host;
       const configuration = host.configuration;
@@ -103,13 +107,14 @@ export class LoaderTask {
       if (result.isAvailable) delegate.process({ type: 'checkCompleteWithUpdate', manifest: result.manifest });
       else if (result.isRollBackToEmbedded) delegate.process({ type: 'checkCompleteWithRollback', commitTime: result.time });
       else delegate.process({ type: 'checkCompleteUnavailable' });
-      if (result.isAvailable) delegate.process({ type: 'download' });
+      if (result.isAvailable || result.isRollBackToEmbedded) delegate.process({ type: 'download' });
 
       const value = await host.loader.fetch(response, result, configuration, launched, embedded,
         progress => delegate.process({ type: 'downloadProgress', progress }));
       const update = await this.select();
       if (!update) throw new ExpoUpdatesError('ERR_UPDATES_LAUNCH', 'The remote result has no launchable update.');
-      if (value.isNew) delegate.process({ type: 'downloadCompleteWithUpdate', manifest: value.manifest });
+      if (value.isRollBackToEmbedded) delegate.process({ type: 'downloadCompleteWithRollback', commitTime: result.time });
+      else if (value.isNew) delegate.process({ type: 'downloadCompleteWithUpdate', manifest: value.manifest });
       else if (delegate.state === 'downloading') delegate.process({ type: 'downloadComplete' });
 
       return { result: value, update };

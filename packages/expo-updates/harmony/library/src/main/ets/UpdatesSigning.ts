@@ -88,7 +88,7 @@ export class UpdatesSigning {
   async verify(body: string, signature?: string, response?: string): Promise<SignatureResult> {
     const config = this.configuration;
     if (!config.certificate) return { verified: false };
-    if (!signature) {
+    if (signature === undefined) {
       if (config.unsigned) return { verified: false };
       throw new ExpoUpdatesError('ERR_UPDATES_CODE_SIGNING', 'The update response is missing its required signature.');
     }
@@ -111,12 +111,18 @@ export class UpdatesSigning {
       }
 
       stage = 'certificate decoding';
-      const source = (config.chain ? response ?? '' : '') + '\n' + config.certificate;
-      const blocks = source.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) ?? [];
-      if (blocks.length === 0) throw new ExpoUpdatesError('ERR_UPDATES_CODE_SIGNING', 'No trusted signing certificate was provided.');
+      const pem = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g;
+      const anchors = config.certificate.match(pem) ?? [];
+      if (anchors.length !== 1) {
+        throw new ExpoUpdatesError('ERR_UPDATES_CODE_SIGNING', 'The app must provide one trusted PEM signing certificate.');
+      }
 
-      const chain = await Promise.all(blocks.map(value => cert.createX509Cert({ data: encode(value), encodingFormat: cert.EncodingFormat.FORMAT_PEM })));
+      const intermediates = config.chain ? response?.match(pem) ?? [] : [];
+
+      const chain = await Promise.all([...intermediates, anchors[0]].map(value =>
+        cert.createX509Cert({ data: encode(value), encodingFormat: cert.EncodingFormat.FORMAT_PEM })));
       const now = new Date().toISOString().replace(/[-:T]/g, '').replace(/\.\d{3}Z$/, 'Z');
+
       for (let index = 0; index < chain.length; index++) {
         stage = `certificate ${index} validity and issuer signature`;
         const current = chain[index];
@@ -137,6 +143,7 @@ export class UpdatesSigning {
 
       let constraint: string[] | undefined;
       let remaining = Number.MAX_SAFE_INTEGER;
+
       for (let index = chain.length - 1; index >= 0; index--) {
         const current = chain[index];
         stage = `certificate ${index} project extension`;

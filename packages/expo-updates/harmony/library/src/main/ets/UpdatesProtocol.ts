@@ -7,7 +7,7 @@
 
 import { EmbeddedManifest, ExpoUpdatesManifest } from '@expo-harmony/expo-manifests';
 import { isRecord } from './UpdatesJson';
-import { isSafeAssetFilename } from './UpdatesAssetPaths';
+import { domBundleDirectory, isSafeAssetFilename, isSafeFilename, isUpdateId } from './UpdatesAssetPaths';
 import { Decimal, parseDictionary, serializeDictionary } from '@expo-harmony/expo-structured-headers';
 import { matchesFilters as policyMatchesFilters } from './selectionpolicy/Filters';
 
@@ -44,12 +44,24 @@ export interface UpdateRecord {
   time: number;
   manifest: Json;
   assets: UpdateAsset[];
+  domAssets?: VerifiedDomAssets;
   url: string | null;
   headers: Headers | null;
   status: 'pending' | 'ready' | 'embedded' | 'development';
   successful: number;
   failed: number;
   accessed: number;
+}
+
+export interface DomAsset {
+  key: string;
+  filename: string;
+  hash?: string;
+}
+
+export interface VerifiedDomAssets {
+  baseUrl: string;
+  files: Map<string, string>;
 }
 
 export interface UpdateDirective {
@@ -157,7 +169,7 @@ function asset(value: unknown, headers: Json, launch: boolean): UpdateAsset {
     throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'An asset hash must be a Base64URL SHA-256 digest.');
   }
 
-  const extra = headers[value.key] ?? {};
+  const extra = Object.prototype.hasOwnProperty.call(headers, value.key) ? headers[value.key] : {};
   if (!isRecord(extra) || !Object.entries(extra).every(([key, item]) => /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(key) && typeof item === 'string' && !/[\r\n\0]/.test(item))) {
     throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'Asset request headers must be string-valued objects.');
   }
@@ -171,8 +183,96 @@ function asset(value: unknown, headers: Json, launch: boolean): UpdateAsset {
     launch, key: value.key, url: value.url, hash: value.hash,
     type: value.contentType ?? 'application/octet-stream',
     extension: extension && !extension.startsWith('.') ? '.' + extension : extension,
-    headers: extra,
+    headers: normalizeHeaders(extra),
   };
+}
+
+function uniqueAssets(assets: UpdateAsset[]): UpdateAsset[] {
+  const unique = new Map<string | null, UpdateAsset>();
+  for (const asset of assets) {
+    const first = unique.get(asset.key);
+    if (!first) {
+      unique.set(asset.key, asset);
+    } else if (asset.hash !== undefined) {
+      if (first.hash !== undefined && first.hash.replace(/=+$/, '') !== asset.hash.replace(/=+$/, '')) {
+        throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', `Asset key ${asset.key} identifies different content in the manifest.`);
+      }
+      first.hash = asset.hash;
+    }
+  }
+
+  return [...unique.values()];
+}
+
+export function parseRemoteAssets(manifest: ExpoUpdatesManifest, headers: Json): UpdateAsset[] {
+  return uniqueAssets([manifest.getLaunchAsset(), ...(manifest.getAssets() ?? [])]
+    .map((value, index) => asset(value, headers, index === 0)));
+}
+
+const domPrefix = domBundleDirectory + '/';
+
+function isDomFilename(value: unknown): value is string {
+  return typeof value === 'string' && value.split(/[/\\]/).includes(domBundleDirectory);
+}
+
+export function parseDomAssetLayout(manifest: Json): DomAsset[] {
+  const launch = manifest.launchAsset;
+  // Embedded manifests use packagerHash and launch these resources directly from rawfile.
+  if (!isRecord(launch) || typeof launch.key !== 'string') return [];
+  if (isDomFilename(launch.embeddedAssetFilename)) throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'A launch bundle cannot be a DOM resource.');
+
+  const entries: DomAsset[] = [];
+  const filenames = new Set<string>();
+  const keys = new Set<string>();
+  const values = Array.isArray(manifest.assets) ? manifest.assets : [];
+
+  for (const value of values) {
+    if (!isRecord(value) || !isDomFilename(value.embeddedAssetFilename)) continue;
+
+    const filename = value.embeddedAssetFilename;
+    const segments = filename.split('/');
+    if (segments.length < 2 || !filename.startsWith(domPrefix) || !segments.every(part => isSafeFilename(part) && !/[\x00-\x1f\x7f%]/.test(part))
+      || typeof value.key !== 'string' || typeof value.hash !== 'string' || !/^[A-Za-z0-9_-]{43}=?$/.test(value.hash)
+      || filenames.has(filename) || keys.has(value.key)) {
+      throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'DOM assets require unique safe paths, unique keys, and SHA-256 hashes.');
+    }
+    filenames.add(filename);
+    keys.add(value.key);
+    entries.push({ filename, key: value.key, hash: value.hash.replace(/=+$/, '') });
+  }
+  if (!entries.length) return entries;
+
+  const allKeys = [launch.key, ...values.map(value => value?.key)];
+  if (new Set(allKeys).size !== allKeys.length) {
+    throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'Updates with DOM assets require unique asset keys.');
+  }
+  if (!entries.some(asset => !asset.filename.slice(domPrefix.length).includes('/') && /\.html$/i.test(asset.filename))) {
+    throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'DOM assets require an HTML file at the root of www.bundle.');
+  }
+
+  // SDK 57 web assets can resolve relative to the DOM page using their usual key and extension.
+  for (const value of values) {
+    if (keys.has(value.key)) continue;
+
+    const ordinary = asset(value, {}, false);
+    const key = ordinary.key!;
+    const name = key + ordinary.extension;
+    const filename = domPrefix + name;
+    if (!isSafeFilename(name) || /[\x00-\x1f\x7f%]/.test(name) || filenames.has(filename)) {
+      throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'A bundled asset filename conflicts with the DOM asset layout.');
+    }
+    filenames.add(filename);
+    entries.push({ filename, key, hash: ordinary.hash?.replace(/=+$/, '') });
+  }
+  for (const filename of filenames) {
+    let directory = filename;
+    while (directory.includes('/')) {
+      directory = directory.slice(0, directory.lastIndexOf('/'));
+      if (filenames.has(directory)) throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'A DOM asset path conflicts with another asset directory.');
+    }
+  }
+
+  return entries;
 }
 
 export function parseEmbeddedUpdate(value: unknown, scope: string, runtime: string, url: string, headers: Headers): UpdateRecord {
@@ -180,7 +280,7 @@ export function parseEmbeddedUpdate(value: unknown, scope: string, runtime: stri
   const raw = manifest.getRawJson();
   const id = manifest.getID().toLowerCase();
   const time = manifest.getCommitTimeLong();
-  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id) || !Number.isFinite(new Date(time).getTime())) {
+  if (!isUpdateId(id) || !Number.isFinite(new Date(time).getTime())) {
     throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'An embedded update requires a UUID and a valid commit time.');
   }
 
@@ -200,9 +300,7 @@ export function parseEmbeddedUpdate(value: unknown, scope: string, runtime: stri
       extension: asset.type ? '.' + asset.type.replace(/^\./, '') : '', headers: {}, embedded: asset.embeddedAssetFilename };
   });
 
-  const unique = assets.filter((asset, index) => assets.findIndex(value => value.key === asset.key) === index);
-
-  return { id, scope, runtime, time, manifest: { ...raw, isVerified: true }, assets: unique, url, headers: { ...headers },
+  return { id, scope, runtime, time, manifest: { ...raw, isVerified: true }, assets: uniqueAssets(assets), url, headers: { ...headers },
     status: 'embedded', successful: 0, failed: 0, accessed: Date.now() };
 }
 
@@ -247,13 +345,12 @@ export async function parseUpdateResponse(
     const id = manifest.getID().toLowerCase();
     const parsed = Date.parse(manifest.getCreatedAt());
     const time = Number.isFinite(parsed) ? parsed : Date.now();
-    if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id)) {
+    if (!isUpdateId(id)) {
       throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'An update requires a UUID.');
     }
 
-    const values = manifest.getAssets() ?? [];
-    const assets = [manifest.getLaunchAsset(), ...values].map((value, index) => asset(value, extensions.assetRequestHeaders ?? {}, index === 0))
-      .filter((asset, index, assets) => assets.findIndex(value => value.key === asset.key) === index);
+    const assets = parseRemoteAssets(manifest, extensions.assetRequestHeaders ?? {});
+    parseDomAssetLayout(value);
     result.update = {
       id, scope, time, runtime: manifest.getRuntimeVersion(), manifest: { ...value, isVerified: signing.verified }, assets,
       url, headers: { ...request }, status: manifest.isDevelopmentMode() ? 'development' : 'pending',

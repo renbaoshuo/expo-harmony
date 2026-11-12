@@ -43,7 +43,9 @@ export function reduceContext(context: Json, event: UpdatesStateEvent): Json {
       changes = { isDownloading: false, downloadError: null, isUpdatePending: false, downloadProgress: 1, downloadStartTime: null, downloadFinishTime: null };
       break;
     case 'downloadCompleteWithRollback':
-      changes = { isDownloading: false, downloadError: null, isUpdatePending: true, downloadStartTime: null, downloadFinishTime: null };
+      changes = { isDownloading: false, downloadError: null, isUpdatePending: true, isUpdateAvailable: true,
+        latestManifest: null, downloadedManifest: null, rollback: { commitTime: new Date(event.commitTime).toISOString() },
+        downloadStartTime: null, downloadFinishTime: null };
       break;
     case 'downloadCompleteWithUpdate':
       changes = { isDownloading: false, downloadError: null, isUpdatePending: true, isUpdateAvailable: true,

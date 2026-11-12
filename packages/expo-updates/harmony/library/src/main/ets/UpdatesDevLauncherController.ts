@@ -11,13 +11,20 @@ import { UpdatesDownloader } from './UpdatesDownloader';
 import { UpdatesState } from './UpdatesState';
 import { UpdatesStorage } from './UpdatesStorage';
 import { RemoteLoader } from './loader/RemoteLoader';
-import { clientIdentity } from './UpdatesClientIdentity';
+import { clientIdentity, prepareClientIdentity } from './UpdatesClientIdentity';
 import { ExpoUpdatesError, Headers, Json, UpdateRecord } from './UpdatesProtocol';
 
 import { IUpdatesController } from './IUpdatesController';
 import { UpdatesLogReader } from './logging/UpdatesLogReader';
 import { SelectionPolicyFactory } from './selectionpolicy/SelectionPolicyFactory';
 import { UpdatesDatabaseLauncher } from './launcher/UpdatesDatabaseLauncher';
+import { localAssetFiles } from './UpdatesAssetPaths';
+
+interface DevelopmentUpdate {
+  manifest: Json;
+  launchAssetPath: string;
+  activate?: () => void;
+}
 
 export class UpdatesDevLauncherController implements IUpdatesController {
   readonly state = new UpdatesState();
@@ -30,9 +37,14 @@ export class UpdatesDevLauncherController implements IUpdatesController {
   private readonly loader: RemoteLoader;
   private opened = false;
   private current?: UpdateRecord;
+  private selectionGeneration = 0;
   developmentReload?: () => void;
 
-  constructor(private readonly context: common.ApplicationContext, private readonly original: UpdatesConfiguration) {
+  constructor(
+    private readonly context: common.ApplicationContext,
+    private readonly original: UpdatesConfiguration,
+    readonly configuredUpdateUrl: string | null = original.url || null,
+  ) {
     this.config = original;
     this.storage = new UpdatesStorage(context);
     this.downloader = new UpdatesDownloader(this.storage, context);
@@ -62,23 +74,17 @@ export class UpdatesDevLauncherController implements IUpdatesController {
       updateId: update?.id,
       commitTime: update?.time,
       manifest: update?.manifest,
-      localAssets: this.localAssets(update),
+      localAssets: localAssetFiles(update),
+      domAssetBaseUrl: update?.domAssets?.baseUrl ?? null,
       initialContext: this.state.context,
     };
-  }
-
-  private localAssets(update?: UpdateRecord): Record<string, string> {
-    if (!update) return {};
-    return Object.fromEntries(update.assets
-      .filter(asset => asset.key !== null && !!asset.path)
-      .map(asset => [asset.key, 'file://' + asset.path!.split('/').map(value => encodeURIComponent(value)).join('/')]));
   }
 
   attach(_id: number, _reload: (reason: string) => Promise<void>, _owner: Object): () => void { return () => {}; }
   loaded(_id: number): void {}
   contentAppeared(_id: number): void {}
   hasAsset(_id: number, path: string): boolean {
-    return this.current?.assets.some(asset => asset.path === path) === true;
+    return this.current?.assets.some(asset => asset.path === path) === true || [...this.current?.domAssets?.files.values() ?? []].includes(path);
   }
   onReactInstanceException(_id: number, _error: Error): void {}
 
@@ -115,7 +121,11 @@ export class UpdatesDevLauncherController implements IUpdatesController {
 
   clearLogs(): Promise<void> { return new UpdatesLogReader(this.context).clear(); }
 
-  reset(): void { this.current = undefined; }
+  reset(): void {
+    ++this.selectionGeneration;
+    this.current = undefined;
+    this.config = this.original;
+  }
 
   configurationFor(value: Json): UpdatesConfiguration {
     const dynamic = { ...value };
@@ -127,21 +137,20 @@ export class UpdatesDevLauncherController implements IUpdatesController {
   }
 
   async loadDevelopment(value: Json, accepted: (manifest: Json) => boolean,
-    progress: (successful: number, failed: number, total: number) => void): Promise<{ manifest: Json; launchAssetPath: string } | null> {
+    progress: (successful: number, failed: number, total: number) => void, deferActivation = false): Promise<DevelopmentUpdate | null> {
     const configuration = this.configurationFor(value);
-    return this.state.queue({ run: () => this.fetch(configuration, accepted, progress) });
+    return this.state.queue({ run: () => this.fetch(configuration, accepted, progress, deferActivation) });
   }
 
   private async fetch(configuration: UpdatesConfiguration, accepted: (manifest: Json) => boolean,
-    progress: (successful: number, failed: number, total: number) => void): Promise<{ manifest: Json; launchAssetPath: string } | null> {
-    const previous = this.config;
+    progress: (successful: number, failed: number, total: number) => void, deferActivation: boolean): Promise<DevelopmentUpdate | null> {
+    const generation = this.selectionGeneration;
     try {
+      await prepareClientIdentity(this.context);
       if (!this.opened) {
         await this.storage.open();
         this.opened = true;
       }
-      this.config = configuration;
-
       const response = await this.loader.response(configuration);
       if (response.directive || !response.update || !accepted(response.update.manifest)) return null;
 
@@ -155,18 +164,28 @@ export class UpdatesDevLauncherController implements IUpdatesController {
       const path = update?.assets.find(asset => asset.launch)?.path;
       if (!update || !path) throw new ExpoUpdatesError('ERR_UPDATES_ASSET', 'The development update has no launch asset.');
 
-      this.current = update;
+      const activate = (): void => {
+        if (generation !== this.selectionGeneration) {
+          throw new ExpoUpdatesError('ERR_UPDATES_DEV_CLIENT', 'The development update selection was superseded.');
+        }
+        ++this.selectionGeneration;
+        const previous = this.current;
+        this.current = update;
+        this.config = configuration;
+        void this.state.queue({
+          run: async (): Promise<void> => {
+            const updates = await this.storage.updates();
+            const obsolete = policy.toDelete(updates, update);
+            await this.storage.delete(obsolete.filter(record => record.id !== previous?.id && record.id !== this.current?.id));
+          },
+        }).catch(error => this.storage.logger.log(`Unable to reap development updates: ${String(error)}`, 'Unknown', 'warn'));
+      };
+      const result = { manifest: update.manifest, launchAssetPath: path };
+      if (deferActivation) return { ...result, activate };
+      activate();
 
-      try {
-        const updates = await this.storage.updates();
-        await this.storage.delete(policy.toDelete(updates, update));
-      } catch (error) {
-        this.storage.logger.log(`Unable to reap development updates: ${String(error)}`, 'Unknown', 'warn');
-      }
-
-      return { manifest: update.manifest, launchAssetPath: path };
+      return result;
     } catch (error) {
-      this.config = previous;
       throw new ExpoUpdatesError(error instanceof ExpoUpdatesError ? error.code : 'ERR_UPDATES_DEV_CLIENT',
         String(error), error instanceof Error ? error : undefined);
     }

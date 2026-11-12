@@ -12,16 +12,25 @@ import { EASClientID } from '@expo-harmony/expo-eas-client/EASClientID';
 import { ExpoUpdatesError } from './UpdatesProtocol';
 import { isCorrupt } from './db/DatabaseError';
 
-function legacy(context: common.ApplicationContext): string | undefined {
-  const path = context.databaseDir + '/rdb/expo-updates.db';
+const legacyStoreName = 'expo-updates.db';
+const legacyIdentities = new Map<string, string | null>();
+const pendingReads = new Map<string, Promise<void>>();
+
+class LegacyIdentityPending extends Error {}
+
+function legacyPath(context: common.ApplicationContext): string {
+  return context.databaseDir + '/rdb/' + legacyStoreName;
+}
+
+async function readLegacyIdentity(context: common.ApplicationContext): Promise<string | undefined> {
   let database: relationalStore.RdbStore | undefined;
   try {
-    if (!fs.accessSync(path)) return undefined;
+    if (!fs.accessSync(legacyPath(context))) return undefined;
 
-    database = relationalStore.getRdbStoreSync(context, {
-      name: 'expo-updates.db', securityLevel: relationalStore.SecurityLevel.S1, isReadOnly: true,
+    database = await relationalStore.getRdbStore(context, {
+      name: legacyStoreName, securityLevel: relationalStore.SecurityLevel.S1, isReadOnly: true,
     });
-    const tables = database.querySqlSync("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('json_data','metadata')");
+    const tables = await database.querySql("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('json_data','metadata')");
     const names: string[] = [];
 
     try { while (tables.goToNextRow()) names.push(tables.getString(0)); } finally { tables.close(); }
@@ -31,7 +40,7 @@ function legacy(context: common.ApplicationContext): string | undefined {
       : names.includes('metadata') ? "SELECT payload FROM metadata WHERE scope='' AND key='clientId' LIMIT 1" : undefined;
     if (query === undefined) return undefined;
 
-    const rows = database.querySqlSync(query);
+    const rows = await database.querySql(query);
 
     try {
       if (!rows.goToNextRow()) return undefined;
@@ -49,11 +58,40 @@ function legacy(context: common.ApplicationContext): string | undefined {
 
     return undefined;
   } finally {
-    database?.close().catch(error => console.warn(`[ExpoUpdates] Unable to close the legacy identity database: ${String(error)}`));
+    await database?.close().catch(error => console.warn(`[ExpoUpdates] Unable to close the legacy identity database: ${String(error)}`));
   }
 }
 
-// Register before any native module constants are evaluated, including headless consumers.
-EASClientID.registerMigration(legacy);
+EASClientID.registerMigration(context => {
+  const path = legacyPath(context);
+  if (legacyIdentities.has(path)) return legacyIdentities.get(path) ?? undefined;
+  if (!fs.accessSync(path)) return undefined;
+  throw new LegacyIdentityPending('Expo Updates is still preparing the legacy EAS client ID.');
+});
+
+// Resolve the old Updates database before exposing the synchronous EAS constants.
+// The EAS getter preserves the canonical file and Preferences precedence.
+export async function prepareClientIdentity(context: common.ApplicationContext, legacyOnly = false): Promise<void> {
+  const path = legacyPath(context);
+  if (legacyOnly && !fs.accessSync(path)) return;
+
+  const identity = clientIdentity(context);
+  try {
+    identity.clientID;
+    return;
+  } catch (error) {
+    if (!(error instanceof LegacyIdentityPending)) throw error;
+  }
+
+  let pending = pendingReads.get(path);
+  if (pending === undefined) {
+    pending = readLegacyIdentity(context).then(id => {
+      legacyIdentities.set(path, id ?? null);
+    }).finally(() => pendingReads.delete(path));
+    pendingReads.set(path, pending);
+  }
+  await pending;
+  identity.clientID;
+}
 
 export function clientIdentity(context: common.ApplicationContext): EASClientID { return new EASClientID(context); }

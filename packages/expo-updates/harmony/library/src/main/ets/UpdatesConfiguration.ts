@@ -26,6 +26,7 @@ export class UpdatesConfiguration {
   readonly chain: boolean;
   readonly unsigned: boolean;
   readonly compatibility: boolean;
+  readonly enableBsdiffPatchSupport: boolean;
 
   constructor(readonly raw: Json, development: boolean) {
     if (!isRecord(raw)) throw new ExpoUpdatesError('ERR_UPDATES_CONFIGURATION', 'Updates configuration must be a JSON object.');
@@ -54,8 +55,8 @@ export class UpdatesConfiguration {
 
     this.embedded = raw.useEmbeddedUpdate !== false;
     this.unsafe = raw.disableAntiBrickingMeasures === true;
-    if (raw.codeSigningCertificate !== undefined && typeof raw.codeSigningCertificate !== 'string') {
-      throw new ExpoUpdatesError('ERR_UPDATES_CONFIGURATION', 'The signing certificate must be PEM text.');
+    if (raw.codeSigningCertificate !== undefined && (typeof raw.codeSigningCertificate !== 'string' || !raw.codeSigningCertificate.trim())) {
+      throw new ExpoUpdatesError('ERR_UPDATES_CONFIGURATION', 'The signing certificate must be nonempty PEM text.');
     }
     if (raw.codeSigningMetadata !== undefined && (!isRecord(raw.codeSigningMetadata)
       || Object.values(raw.codeSigningMetadata).some(value => typeof value !== 'string'))) {
@@ -70,6 +71,7 @@ export class UpdatesConfiguration {
     this.chain = raw.codeSigningIncludeManifestResponseCertificateChain === true;
     this.unsigned = raw.codeSigningAllowUnsignedManifests === true;
     this.compatibility = raw.enableExpoUpdatesProtocolV0CompatibilityMode === true;
+    this.enableBsdiffPatchSupport = raw.enableBsdiffPatchSupport !== false;
   }
 
   static merge(base: Json, override: Json): Json { return { ...base, ...override }; }
@@ -78,6 +80,7 @@ export class UpdatesConfiguration {
     if (!isRecord(value) || !Object.entries(value).every(([key, item]) => /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(key) && typeof item === 'string' && !/[\r\n\0]/.test(item))) {
       throw new ExpoUpdatesError('ERR_UPDATES_CONFIGURATION', 'Update request headers must have valid names and string values without newlines.');
     }
+
     return normalizeHeaders(value);
   }
 
@@ -86,7 +89,6 @@ export class UpdatesConfiguration {
     if (value.url !== undefined && !this.unsafe) throw new ExpoUpdatesError('ERR_UPDATES_CONFIGURATION', 'URL overrides require disableAntiBrickingMeasures.');
 
     let headers: Headers;
-
     try {
       headers = UpdatesConfiguration.headers(value.requestHeaders ?? this.headers);
     } catch (error) {
@@ -94,6 +96,7 @@ export class UpdatesConfiguration {
       console.warn('[ExpoUpdates] Invalid persisted request header override; using embedded request headers.');
       headers = this.headers;
     }
+
     if (!this.unsafe && Object.keys(headers).some(key => key.trim().toLowerCase() === 'host' ||
       !Object.prototype.hasOwnProperty.call(this.headers, key.trim().toLowerCase()))) {
       console.warn('[ExpoUpdates] Invalid request header override; using embedded request headers.');

@@ -15,6 +15,7 @@ import {
   ReactRuntimeContext,
 } from '@expo-harmony/expo-modules-core';
 import { assetAccess } from './UpdatesAssetAccess';
+import { prepareClientIdentity } from './UpdatesClientIdentity';
 import { UpdatesController } from './UpdatesController';
 import { ExpoUpdatesError } from './UpdatesProtocol';
 
@@ -27,6 +28,10 @@ export class ExpoUpdatesRuntimeBinding implements ReactRuntimeBinding {
 
   async bind(context: ReactRuntimeContext): Promise<(() => void) | void> {
     await UpdatesController.get(this.context).ready;
+    await prepareClientIdentity(this.context, true).catch((error: Error): void => {
+      console.warn(`Unable to prepare the legacy EAS client ID: ${String(error)}`);
+    });
+
     const controller = UpdatesController.get(this.context);
     if (!controller.active) return;
 
@@ -34,6 +39,7 @@ export class ExpoUpdatesRuntimeBinding implements ReactRuntimeBinding {
     const id = instance.getId();
     const subscriptions: (() => void)[] = [];
     let active = true;
+
     const cleanup = (): void => {
       if (!active) return;
       active = false;

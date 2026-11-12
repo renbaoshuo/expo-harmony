@@ -9,6 +9,10 @@
   "module": {
     "name": "expo_updates",
     "type": "har",
-    "deviceTypes": ["default", "tablet", "2in1"]
+    "deviceTypes": ["default", "tablet", "2in1"],
+    "requestPermissions": [
+      { "name": "ohos.permission.INTERNET" },
+      { "name": "ohos.permission.GET_NETWORK_INFO" }
+    ]
   }
 }

@@ -42,7 +42,8 @@ export class UpdatesController {
     const current = UpdatesController.controllers.get(info.name);
     if (current !== undefined) return current;
 
-    const configuration = UpdatesController.configuration(context, info.name, development);
+    const embedded = UpdatesController.readEmbeddedConfiguration(context);
+    const configuration = UpdatesController.configuration(embedded, info.name, development);
     const controller: IUpdatesController = configuration.enabled
       ? new EnabledUpdatesController(context, configuration, development, (error: Error): void => {
           const disabled = new DisabledUpdatesController(context, configuration, error);
@@ -62,15 +63,18 @@ export class UpdatesController {
     const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
     const current = UpdatesController.controllers.get(info.name);
     if (current instanceof UpdatesDevLauncherController) {
-      const adapter = new ExpoUpdatesDevLauncherAdapter(context, current);
-      UpdatesController.adapters.set(info.name, adapter);
-      UpdatesControllerRegistry.controller = adapter;
+      UpdatesControllerRegistry.controller = UpdatesController.adapters.get(info.name);
       return current;
     }
     if (current !== undefined)
       throw new ExpoUpdatesError('ERR_UPDATES_INITIALIZATION', 'Initialize the development launcher before initializing Updates.');
 
-    const controller = new UpdatesDevLauncherController(context, UpdatesController.configuration(context, info.name, false));
+    const embedded = UpdatesController.readEmbeddedConfiguration(context);
+    const effective = UpdatesController.configuration(embedded, info.name, false);
+    const packaged = UpdatesController.overrides.has(info.name)
+      ? UpdatesController.parseConfiguration(embedded, false)
+      : effective;
+    const controller = new UpdatesDevLauncherController(context, effective, packaged.url || null);
     UpdatesController.controllers.set(info.name, controller);
     const adapter = new ExpoUpdatesDevLauncherAdapter(context, controller);
     UpdatesController.adapters.set(info.name, adapter);
@@ -83,15 +87,9 @@ export class UpdatesController {
     const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
     if (UpdatesController.controllers.has(info.name))
       throw new ExpoUpdatesError('ERR_UPDATES_INITIALIZATION', 'Override Updates configuration before initializing its controller.');
+
     try {
-      let embedded: Json = {};
-
-      try {
-        embedded = JSON.parse(decode(context.resourceManager.getRawFileContentSync('expo-updates/config.json')));
-      } catch (error) {
-        console.info(`No embedded Updates configuration: ${String(error)}`);
-      }
-
+      const embedded = UpdatesController.readEmbeddedConfiguration(context);
       const configuration = new UpdatesConfiguration(UpdatesConfiguration.merge(embedded, value), false);
       if (!configuration.enabled) {
         console.warn('Ignoring an invalid Updates configuration override.');
@@ -103,18 +101,22 @@ export class UpdatesController {
     }
   }
 
-  private static configuration(context: common.ApplicationContext, name: string, development: boolean): UpdatesConfiguration {
-    let embedded: Json = {};
-
+  private static readEmbeddedConfiguration(context: common.ApplicationContext): Json {
     try {
-      embedded = JSON.parse(decode(context.resourceManager.getRawFileContentSync('expo-updates/config.json')));
+      return JSON.parse(decode(context.resourceManager.getRawFileContentSync('expo-updates/config.json')));
     } catch (error) {
       console.info(`No embedded Updates configuration: ${String(error)}`);
+      return {};
     }
+  }
 
+  private static configuration(embedded: Json, name: string, development: boolean): UpdatesConfiguration {
     const override = UpdatesController.overrides.get(name);
     const raw: Json = override === undefined ? embedded : UpdatesConfiguration.merge(embedded, override);
+    return UpdatesController.parseConfiguration(raw, development);
+  }
 
+  private static parseConfiguration(raw: Json, development: boolean): UpdatesConfiguration {
     try {
       return new UpdatesConfiguration(raw, development);
     } catch (error) {

@@ -69,16 +69,17 @@ export class AssetsDao {
       const launch = this.getById(launchId);
       if (launch) assets.unshift(launch);
     }
+
     return assets.map(asset => ({ ...asset, launch: asset.id === launchId }));
   }
 
   save(asset: Omit<UpdateAsset, 'launch'>): number {
     const existing = (asset.id === undefined ? undefined : this.getById(asset.id)) ?? this.get(asset.key);
     if (existing) {
-      this.db.executeSync(`UPDATE asset_records SET url=COALESCE(NULLIF(?,''),url),headers=?,
+      this.db.executeSync(`UPDATE asset_records SET url=COALESCE(NULLIF(?,''),url),headers=?,hash=COALESCE(hash,?),
         embedded=COALESCE(?,embedded),path=COALESCE(?,path),digest=COALESCE(?,digest),
         download_time=CASE WHEN ? IS NOT NULL AND (?<>COALESCE(path,'') OR ?<>COALESCE(digest,'')) THEN ? ELSE download_time END,
-        marked=0 WHERE asset_id=?`, [asset.url, JSON.stringify(asset.headers), asset.embedded ?? null,
+        marked=0 WHERE asset_id=?`, [asset.url, JSON.stringify(asset.headers), asset.hash ?? null, asset.embedded ?? null,
         asset.path ?? null, asset.digest ?? null, asset.path ?? null, asset.path ?? null, asset.digest ?? null, Date.now(), existing.id]);
       return existing.id;
     }
@@ -150,7 +151,7 @@ export class UpdatesDao {
     this.db.executeSync("UPDATE update_records SET status=?,keep=CASE WHEN ?='pending' THEN keep ELSE 1 END WHERE id=?", [status, status, id]);
   }
   markFinished(id: string): void {
-    this.db.executeSync("UPDATE update_records SET status=CASE WHEN status='development' THEN status ELSE 'ready' END,keep=1 WHERE id=?", [id]);
+    this.db.executeSync('UPDATE update_records SET keep=1 WHERE id=?', [id]);
   }
 
   setScope(id: string, scope: string): void { this.db.executeSync('UPDATE update_records SET scope=? WHERE id=?', [scope, id]); }

@@ -19,6 +19,8 @@ import {
 import { UpdatesController } from './UpdatesController';
 import { UpdatesDevLauncherController } from './UpdatesDevLauncherController';
 import { IUpdatesController } from './IUpdatesController';
+import type { UpdatesConfiguration } from './UpdatesConfiguration';
+import { normalizeHeaders } from './UpdatesProtocol';
 
 export class ExpoUpdatesAdapter implements UpdatesInterface {
   private readonly context: common.ApplicationContext;
@@ -36,11 +38,19 @@ export class ExpoUpdatesAdapter implements UpdatesInterface {
   get isUsingNativeDebug(): boolean {
     return this.controller.configuration.debug;
   }
+  protected get publicConfiguration(): UpdatesConfiguration | undefined {
+    const controller = this.controller;
+    return controller.enabled ? controller.configuration : undefined;
+  }
   get runtimeVersion(): string | null {
-    return this.isEnabled ? this.controller.configuration.runtime || null : null;
+    return this.publicConfiguration?.runtime || null;
   }
   get updateUrl(): string | null {
-    return this.isEnabled ? this.controller.configuration.url || null : null;
+    return this.publicConfiguration?.url || null;
+  }
+  get requestHeaders(): Record<string, string> | null {
+    const configuration = this.publicConfiguration;
+    return configuration === undefined ? null : normalizeHeaders(configuration.headers);
   }
   get launchedUpdateId(): string | null {
     return this.controller.launched?.id ?? null;
@@ -126,6 +136,15 @@ export class ExpoUpdatesDevLauncherAdapter extends ExpoUpdatesAdapter implements
     return this.development;
   }
 
+  get configuredUpdateUrl(): string | null {
+    return this.controller.configuredUpdateUrl;
+  }
+
+  protected override get publicConfiguration(): UpdatesConfiguration | undefined {
+    const configuration = this.controller.configuration;
+    return configuration.enabled ? configuration : undefined;
+  }
+
   get updatesInterfaceCallbacks(): UpdatesInterfaceCallbacks | undefined {
     return this.callbacks?.deref();
   }
@@ -147,12 +166,13 @@ export class ExpoUpdatesDevLauncherAdapter extends ExpoUpdatesAdapter implements
     }
   }
 
-  fetchUpdateWithConfiguration(value: Record<string, ESObject>, callback: UpdatesDevLauncherCallback): void {
+  fetchUpdateWithConfiguration(value: Record<string, ESObject>, callback: UpdatesDevLauncherCallback, deferActivation: boolean = false): void {
     this.controller
       .loadDevelopment(
         value,
         (manifest: Record<string, ESObject>): boolean => callback.onManifestLoaded(manifest),
         (successful: number, failed: number, total: number): void => callback.onProgress(successful, failed, total),
+        deferActivation,
       )
       .then(
         (update: UpdatesDevLauncherResult | null): void => callback.onSuccess(update),

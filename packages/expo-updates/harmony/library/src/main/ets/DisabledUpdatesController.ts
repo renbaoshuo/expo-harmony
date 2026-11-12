@@ -41,7 +41,7 @@ export class DisabledUpdatesController implements IUpdatesController {
       launchDuration: this.duration, isEmbeddedLaunch: false, isUsingEmbeddedAssets: true,
       runtimeVersion: '', checkAutomatically: 'NEVER', channel: '', shouldDeferToNativeForAPIMethodAvailabilityInDevelopment: false,
       updateId: this.launched?.id, commitTime: this.launched?.time, manifest: this.launched?.manifest,
-      localAssets: {}, initialContext: this.state.context,
+      localAssets: {}, domAssetBaseUrl: null, initialContext: this.state.context,
     };
   }
 

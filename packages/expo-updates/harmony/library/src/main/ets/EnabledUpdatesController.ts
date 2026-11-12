@@ -10,7 +10,7 @@ import { UpdatesConfiguration } from './UpdatesConfiguration';
 import { UpdatesConfigurationOverride } from './UpdatesConfigurationOverride';
 import { UpdatesState } from './UpdatesState';
 import { UpdatesStorage } from './UpdatesStorage';
-import { clientIdentity } from './UpdatesClientIdentity';
+import { prepareClientIdentity } from './UpdatesClientIdentity';
 import { UpdatesSelectionPolicy } from './selectionpolicy/UpdatesSelectionPolicy';
 import { StartupProcedure } from './procedures/StartupProcedure';
 import { CheckForUpdateProcedure } from './procedures/CheckForUpdateProcedure';
@@ -20,6 +20,7 @@ import { ExpoUpdatesError, Headers, Json, UpdateRecord,
   serializeHeaders } from './UpdatesProtocol';
 
 import { IUpdatesController } from './IUpdatesController';
+import { localAssetFiles } from './UpdatesAssetPaths';
 
 
 export class EnabledUpdatesController implements IUpdatesController {
@@ -63,27 +64,29 @@ export class EnabledUpdatesController implements IUpdatesController {
   get localAssets(): Record<string, string> { return this.assets(this.launched); }
 
   private assets(update?: UpdateRecord): Record<string, string> {
-    if (!update) return {};
     const embedded = this.configuration.embedded ? this.embedded?.assets.filter(asset => !asset.launch) ?? [] : [];
-    return Object.fromEntries([...embedded, ...update.assets].filter(asset => asset.key !== null && !!asset.path).map(asset => [asset.key, 'file://' + asset.path!.split('/').map(value => encodeURIComponent(value)).join('/')]));
+    return localAssetFiles(update, embedded);
   }
 
   hasAsset(id: number, path: string): boolean {
     const update = this.startup.update(id) ?? this.launched;
     const embedded = this.configuration.embedded ? this.embedded?.assets ?? [] : [];
-    return [...embedded, ...(update?.assets ?? [])].some(asset => asset.path === path);
+    return [...embedded, ...(update?.assets ?? [])].some(asset => asset.path === path)
+      || [...update?.domAssets?.files.values() ?? []].includes(path);
   }
 
   constants(id?: number): Json {
     const launched = id === undefined ? this.launched : this.startup.update(id) ?? this.launched;
+    const isEmbeddedLaunch = !!launched && this.configuration.embedded && launched.id === this.embedded?.id;
     return {
       isEnabled: this.enabled, isEmergencyLaunch: this.emergency !== undefined, emergencyLaunchReason: this.emergency ?? null,
-      launchDuration: this.duration, isEmbeddedLaunch: !!launched && this.configuration.embedded && launched.id === this.embedded?.id,
-      isUsingEmbeddedAssets: !launched || launched.status === 'embedded', runtimeVersion: this.configuration.runtime,
+      launchDuration: this.duration, isEmbeddedLaunch,
+      isUsingEmbeddedAssets: !launched?.assets.some(asset => asset.launch && !!asset.path), runtimeVersion: this.configuration.runtime,
       checkAutomatically: this.configuration.check, channel: this.configuration.headers['expo-channel-name'] ?? '',
       shouldDeferToNativeForAPIMethodAvailabilityInDevelopment: this.configuration.debug,
       updateId: launched?.id, commitTime: launched?.time,
-      manifest: launched?.manifest, localAssets: this.assets(launched), initialContext: this.state.context,
+      manifest: launched?.manifest, localAssets: this.assets(launched),
+      domAssetBaseUrl: isEmbeddedLaunch ? null : launched?.domAssets?.baseUrl ?? null, initialContext: this.state.context,
     };
   }
 
@@ -99,13 +102,13 @@ export class EnabledUpdatesController implements IUpdatesController {
     this.startup.begin();
 
     try {
-      clientIdentity(this.context).clientID;
+      await prepareClientIdentity(this.context);
       await this.storage.open();
-    }
-    catch (error) {
+    } catch (error) {
       this.disable(new ExpoUpdatesError('ERR_UPDATES_DATABASE', `Unable to initialize Updates storage: ${String(error)}`, error as Error));
       return;
     }
+
     this.overrides = new UpdatesConfigurationOverride(this.context);
     if (!this.overrides.initialized) this.overrides.save(await this.storage.metadata('', 'configuration'));
     this.initialized = true;
@@ -193,15 +196,17 @@ export class EnabledUpdatesController implements IUpdatesController {
 
   overrideHeaders(headers: Headers | null): void {
     this.requireEnabled();
-    const normalized = headers === null ? null : UpdatesConfiguration.headers(headers);
-    if (normalized && Object.keys(normalized).some(key => key === 'host' || !Object.prototype.hasOwnProperty.call(this.original.headers, key))) {
-      throw new ExpoUpdatesError('ERR_UPDATES_RUNTIME_OVERRIDE', 'Request header overrides can only replace embedded header names.');
+    const next = headers === null ? null : UpdatesConfiguration.headers(headers);
+    if (next && Object.keys(next).some(key => key === 'host' || !Object.prototype.hasOwnProperty.call(this.original.headers, key))) {
+      throw new ExpoUpdatesError('ERR_UPDATES_RUNTIME_OVERRIDE',
+        'Override keys must be declared in updates.requestHeaders in your app config at build time. Add the key to updates.requestHeaders and rebuild the app. Host overrides are not allowed.');
     }
 
     const previous = this.overrides!.load() ?? {};
     const value = { ...previous };
     if (headers === null) delete value.requestHeaders;
-    else value.requestHeaders = normalized;
+    else value.requestHeaders = next;
+
     this.override(Object.keys(value).length ? value : null, true);
   }
 

@@ -10,15 +10,16 @@ import { Json } from './UpdatesProtocol';
 export type UpdatesStateValue = 'idle' | 'checking' | 'downloading' | 'restarting';
 
 export type UpdatesStateEvent =
-  | { type: 'startStartup' | 'endStartup' | 'check' | 'checkCompleteUnavailable' | 'download' | 'downloadComplete' | 'downloadCompleteWithRollback' | 'restart' }
+  | { type: 'startStartup' | 'endStartup' | 'check' | 'checkCompleteUnavailable' | 'download' | 'downloadComplete' | 'restart' }
   | { type: 'checkCompleteWithUpdate' | 'downloadCompleteWithUpdate'; manifest: Json }
-  | { type: 'checkCompleteWithRollback'; commitTime: number }
+  | { type: 'checkCompleteWithRollback' | 'downloadCompleteWithRollback'; commitTime: number }
   | { type: 'checkError' | 'downloadError'; errorMessage: string }
   | { type: 'downloadProgress'; progress: number };
 
 export function nativeEvent(event: UpdatesStateEvent): Json {
   if (event.type === 'checkCompleteWithRollback') return { type: event.type };
   if (event.type === 'downloadCompleteWithRollback') return { type: 'downloadComplete' };
+
   return JSON.parse(JSON.stringify(event));
 }
 

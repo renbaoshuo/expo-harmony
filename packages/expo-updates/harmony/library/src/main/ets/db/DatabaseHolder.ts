@@ -11,13 +11,17 @@ import type { DatabaseConnection } from './Daos';
 
 export async function transact<T>(store: relationalStore.RdbStore, body: (db: DatabaseConnection) => T): Promise<T> {
   const transaction = await store.createTransaction();
+
   try {
     const result = body(transaction);
     await transaction.commit();
+
     return result;
   } catch (error) {
     try { await transaction.rollback(); }
     catch (failure) { console.error(`Unable to roll back Updates transaction: ${String(failure)}`); }
+
+    if (error instanceof ExpoUpdatesError) throw error;
     throw new ExpoUpdatesError('ERR_UPDATES_DATABASE', String(error), error instanceof Error ? error : undefined);
   }
 }

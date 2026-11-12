@@ -76,6 +76,7 @@ export class StartupProcedure implements StateMachineProcedure<void>, UpdatesPro
 
   async run(context: ProcedureContext): Promise<void> {
     context.process({ type: 'startStartup' });
+
     try {
       await this.task.start({
         process: event => context.process(event),
@@ -94,7 +95,11 @@ export class StartupProcedure implements StateMachineProcedure<void>, UpdatesPro
   }
 
   async loadEmbedded(): Promise<void> {
-    this.bundled = await this.embeddedLoader.load(this.configuration);
+    try {
+      this.bundled = await this.embeddedLoader.load(this.configuration);
+    } catch (error) {
+      this.storage.logger.error(`Unable to load the embedded update: ${String(error)}`, error as Error, 'UpdateFailedToLoad');
+    }
   }
 
   private async select(): Promise<UpdateRecord | undefined> {
@@ -159,6 +164,7 @@ export class StartupProcedure implements StateMachineProcedure<void>, UpdatesPro
   onReactInstanceException(id: number, error: Error): void {
     const runtime = this.recovery.runtime(id);
     if (runtime === undefined) return;
+
     this.recovery.recover(id, error).catch((failure: Error): void => {
       if (this.recovery.runtime(id) !== runtime) return;
       try { this.storage.logger.error(failure.message, failure, 'Unknown'); }

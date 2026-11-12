@@ -6,8 +6,11 @@
  */
 
 #include <array>
+#include <cstring>
+#include <limits.h>
 #include <memory>
 #include <string>
+#include <unistd.h>
 
 #include <napi/native_api.h>
 
@@ -41,6 +44,7 @@ static napi_value apply(napi_env env, napi_callback_info info) {
         napi_throw_type_error(env, "ERR_UPDATES_PATCH", "Patch paths must be nonempty strings.");
         return nullptr;
       }
+
       patch->paths[i].resize(size);
       if (napi_get_value_string_utf8(env, args[i], patch->paths[i].data(), size + 1, &size) != napi_ok) {
         return nullptr;
@@ -62,12 +66,15 @@ static napi_value apply(napi_env env, napi_callback_info info) {
   const auto created = napi_create_async_work(env, nullptr, name, [](napi_env, void *data) {
       auto *patch = static_cast<Patch *>(data);
       std::array<char *, 4> args = {const_cast<char *>("bspatch"), patch->paths[0].data(), patch->paths[1].data(), patch->paths[2].data()};
-      patch->result = bspatch_main(static_cast<int>(args.size()), args.data()); }, [](napi_env env, napi_status status, void *data) {
+      patch->result = bspatch_main(static_cast<int>(args.size()), args.data());
+    }, [](napi_env env, napi_status status, void *data) {
       std::unique_ptr<Patch> patch(static_cast<Patch *>(data));
       napi_value result;
       napi_create_int32(env, status == napi_ok ? patch->result : 1, &result);
       napi_resolve_deferred(env, patch->deferred, result);
-      napi_delete_async_work(env, patch->work); }, patch.get(), &patch->work);
+      napi_delete_async_work(env, patch->work);
+    }, patch.get(), &patch->work);
+
   if (created != napi_ok || napi_queue_async_work(env, patch->work) != napi_ok) {
     if (patch->work) {
       napi_delete_async_work(env, patch->work);
@@ -77,15 +84,41 @@ static napi_value apply(napi_env env, napi_callback_info info) {
     napi_resolve_deferred(env, patch->deferred, result);
     return promise;
   }
+
   patch.release();
+
   return promise;
+}
+
+static napi_value linkAsset(napi_env env, napi_callback_info info) {
+  size_t count = 2;
+  napi_value args[2] = {};
+  if (napi_get_cb_info(env, info, &count, args, nullptr, nullptr) != napi_ok) {
+    return nullptr;
+  }
+
+  std::array<char, PATH_MAX> paths[2] = {};
+  bool valid = count == 2;
+  for (size_t i = 0; i < count && valid; i++) {
+    size_t length = 0;
+    valid = napi_get_value_string_utf8(env, args[i], nullptr, 0, &length) == napi_ok &&
+        length > 0 && length < paths[i].size() &&
+        napi_get_value_string_utf8(env, args[i], paths[i].data(), paths[i].size(), &length) == napi_ok &&
+        std::memchr(paths[i].data(), '\0', length) == nullptr;
+  }
+
+  napi_value result = nullptr;
+  napi_get_boolean(env, valid && link(paths[0].data(), paths[1].data()) == 0, &result);
+
+  return result;
 }
 
 static napi_value initialize(napi_env env, napi_value exports) {
   napi_property_descriptor methods[] = {
       {"applyPatch", nullptr, apply, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"linkAsset", nullptr, linkAsset, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"crash", nullptr, crash, nullptr, nullptr, nullptr, napi_default, nullptr}};
-  napi_define_properties(env, exports, 2, methods);
+  napi_define_properties(env, exports, 3, methods);
   return exports;
 }
 

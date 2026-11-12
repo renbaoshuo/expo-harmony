@@ -13,8 +13,8 @@ import util from '@ohos.util';
 import type common from '@ohos.app.ability.common';
 import { applyPatch } from 'libexpo_updates.so';
 import { ExpoUpdatesError, Headers, UpdateAsset, UpdateRecord, normalizeHeaders } from './UpdatesProtocol';
-import { UpdatesStorage, decode, digest, encode, exists, hashFile, write } from './UpdatesStorage';
-import { isAssetPath, isSafeAssetFilename } from './UpdatesAssetPaths';
+import { UpdatesStorage, decode, digest, encode, exists, hashFile, isVerifiedAsset, write } from './UpdatesStorage';
+import { isSafeAssetFilename } from './UpdatesAssetPaths';
 
 interface DownloadOptions {
   timeout?: number;
@@ -50,6 +50,7 @@ export class UpdatesDownloader {
 
     try {
       file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+
       request.on('headersReceive', value => { response = normalizeHeaders(value as Record<string, ESObject>); });
       const completed = new Promise<void>((resolve, reject) => {
         request.on('dataReceive', bytes => {
@@ -62,9 +63,10 @@ export class UpdatesDownloader {
         request.on('dataEnd', resolve);
         request.on('dataReceiveProgress', value => progress(value.receiveSize, value.totalSize));
       });
-      const requested = request.requestInStream(url, { method: http.RequestMethod.GET,
+
+      const pending = request.requestInStream(url, { method: http.RequestMethod.GET,
         header: headers, usingCache: false, connectTimeout: timeout, readTimeout: timeout });
-      const [status] = await Promise.all([requested, completed]);
+      const [status] = await Promise.all([pending, completed]);
       if (status < 200 || status >= 300) throw new ExpoUpdatesError('ERR_UPDATES_ASSET', `Asset request returned HTTP ${status}.`);
 
       fs.fsyncSync(file.fd);
@@ -82,11 +84,15 @@ export class UpdatesDownloader {
     }
 
     const cached = await this.storage.asset(asset);
-    if (cached?.path && isAssetPath(this.storage.directory, cached.path) && exists(cached.path)) {
-      const actual = hashFile(cached.path);
-      if (actual === cached.digest && (!asset.hash || actual === asset.hash.replace(/=+$/, ''))) {
-        return { ...asset, id: cached.id, path: cached.path, digest: actual };
-      }
+    const expected = asset.hash?.replace(/=+$/, '');
+    const storedHash = cached?.hash?.replace(/=+$/, '') ?? cached?.digest;
+    if (expected !== undefined && storedHash !== undefined && expected !== storedHash) {
+      throw new ExpoUpdatesError('ERR_UPDATES_ASSET_HASH', `Asset key ${asset.key} already identifies different content.`);
+    }
+
+    const requiredHash = expected ?? storedHash;
+    if (cached && isVerifiedAsset(this.storage.directory, cached, requiredHash)) {
+      return { ...asset, id: cached.id, path: cached.path, digest: cached.digest };
     }
 
     const name = asset.key === null ? util.generateRandomUUID() : digest(encode(asset.key));
@@ -100,10 +106,12 @@ export class UpdatesDownloader {
         const size = await this.copyEmbeddedAsset(asset.embedded, temporary);
         progress(size, size);
       } else {
-        const extra = { ...asset.headers, ...headers, accept: '*/*', ...options.headers };
+        // Normalize cached headers too: older database rows can retain mixed-case names.
+        const extra: Headers = { ...normalizeHeaders(asset.headers), ...normalizeHeaders(headers), accept: '*/*' };
         const patch = asset.launch && options.patch === true && options.base !== undefined && options.requested !== undefined && options.base.id !== options.requested;
         if (patch) extra['a-im'] = 'bsdiff';
         else delete extra['a-im'];
+        Object.assign(extra, normalizeHeaders(options.headers ?? {}));
 
         const response = await this.stream(asset.url, extra, temporary, options.timeout ?? 10000, progress);
         if (response.status === 226 || response.headers.im?.split(',').some(value => value.trim().toLowerCase() === 'bsdiff')) {
@@ -116,7 +124,7 @@ export class UpdatesDownloader {
 
             const source = await this.resolvePatchBase(base, extracted);
             if (await applyPatch(source, patched, temporary) !== 0) throw new ExpoUpdatesError('ERR_UPDATES_PATCH', 'Unable to apply BSDIFF update.');
-            if (asset.hash && hashFile(patched) !== asset.hash.replace(/=+$/, '')) throw new ExpoUpdatesError('ERR_UPDATES_PATCH', 'Patched bundle failed SHA-256 verification.');
+            if (requiredHash && hashFile(patched) !== requiredHash) throw new ExpoUpdatesError('ERR_UPDATES_PATCH', 'Patched bundle failed SHA-256 verification.');
 
             fs.renameSync(patched, temporary);
             this.storage.logger.log(`Applied BSDIFF for asset ${asset.key}.`, 'None', 'info', options.requested, asset.key ?? undefined);
@@ -133,7 +141,7 @@ export class UpdatesDownloader {
       }
 
       const actual = hashFile(temporary);
-      if (asset.hash && actual !== asset.hash.replace(/=+$/, '')) throw new ExpoUpdatesError('ERR_UPDATES_ASSET_HASH', `SHA-256 mismatch for asset ${asset.key}.`);
+      if (requiredHash && actual !== requiredHash) throw new ExpoUpdatesError('ERR_UPDATES_ASSET_HASH', `SHA-256 mismatch for asset ${asset.key}.`);
 
       fs.renameSync(temporary, path);
       const result: UpdateAsset = { ...asset, path, digest: actual };
@@ -141,8 +149,8 @@ export class UpdatesDownloader {
 
       return result;
     } finally {
-      for (const path of [temporary, patched, extracted]) {
-        try { if (exists(path)) fs.unlinkSync(path); }
+      for (const file of [temporary, patched, extracted]) {
+        try { if (exists(file)) fs.unlinkSync(file); }
         catch (error) { this.storage.logger.warn(`Unable to remove temporary update asset: ${String(error)}`, 'AssetsFailedToLoad'); }
       }
     }
@@ -168,10 +176,7 @@ export class UpdatesDownloader {
 
   private async resolvePatchBase(base: UpdateAsset, temporary: string): Promise<string> {
     const expected = base.hash?.replace(/=+$/, '') ?? base.digest;
-    if (base.path && isAssetPath(this.storage.directory, base.path) && exists(base.path)) {
-      const actual = hashFile(base.path);
-      if (actual === base.digest && actual === expected) return base.path;
-    }
+    if (base.path && isVerifiedAsset(this.storage.directory, base, expected)) return base.path;
 
     if (base.embedded && expected) {
       await this.copyEmbeddedAsset(base.embedded, temporary);

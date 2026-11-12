@@ -6,11 +6,10 @@
  */
 
 import { UpdatesDownloader } from '../UpdatesDownloader';
-import { UpdatesStorage, exists, hashFile } from '../UpdatesStorage';
+import { UpdatesStorage, isVerifiedAsset } from '../UpdatesStorage';
 import { UpdatesConfiguration } from '../UpdatesConfiguration';
 import { UpdateRecord } from '../UpdatesProtocol';
 import { UpdatesSelectionPolicy } from '../selectionpolicy/UpdatesSelectionPolicy';
-import { isAssetPath } from '../UpdatesAssetPaths';
 
 export type AssetHeaders = (update: UpdateRecord) => Promise<Record<string, string>>;
 
@@ -19,8 +18,11 @@ export class UpdatesDatabaseLauncher {
     private readonly policy: UpdatesSelectionPolicy, private readonly embedded: () => UpdateRecord | undefined) {}
 
   async launch(config: UpdatesConfiguration, headers: AssetHeaders): Promise<UpdateRecord | undefined> {
-    const candidates = (await this.storage.launchable(config.scope)).filter(value =>
-      (value.status !== 'embedded' || (config.embedded && value.id === this.embedded()?.id)));
+    const candidates = (await this.storage.launchable(config.scope)).filter(value => {
+      // Older versions marked copied embedded updates as ready.
+      if (!config.embedded && typeof value.manifest.launchAsset?.packagerHash === 'string') return false;
+      return value.status !== 'embedded' || (config.embedded && value.id === this.embedded()?.id);
+    });
     const selected = this.policy.select(candidates, await this.storage.metadata(config.scope, 'filters'));
     if (!selected) return undefined;
 
@@ -30,9 +32,10 @@ export class UpdatesDatabaseLauncher {
 
   async launchUpdate(selected: UpdateRecord, config: UpdatesConfiguration, headers: AssetHeaders): Promise<UpdateRecord | undefined> {
     let available = selected.assets.some(asset => asset.launch);
+
     for (let index = 0; index < selected.assets.length; index++) {
       const asset = selected.assets[index];
-      if (asset.path && isAssetPath(this.storage.directory, asset.path) && exists(asset.path) && hashFile(asset.path) === asset.digest) continue;
+      if (isVerifiedAsset(this.storage.directory, asset)) continue;
 
       const embedded = this.embedded()?.assets.find(value => asset.key !== null && value.key === asset.key && (!asset.hash || value.hash === asset.hash));
 
@@ -47,9 +50,17 @@ export class UpdatesDatabaseLauncher {
       }
     }
 
-    if (available) await this.storage.markAccessed(selected.id);
+    if (available) {
+      try {
+        this.storage.prepareDomAssets(selected);
+      } catch (error) {
+        this.storage.logger.log(`Unable to prepare DOM assets: ${String(error)}`, 'AssetsFailedToLoad', 'warn', selected.id);
+        return undefined;
+      }
+      await this.storage.markAccessed(selected.id);
 
-    if (available) return selected;
+      return selected;
+    }
 
     this.storage.logger.log(`Update ${selected.id} has missing or corrupt assets.`, 'UpdateAssetsNotAvailable', 'warn', selected.id);
 
