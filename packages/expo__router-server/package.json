@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo__router-server",
-  "version": "55.0.19-harmony.2",
+  "version": "57.0.14-harmony.0",
   "description": "HarmonyOS port of @expo/router-server",
   "keywords": [
     "react-native",
@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/router-server": "55.0.19"
+    "@expo/router-server": "57.0.14"
   },
   "engines": {
     "node": ">=20"
