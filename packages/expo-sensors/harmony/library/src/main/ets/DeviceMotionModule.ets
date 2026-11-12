@@ -121,14 +121,16 @@ export class DeviceMotionModule extends SensorModule {
       });
   }
 
-  protected initialize(): void {
+  protected didStartObservation(): void {
+    const generation = this.generation;
+
     this.context
       .getReactNativeWindow()
       .then((current: window.Window): void => {
-        if (this.context.isValid) this.window = current;
+        if (generation === this.generation && this.context.isValid) this.window = current;
       })
       .catch((error: Error): void => {
-        this.warn(`Unable to obtain the React Native window: ${String(error)}`);
+        if (generation === this.generation) this.warn(`Unable to obtain the React Native window: ${String(error)}`);
       });
   }
 
@@ -139,6 +141,7 @@ export class DeviceMotionModule extends SensorModule {
     this.rotation = undefined;
     this.rate = undefined;
     this.pending = false;
+    this.window = undefined;
   }
 
   private async updateRotation(value: sensor.RotationVectorResponse): Promise<void> {
@@ -173,40 +176,47 @@ export class DeviceMotionModule extends SensorModule {
   }
 
   private publish(): void {
-    const linear = this.acceleration;
     const total = this.total;
     const gravity = this.gravity;
     const rotation = this.rotation;
-    const rate = this.rate;
+
+    if (total === undefined || gravity === undefined || rotation === undefined) return;
 
     // Match upstream Android's gravity direction, including its factor of two.
-    const combined =
-      total === undefined || gravity === undefined
-        ? undefined
-        : new VectorMeasurement(total.x - 2 * gravity.x, total.y - 2 * gravity.y, total.z - 2 * gravity.z, total.timestamp * NANOSECONDS_PER_SECOND);
+    const combined = new VectorMeasurement(
+      total.x - 2 * gravity.x,
+      total.y - 2 * gravity.y,
+      total.z - 2 * gravity.z,
+      total.timestamp * NANOSECONDS_PER_SECOND,
+    );
 
-    this.emitMeasurement(new DeviceMotionMeasurement(linear, combined, rotation, rate, this.interval, this.orientation()));
+    this.emitMeasurement(new DeviceMotionMeasurement(this.acceleration ?? null, combined, rotation, this.rate ?? null, this.interval, this.orientation()));
   }
 
   private orientation(): number {
+    let rotation: number;
+
     try {
       const id = this.window?.getWindowProperties().displayId;
-      const rotation = id === undefined ? display.getDefaultDisplaySync().rotation : display.getDisplayByIdSync(id).rotation;
-
-      switch (rotation) {
-        case display.Orientation.PORTRAIT:
-          return 0;
-        case display.Orientation.LANDSCAPE:
-          return 90;
-        case display.Orientation.PORTRAIT_INVERTED:
-          return 180;
-        case display.Orientation.LANDSCAPE_INVERTED:
-          return -90;
-        default:
-          return 0;
-      }
+      rotation = id === undefined ? display.getDefaultDisplaySync().rotation : display.getDisplayByIdSync(id).rotation;
     } catch (_) {
-      return 0;
+      // The window or its display may have been removed while observing.
+      try {
+        rotation = display.getDefaultDisplaySync().rotation;
+      } catch (_) {
+        return 0;
+      }
+    }
+
+    switch (rotation) {
+      case 1:
+        return 90;
+      case 2:
+        return 180;
+      case 3:
+        return -90;
+      default:
+        return 0;
     }
   }
 }

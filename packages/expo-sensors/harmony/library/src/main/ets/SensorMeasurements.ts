@@ -88,18 +88,18 @@ export class PedometerMeasurement {
 }
 
 export class DeviceMotionMeasurement {
-  acceleration?: VectorMeasurement;
-  accelerationIncludingGravity?: VectorMeasurement;
-  rotation?: RotationMeasurement;
-  rotationRate?: RotationMeasurement;
+  acceleration: VectorMeasurement | null;
+  accelerationIncludingGravity: VectorMeasurement;
+  rotation: RotationMeasurement;
+  rotationRate: RotationMeasurement | null;
   interval: number;
   orientation: number;
 
   constructor(
-    acceleration: VectorMeasurement | undefined,
-    total: VectorMeasurement | undefined,
-    rotation: RotationMeasurement | undefined,
-    rate: RotationMeasurement | undefined,
+    acceleration: VectorMeasurement | null,
+    total: VectorMeasurement,
+    rotation: RotationMeasurement,
+    rate: RotationMeasurement | null,
     interval: number,
     orientation: number,
   ) {

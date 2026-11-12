@@ -25,9 +25,6 @@
         "name": "ohos.permission.ACTIVITY_MOTION",
         "reason": "$string:expo_sensors_motion_permission_reason",
         "usedScene": {
-          "abilities": [
-            "EntryAbility"
-          ],
           "when": "inuse"
         }
       }

@@ -11,6 +11,10 @@ import { intervalNanoseconds, timestampSeconds } from './SensorMeasurements';
 const UNSUBSCRIBE_RETRY_MS: number = 1000;
 const MAX_UNSUBSCRIBE_ATTEMPTS: number = 3;
 
+// Native listeners for the same sensor share a sampling period. Preserve the
+// fastest request when DeviceMotion and a standalone sensor are both observing.
+const activeSamplePeriods = new Map<sensor.SensorId, Map<SensorObserver, number>>();
+
 export interface SensorObserver {
   id: sensor.SensorId;
   start(interval: number): void;
@@ -72,17 +76,32 @@ export class SensorSubscription<T extends sensor.Response> implements SensorObse
     this.active = true;
     this.attempts = 0;
 
+    const periods = activeSamplePeriods.get(this.id) ?? new Map<SensorObserver, number>();
+    let sharedPeriod = period;
+    periods.forEach((current: number): void => {
+      sharedPeriod = Math.min(sharedPeriod, current);
+    });
+
     try {
-      this.subscribe(callback, { interval: period });
+      this.subscribe(callback, { interval: sharedPeriod });
     } catch (error) {
-      this.stop();
+      this.active = false;
+      this.callback = undefined;
 
       throw new Error(`Unable to subscribe sensor ${this.id}: ${String(error)}`);
     }
+
+    periods.set(this, period);
+    activeSamplePeriods.set(this.id, periods);
   }
 
   stop(): void {
     this.active = false;
+    const periods = activeSamplePeriods.get(this.id);
+    if (periods !== undefined) {
+      periods.delete(this);
+      if (periods.size === 0) activeSamplePeriods.delete(this.id);
+    }
     if (this.retry >= 0) clearTimeout(this.retry);
     this.retry = -1;
 

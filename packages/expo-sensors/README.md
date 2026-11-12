@@ -1,229 +1,236 @@
 # @expo-harmony/expo-sensors
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-sensors) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/sensors/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-sensors) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/sensors/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Sensors 的原生实现，与官方同版本的 `expo-sensors` 配套使用。已实现加速度计、陀螺仪、磁力计、未校准磁力计、气压计、环境光、设备运动和计步器。
+为 HarmonyOS 上的 React Native 应用提供 Expo Sensors 原生实现，与官方同版本的 `expo-sensors` 配套使用。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
+在 Expo 应用项目目录中运行以下命令安装：
+
 ```bash
-npm install @expo-harmony/expo-sensors expo-sensors@55.0.19
-```
-
-本包适配 Expo SDK 55 的 `expo-sensors`，原生模块通过 Expo Harmony 自动链接。最低支持 HarmonyOS 5.0.1（API 13），宿主的 `compatibleSdkVersion` 也要满足这一要求。
-
-HAR 声明了 `ohos.permission.ACCELEROMETER`、`ohos.permission.GYROSCOPE` 和 `ohos.permission.ACTIVITY_MOTION`。加速度和陀螺仪属于 `system_grant` 权限，随安装授予，不会弹窗；运动权限用于计步器，订阅前需要申请，权限的 `usedScene` 默认挂在 `EntryAbility` 的 `inuse` 场景上，宿主的入口 Ability 使用其他名称时要改成实际名称。
-
-业务代码从官方包导入：
-
-```ts
-import { Accelerometer, DeviceMotion, Pedometer } from 'expo-sensors';
-
-Accelerometer.addListener(({ x, y, z }) => console.log(x, y, z));
+npm install @expo-harmony/expo-sensors expo-sensors
 ```
 
 ## API 对照表
-
-### Classes
-
-#### `Accelerometer`
-
-测量三轴加速度，单位 `g`。
-
-#### `Barometer`
-
-测量气压，单位 `hPa`。
-
-#### `DeviceMotion`
-
-测量设备的运动状态，同时依赖加速度、线性加速度、重力、陀螺仪和旋转矢量五个传感器。`isAvailableAsync()` 要求五个传感器全部存在。订阅任一传感器失败时会停止已启动的订阅。首次样本异步到达，事件可能先包含部分字段，业务端应检查字段是否存在。更新间隔默认 `1000 / 60` 毫秒，其他传感器默认 100 毫秒。
-
-加速度的单位和坐标约定与 Expo Android 一致。`rotation` 的 `alpha`、`beta`、`gamma` 是弧度，`rotationRate` 是度每秒。`orientation` 取屏幕旋转方向，值为 `0`、`90`、`180` 或 `-90`。
-
-#### `Gyroscope`
-
-测量三轴角速度，单位 `rad/s`。
-
-#### `LightSensor`
-
-测量环境光，单位 `lux`。
-
-#### `Magnetometer`
-
-测量三轴磁场强度，单位 `μT`。
-
-#### `MagnetometerUncalibrated`
-
-测量未经校准的三轴磁场强度，单位 `μT`。
-
-#### `DeviceSensor`
-
-传感器的基类，上面七个传感器都继承它。以下方法在所有传感器上都可用。
-
-##### `addListener(listener)`
-
-返回 `Subscription`，订阅测量更新。订阅前应先用 `isAvailableAsync()` 检查硬件。订阅期间应用切到后台会暂停上报，回到前台后恢复；订阅一时失败会自动重试三次。传感器不可用或缺少权限时订阅静默失败，不向调用方抛错，只是收不到更新。
-
-##### `isAvailableAsync()`
-
-返回 `Promise<boolean>`，设备是否提供该传感器。
-
-##### `setUpdateInterval(intervalMs)`
-
-设置更新间隔，单位毫秒，默认 100。传入负数、非有限数或超出安全整数范围的值时以 `ERR_SENSOR_INTERVAL` 报错。官方 JS 包里该方法返回 `void`，报错不会传给调用方，应先校验输入。实际频率受硬件和系统限制。上报按间隔节流，节流依据设备开机时长，不受系统时间调整影响。
-
-##### `hasListeners()`
-
-返回 `boolean`，是否有已注册的监听。
-
-##### `getListenerCount()`
-
-返回 `number`，已注册的监听数量。
-
-##### `removeAllListeners()`
-
-移除该传感器的全部监听。
-
-##### `removeSubscription(subscription)`
-
-取消指定的监听。官方已标记废弃，改调 `subscription.remove()`。
-
-##### `getPermissionsAsync()`
-
-返回 `Promise<PermissionResponse>`。加速度计、陀螺仪和设备运动读取系统权限状态；磁力计、未校准磁力计、气压计和环境光不需要权限，直接返回已授权。
-
-##### `requestPermissionsAsync()`
-
-返回 `Promise<PermissionResponse>`，取值与 `getPermissionsAsync()` 一致。加速度计和陀螺仪的权限随安装授予，不会弹出授权对话框。
 
 ### Constants
 
 #### `DeviceMotion.Gravity`
 
-类型：`number`，值为 `9.80665`。
+地球标准重力加速度，值为 `9.80665`，单位为 `m/s²`。
 
 ### Methods
 
-#### `Pedometer.watchStepCount(callback)`
+#### `Accelerometer.isAvailableAsync()`
 
-返回 `Subscription`，订阅步数更新，需要运动权限。步数更新按默认的 100 毫秒间隔节流，`Pedometer` 上没有调整间隔的方法。没有运动权限或设备没有计步器时订阅静默失败，不抛错。
+返回 `Promise<boolean>`，表示设备是否提供加速度计。
 
-系统上报的是累计步数。与 Expo Android 一致，每轮订阅以首次收到的累计值减一作为基线，首次更新为 `steps: 1`，之后返回相对该基线的步数。前后台切换保留基线，移除最后一个监听后重新订阅会重置基线。设备记录被系统清零时，模块会接续之前的计数。暂停期间不会上报，但恢复后的累计值可能包含暂停期间的步数。
+#### `Barometer.isAvailableAsync()`
+
+返回 `Promise<boolean>`，表示设备是否提供气压计。
+
+#### `DeviceMotion.isAvailableAsync()`
+
+返回 `Promise<boolean>`。设备运动所需的加速度、线性加速度、重力、陀螺仪和旋转矢量传感器都可用时返回 `true`。
+
+#### `Gyroscope.isAvailableAsync()`
+
+返回 `Promise<boolean>`，表示设备是否提供陀螺仪。
+
+#### `LightSensor.isAvailableAsync()`
+
+返回 `Promise<boolean>`，表示设备是否提供环境光传感器。
+
+#### `Magnetometer.isAvailableAsync()`
+
+返回 `Promise<boolean>`，表示设备是否提供磁力计。
+
+#### `MagnetometerUncalibrated.isAvailableAsync()`
+
+返回 `Promise<boolean>`，表示设备是否提供未校准磁力计。
 
 #### `Pedometer.isAvailableAsync()`
 
-返回 `Promise<boolean>`，设备是否提供计步器。
+返回 `Promise<boolean>`，表示设备是否提供计步器。
 
-#### `Pedometer.getPermissionsAsync()`
+#### `DeviceSensor.setUpdateInterval(intervalMs)`
 
-返回 `Promise<PermissionResponse>`，读取运动权限状态。
+设置传感器更新间隔，参数单位为毫秒，返回 `void`。参数须为有限的非负数；实际更新频率受传感器支持的采样范围限制。默认间隔为 100 毫秒；`DeviceMotion` 默认间隔为 `1000 / 60` 毫秒。`Pedometer` 不提供此方法。
 
-`status` 可能为 `'granted'`、`'denied'` 或 `'undetermined'`。API 20 及以上由系统区分未决定和已拒绝；API 13 到 API 19 的系统查询只能给出已授权或未授权，模块自己记录用户有没有被问过，没问过时按未决定返回。
+#### `DeviceSensor.hasListeners()`
 
-#### `Pedometer.requestPermissionsAsync()`
+返回 `boolean`，表示当前传感器是否有监听器。
 
-返回 `Promise<PermissionResponse>`，弹出授权对话框，取值与 `getPermissionsAsync()` 一致。同时发起的多次调用合并为一次请求，授权成功后正在等待的订阅自动恢复。权限没有在 `module.json5` 中声明时抛出 `ERR_SENSOR_PERMISSION`。
+#### `DeviceSensor.getListenerCount()`
 
-> **未实现的内容**
->
-> - `Pedometer.getStepCountAsync()`：iOS 专属接口，HarmonyOS 上没有按时间段查询步数的能力，调用抛出 `ERR_NOT_SUPPORTED`。
+返回 `number`，表示当前传感器的监听器数量。
+
+#### `DeviceSensor.removeAllListeners()`
+
+移除当前传感器的所有监听器，返回 `void`。
+
+#### `DeviceSensor.removeSubscription(subscription)`
+
+移除指定的监听订阅，返回 `void`。此方法已废弃，请调用 `subscription.remove()`。
+
+#### `Pedometer.getStepCountAsync(start, end)`
+
+参数 `start` 和 `end` 为 `Date`，表示查询范围的起止时间；返回类型为 `Promise<PedometerResult>`。
+
+- HarmonyOS 不提供按时间范围查询步数的功能。
+
+### Event subscriptions
+
+#### `Accelerometer.addListener(listener)`
+
+参数 `listener: (measurement: AccelerometerMeasurement) => void`。订阅加速度更新，返回 `Subscription`；调用 `remove()` 取消订阅。测量值的三轴单位为 `g`。应用进入后台时暂停事件，回到前台后恢复。
+
+#### `Barometer.addListener(listener)`
+
+参数 `listener: (measurement: BarometerMeasurement) => void`。订阅气压更新，返回 `Subscription`；调用 `remove()` 取消订阅。应用进入后台时暂停事件，回到前台后恢复。
+
+#### `DeviceMotion.addListener(listener)`
+
+参数 `listener: (measurement: DeviceMotionMeasurement) => void`。订阅设备运动更新，返回 `Subscription`；调用 `remove()` 取消订阅。收齐含重力加速度和设备姿态数据后开始回调；线性加速度和角速度数据尚不可用时，相应字段为 `null`。应用进入后台时暂停事件，回到前台后恢复。
+
+#### `Gyroscope.addListener(listener)`
+
+参数 `listener: (measurement: GyroscopeMeasurement) => void`。订阅陀螺仪更新，返回 `Subscription`；调用 `remove()` 取消订阅。测量值的三轴单位为 `rad/s`。应用进入后台时暂停事件，回到前台后恢复。
+
+#### `LightSensor.addListener(listener)`
+
+参数 `listener: (measurement: LightSensorMeasurement) => void`。订阅环境光更新，返回 `Subscription`；调用 `remove()` 取消订阅。应用进入后台时暂停事件，回到前台后恢复。
+
+#### `Magnetometer.addListener(listener)`
+
+参数 `listener: (measurement: MagnetometerMeasurement) => void`。订阅磁场强度更新，返回 `Subscription`；调用 `remove()` 取消订阅。应用进入后台时暂停事件，回到前台后恢复。
+
+#### `MagnetometerUncalibrated.addListener(listener)`
+
+参数 `listener: (measurement: MagnetometerUncalibratedMeasurement) => void`。订阅未经校准的磁场强度更新，返回 `Subscription`；调用 `remove()` 取消订阅。应用进入后台时暂停事件，回到前台后恢复。
+
+#### `Pedometer.watchStepCount(callback)`
+
+参数 `callback: PedometerUpdateCallback`，返回 `Subscription`；调用 `remove()` 取消订阅。需要运动权限；未授权时不会收到步数事件。事件按默认 100 毫秒间隔节流。每轮订阅首次收到的步数为 `1`；前后台切换会保留本轮计数，移除最后一个订阅后再次订阅会重新计数。应用处于后台时暂停事件；恢复后步数可能包含暂停期间记录的步数。
 
 ### Types
 
 #### `AccelerometerMeasurement`
 
-| 属性          | 类型     | 说明                     |
-| ------------- | -------- | ------------------------ |
-| `x`、`y`、`z` | `number` | 三个轴的加速度，单位 `g` |
-| `timestamp`   | `number` | 测量时间，单位秒         |
+- `x`、`y`、`z: number`：设备三轴加速度，单位 `g`。
+- `timestamp: number`：测量时间，单位秒。
 
 #### `BarometerMeasurement`
 
-| 属性        | 类型     | 说明             |
-| ----------- | -------- | ---------------- |
-| `pressure`  | `number` | 气压，单位 `hPa` |
-| `timestamp` | `number` | 测量时间，单位秒 |
-
-> **未实现的内容**
->
-> - `BarometerMeasurement.relativeAltitude`：iOS 专属字段，HarmonyOS 上没有取值来源。
-
-#### `GyroscopeMeasurement`
-
-| 属性          | 类型     | 说明                         |
-| ------------- | -------- | ---------------------------- |
-| `x`、`y`、`z` | `number` | 三个轴的角速度，单位 `rad/s` |
-| `timestamp`   | `number` | 测量时间，单位秒             |
-
-#### `LightSensorMeasurement`
-
-| 属性          | 类型     | 说明                   |
-| ------------- | -------- | ---------------------- |
-| `illuminance` | `number` | 环境光照度，单位 `lux` |
-| `timestamp`   | `number` | 测量时间，单位秒       |
-
-#### `MagnetometerMeasurement`
-
-| 属性          | 类型     | 说明                        |
-| ------------- | -------- | --------------------------- |
-| `x`、`y`、`z` | `number` | 三个轴的磁场强度，单位 `μT` |
-| `timestamp`   | `number` | 测量时间，单位秒            |
-
-#### `MagnetometerUncalibratedMeasurement`
-
-字段与 `MagnetometerMeasurement` 相同，数值未经校准。
+- `pressure: number`：气压，单位 `hPa`。
+- `timestamp: number`：测量时间，单位秒。
+- `relativeAltitude?: number`：HarmonyOS 不提供相对高度数据。
 
 #### `DeviceMotionMeasurement`
 
-| 属性                           | 类型                                             | 说明                          |
-| ------------------------------ | ------------------------------------------------ | ----------------------------- |
-| `acceleration`                 | `{ x, y, z, timestamp } \| undefined`            | 不含重力的加速度，单位 `m/s²` |
-| `accelerationIncludingGravity` | `{ x, y, z, timestamp } \| undefined`            | 含重力的加速度，单位 `m/s²`   |
-| `rotation`                     | `{ alpha, beta, gamma, timestamp } \| undefined` | 设备在空间中的姿态，单位弧度  |
-| `rotationRate`                 | `{ alpha, beta, gamma, timestamp } \| undefined` | 旋转速率，单位度每秒          |
-| `interval`                     | `number`                                         | 更新间隔，单位毫秒            |
-| `orientation`                  | `DeviceMotionOrientation`                        | 屏幕旋转方向                  |
+- `acceleration: { x, y, z, timestamp } | null`：不含重力的加速度，单位 `m/s²`；数据暂不可用时为 `null`。
+- `accelerationIncludingGravity: { x, y, z, timestamp }`：含重力的加速度，单位 `m/s²`。
+- `rotation: { alpha, beta, gamma, timestamp }`：设备姿态，角度单位为弧度。
+- `rotationRate: { alpha, beta, gamma, timestamp } | null`：角速度，单位为度每秒；数据暂不可用时为 `null`。
+- `interval: number`：更新间隔，单位毫秒。
+- `orientation: DeviceMotionOrientation`：屏幕方向对应的角度。
+
+#### `GyroscopeMeasurement`
+
+- `x`、`y`、`z: number`：设备三轴角速度，单位 `rad/s`。
+- `timestamp: number`：测量时间，单位秒。
+
+#### `LightSensorMeasurement`
+
+- `illuminance: number`：环境光照度，单位 `lux`。
+- `timestamp: number`：测量时间，单位秒。
+
+#### `MagnetometerMeasurement`
+
+- `x`、`y`、`z: number`：设备三轴磁场强度，单位 `μT`。
+- `timestamp: number`：测量时间，单位秒。
+
+#### `MagnetometerUncalibratedMeasurement`
+
+- `x`、`y`、`z: number`：设备三轴未经校准的磁场强度，单位 `μT`。
+- `timestamp: number`：测量时间，单位秒。
 
 #### `PedometerResult`
 
-| 属性    | 类型     | 说明 |
-| ------- | -------- | ---- |
-| `steps` | `number` | 步数 |
+- `steps: number`：本轮计步订阅中的步数。
 
 #### `PedometerUpdateCallback`
 
-`(result: PedometerResult) => void`。
-
-#### `Listener`
-
-`(event: Measurement) => void`。
+类型为 `(result: PedometerResult) => void`，接收步数更新。
 
 #### `Subscription`
 
-取消订阅的对象，实现见 `addListener()`。
+订阅句柄。调用 `remove()` 取消订阅，返回 `void`。
 
 #### `PermissionExpiration`
 
-`'never' | number`，恒为 `'never'`。
+类型为 `'never' | number`。HarmonyOS 上始终为 `'never'`。
 
 #### `PermissionResponse`
 
-| 属性          | 类型                   | 说明                                          |
-| ------------- | ---------------------- | --------------------------------------------- |
-| `status`      | `PermissionStatus`     | `'granted'`、`'denied'` 或 `'undetermined'`   |
-| `granted`     | `boolean`              | 是否已授权                                    |
-| `canAskAgain` | `boolean`              | 已授权或未决定时为 `true`，被拒绝后为 `false` |
-| `expires`     | `PermissionExpiration` | 恒为 `'never'`                                |
+- `status: PermissionStatus`：`'granted'`、`'denied'` 或 `'undetermined'`。
+- `granted: boolean`：`status` 为 `'granted'` 时为 `true`。
+- `canAskAgain: boolean`：`status` 为 `'granted'` 或 `'undetermined'` 时为 `true`，为 `'denied'` 时为 `false`。
+- `expires: PermissionExpiration`：HarmonyOS 上始终为 `'never'`。
 
 ### Enums
 
 #### `DeviceMotionOrientation`
 
-`Portrait = 0`、`RightLandscape = 90`、`UpsideDown = 180`、`LeftLandscape = -90`。
+- `Portrait = 0`
+- `RightLandscape = 90`
+- `UpsideDown = 180`
+- `LeftLandscape = -90`
 
 #### `PermissionStatus`
 
-`'granted' | 'denied' | 'undetermined'`，三个取值都会出现。
+- `GRANTED = 'granted'`
+- `DENIED = 'denied'`
+- `UNDETERMINED = 'undetermined'`
+
+### Error codes
+
+#### `ERR_NOT_SUPPORTED`
+
+调用 `Pedometer.getStepCountAsync()` 时抛出；HarmonyOS 不支持按日期范围查询步数。
+
+#### `ERR_SENSOR_INTERVAL`
+
+`DeviceSensor.setUpdateInterval()` 的参数不是有限的非负数，或超出可接受的数值范围时抛出。
+
+#### `ERR_SENSOR_PERMISSION`
+
+查询或请求计步权限时，权限未在应用中声明、系统无法请求权限或系统返回无效权限状态时抛出。
+
+### Permissions
+
+#### `DeviceSensor.getPermissionsAsync()`
+
+返回 `Promise<PermissionResponse>`。`Accelerometer` 和 `Gyroscope` 返回对应系统权限状态；`DeviceMotion` 返回加速度计和陀螺仪权限状态。HarmonyOS 在安装时授予 `ohos.permission.ACCELEROMETER` 和 `ohos.permission.GYROSCOPE`。
+
+#### `DeviceSensor.requestPermissionsAsync()`
+
+返回 `Promise<PermissionResponse>`。`Accelerometer`、`Gyroscope` 和 `DeviceMotion` 的请求方法不会弹出授权对话框；`Barometer`、`LightSensor`、`Magnetometer` 和 `MagnetometerUncalibrated` 不需要额外权限，查询和请求均返回已授权状态。
+
+#### `Pedometer.getPermissionsAsync()`
+
+返回 `Promise<PermissionResponse>`，读取 `ohos.permission.ACTIVITY_MOTION` 的授权状态。
+
+#### `Pedometer.requestPermissionsAsync()`
+
+返回 `Promise<PermissionResponse>`，请求 `ohos.permission.ACTIVITY_MOTION`。授权成功后，已等待权限的步数订阅会恢复；用户拒绝或需要前往系统设置授权时返回 `denied`。
+
+HarmonyOS SDK API 20 及以上可区分尚未请求和已拒绝。API 13 至 19 首次请求前返回 `undetermined`；请求被拒绝后返回 `denied`。`PermissionResponse` 的 `expires` 始终为 `'never'`。
 
 ## Author
 

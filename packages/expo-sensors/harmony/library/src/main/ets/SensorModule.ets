@@ -56,7 +56,6 @@ export class SensorModule extends ExpoModule {
       .events([this.event])
       .onCreate((): void => {
         this.logger = this.context.logger;
-        this.initialize();
       })
       .asyncFunction('isAvailableAsync', async (): Promise<boolean> => {
         return this.subscriptions.every((subscription: SensorObserver): boolean => {
@@ -146,6 +145,7 @@ export class SensorModule extends ExpoModule {
     if (!this.running || !this.context.isValid || !this.hasPermissions()) return;
 
     const now = systemDateTime.getUptime(systemDateTime.TimeType.STARTUP);
+
     if (this.emitted >= 0 && now - this.emitted < this.interval) return;
 
     this.sendEvent(this.event, value);
@@ -154,7 +154,7 @@ export class SensorModule extends ExpoModule {
 
   protected resetObservation(): void {}
   protected clearSamples(): void {}
-  protected initialize(): void {}
+  protected didStartObservation(): void {}
 
   protected systemPermissions(): SensorPermissionResponse {
     const granted = this.hasPermissions();
@@ -207,6 +207,8 @@ export class SensorModule extends ExpoModule {
 
       throw new ExpoModuleError('ERR_SENSOR_SUBSCRIBE', String(error));
     }
+
+    this.didStartObservation();
   }
 
   private pause(): void {

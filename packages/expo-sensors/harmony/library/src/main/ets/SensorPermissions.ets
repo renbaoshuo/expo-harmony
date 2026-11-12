@@ -14,7 +14,8 @@ const ACTIVITY_MOTION: Permissions = 'ohos.permission.ACTIVITY_MOTION';
 const SELF_PERMISSION_STATUS_API: number = 20;
 const REQUEST_ERROR_REASONS_API: number = 18;
 const PREFERENCES_NAME: string = 'ExpoSensors';
-const DENIED_KEY: string = 'activityMotionDenied';
+const DECISION_KEY: string = 'activityMotionDetermined';
+const LEGACY_DENIED_KEY: string = 'activityMotionDenied';
 
 enum RequestReason {
   Success = 0,
@@ -39,7 +40,7 @@ export class SensorPermissionResponse {
 
 export class PedometerPermissions {
   private readonly context: ExpoModuleContext;
-  private denied?: boolean;
+  private determined: boolean = false;
   private pending?: Promise<SensorPermissionResponse>;
 
   constructor(context: ExpoModuleContext) {
@@ -51,13 +52,19 @@ export class PedometerPermissions {
 
     if (deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) {
       if (this.context.systemPermissionStatus(ACTIVITY_MOTION) === ExpoPermissionStatus.GRANTED) {
-        await this.setDenied(false);
+        await this.rememberDecision();
       }
 
-      history = await this.wasDenied();
+      history = await this.hasDecision();
     }
 
     const status = this.context.permissionStatus(ACTIVITY_MOTION, history);
+    if (status === ExpoPermissionStatus.INVALID) {
+      throw new ExpoModuleError(
+        'ERR_SENSOR_PERMISSION',
+        'Invalid activity motion permission. Declare ACTIVITY_MOTION in the application module.json5.',
+      );
+    }
     if (status === ExpoPermissionStatus.GRANTED) return new SensorPermissionResponse('granted', true);
 
     const undetermined = status === ExpoPermissionStatus.NOT_DETERMINED;
@@ -79,7 +86,9 @@ export class PedometerPermissions {
   }
 
   private async requestOnce(): Promise<SensorPermissionResponse> {
-    const request = await this.context.requestPermissions([ACTIVITY_MOTION]);
+    const request = await this.context.requestPermissions([ACTIVITY_MOTION]).catch((error: Error) => {
+      throw new ExpoModuleError('ERR_SENSOR_PERMISSION', 'The system could not request activity motion permission.', error);
+    });
 
     let blocked = false;
 
@@ -88,29 +97,27 @@ export class PedometerPermissions {
       const reason =
         deviceInfo.sdkApiVersion >= REQUEST_ERROR_REASONS_API ? (result.errorReasons?.[index] ?? RequestReason.Success) : RequestReason.Success;
 
-      if (
-        index < 0 ||
-        reason === RequestReason.InvalidPermission ||
-        reason === RequestReason.NotDeclared ||
-        (reason === RequestReason.Success &&
-          result.authResults[index] !== ExpoPermissionStatus.GRANTED &&
-          result.authResults[index] !== ExpoPermissionStatus.DENIED)
-      ) {
+      if (index < 0 || reason === RequestReason.InvalidPermission || reason === RequestReason.NotDeclared) {
         throw new ExpoModuleError(
           'ERR_SENSOR_PERMISSION',
           'Invalid activity motion permission result. Check the ACTIVITY_MOTION declaration in module.json5.',
         );
       }
 
-      blocked = blocked || reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings;
+      const cannotRequest = reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings;
+      if (!cannotRequest && reason !== RequestReason.Success) {
+        throw new ExpoModuleError('ERR_SENSOR_PERMISSION', `The system could not request activity motion permission (reason ${reason}).`);
+      }
 
-      if (
-        deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API &&
-        ((reason === RequestReason.Success &&
-          (result.authResults[index] === ExpoPermissionStatus.GRANTED || result.dialogShownResults?.[index] === true)) ||
-          blocked)
-      ) {
-        await this.setDenied(result.authResults[index] === ExpoPermissionStatus.DENIED);
+      const status = result.authResults[index];
+      if (!cannotRequest && status !== ExpoPermissionStatus.GRANTED && status !== ExpoPermissionStatus.DENIED) {
+        throw new ExpoModuleError('ERR_SENSOR_PERMISSION', 'Invalid activity motion permission result. Check the ACTIVITY_MOTION declaration in module.json5.');
+      }
+
+      blocked = blocked || cannotRequest;
+
+      if (deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) {
+        await this.rememberDecision();
       }
     }
 
@@ -119,29 +126,29 @@ export class PedometerPermissions {
     return blocked && !response.granted ? new SensorPermissionResponse('denied', false) : response;
   }
 
-  private async wasDenied(): Promise<boolean> {
-    if (this.denied !== undefined) return this.denied;
+  private async hasDecision(): Promise<boolean> {
+    if (this.determined) return true;
 
     try {
       const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: PREFERENCES_NAME });
-      const value = await store.get(DENIED_KEY, false);
-
-      this.denied = this.denied ?? value === true;
+      if ((await store.get(DECISION_KEY, false)) === true || (await store.get(LEGACY_DENIED_KEY, false)) === true) {
+        this.determined = true;
+      }
     } catch (_) {
-      this.denied = this.denied ?? false;
+      // The system grant remains authoritative if history is unavailable.
     }
 
-    return this.denied;
+    return this.determined;
   }
 
-  private async setDenied(value: boolean): Promise<void> {
-    this.denied = value;
+  private async rememberDecision(): Promise<void> {
+    if (this.determined) return;
+
+    this.determined = true;
 
     try {
       const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: PREFERENCES_NAME });
-      if ((await store.get(DENIED_KEY, false)) === value) return;
-
-      await store.put(DENIED_KEY, value);
+      await store.put(DECISION_KEY, true);
       await store.flush();
     } catch (_) {
       // Permission history is best effort; the OS remains authoritative.
