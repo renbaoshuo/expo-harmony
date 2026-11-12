@@ -10,6 +10,7 @@
 const { createRunOncePlugin } = require('@expo/config-plugins');
 const {
   HarmonyConfigPluginError,
+  HarmonyManifest,
   registerHarmonyConfigPlugin,
   withModuleJson,
 } = require('@expo-harmony/config-plugins');
@@ -24,7 +25,10 @@ const DEFAULT_SHARED_TYPES = [
   'general.text',
   'general.file',
 ];
-const DEFAULT_MAX_FILES = 50;
+// SharedData supports up to 500 records (Share Kit API reference).
+const MAX_SHARED_RECORDS = 500;
+const DEFAULT_MAX_FILES = MAX_SHARED_RECORDS;
+const SHARE_SCHEME_METADATA = 'expo.sharing.scheme';
 
 function createSharingSkill(options) {
   const values = options.utds ?? DEFAULT_SHARED_TYPES;
@@ -45,10 +49,10 @@ function createSharingSkill(options) {
   }
 
   const limit = options.maxFileSupported ?? DEFAULT_MAX_FILES;
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > DEFAULT_MAX_FILES) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SHARED_RECORDS) {
     throw new HarmonyConfigPluginError(
       'ERR_HARMONY_SHARING_CONFIG_INVALID',
-      `@expo-harmony/expo-sharing maxFileSupported must be between 1 and ${DEFAULT_MAX_FILES}.`,
+      `@expo-harmony/expo-sharing maxFileSupported must be between 1 and ${MAX_SHARED_RECORDS}.`,
       { operation: 'configure-incoming-sharing' }
     );
   }
@@ -70,13 +74,8 @@ function createSharingSkill(options) {
   };
 }
 
-function isSharingSkill(skill) {
-  return skill && typeof skill === 'object' && Array.isArray(skill.actions)
-    && skill.actions.some(action => SEND_ACTIONS.includes(action));
-}
-
-function updateEntryAbility(json, options = {}) {
-  const module = json.module;
+function updateEntryAbility(mod, options, scheme) {
+  const module = mod.modResults.module;
   if (!module || typeof module !== 'object' || !Array.isArray(module.abilities)) {
     throw new HarmonyConfigPluginError(
       'ERR_HARMONY_SHARING_ABILITY_NOT_FOUND',
@@ -94,14 +93,16 @@ function updateEntryAbility(json, options = {}) {
     );
   }
 
-  const target = module.abilities.find(ability => ability?.name === name);
-  if (!target) {
+  const targets = module.abilities.filter(ability => ability?.name === name);
+  if (targets.length !== 1) {
     throw new HarmonyConfigPluginError(
       'ERR_HARMONY_SHARING_ABILITY_NOT_FOUND',
-      `Incoming sharing target Ability '${name}' does not exist.`,
+      `Expected exactly one incoming sharing target Ability '${name}', found ${targets.length}.`,
       { operation: 'configure-incoming-sharing' }
     );
   }
+
+  const [target] = targets;
   if (target.exported !== true) {
     throw new HarmonyConfigPluginError(
       'ERR_HARMONY_SHARING_ABILITY_NOT_EXPORTED',
@@ -110,24 +111,10 @@ function updateEntryAbility(json, options = {}) {
     );
   }
 
-  const skill = createSharingSkill(options);
-  const abilities = module.abilities.map((ability) => {
-    if (!ability || typeof ability !== 'object') return ability;
-    if (ability.name !== name) return ability;
-
-    const skills = Array.isArray(ability.skills) ? ability.skills : [];
-    const retained = skills.flatMap((value) => {
-      if (!isSharingSkill(value)) return [value];
-
-      const actions = value.actions.filter(action => !SEND_ACTIONS.includes(action));
-
-      return actions.length > 0 ? [{ ...value, actions }] : [];
-    });
-
-    return { ...ability, skills: [...retained, skill] };
+  HarmonyManifest.configureAbility(mod, target, {
+    skills: [createSharingSkill(options)],
+    metadata: scheme === undefined ? [] : [{ name: SHARE_SCHEME_METADATA, value: scheme }],
   });
-
-  return { ...json, module: { ...module, abilities } };
 }
 
 function withHarmonySharing(config, options = {}) {
@@ -137,10 +124,13 @@ function withHarmonySharing(config, options = {}) {
   config = registerHarmonyConfigPlugin(config, pkg.name);
 
   return withModuleJson(config, (mod) => {
-    mod.modResults = updateEntryAbility(mod.modResults, {
+    const { scheme } = mod.modRawConfig;
+    const shareScheme = (Array.isArray(scheme) ? scheme : [scheme])
+      .find(value => typeof value === 'string' && /^[a-z][a-z0-9+.-]*$/i.test(value));
+    updateEntryAbility(mod, {
       ...options,
       abilityName: options.abilityName ?? mod.modRawConfig.harmony?.abilityName,
-    });
+    }, shareScheme);
 
     return mod;
   });

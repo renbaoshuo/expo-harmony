@@ -10,6 +10,7 @@ import {
   ExpoAppLifecycleState,
   ExpoFileAccessKey,
   ExpoFileAccessPolicy,
+  ExpoFileAccessRegistry,
   ExpoFunction,
   ExpoModule,
   ExpoModuleContext,
@@ -17,7 +18,9 @@ import {
   ExpoModuleError,
   ExpoValueType,
   ExpoValueTypes,
+  copyWant,
   fileUriFromPath,
+  resolveFileReadSource,
 } from '@expo-harmony/expo-modules-core';
 import { util } from '@kit.ArkTS';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
@@ -32,11 +35,10 @@ const SHARE_CAPABILITY: string = 'SystemCapability.Collaboration.SystemShare';
 const SEND_ACTION: string = 'ohos.want.action.sendData';
 const SEND_MULTIPLE_ACTION: string = 'ohos.want.action.sendMultipleData';
 const URL_TIMEOUT_MS: number = 5000;
-const MAX_INCOMING_RECORDS: number = 50;
-const MAX_INCOMING_FILE_BYTES: number = 100 * 1024 * 1024;
-const MAX_INCOMING_TOTAL_BYTES: number = 250 * 1024 * 1024;
 const MODULE_NAME: string = 'ExpoSharing';
 const INCOMING_SHARE_EVENT: string = 'onSharedPayloadsChanged';
+const SHARE_SCHEME_METADATA: string = 'expo.sharing.scheme';
+const MAX_FILE_NAME_BYTES: number = 255;
 
 interface ShareFile {
   uri: string;
@@ -108,7 +110,6 @@ interface ResolvedRecord {
 }
 
 class IncomingGeneration {
-  readonly revision: number;
   records: systemShare.SharedRecord[] = [];
   resolved?: ResolvedSharePayload[] = undefined;
   failure?: string = undefined;
@@ -117,10 +118,6 @@ class IncomingGeneration {
   ready: boolean = false;
   cancelled: boolean = false;
   readonly files: Set<string> = new Set<string>();
-
-  constructor(revision: number) {
-    this.revision = revision;
-  }
 }
 
 const states: WeakMap<Object, IncomingShareState> = new WeakMap<Object, IncomingShareState>();
@@ -129,8 +126,7 @@ class IncomingShareState {
   private readonly cache: string;
   private readonly access?: ExpoFileAccessPolicy;
   private destroyed: boolean = false;
-  private revision: number = 0;
-  private generation: IncomingGeneration = new IncomingGeneration(0);
+  private generation: IncomingGeneration = new IncomingGeneration();
   private readonly listeners: Set<() => void> = new Set<() => void>();
 
   constructor(cache: string, access?: ExpoFileAccessPolicy) {
@@ -142,7 +138,7 @@ class IncomingShareState {
   receive(want: Want): void {
     if (this.destroyed || !isShareWant(want)) return;
 
-    const generation = new IncomingGeneration(++this.revision);
+    const generation = new IncomingGeneration();
 
     this.replaceGeneration(generation);
     generation.loading = this.load(want, generation);
@@ -201,7 +197,7 @@ class IncomingShareState {
   }
 
   clear(): void {
-    const generation = new IncomingGeneration(++this.revision);
+    const generation = new IncomingGeneration();
 
     generation.ready = true;
     generation.resolved = [];
@@ -222,7 +218,7 @@ class IncomingShareState {
     this.destroyed = true;
     this.listeners.clear();
 
-    const generation = new IncomingGeneration(++this.revision);
+    const generation = new IncomingGeneration();
 
     generation.ready = true;
     this.replaceGeneration(generation);
@@ -232,13 +228,6 @@ class IncomingShareState {
     try {
       const data = await systemShare.getSharedData(want);
       const records = data.getRecords();
-
-      if (records.length > MAX_INCOMING_RECORDS) {
-        throw new ExpoSharingError(
-          'ERR_FAILED_TO_RESOLVE_SHARED_DATA',
-          `Incoming share contains ${records.length} records; the limit is ${MAX_INCOMING_RECORDS}.`,
-        );
-      }
 
       if (!this.isCurrent(generation)) return;
 
@@ -257,27 +246,18 @@ class IncomingShareState {
 
   private async resolve(generation: IncomingGeneration): Promise<void> {
     const resolved: ResolvedSharePayload[] = [];
-    let total: number = 0;
 
     try {
-      for (let index = 0; index < generation.records.length; index += 1) {
+      for (const record of generation.records) {
         this.assertCurrent(generation);
 
-        const result = await resolvedPayloadFromRecord(
-          generation.records[index],
-          this.cache,
-          generation.revision,
-          index,
-          MAX_INCOMING_TOTAL_BYTES - total,
-          this.access,
-        );
+        const result = await resolvedPayloadFromRecord(record, this.cache, this.access);
 
         if (result === undefined) continue;
 
         if (result.file !== undefined) generation.files.add(result.file);
         this.assertCurrent(generation);
 
-        if (result.file !== undefined) total += result.payload.contentSize ?? 0;
         resolved.push(result.payload);
       }
 
@@ -335,19 +315,24 @@ class IncomingShareState {
 
 export class ExpoSharingLifecycleSubscriber extends ExpoAbilityLifecycleSubscriber {
   private readonly incoming: IncomingShareState;
+  private readonly route?: string;
 
   constructor(context: common.UIAbilityContext) {
     super(context);
     this.incoming = new IncomingShareState(context.cacheDir);
+    const scheme = context.abilityInfo.metadata?.find((entry): boolean => entry.name === SHARE_SCHEME_METADATA)?.value;
+    if (scheme !== undefined && /^[a-z][a-z0-9+.-]*$/i.test(scheme)) {
+      this.route = `${scheme}://expo-sharing`;
+    }
     states.set(context, this.incoming);
   }
 
-  override onCreate(want: Want): void {
-    this.incoming.receive(want);
-  }
+  override onWillReceiveWant(want: Want): void {
+    if (!isShareWant(want)) return;
 
-  override onNewWant(want: Want): void {
-    this.incoming.receive(want);
+    // Linking receives only the app's share route. Share Kit reads the original Want.
+    this.incoming.receive(copyWant(want));
+    want.uri = this.route;
   }
 
   override onDestroy(): void {
@@ -459,10 +444,10 @@ export class ExpoSharingModule extends ExpoModule {
   }
 
   private async share(url: string, options: SharingOptions): Promise<void> {
-    this.assertActive();
     if (this.sharing) {
       throw new ExpoSharingError('ERR_SHARING_IN_PROGRESS', 'Another share request is being processed now.');
     }
+    this.assertActive();
 
     const session: ShareSession = { cancelled: false };
 
@@ -525,32 +510,20 @@ async function showShare(
   config: systemShare.ShareControllerOptions,
   session: ShareSession,
 ): Promise<void> {
-  let finish: () => void = (): void => {};
-  let dismissed: boolean = false;
+  if (session.cancelled) return;
+
+  let dismiss: () => void = (): void => {};
   const done = new Promise<void>((resolve: () => void): void => {
-    finish = resolve;
+    dismiss = resolve;
   });
 
-  const dismiss = (): void => {
-    if (dismissed) return;
-
-    dismissed = true;
-    finish();
-  };
-
-  session.finish = dismiss;
-  if (session.cancelled) {
-    dismiss();
-    return;
-  }
-
   controller.on('dismiss', dismiss);
+  session.finish = dismiss;
 
   try {
-    if (session.cancelled) return;
-
-    await controller.show(context.uiAbilityContext, config);
-    await done;
+    // A presentation error rejects the call. Dismissal or teardown settles it even if show() is pending.
+    const shown = controller.show(context.uiAbilityContext, config).then((): Promise<void> => done);
+    await Promise.race([done, shown]);
   } finally {
     session.finish = undefined;
     controller.off('dismiss', dismiss);
@@ -573,84 +546,37 @@ async function prepareShareFile(url: string, context: ExpoModuleContext): Promis
     );
   }
 
-  const authority = source.authority ?? '';
-  const name = source.getLastSegment();
-  if (authority.length > 0 && authority !== 'localhost') {
-    let file: fileIo.File | undefined;
-
-    try {
-      file = await fileIo.open(url, fileIo.OpenMode.READ_ONLY);
-      context.assertFileAccess(file.path);
-
-      const stat = await fileIo.stat(file.fd);
-
-      if (!stat.isFile()) {
-        throw new ExpoSharingError('ERR_SHARING_INVALID_URL', 'The URL to share does not point to a file.');
-      }
-    } catch (error) {
-      if (error instanceof ExpoSharingError) {
-        throw new ExpoSharingError(error.code, error.message, error.cause);
-      }
-
-      throw new ExpoSharingError(
-        'ERR_SHARING_INVALID_URL',
-        `The application or user file URI cannot be read: ${errorMessage(error as Object)}`,
-        error as Object,
-      );
-    } finally {
-      if (file !== undefined) {
-        try {
-          await fileIo.close(file);
-        } catch (_) {}
-      }
-    }
-
-    return { uri: url, name: name.length > 0 ? name : 'shared-file' };
-  }
-
-  const path = source.path ?? '';
-  if (path.length === 0 || !path.startsWith('/')) {
-    throw new ExpoSharingError('ERR_SHARING_INVALID_URL', 'The URL to share must contain an absolute file path.');
-  }
-
   let file: fileIo.File | undefined;
 
   try {
-    context.assertFileAccess(path);
-    file = await fileIo.open(path, fileIo.OpenMode.READ_ONLY);
-    context.assertFileAccess(file.path);
+    const target = context.fileSourceForRead(url);
+    file = await fileIo.open(target, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
 
-    const stat = await fileIo.stat(file.fd);
-
-    if (!stat.isFile()) {
+    if (!(await fileIo.stat(file.fd)).isFile()) {
       throw new ExpoSharingError('ERR_SHARING_INVALID_URL', 'The URL to share does not point to a file.');
+    }
+    if (!target.startsWith('/')) return { uri: target, name: nameFromURI(target) ?? 'shared-file' };
+
+    try {
+      const path = context.readPathForDescriptor(target, file);
+      return { uri: fileUri.getUriFromPath(path), name: path.slice(path.lastIndexOf('/') + 1) };
+    } catch (error) {
+      throw new ExpoSharingError('ERR_SHARING_FAILED', `The local file URI cannot be created: ${errorMessage(error as Object)}`, error as Object);
     }
   } catch (error) {
     if (error instanceof ExpoSharingError) {
       throw new ExpoSharingError(error.code, error.message, error.cause);
     }
-
-    throw new ExpoSharingError('ERR_SHARING_INVALID_URL', `The local file cannot be read: ${errorMessage(error as Object)}`, error as Object);
+    throw new ExpoSharingError(
+      'ERR_SHARING_INVALID_URL',
+      `The application or user file URI cannot be read: ${errorMessage(error as Object)}`,
+      error as Object,
+    );
   } finally {
     if (file !== undefined) {
-      try {
-        await fileIo.close(file);
-      } catch (_) {}
+      try { await fileIo.close(file); } catch (_) {}
     }
   }
-
-  let result: string;
-
-  try {
-    result = fileUri.getUriFromPath(path);
-  } catch (error) {
-    throw new ExpoSharingError('ERR_SHARING_FAILED', `The local file URI cannot be created: ${errorMessage(error as Object)}`, error as Object);
-  }
-
-  return {
-    uri: result,
-    name: name.length > 0 ? name : 'shared-file',
-  };
 }
 
 function resolvePreview(name: string, mime: string | undefined): SharePreview {
@@ -683,16 +609,15 @@ function resolvePreview(name: string, mime: string | undefined): SharePreview {
   if (type === null) utd = uniformTypeDescriptor.UniformDataType.FILE;
 
   if (type !== null) {
-    if (type.belongsTo(uniformTypeDescriptor.UniformDataType.IMAGE)) {
+    if (type.belongsTo(uniformTypeDescriptor.UniformDataType.IMAGE)
+      || type.belongsTo(uniformTypeDescriptor.UniformDataType.VIDEO)) {
       return { utd, mode: systemShare.SharePreviewMode.DETAIL };
     }
 
-    if (type.belongsTo(uniformTypeDescriptor.UniformDataType.VIDEO)) {
-      return { utd, mode: systemShare.SharePreviewMode.DETAIL };
-    }
-
-    if (type.belongsTo(uniformTypeDescriptor.UniformDataType.AUDIO)) {
-      return { utd, mode: systemShare.SharePreviewMode.DEFAULT };
+    // Share Kit represents text and links as inline content. shareAsync always sends a file URI.
+    if (type.belongsTo(uniformTypeDescriptor.UniformDataType.TEXT)
+      || type.belongsTo(uniformTypeDescriptor.UniformDataType.HYPERLINK)) {
+      utd = uniformTypeDescriptor.UniformDataType.FILE;
     }
   }
 
@@ -704,10 +629,11 @@ function isShareWant(want: Want): boolean {
 }
 
 function payloadFromRecord(record: systemShare.SharedRecord): SharePayload | undefined {
-  const value = recordValue(record);
-  if (value.length === 0) return undefined;
+  const source = optionalString(record.uri);
+  const value = source ?? optionalString(record.content);
+  if (value === undefined) return undefined;
 
-  const type = shareTypeFromRecord(record, value);
+  const type = shareTypeFromRecord(record, value, source !== undefined);
 
   return {
     value,
@@ -719,15 +645,12 @@ function payloadFromRecord(record: systemShare.SharedRecord): SharePayload | und
 async function resolvedPayloadFromRecord(
   record: systemShare.SharedRecord,
   cache: string,
-  revision: number,
-  index: number,
-  remaining: number,
   access?: ExpoFileAccessPolicy,
 ): Promise<ResolvedRecord | undefined> {
   const payload = payloadFromRecord(record);
   if (payload === undefined) return undefined;
 
-  if (payload.shareType === 'text' && optionalString(record.uri) === undefined) {
+  if (payload.shareType === 'text') {
     return {
       payload: {
         value: payload.value,
@@ -744,11 +667,13 @@ async function resolvedPayloadFromRecord(
 
   if (payload.shareType === 'url') return await resolveURLPayload(payload);
 
-  return await resolveFilePayload(record, payload, cache, revision, index, remaining, access);
+  return await resolveFilePayload(record, payload, cache, access);
 }
 
 async function resolveURLPayload(payload: SharePayload): Promise<ResolvedRecord> {
   try {
+    if (!isWebURL(payload.value)) throw new Error('Shared links must have an HTTP or HTTPS URL.');
+
     const response = await streamURLHeaders(payload.value);
     const headers = response.headers;
     const url = response.url;
@@ -827,52 +752,45 @@ async function resolveFilePayload(
   record: systemShare.SharedRecord,
   payload: SharePayload,
   cache: string,
-  revision: number,
-  index: number,
-  remaining: number,
   access?: ExpoFileAccessPolicy,
 ): Promise<ResolvedRecord> {
   const url = optionalString(record.uri);
-  if (url === undefined) {
+  // Share Kit file records use app or user file URIs with a provider authority.
+  if (url === undefined || url.includes('\0') || !/^file:\/\/(?!localhost\/)[^/?#]+\/[^?#]+/i.test(url)) {
     throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', `Shared ${payload.shareType} data does not contain a readable file URI.`);
   }
 
-  const name = sharedFileName(record, url);
+  const uriName = nameFromURI(url);
+  const name = optionalString(record.title) ?? uriName ?? 'unknown';
   const dir = `${cache}/expo-sharing`;
-  const file = `${dir}/${util.generateRandomUUID()}-${revision}-${index}-${safeFileName(name)}`;
+  const file = `${dir}/${cacheFileName(uriName ?? name)}`;
   let source: fileIo.File | undefined;
+  let copying = false;
 
   try {
-    if (!(await fileIo.access(dir))) await fileIo.mkdir(dir, true);
-
-    source = await fileIo.open(url, fileIo.OpenMode.READ_ONLY);
-    access?.grantExternalPath(source.path, false, false);
-    access?.assertAccess(source.path, 'read');
     access?.assertAccess(file, 'write');
+
+    const readSource = resolveFileReadSource(url, cache);
+    access?.assertAccess(readSource, 'read');
+
+    source = await fileIo.open(url, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
 
     const stat = await fileIo.stat(source.fd);
     if (!stat.isFile()) {
       throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', 'Shared file URI does not point to a regular file.');
     }
 
-    const bytes = stat.size;
-    if (!Number.isSafeInteger(bytes) || bytes < 0) {
-      throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', 'Shared file has an invalid size.');
-    }
+    if (access !== undefined) ExpoFileAccessRegistry.assertReadDescriptor(undefined, readSource, source, access);
 
-    if (bytes > MAX_INCOMING_FILE_BYTES) {
-      throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', `Shared file exceeds the ${MAX_INCOMING_FILE_BYTES}-byte per-file limit.`);
-    }
-
-    if (bytes > remaining) {
-      throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', `Incoming share exceeds the ${MAX_INCOMING_TOTAL_BYTES}-byte total limit.`);
-    }
-
+    // The system grant is sufficient for copying. JS receives the cache file,
+    // so the source URI does not need to become a runtime capability.
+    if (!(await fileIo.access(dir))) await fileIo.mkdir(dir, true);
+    copying = true;
     await fileIo.copyFile(source.fd, file);
 
     const size = (await fileIo.stat(file)).size;
-    if (size !== bytes) {
-      throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', 'Shared file copy was incomplete.');
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', 'Shared cache file has an invalid size.');
     }
 
     return {
@@ -889,9 +807,11 @@ async function resolveFilePayload(
       },
     };
   } catch (error) {
-    try {
-      await fileIo.unlink(file);
-    } catch (_) {}
+    if (copying) {
+      try {
+        await fileIo.unlink(file);
+      } catch (_) {}
+    }
 
     throw new ExpoSharingError(
       'ERR_FAILED_TO_RESOLVE_SHARED_DATA',
@@ -907,7 +827,9 @@ async function resolveFilePayload(
   }
 }
 
-function shareTypeFromRecord(record: systemShare.SharedRecord, value: string): ShareType {
+function shareTypeFromRecord(record: systemShare.SharedRecord, value: string, hasFileUri: boolean): ShareType {
+  if (!hasFileUri && isWebURL(value)) return 'url';
+
   try {
     const type = uniformTypeDescriptor.getTypeDescriptor(record.utd);
     if (type !== null) {
@@ -917,23 +839,17 @@ function shareTypeFromRecord(record: systemShare.SharedRecord, value: string): S
 
       if (type.belongsTo(uniformTypeDescriptor.UniformDataType.VIDEO)) return 'video';
 
+      if (hasFileUri) return 'file';
+
       if (type.belongsTo(uniformTypeDescriptor.UniformDataType.HYPERLINK)) return 'url';
 
-      if (type.belongsTo(uniformTypeDescriptor.UniformDataType.TEXT)) {
-        return isWebURL(value) ? 'url' : 'text';
-      }
+      if (type.belongsTo(uniformTypeDescriptor.UniformDataType.TEXT)) return 'text';
 
       if (type.belongsTo(uniformTypeDescriptor.UniformDataType.FILE)) return 'file';
     }
   } catch (_) {}
 
-  if (isWebURL(value)) return 'url';
-
-  return optionalString(record.uri) === undefined ? 'text' : 'file';
-}
-
-function recordValue(record: systemShare.SharedRecord): string {
-  return optionalString(record.uri) ?? optionalString(record.content) ?? '';
+  return hasFileUri ? 'file' : 'text';
 }
 
 function isWebURL(value: string): boolean {
@@ -987,15 +903,10 @@ function mimeFromUTD(utd: string): string | undefined {
 
 function nameFromURI(value: string): string | null {
   try {
-    const name = new uri.URI(value).getLastSegment();
-    return name.length > 0 ? name : null;
+    return optionalString(new uri.URI(value).getLastSegment()) ?? null;
   } catch (_) {
     return null;
   }
-}
-
-function sharedFileName(record: systemShare.SharedRecord, value: string): string {
-  return nameFromURI(value) ?? optionalString(record.title) ?? 'unknown';
 }
 
 function safeFileName(value: string): string {
@@ -1003,7 +914,18 @@ function safeFileName(value: string): string {
   const name = (segments[segments.length - 1] ?? '').replace(/[\u0000-\u001F:*?"<>|]/g, '_').trim();
   if (name.length === 0 || name === '.' || name === '..') return 'unknown';
 
-  return name.slice(0, 180);
+  return name;
+}
+
+function cacheFileName(value: string): string {
+  const prefix = `${util.generateRandomUUID()}-`;
+  const bytes = new util.TextEncoder().encodeInto(safeFileName(value));
+  let start = Math.max(0, bytes.length + prefix.length - MAX_FILE_NAME_BYTES);
+
+  // Keep the extension and begin at a complete UTF-8 character.
+  while ((bytes[start] & 0xc0) === 0x80) start += 1;
+
+  return prefix + util.TextDecoder.create('utf-8').decodeToString(bytes.subarray(start));
 }
 
 function normalizedMimeType(value: string | undefined): string | undefined {
