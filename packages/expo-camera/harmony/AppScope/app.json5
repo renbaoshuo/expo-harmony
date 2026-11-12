@@ -9,7 +9,7 @@
   "app": {
     "bundleName": "dev.expo.camera.build",
     "vendor": "expo-harmony",
-    "versionCode": 550023,
-    "versionName": "55.0.23-harmony.0"
+    "versionCode": 570006,
+    "versionName": "57.0.6-harmony.0"
   }
 }

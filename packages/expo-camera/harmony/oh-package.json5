@@ -8,7 +8,7 @@
 {
   "modelVersion": "5.0.0",
   "name": "@expo-harmony-internal/expo-camera",
-  "version": "55.0.23-harmony.3",
+  "version": "57.0.6-harmony.0",
   "description": "HarmonyOS port of expo-camera",
   "keywords": [
     "react-native",
@@ -28,6 +28,8 @@
     "@expo-harmony/expo-camera": "./library"
   },
   "overrides": {
-    "@rnoh/react-native-openharmony": "0.84.1"
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
+    "@expo-harmony/expo-image-loader": "57.0.1-harmony.0",
+    "@rnoh/react-native-openharmony": "0.86.1"
   }
 }

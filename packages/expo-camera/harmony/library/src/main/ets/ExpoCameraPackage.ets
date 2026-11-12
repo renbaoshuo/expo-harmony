@@ -6,7 +6,6 @@
  */
 
 import {
-  ExpoFileAccessKey,
   fileUriFromPath,
   ExpoFunction,
   ExpoModule,
@@ -21,73 +20,26 @@ import {
   ExpoViewContext,
   ExpoViewDefinition,
 } from '@expo-harmony/expo-modules-core';
+import { ImageLoaderInterfaceKey } from '@expo-harmony/expo-image-loader';
 import { Permissions } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { camera } from '@kit.CameraKit';
 import { media } from '@kit.MediaKit';
-import { http } from '@kit.NetworkKit';
-import { detectBarcode, scanBarcode, scanCore } from '@kit.ScanKit';
+import { detectBarcode, scanBarcode } from '@kit.ScanKit';
 import deviceInfo from '@ohos.deviceInfo';
 import fs from '@ohos.file.fs';
 import image from '@ohos.multimedia.image';
 import util from '@ohos.util';
+import { BarcodeResult, barcodeResult, SCAN_CAPABILITY, scanTypes } from './ExpoCameraBarcode';
 import { ExpoCameraError } from './ExpoCameraError';
+import { ensureDirectory, packPicture, readBuffer, uniquePath } from './ExpoCameraFiles';
 import { encodeExifMetadata } from './ExpoCameraExif';
 import { BarcodeScannerSettings, buildExpoCameraView, ExpoCameraViewState, PictureOptions, RecordingOptions } from './ExpoCameraView';
 
 const CAMERA_PERMISSION: Permissions = 'ohos.permission.CAMERA';
 const MICROPHONE_PERMISSION: Permissions = 'ohos.permission.MICROPHONE';
-const SCAN_CAPABILITY: string = 'SystemCapability.Multimedia.Scan.ScanBarcode';
 // Scan Kit BusinessError: the user cancelled the system scanner UI.
 const SCANNER_CANCELLED_ERROR_CODE: number = 1000500002;
-const BARCODE_IMAGE_LIMIT: number = 10 * 1024 * 1024;
-let fileSequence: number = 0;
-
-class BarcodePoint {
-  x: number;
-  y: number;
-
-  constructor(x: number, y: number) {
-    this.x = x;
-    this.y = y;
-  }
-}
-
-class BarcodeSize {
-  width: number;
-  height: number;
-
-  constructor(width: number, height: number) {
-    this.width = width;
-    this.height = height;
-  }
-}
-
-class BarcodeBounds {
-  origin: BarcodePoint;
-  size: BarcodeSize;
-
-  constructor(origin: BarcodePoint, size: BarcodeSize) {
-    this.origin = origin;
-    this.size = size;
-  }
-}
-
-class BarcodeResult {
-  type: string;
-  data: string;
-  raw: string;
-  cornerPoints: BarcodePoint[];
-  bounds: BarcodeBounds;
-
-  constructor(type: string, data: string, points: BarcodePoint[], bounds: BarcodeBounds) {
-    this.type = type;
-    this.data = data;
-    this.raw = data;
-    this.cornerPoints = points;
-    this.bounds = bounds;
-  }
-}
 
 interface SavePictureOptions {
   quality?: number;
@@ -203,58 +155,6 @@ class SavedPicture {
   }
 }
 
-async function writeBuffer(path: string, buffer: ArrayBuffer): Promise<void> {
-  const file = await fs.open(path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-  let offset = 0;
-
-  try {
-    while (offset < buffer.byteLength) {
-      const chunk = buffer.slice(offset, Math.min(offset + 64 * 1024, buffer.byteLength));
-      const count = await fs.write(file.fd, chunk, { offset });
-      if (count <= 0) throw new ExpoCameraError('ERR_CAMERA_FILE_WRITE', `Unable to write '${path}'.`);
-      offset += count;
-    }
-  } finally {
-    await fs.close(file.fd);
-  }
-}
-
-async function ensureDirectory(path: string): Promise<void> {
-  if (!(await fs.access(path))) await fs.mkdir(path, true);
-}
-
-async function readBuffer(path: string): Promise<ArrayBuffer> {
-  const stat = await fs.stat(path);
-  const buffer = new ArrayBuffer(stat.size);
-  const file = await fs.open(path, fs.OpenMode.READ_ONLY);
-  let offset = 0;
-
-  try {
-    while (offset < buffer.byteLength) {
-      const chunk = new ArrayBuffer(Math.min(64 * 1024, buffer.byteLength - offset));
-      const count = await fs.read(file.fd, chunk, { length: chunk.byteLength });
-      if (count <= 0) break;
-
-      new Uint8Array(buffer).set(new Uint8Array(chunk, 0, count), offset);
-      offset += count;
-    }
-  } finally {
-    await fs.close(file.fd);
-  }
-
-  if (offset !== buffer.byteLength) {
-    throw new ExpoCameraError('ERR_CAMERA_FILE_READ', `Unable to read '${path}'.`);
-  }
-
-  return buffer;
-}
-
-function uniquePath(dir: string, prefix: string, extension: string): string {
-  fileSequence = (fileSequence + 1) % 1_000_000;
-
-  return `${dir}/${prefix}-${Date.now()}-${fileSequence}.${extension}`;
-}
-
 async function writeMetadata(path: string, metadata?: Record<string, ESObject>): Promise<void> {
   const records = encodeExifMetadata(metadata);
   if (Object.keys(records).length === 0) return;
@@ -265,65 +165,6 @@ async function writeMetadata(path: string, metadata?: Record<string, ESObject>):
   } finally {
     await source.release();
   }
-}
-
-function barcodeType(type: scanCore.ScanType): string {
-  if (type === scanCore.ScanType.AZTEC_CODE) return 'aztec';
-  if (type === scanCore.ScanType.CODABAR_CODE) return 'codabar';
-  if (type === scanCore.ScanType.CODE39_CODE) return 'code39';
-  if (type === scanCore.ScanType.CODE93_CODE) return 'code93';
-  if (type === scanCore.ScanType.CODE128_CODE) return 'code128';
-  if (type === scanCore.ScanType.DATAMATRIX_CODE) return 'datamatrix';
-  if (type === scanCore.ScanType.EAN8_CODE) return 'ean8';
-  if (type === scanCore.ScanType.EAN13_CODE) return 'ean13';
-  if (type === scanCore.ScanType.ITF14_CODE) return 'itf14';
-  if (type === scanCore.ScanType.PDF417_CODE) return 'pdf417';
-  if (type === scanCore.ScanType.QR_CODE) return 'qr';
-  if (type === scanCore.ScanType.UPC_A_CODE) return 'upc_a';
-  if (type === scanCore.ScanType.UPC_E_CODE) return 'upc_e';
-  return 'unknown';
-}
-
-function scanType(type: string): scanCore.ScanType | undefined {
-  if (type === 'aztec') return scanCore.ScanType.AZTEC_CODE;
-  if (type === 'codabar') return scanCore.ScanType.CODABAR_CODE;
-  if (type === 'code39') return scanCore.ScanType.CODE39_CODE;
-  if (type === 'code93') return scanCore.ScanType.CODE93_CODE;
-  if (type === 'code128') return scanCore.ScanType.CODE128_CODE;
-  if (type === 'datamatrix') return scanCore.ScanType.DATAMATRIX_CODE;
-  if (type === 'ean8') return scanCore.ScanType.EAN8_CODE;
-  if (type === 'ean13') return scanCore.ScanType.EAN13_CODE;
-  if (type === 'itf14') return scanCore.ScanType.ITF14_CODE;
-  if (type === 'pdf417') return scanCore.ScanType.PDF417_CODE;
-  if (type === 'qr') return scanCore.ScanType.QR_CODE;
-  if (type === 'upc_a') return scanCore.ScanType.UPC_A_CODE;
-  if (type === 'upc_e') return scanCore.ScanType.UPC_E_CODE;
-  return undefined;
-}
-
-function scanTypes(value?: string[], allWhenEmpty: boolean = true): scanCore.ScanType[] {
-  if (value === undefined) return allWhenEmpty ? [scanCore.ScanType.ALL] : [];
-
-  const types = value
-    .map((type: string): scanCore.ScanType | undefined => scanType(type))
-    .filter((type: scanCore.ScanType | undefined): boolean => type !== undefined) as scanCore.ScanType[];
-
-  return types.length === 0 && allWhenEmpty ? [scanCore.ScanType.ALL] : types;
-}
-
-function barcodeResult(value: scanBarcode.ScanResult): BarcodeResult {
-  const rect = value.scanCodeRect;
-  const left = rect?.left ?? 0;
-  const top = rect?.top ?? 0;
-  const right = rect?.right ?? left;
-  const bottom = rect?.bottom ?? top;
-  const bounds = new BarcodeBounds(new BarcodePoint(left, top), new BarcodeSize(right - left, bottom - top));
-  const points =
-    value.cornerPoints?.map((point: scanBarcode.Point): BarcodePoint => {
-      return new BarcodePoint(point.x, point.y);
-    }) ?? [];
-
-  return new BarcodeResult(barcodeType(value.scanType), value.originalValue, points, bounds);
 }
 
 class PermissionRecord {
@@ -365,13 +206,15 @@ export class ExpoCameraModule extends ExpoModule {
         new ExpoCameraViewState(
           viewContext,
           (pixel: image.PixelMap, width: number, height: number): CameraPictureRef =>
-            new CameraPictureRef(
-              this.context,
-              pixel,
-              width,
-              height,
-              async (picturePixel: image.PixelMap, options: SavePictureOptions): Promise<SavedPicture> =>
-                await this.savePicture(picturePixel, options),
+            pictureClass.instance(
+              new CameraPictureRef(
+                this.context,
+                pixel,
+                width,
+                height,
+                async (picturePixel: image.PixelMap, options: SavePictureOptions): Promise<SavedPicture> =>
+                  await this.savePicture(picturePixel, options),
+              ),
             ),
         ),
       wrapBuilder(buildExpoCameraView),
@@ -656,91 +499,38 @@ export class ExpoCameraModule extends ExpoModule {
       throw new ExpoCameraError('ERR_CAMERA_SCANNER_UNAVAILABLE', 'Barcode scanning is not supported on this device.');
     }
 
-    const requested = scanTypes(types ?? ['qr'], false);
-    if (requested.length === 0) return [];
-    let uri = url;
+    const formats = scanTypes(types ?? ['qr'], false);
+    if (formats.length === 0) return [];
+
     let path: string | undefined;
 
     try {
-      if (url.startsWith('http://') || url.startsWith('https://')) {
-        const request = http.createHttp();
-
-        try {
-          const response = await request.request(url, {
-            method: http.RequestMethod.GET,
-            expectDataType: http.HttpDataType.ARRAY_BUFFER,
-            connectTimeout: 15000,
-            readTimeout: 30000,
-            maxLimit: BARCODE_IMAGE_LIMIT,
-          });
-          if (response.responseCode < 200 || response.responseCode >= 300 || !(response.result instanceof ArrayBuffer)) {
-            throw new ExpoCameraError('ERR_CAMERA_IMAGE_DOWNLOAD', 'Could not download the barcode image.');
-          }
-          if (response.result.byteLength > BARCODE_IMAGE_LIMIT) {
-            throw new ExpoCameraError('ERR_CAMERA_IMAGE_TOO_LARGE', 'The barcode image exceeds the 10 MB limit.');
-          }
-
-          const dir = `${this.context.cachePath}/expo-camera`;
-          await ensureDirectory(dir);
-          path = uniquePath(dir, 'barcode', 'img');
-
-          await writeBuffer(path, response.result);
-
-          uri = fileUriFromPath(path);
-        } catch (error) {
-          console.error(`Expo Camera barcode image download failed: ${String(error)}`);
-          if (error instanceof ExpoCameraError && error.code === 'ERR_CAMERA_IMAGE_TOO_LARGE') {
-            throw new ExpoCameraError('ERR_CAMERA_IMAGE_TOO_LARGE', 'The barcode image exceeds the 10 MB limit.');
-          }
-
-          throw new ExpoCameraError('ERR_CAMERA_IMAGE_DOWNLOAD', 'Could not download the barcode image.');
-        } finally {
-          request.destroy();
-        }
-      } else if (url.startsWith('data:')) {
-        const separator = url.indexOf(',');
-        if (separator < 0 || !url.slice(0, separator).includes(';base64')) {
-          throw new ExpoCameraError('ERR_CAMERA_INVALID_URL', 'The barcode data URL must contain a base64-encoded image.');
-        }
-
-        let data: Uint8Array;
-        try {
-          data = await new util.Base64Helper().decode(url.slice(separator + 1));
-        } catch (error) {
-          console.error(`Expo Camera could not decode a barcode data URL: ${String(error)}`);
-
-          throw new ExpoCameraError('ERR_CAMERA_INVALID_URL', 'The barcode data URL is not valid base64.');
-        }
-        if (data.byteLength > BARCODE_IMAGE_LIMIT) {
-          throw new ExpoCameraError('ERR_CAMERA_IMAGE_TOO_LARGE', 'The barcode image exceeds the 10 MB limit.');
-        }
+      const loader = this.context.services.require(ImageLoaderInterfaceKey);
+      const pixel = await loader.loadImageForManipulationFromURL(url);
+      try {
+        this.context.assertActive();
 
         const dir = `${this.context.cachePath}/expo-camera`;
         await ensureDirectory(dir);
-        path = uniquePath(dir, 'barcode', 'img');
+        this.context.assertActive();
 
-        await writeBuffer(path, data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-
-        uri = fileUriFromPath(path);
+        // Scan Kit requires the pixels to be staged at a local URI.
+        path = uniquePath(dir, 'barcode', 'png');
+        await packPicture(path, pixel, { format: 'image/png', quality: 100 });
+      } finally {
+        await pixel.release().catch((): void => {});
       }
 
-      try {
-        if (this.context.services.get(ExpoFileAccessKey) !== undefined || uri.startsWith('file://') || uri.startsWith('/')) {
-          const localPath = this.context.filePathForRead(uri);
-          if ((await fs.stat(localPath)).size > BARCODE_IMAGE_LIMIT) {
-            throw new ExpoCameraError('ERR_CAMERA_IMAGE_TOO_LARGE', 'The barcode image exceeds the 10 MB limit.');
-          }
-          uri = fileUriFromPath(localPath);
-        }
-        const results = await detectBarcode.decode({ uri }, { scanTypes: requested });
+      this.context.assertActive();
+      const results = await detectBarcode.decode({ uri: fileUriFromPath(path) }, { scanTypes: formats });
+      this.context.assertActive();
 
-        return results.map((result: scanBarcode.ScanResult): BarcodeResult => barcodeResult(result));
-      } catch (error) {
-        if (error instanceof ExpoCameraError) throw new ExpoCameraError(error.code, error.message, error.cause);
-        console.error(`Expo Camera barcode scan failed: ${String(error)}`);
+      return results.map((result: scanBarcode.ScanResult): BarcodeResult => barcodeResult(result));
+    } catch (error) {
+      if (error instanceof ExpoModuleError) throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
 
-        throw new ExpoCameraError('ERR_CAMERA_BARCODE_SCAN', 'The barcode image could not be scanned.');
-      }
+      console.error(`Expo Camera barcode scan failed: ${String(error)}`);
+      throw new ExpoCameraError('ERR_CAMERA_BARCODE_SCAN', 'The barcode image could not be scanned.');
     } finally {
       if (path !== undefined) {
         try {
@@ -777,35 +567,36 @@ export class ExpoCameraModule extends ExpoModule {
       throw new ExpoCameraError('ERR_CAMERA_INVALID_OPTION', 'Photo quality must be a number between 0 and 1.');
     }
 
-    const packer = image.createImagePacker();
+    let path: string | undefined;
+    let saved = false;
 
     try {
       const info = await pixel.getImageInfo();
-      const buffer = await packer.packToData(pixel, {
-        format: 'image/jpeg',
-        quality: Math.round((options.quality ?? 1) * 100),
-        bufferSize: 25 * 1024 * 1024,
-        needsPackProperties: options.metadata !== undefined,
-      });
-
       const dir = `${this.context.cachePath}/expo-camera`;
       await ensureDirectory(dir);
-      const path = uniquePath(dir, 'picture-ref', 'jpg');
+      path = uniquePath(dir, 'picture-ref', 'jpg');
 
-      await writeBuffer(path, buffer);
+      await packPicture(path, pixel, {
+        format: 'image/jpeg',
+        quality: Math.round((options.quality ?? 1) * 100),
+        needsPackProperties: options.metadata !== undefined,
+      });
       await writeMetadata(path, options.metadata);
 
       const result = new SavedPicture(fileUriFromPath(path), info.size.width, info.size.height);
       if (options.base64 === true) {
-        const saved = options.metadata === undefined ? buffer : await readBuffer(path);
-        result.base64 = await new util.Base64Helper().encodeToString(new Uint8Array(saved));
+        const bytes = await readBuffer(path);
+        result.base64 = await new util.Base64Helper().encodeToString(new Uint8Array(bytes));
       }
 
+      saved = true;
       return result;
     } finally {
-      try {
-        await packer.release();
-      } catch (_) {}
+      if (!saved && path !== undefined) {
+        try {
+          fs.unlinkSync(path);
+        } catch (_) {}
+      }
     }
   }
 }
