@@ -1,90 +1,116 @@
 # @expo-harmony/expo-mail-composer
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-mail-composer) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/mail-composer/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-mail-composer) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/mail-composer/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo MailComposer 的原生实现，与官方同版本的 `expo-mail-composer` 配套使用。支持查询邮件能力，以及打开系统邮件面板，预填收件人、主题、纯文本正文和本地附件。
+为 HarmonyOS 上的 React Native 应用提供 Expo Mail Composer 的原生实现，与官方同版本的 `expo-mail-composer` 配套使用。
 
 ## 安装
 
 ```bash
-npm install @expo-harmony/expo-mail-composer expo-mail-composer@55.0.18
+npm install @expo-harmony/expo-mail-composer expo-mail-composer
 ```
 
-本包适配 Expo SDK 55 的 `expo-mail-composer`，业务代码继续从官方包导入。原生模块由 Expo Harmony 自动链接。最低支持 HarmonyOS 6.0.1（API 21），宿主应用的 `compatibleSdkVersion` 不能低于这个版本。
+本包适配 Expo SDK 57。
 
-调用 `isAvailableAsync()` 需要先在 `app.json` 的 `harmony.querySchemes` 中声明 `mailto`，然后重新 prebuild 并构建应用。
-
-```json
-{
-  "expo": {
-    "harmony": {
-      "querySchemes": ["mailto"]
-    }
-  }
-}
-```
-
-缺少这个声明时 `isAvailableAsync()` 会报错。Bare 工程需要把 `mailto` 写进 `entry/src/main/module.json5` 的 `module.querySchemes` 数组。这项配置只声明要查询的链接类型，不是申请查询全部已安装应用的权限。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 21（HarmonyOS 6.0.1）。
 
 ## API 对照表
 
 ### Methods
 
-#### `MailComposer.isAvailableAsync()`
-
-返回 `Promise<boolean>`，查询设备上有没有应用声明了 `mailto` 链接。没有在 `querySchemes` 中声明 `mailto`，或系统查询出错时，以 `ERR_MAIL_COMPOSER_AVAILABILITY` 拒绝。
-
-结果只反映有没有应用声明了 `mailto`，不检查邮件账户、登录状态或网络。系统选择面板按邮件编辑能力匹配客户端，不看 `mailto` 声明，返回 `true` 不保证面板里一定有客户端可选，返回 `false` 也不代表面板一定打不开。调用 `composeAsync()` 前不需要先做这项查询。
-
 #### `MailComposer.getClients()`
 
-同步返回 `MailClient[]`。系统没有提供枚举邮件客户端的接口，这里始终返回空数组。空数组不代表邮件功能不可用，选择客户端交给 `composeAsync()` 打开的面板完成。
+返回 `MailClient[]`。
+
+- HarmonyOS 不提供可供应用读取的邮件客户端清单，因此始终返回空数组。
+
+#### `MailComposer.isAvailableAsync()`
+
+返回 `Promise<boolean>`。查询设备是否有应用可处理 `mailto` 链接；没有时返回 `false`。调用前需在应用配置的 `harmony.querySchemes` 中声明 `mailto`。查询失败时以 `ERR_MAIL_COMPOSER_AVAILABILITY` 拒绝。
 
 #### `MailComposer.composeAsync(options)`
 
-返回 `Promise<MailComposerResult>`，打开系统邮件选择面板，用户选定客户端后进入编辑，预填内容随面板带入。必须在应用前台调用，否则以 `ERR_MAIL_COMPOSER_BACKGROUND` 拒绝。前一个请求还没结束时再次调用，以 `ERR_MAIL_COMPOSER_IN_PROGRESS` 拒绝。
+返回 `Promise<MailComposerResult>`，打开系统邮件选择界面并将选项中的内容交给用户选择的邮件客户端。系统报告用户取消选择时返回 `{ status: 'cancelled' }`；客户端启动成功或系统只返回通用结果时返回 `{ status: 'undetermined' }`。结果不代表邮件已发送或保存。设备没有可用邮件客户端时，系统可能提示用户，但 Promise 可能一直等待系统回调。
 
-面板正常返回、客户端启动成功或用户在面板取消时，Promise 以 `{ status: 'undetermined' }` 结束，取消不会报错。回调在客户端启动时就会触发，用户可能还没写完邮件。系统不报告邮件是发送、保存还是放弃，应用无从区分。官方 Android 实现固定返回 `sent`，本包不把客户端启动成功当作发送成功。
-
-启动客户端失败时以 `ERR_MAIL_COMPOSER_COMPOSE` 拒绝。设备上没有支持的客户端时，系统会给出提示，请求可能一直等待回调。应用重载或销毁时，未完成的请求以 `ERR_MAIL_COMPOSER_DESTROYED` 拒绝。
+应用必须处于前台才能调用。上一个请求未结束时再次调用会以 `ERR_MAIL_COMPOSER_IN_PROGRESS` 拒绝；应用在请求完成前重载或销毁时会以 `ERR_MAIL_COMPOSER_DESTROYED` 拒绝。启动客户端失败时以 `ERR_MAIL_COMPOSER_COMPOSE` 拒绝。
 
 ### Types
+
+#### `MailClient`
+
+| 属性 | 类型 | 说明 |
+| --- | --- | --- |
+| `label` | `string` | 邮件客户端的显示名称。 |
+| `packageName` | `string?` | 客户端的应用包名。 |
+| `url` | `string?` | 客户端的 URL scheme。 |
 
 #### `MailComposerOptions`
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
-| `recipients` | `string[]` | 收件人地址，支持多个。 |
-| `ccRecipients` | `string[]` | 抄送地址。 |
-| `bccRecipients` | `string[]` | 密送地址。 |
-| `subject` | `string` | 邮件主题。 |
-| `body` | `string` | 纯文本正文，支持 Unicode 和换行。 |
-| `isHtml` | `boolean` | 可省略或设为 `false`，设为 `true` 时以 `ERR_MAIL_COMPOSER_HTML_UNSUPPORTED` 拒绝。 |
-| `attachments` | `string[]` | 应用可读的本地文件 URI 或绝对路径，支持多个附件。 |
+| `recipients` | `string[]?` | 收件人地址，支持多个。 |
+| `ccRecipients` | `string[]?` | 抄送地址，支持多个。 |
+| `bccRecipients` | `string[]?` | 密送地址，支持多个。 |
+| `subject` | `string?` | 邮件主题。 |
+| `body` | `string?` | 纯文本正文，支持 Unicode 和换行。 |
+| `isHtml` | `boolean?` | 是否将正文作为 HTML；默认 `false`。 |
+| `attachments` | `string[]?` | 附件的文件 URI 或绝对路径，支持多个。 |
 
-所有字段都可以省略，地址和附件也可以传空数组。正文按纯文本原样传递，传 HTML 片段不会得到格式化效果，需要排版时应改用纯文本写法。
+所有选项均可省略；地址和附件可传空数组。附件必须是可读取的普通文件，并位于应用的文件、缓存、临时或分布式文件目录中。系统文件选择器提供的文件需先复制到应用目录。用户选择邮件客户端后，附件会获得临时读取权限；应用需在客户端完成读取前保留文件。
 
-附件在面板打开前逐一校验，目录、远程 URL 和应用读不到的文件以 `ERR_MAIL_COMPOSER_ATTACHMENT` 拒绝。从系统选择器拿到的文件建议先复制到应用自己的目录再传入。系统会向用户选定的客户端授予附件的临时读权限。客户端可能在面板关闭后继续读取附件，调用方要保持文件存在，模块不会删除传入的文件。
+- HarmonyOS 仅支持纯文本正文；`isHtml: true` 会以 `ERR_MAIL_COMPOSER_HTML_UNSUPPORTED` 拒绝。
+- 无法读取或不在应用上述目录中的附件会以 `ERR_MAIL_COMPOSER_ATTACHMENT` 拒绝。
 
 #### `MailComposerResult`
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
-| `status` | `MailComposerStatus` | HarmonyOS 上始终为 `undetermined`，不能据此确认邮件发送状态。 |
-
-> **未实现的内容**
->
-> - `MailClient`：系统没有提供枚举邮件客户端的接口，`getClients()` 始终返回空数组，这个类型在 HarmonyOS 上没有取值来源。
+| `status` | `MailComposerStatus` | 系统报告的选择结果；不表示邮件是否已发送或保存。 |
 
 ### Enums
 
 #### `MailComposerStatus`
 
-HarmonyOS 上只会返回 `undetermined`，表示选择面板返回或目标客户端启动完成，邮件本身的处理结果未知。
+| 成员 | 值 | 说明 |
+| --- | --- | --- |
+| `CANCELLED` | `'cancelled'` | 系统报告用户取消选择邮件客户端。 |
+| `UNDETERMINED` | `'undetermined'` | 邮件处理结果未知。 |
 
-> **未实现的内容**
->
-> - `CANCELLED`、`SAVED`、`SENT`：系统面板不报告邮件的发送、保存或取消结果，这三个值在 HarmonyOS 上不会出现。
+- HarmonyOS 不会返回 `SENT` 或 `SAVED`，因为邮件客户端不会报告邮件是否已发送或保存。
+
+### Error codes
+
+#### `ERR_MAIL_COMPOSER_AVAILABILITY`
+
+查询设备上的邮件应用失败。请确认应用配置的 `harmony.querySchemes` 已声明 `mailto`。
+
+#### `ERR_MAIL_COMPOSER_ATTACHMENT`
+
+附件无法读取，或不是应用文件、缓存、临时或分布式文件目录中的普通文件。
+
+#### `ERR_MAIL_COMPOSER_BACKGROUND`
+
+应用不在前台时调用 `composeAsync()`。
+
+#### `ERR_MAIL_COMPOSER_COMPOSE`
+
+系统无法启动邮件客户端或处理邮件请求。
+
+#### `ERR_MAIL_COMPOSER_DESTROYED`
+
+邮件请求尚未完成时应用重载或销毁。
+
+#### `ERR_MAIL_COMPOSER_HTML_UNSUPPORTED`
+
+`MailComposerOptions.isHtml` 设为 `true`；HarmonyOS 邮件撰写仅支持纯文本。
+
+#### `ERR_MAIL_COMPOSER_IN_PROGRESS`
+
+前一个 `composeAsync()` 请求尚未完成时再次调用。
+
+#### `ERR_MAIL_COMPOSER_UNAVAILABLE`
+
+设备不支持系统邮件撰写能力。
 
 ## Author
 

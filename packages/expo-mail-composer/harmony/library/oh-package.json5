@@ -7,7 +7,7 @@
 
 {
   "name": "@expo-harmony/expo-mail-composer",
-  "version": "55.0.18-harmony.3",
+  "version": "57.0.2-harmony.0",
   "description": "HarmonyOS port of expo-mail-composer",
   "keywords": [
     "react-native",
@@ -25,6 +25,6 @@
   "main": "Index.ets",
   "license": "MIT",
   "dependencies": {
-    "@expo-harmony/expo-modules-core": "55.0.26-harmony.3"
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0"
   }
 }

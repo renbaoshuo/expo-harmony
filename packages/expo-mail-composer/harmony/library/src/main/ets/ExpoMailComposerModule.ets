@@ -24,8 +24,10 @@ interface MailClient {
   url?: string;
 }
 
+type MailComposerStatus = 'cancelled' | 'undetermined';
+
 interface MailComposerResult {
-  status: string;
+  status: MailComposerStatus;
 }
 
 class MailComposerRequest {
@@ -82,6 +84,7 @@ export class ExpoMailComposerModule extends ExpoModule {
 
   private compose(options: MailComposerOptions): Promise<MailComposerResult> {
     this.assertForeground();
+
     if (this.pending !== undefined) {
       throw new ExpoModuleError('ERR_MAIL_COMPOSER_IN_PROGRESS', 'Another mail composer request is in progress.');
     }
@@ -98,9 +101,8 @@ export class ExpoMailComposerModule extends ExpoModule {
   }
 
   private async open(request: MailComposerRequest, options: MailComposerOptions): Promise<void> {
-    const params: Record<string, Object> = {};
-
     // The mail protocol requires encodeURI even for strings that are not URIs.
+    const params: Record<string, Object> = {};
     params.email = options.recipients.map((value: string): string => encodeURI(value));
     params.cc = options.ccRecipients.map((value: string): string => encodeURI(value));
     params.bcc = options.bccRecipients.map((value: string): string => encodeURI(value));
@@ -120,7 +122,6 @@ export class ExpoMailComposerModule extends ExpoModule {
     }
 
     if (this.pending !== request) return;
-
     this.assertForeground();
 
     const callback: common.AbilityStartCallback = {
@@ -132,7 +133,7 @@ export class ExpoMailComposerModule extends ExpoModule {
         onRequestSuccess: (_name: string): void => this.finish(request),
         onRequestFailure: (name: string, code: AbilityStartFailureCode, message: string): void => {
           if (code === AbilityStartFailureCode.FAILURE_CODE_USER_CANCEL) {
-            this.finish(request);
+            this.finish(request, 'cancelled');
           } else {
             this.fail(request, new ExpoModuleError('ERR_MAIL_COMPOSER_COMPOSE', `${name} (${code}): ${message}`));
           }
@@ -148,13 +149,12 @@ export class ExpoMailComposerModule extends ExpoModule {
     }
   }
 
-  private finish(request: MailComposerRequest): void {
+  private finish(request: MailComposerRequest, status: MailComposerStatus = 'undetermined'): void {
     if (this.pending !== request) return;
 
     this.pending = undefined;
 
-    // Launch callbacks cannot confirm delivery.
-    request.resolve({ status: 'undetermined' });
+    request.resolve({ status });
   }
 
   private fail(request: MailComposerRequest, error: Object): void {
