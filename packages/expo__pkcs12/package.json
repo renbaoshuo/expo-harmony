@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo__pkcs12",
-  "version": "0.4.2-harmony.3",
+  "version": "0.6.0-harmony.0",
   "description": "HarmonyOS port of @expo/pkcs12",
   "keywords": [
     "react-native",
@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/pkcs12": "0.4.2"
+    "@expo/pkcs12": "0.6.0"
   },
   "engines": {
     "node": ">=20"
