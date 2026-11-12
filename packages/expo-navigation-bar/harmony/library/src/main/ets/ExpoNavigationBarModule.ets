@@ -5,8 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import type bundleManager from '@ohos.bundle.bundleManager';
-import type common from '@ohos.app.ability.common';
+import type { bundleManager, common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import {
@@ -20,35 +19,21 @@ import {
 } from '@expo-harmony/expo-modules-core';
 
 const VISIBILITY_EVENT_NAME: string = 'ExpoNavigationBar.didChange';
-const BACKGROUND_METADATA: string = 'expo.harmony.navigationBar.backgroundColor';
-const BUTTON_STYLE_METADATA: string = 'expo.harmony.navigationBar.barStyle';
-const POSITION_METADATA: string = 'expo.harmony.navigationBar.position';
-const VISIBILITY_METADATA: string = 'expo.harmony.navigationBar.visibility';
+const STYLE_METADATA: string = 'expo.harmony.navigationBar.style';
+const HIDDEN_METADATA: string = 'expo.harmony.navigationBar.hidden';
 const ANDROID_HIDE_NAVIGATION_FLAG: number = 2;
-const CONFIG_BACKGROUND: string = 'backgroundColor';
-const CONFIG_BUTTON_STYLE: string = 'buttonStyle';
-const CONFIG_POSITION: string = 'position';
-const CONFIG_VISIBILITY: string = 'visibility';
+const CAPABILITY_UNSUPPORTED: number = 801;
+const CONFIG_STYLE: string = 'style';
+const CONFIG_HIDDEN: string = 'hidden';
 
-type NavigationBarButtonStyle = 'light' | 'dark';
-type NavigationBarPosition = 'relative' | 'absolute';
+type NavigationBarStyle = 'light' | 'dark';
 type NavigationBarVisibility = 'visible' | 'hidden';
 
-const BUTTON_STYLE_VALUES: Record<string, NavigationBarButtonStyle> = {
+const STYLE_VALUES: Record<string, NavigationBarStyle> = {
   'light': 'light',
   'dark': 'dark',
 };
-const BUTTON_STYLE_TYPE = ExpoValueTypes.enumerable<NavigationBarButtonStyle>('navigation bar button style', BUTTON_STYLE_VALUES);
-const POSITION_VALUES: Record<string, NavigationBarPosition> = {
-  'relative': 'relative',
-  'absolute': 'absolute',
-};
-const POSITION_TYPE = ExpoValueTypes.enumerable<NavigationBarPosition>('navigation bar position', POSITION_VALUES);
-const VISIBILITY_VALUES: Record<string, NavigationBarVisibility> = {
-  'visible': 'visible',
-  'hidden': 'hidden',
-};
-const VISIBILITY_TYPE = ExpoValueTypes.enumerable<NavigationBarVisibility>('navigation bar visibility', VISIBILITY_VALUES);
+const STYLE_TYPE = ExpoValueTypes.enumerable<NavigationBarStyle>('navigation bar style', STYLE_VALUES);
 
 class ExpoNavigationBarError extends ExpoModuleError {
   constructor(code: string, message: string) {
@@ -58,10 +43,8 @@ class ExpoNavigationBarError extends ExpoModuleError {
 }
 
 class NavigationBarConfiguration {
-  backgroundColor: string | null = null;
-  buttonStyle: NavigationBarButtonStyle | null = null;
-  position: NavigationBarPosition | null = null;
-  visibility: NavigationBarVisibility | null = null;
+  style: NavigationBarStyle | null = null;
+  hidden: boolean | null = null;
 }
 
 class NavigationBarVisibilityEvent {
@@ -77,37 +60,34 @@ class NavigationBarVisibilityEvent {
 type NavigationBarListener = (event: NavigationBarVisibilityEvent) => void;
 
 class AbilityNavigationBarState {
-  private readonly config: NavigationBarConfiguration;
-  private stage?: window.WindowStage;
+  private readonly settings: NavigationBarConfiguration;
+  private target?: window.Window;
   private generation: number = 0;
   private destroyed: boolean = false;
-  private configuredId: number | null = null;
   private readonly applied: Set<string> = new Set();
   private queue: Promise<void> = Promise.resolve();
   private readonly listeners: Set<NavigationBarListener> = new Set();
-  private observed?: window.Window;
+  private observer?: (options: window.AvoidAreaOptions) => void;
   private last: NavigationBarVisibility | null = null;
-  private readonly listener = (options: window.AvoidAreaOptions): void => {
-    if (options.type === window.AvoidAreaType.TYPE_SYSTEM || options.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR) {
-      this.publishVisibility(options.type === window.AvoidAreaType.TYPE_SYSTEM);
-    }
-  };
 
   constructor(context: common.UIAbilityContext) {
-    this.config = readConfiguration(context);
+    this.settings = readConfiguration(context);
   }
 
-  setStage(stage: window.WindowStage): void {
-    this.clearWindow();
-    this.stage = stage;
+  async setWindow(target: window.Window): Promise<void> {
+    if (this.target !== target) {
+      this.clearWindow();
+      this.target = target;
+    }
+    await this.prepare();
   }
 
   clearWindow(): void {
     this.generation += 1;
-    this.stage = undefined;
-    this.configuredId = null;
-    this.applied.clear();
     this.detachWindow();
+    this.target = undefined;
+    this.applied.clear();
+    this.queue = Promise.resolve();
   }
 
   destroy(): void {
@@ -116,15 +96,19 @@ class AbilityNavigationBarState {
     this.listeners.clear();
   }
 
-  async prepare(): Promise<void> {
-    await this.useWindow(async (): Promise<void> => {});
+  private async prepare(): Promise<void> {
+    await this.useWindow(async (target: window.Window): Promise<void> => {
+      this.publishVisibility(target, false, false);
+    });
   }
 
   refresh(): void {
-    if (this.destroyed || this.stage === undefined) return;
+    if (this.destroyed || this.target === undefined) return;
+
+    const generation = this.generation;
 
     this.prepare().catch((error: Object): void => {
-      if (!this.destroyed && this.stage !== undefined) console.warn(`Unable to initialize Expo NavigationBar: ${String(error)}`);
+      if (!this.destroyed && this.generation === generation) console.warn(`Unable to initialize Expo NavigationBar: ${String(error)}`);
     });
   }
 
@@ -135,36 +119,56 @@ class AbilityNavigationBarState {
 
   removeListener(listener: NavigationBarListener): void {
     this.listeners.delete(listener);
-    if (this.listeners.size === 0) this.detachWindow();
+    if (this.listeners.size === 0) {
+      this.detachWindow();
+      this.last = null;
+    }
   }
 
-  async useWindow<T>(operation: (target: window.Window) => Promise<T>, active: () => boolean = (): boolean => true, key?: string): Promise<T> {
-    const stage = this.stage;
+  async setStyle(style: NavigationBarStyle, active: () => boolean): Promise<void> {
+    await this.useWindow(async (target: window.Window, check: () => void): Promise<void> => {
+      await applyStyle(target, style);
+      check();
+      this.settings.style = style;
+      this.applied.add(CONFIG_STYLE);
+    }, active);
+  }
+
+  async setHidden(hidden: boolean, active: () => boolean): Promise<void> {
+    await this.useWindow(async (target: window.Window, check: () => void): Promise<void> => {
+      await setNavigationBarVisibility(target, !hidden, check);
+      check();
+      this.settings.hidden = hidden;
+      this.applied.add(CONFIG_HIDDEN);
+    }, active);
+  }
+
+  async useWindow<T>(
+    operation: (target: window.Window, check: () => void) => Promise<T>,
+    active: () => boolean = (): boolean => true,
+  ): Promise<T> {
+    const target = this.target;
     const generation = this.generation;
 
     const check = (): void => {
       if (this.destroyed || !active()) {
         throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_DESTROYED', 'The Expo NavigationBar owner has been destroyed.');
       }
-      if (stage === undefined || this.stage !== stage || this.generation !== generation) {
+      if (target === undefined || this.generation !== generation) {
         throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_WINDOW', 'The Expo NavigationBar window is no longer available.');
       }
     };
 
     const next = this.queue
-      .catch((): void => {})
       .then(async (): Promise<T> => {
         check();
 
-        const target = await (stage as window.WindowStage).getMainWindow();
+        const current = target as window.Window;
+        await this.prepareWindow(current, check);
         check();
 
-        await this.prepareWindow(target, check);
+        const result = await operation(current, check);
         check();
-
-        const result = await operation(target);
-        check();
-        if (key !== undefined) this.applied.add(key);
 
         return result;
       });
@@ -178,33 +182,30 @@ class AbilityNavigationBarState {
   }
 
   private async prepareWindow(target: window.Window, check: () => void): Promise<void> {
-    const id = target.getWindowProperties().id;
-    if (this.configuredId !== id) {
-      this.configuredId = id;
-      this.applied.clear();
-    }
+    const style = this.settings.style;
+    const hidden = this.settings.hidden;
 
-    const config = this.config;
-    const position = config.position;
-    const color = config.backgroundColor;
-    const style = config.buttonStyle;
-    const visibility = config.visibility;
-
-    if (position !== null)
-      await this.applyOption(CONFIG_POSITION, (): Promise<void> => target.setWindowLayoutFullScreen(position === 'absolute'), check);
-    if (color !== null)
-      await this.applyOption(CONFIG_BACKGROUND, (): Promise<void> => target.setWindowSystemBarProperties({ navigationBarColor: color }), check);
-    if (style !== null) await this.applyOption(CONFIG_BUTTON_STYLE, (): Promise<void> => applyButtonStyle(target, style), check);
-    if (visibility !== null)
-      await this.applyOption(CONFIG_VISIBILITY, (): Promise<void> => setNavigationBarVisibility(target, visibility === 'visible'), check);
+    if (style !== null) await this.applyOption(CONFIG_STYLE, (): Promise<void> => applyStyle(target, style), check);
+    if (hidden !== null)
+      await this.applyOption(CONFIG_HIDDEN, (): Promise<void> => setNavigationBarVisibility(target, !hidden, check), check);
 
     check();
 
-    if (this.listeners.size > 0 && this.observed !== target) {
-      this.detachWindow();
-      target.on('avoidAreaChange', this.listener);
-      this.observed = target;
-      this.last = inspectVisibility(target);
+    if (this.listeners.size === 0 || this.observer !== undefined) return;
+
+    const observer = (options: window.AvoidAreaOptions): void => {
+      if (this.observer !== observer) return;
+      if (options.type === window.AvoidAreaType.TYPE_SYSTEM || options.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR) {
+        this.publishVisibility(target, options.type === window.AvoidAreaType.TYPE_SYSTEM);
+      }
+    };
+
+    try {
+      target.on('avoidAreaChange', observer);
+      this.observer = observer;
+      this.publishVisibility(target, false, false);
+    } catch (error) {
+      console.warn(`Unable to initialize Expo NavigationBar visibility observation: ${String(error)}`);
     }
   }
 
@@ -227,26 +228,26 @@ class AbilityNavigationBarState {
   }
 
   private detachWindow(): void {
-    if (this.observed !== undefined) {
+    const observer = this.observer;
+    this.observer = undefined;
+    if (this.target !== undefined && observer !== undefined) {
       try {
-        this.observed.off('avoidAreaChange', this.listener);
+        this.target.off('avoidAreaChange', observer);
       } catch (error) {
         console.warn(`Unable to detach Expo NavigationBar observer: ${String(error)}`);
       }
     }
-
-    this.observed = undefined;
-    this.last = null;
   }
 
-  private publishVisibility(force: boolean): void {
-    if (this.destroyed || this.observed === undefined) return;
+  private publishVisibility(target: window.Window, force: boolean, notifyInitial: boolean = true): void {
+    if (this.observer === undefined) return;
 
     try {
-      const visibility = inspectVisibility(this.observed);
-      if (!force && this.last === visibility) return;
-
+      const visibility = inspectVisibility(target);
+      const previous = this.last;
       this.last = visibility;
+      if (!force && (previous === visibility || (previous === null && !notifyInitial))) return;
+
       const event = new NavigationBarVisibilityEvent(visibility);
 
       this.listeners.forEach((listener: NavigationBarListener): void => {
@@ -266,7 +267,6 @@ const states: WeakMap<common.UIAbilityContext, AbilityNavigationBarState> = new 
 
 export class ExpoNavigationBarLifecycleSubscriber extends ExpoAbilityLifecycleSubscriber {
   private readonly state: AbilityNavigationBarState;
-  private ready: boolean = false;
 
   constructor(context: common.UIAbilityContext) {
     super(context);
@@ -274,22 +274,20 @@ export class ExpoNavigationBarLifecycleSubscriber extends ExpoAbilityLifecycleSu
     states.set(context, this.state);
   }
 
-  override onWindowStageCreate(stage: window.WindowStage): void {
-    this.ready = false;
-    this.state.setStage(stage);
+  override onWindowStageCreate(): void {
+    this.state.clearWindow();
   }
 
-  override onWindowStageRestore(stage: window.WindowStage): void {
-    this.onWindowStageCreate(stage);
+  override onWindowStageRestore(): void {
+    this.state.clearWindow();
   }
 
-  override async onWindowStageSetup(): Promise<void> {
-    this.ready = true;
-    await this.state.prepare();
+  override async onWindowSetup(target: window.Window): Promise<void> {
+    await this.state.setWindow(target);
   }
 
   override onForeground(): void {
-    if (this.ready) this.state.refresh();
+    this.state.refresh();
   }
 
   override onWindowStageWillDestroy(): void {
@@ -334,69 +332,23 @@ export class ExpoNavigationBarModule extends ExpoModule {
       .name('ExpoNavigationBar')
       .events([VISIBILITY_EVENT_NAME])
       .asyncFunction(
-        'setBackgroundColorAsync',
-        ExpoFunction.typed1(ExpoValueTypes.number(), async (color: number): Promise<void> => {
-          const value = requireProcessedColor(color);
-
-          await this.useWindow(async (target: window.Window): Promise<void> => {
-            await target.setWindowSystemBarProperties({ navigationBarColor: value });
-          }, CONFIG_BACKGROUND);
+        'setStyle',
+        ExpoFunction.typed1(STYLE_TYPE, async (style: NavigationBarStyle): Promise<void> => {
+          await this.requireState().setStyle(style, (): boolean => this.isActive());
         }),
       )
       .asyncFunction(
-        'getBackgroundColorAsync',
-        async (): Promise<string> =>
-          this.useWindow(
-            async (target: window.Window): Promise<string> => exposeWindowColor(target.getWindowSystemBarProperties().navigationBarColor),
-          ),
-      )
-      .asyncFunction(
-        'setButtonStyleAsync',
-        ExpoFunction.typed1(BUTTON_STYLE_TYPE, async (style: NavigationBarButtonStyle): Promise<void> => {
-          await this.useWindow(async (target: window.Window): Promise<void> => {
-            await applyButtonStyle(target, style);
-          }, CONFIG_BUTTON_STYLE);
-        }),
-      )
-      .asyncFunction(
-        'getButtonStyleAsync',
-        async (): Promise<NavigationBarButtonStyle> =>
-          this.useWindow(
-            async (target: window.Window): Promise<NavigationBarButtonStyle> => inspectButtonStyle(target.getWindowSystemBarProperties()),
-          ),
-      )
-      .asyncFunction(
-        'setVisibilityAsync',
-        ExpoFunction.typed1(VISIBILITY_TYPE, async (visibility: NavigationBarVisibility): Promise<void> => {
-          await this.useWindow(async (target: window.Window): Promise<void> => {
-            try {
-              await setNavigationBarVisibility(target, visibility === 'visible');
-            } catch (error) {
-              throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_VISIBILITY', `Unable to set Harmony navigation bar visibility: ${String(error)}`);
-            }
-          }, CONFIG_VISIBILITY);
+        'setHidden',
+        ExpoFunction.typed1(ExpoValueTypes.boolean(), async (hidden: boolean): Promise<void> => {
+          await this.requireState().setHidden(hidden, (): boolean => this.isActive());
         }),
       )
       .asyncFunction(
         'getVisibilityAsync',
-        async (): Promise<NavigationBarVisibility> =>
-          this.useWindow(async (target: window.Window): Promise<NavigationBarVisibility> => inspectVisibility(target)),
-      )
-      .asyncFunction(
-        'setPositionAsync',
-        ExpoFunction.typed1(POSITION_TYPE, async (position: NavigationBarPosition): Promise<void> => {
-          await this.useWindow(async (target: window.Window): Promise<void> => {
-            await target.setWindowLayoutFullScreen(position === 'absolute');
-          }, CONFIG_POSITION);
-        }),
-      )
-      .asyncFunction(
-        'getPositionAsync',
-        async (): Promise<NavigationBarPosition> =>
-          this.useWindow(
-            async (target: window.Window): Promise<NavigationBarPosition> =>
-              target.getWindowProperties().isLayoutFullScreen ? 'absolute' : 'relative',
-          ),
+        async (): Promise<NavigationBarVisibility> => this.requireState().useWindow(
+          async (target: window.Window): Promise<NavigationBarVisibility> => inspectVisibility(target),
+          (): boolean => this.isActive(),
+        ),
       )
       .onStartObserving(VISIBILITY_EVENT_NAME, (): void => {
         if (!this.isActive() || this.observing) return;
@@ -409,10 +361,10 @@ export class ExpoNavigationBarModule extends ExpoModule {
       .onDestroy((): void => this.destroy());
   }
 
-  private async useWindow<T>(operation: (target: window.Window) => Promise<T>, key?: string): Promise<T> {
+  private requireState(): AbilityNavigationBarState {
     if (this.state === undefined) throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_WINDOW', 'NavigationBar requires a UIAbility window.');
 
-    return await this.state.useWindow(operation, (): boolean => this.isActive(), key);
+    return this.state;
   }
 
   private isActive(): boolean {
@@ -430,38 +382,38 @@ export class ExpoNavigationBarModule extends ExpoModule {
   }
 }
 
-async function applyButtonStyle(target: window.Window, style: NavigationBarButtonStyle): Promise<void> {
+async function applyStyle(target: window.Window, style: NavigationBarStyle): Promise<void> {
   await target.setWindowSystemBarProperties({
     navigationBarContentColor: style === 'light' ? '#FFFFFFFF' : '#FF000000',
   });
 }
 
-async function setNavigationBarVisibility(target: window.Window, visible: boolean): Promise<void> {
-  await target.setSpecificSystemBarEnabled('navigation', visible, false);
-
+async function setNavigationBarVisibility(target: window.Window, visible: boolean, check: () => void): Promise<void> {
+  // Harmony's bottom navigation selector covers both gestures and buttons.
   try {
     await target.setSpecificSystemBarEnabled('navigationIndicator', visible, false);
   } catch (error) {
     if (!isCapabilityUnsupported(error)) {
       throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_VISIBILITY', `Unable to update the Harmony navigation indicator: ${String(error)}`);
     }
+
+    check();
+    await target.setSpecificSystemBarEnabled('navigation', visible, false);
   }
 }
 
 function inspectVisibility(target: window.Window): NavigationBarVisibility {
-  const system: window.AvoidArea = target.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
-  if (hasNavigationEdge(system)) return 'visible';
-
   try {
     const indicator: window.AvoidArea = target.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
-    if (hasAnyEdge(indicator)) return 'visible';
+    return hasAnyEdge(indicator) ? 'visible' : 'hidden';
   } catch (error) {
     if (!isCapabilityUnsupported(error)) {
       throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_VISIBILITY', `Unable to inspect the Harmony navigation indicator: ${String(error)}`);
     }
   }
 
-  return 'hidden';
+  const system: window.AvoidArea = target.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+  return hasNavigationEdge(system) ? 'visible' : 'hidden';
 }
 
 function hasNavigationEdge(area: window.AvoidArea): boolean {
@@ -474,64 +426,7 @@ function hasAnyEdge(area: window.AvoidArea): boolean {
 
 function isCapabilityUnsupported(error: Object): boolean {
   const value = error as BusinessError;
-  return value.code === 801;
-}
-
-function inspectButtonStyle(props: window.SystemBarProperties): NavigationBarButtonStyle {
-  if (typeof props.navigationBarContentColor === 'string') {
-    return isLightColor(props.navigationBarContentColor) ? 'light' : 'dark';
-  }
-
-  if (typeof props.isNavigationBarLightIcon === 'boolean') {
-    return props.isNavigationBarLightIcon ? 'light' : 'dark';
-  }
-
-  throw new ExpoNavigationBarError(
-    'ERR_NAVIGATION_BAR_BUTTON_STYLE_UNAVAILABLE',
-    'HarmonyOS did not expose the current navigation bar content color.',
-  );
-}
-
-function isLightColor(value: string): boolean {
-  const match: RegExpMatchArray | null = value.match(/^#(?:[0-9a-f]{2})?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
-  if (match === null) {
-    throw new ExpoNavigationBarError(
-      'ERR_NAVIGATION_BAR_BUTTON_STYLE_UNAVAILABLE',
-      `HarmonyOS returned an unsupported navigation bar color '${value}'.`,
-    );
-  }
-
-  const red: number = parseInt(match[1], 16);
-  const green: number = parseInt(match[2], 16);
-  const blue: number = parseInt(match[3], 16);
-
-  return red * 299 + green * 587 + blue * 114 >= 128000;
-}
-
-function requireProcessedColor(value: number): string {
-  if (!Number.isInteger(value) || value < -2147483648 || value > 4294967295) {
-    throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_COLOR', 'Expo NavigationBar expected a processed 32-bit React Native color.');
-  }
-
-  const unsigned: number = value < 0 ? value + 4294967296 : value;
-
-  return `#${unsigned.toString(16).padStart(8, '0').toUpperCase()}`;
-}
-
-function exposeWindowColor(value: string | undefined): string {
-  if (typeof value !== 'string') {
-    throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_COLOR_UNAVAILABLE', 'HarmonyOS did not expose the current navigation bar background color.');
-  }
-
-  const argb: RegExpMatchArray | null = value.match(/^#([0-9a-f]{8})$/i);
-
-  if (argb !== null) {
-    return `#${argb[1].slice(2)}${argb[1].slice(0, 2)}`.toLowerCase();
-  }
-
-  if (/^#[0-9a-f]{6}$/i.test(value)) return `${value.toLowerCase()}ff`;
-
-  throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_COLOR_UNAVAILABLE', `HarmonyOS returned an unsupported navigation bar color '${value}'.`);
+  return value.code === CAPABILITY_UNSUPPORTED;
 }
 
 function readConfiguration(context: common.UIAbilityContext): NavigationBarConfiguration {
@@ -548,24 +443,14 @@ function readConfiguration(context: common.UIAbilityContext): NavigationBarConfi
 
 function applyMetadata(config: NavigationBarConfiguration, metadata: Array<bundleManager.Metadata>): void {
   metadata.forEach((entry: bundleManager.Metadata): void => {
-    if (entry.name === BACKGROUND_METADATA) {
-      if (/^#[0-9a-f]{8}$/i.test(entry.value)) config.backgroundColor = entry.value;
-      else console.warn(`Ignoring invalid ${BACKGROUND_METADATA} metadata value '${entry.value}'.`);
+    if (entry.name === STYLE_METADATA) {
+      if (entry.value === 'light' || entry.value === 'dark') config.style = entry.value;
+      else console.warn(`Ignoring invalid ${STYLE_METADATA} metadata value '${entry.value}'.`);
     }
 
-    if (entry.name === BUTTON_STYLE_METADATA) {
-      if (entry.value === 'light' || entry.value === 'dark') config.buttonStyle = entry.value;
-      else console.warn(`Ignoring invalid ${BUTTON_STYLE_METADATA} metadata value '${entry.value}'.`);
-    }
-
-    if (entry.name === POSITION_METADATA) {
-      if (entry.value === 'relative' || entry.value === 'absolute') config.position = entry.value;
-      else console.warn(`Ignoring invalid ${POSITION_METADATA} metadata value '${entry.value}'.`);
-    }
-
-    if (entry.name === VISIBILITY_METADATA) {
-      if (entry.value === 'visible' || entry.value === 'hidden') config.visibility = entry.value;
-      else console.warn(`Ignoring invalid ${VISIBILITY_METADATA} metadata value '${entry.value}'.`);
+    if (entry.name === HIDDEN_METADATA) {
+      if (entry.value === 'true' || entry.value === 'false') config.hidden = entry.value === 'true';
+      else console.warn(`Ignoring invalid ${HIDDEN_METADATA} metadata value '${entry.value}'.`);
     }
   });
 }

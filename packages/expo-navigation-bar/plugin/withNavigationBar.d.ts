@@ -8,9 +8,11 @@
 import type { ConfigPlugin } from '@expo/config-plugins';
 
 export type NavigationBarPluginProps = {
-  backgroundColor?: string | null;
+  style?: 'light' | 'dark';
+  hidden?: boolean;
+  /** @deprecated Use `style` instead. */
   barStyle?: 'light' | 'dark' | null;
-  position?: 'relative' | 'absolute';
+  /** @deprecated Use `hidden` instead. */
   visibility?: 'visible' | 'hidden';
 };
 
