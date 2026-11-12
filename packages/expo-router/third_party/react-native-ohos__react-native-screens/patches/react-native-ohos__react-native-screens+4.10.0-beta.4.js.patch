@@ -1,0 +1,1010 @@
+--- a/src/components/Screen.tsx
++++ b/src/components/Screen.tsx
+@@ -71,4 +71,5 @@
+ 
+ type NativeScreenRef = React.ElementRef<typeof ScreenNativeComponent>;
++type HarmonyScreenProps = ScreenProps & {experimentalScreen?: boolean};
+ 
+ // Incomplete type, all accessible properties available at:
+@@ -98,5 +99,5 @@
+ }
+ 
+-export const InnerScreen = React.forwardRef<View, ScreenProps>(
++export const InnerScreen = React.forwardRef<View, HarmonyScreenProps>(
+   function InnerScreen(props, ref) {
+     const innerRef = React.useRef<ViewConfig | null>(null);
+@@ -301,4 +302,10 @@
+         // Workaround is necessary to prevent React Native from hiding frozen screens.
+         // See this PR: https://github.com/grahammendick/navigation/pull/860
++        if (props.experimentalScreen) {
++          // Gamma preloads stay mounted but must keep display:none so their
++          // Fabric subtree cannot cover the active destination's touch targets.
++          setRef(ref);
++          return;
++        }
+         if (ref?.viewConfig?.validAttributes?.style) {
+           ref.viewConfig.validAttributes.style = {
+@@ -448,5 +455,5 @@
+ export const ScreenContext = React.createContext(InnerScreen);
+ 
+-const Screen = React.forwardRef<View, ScreenProps>((props, ref) => {
++const Screen = React.forwardRef<View, HarmonyScreenProps>((props, ref) => {
+   const ScreenWrapper = React.useContext(ScreenContext) || InnerScreen;
+ 
+--- a/src/components/ScreenStackItem.tsx
++++ b/src/components/ScreenStackItem.tsx
+@@ -21,5 +21,5 @@
+   StackPresentationTypes,
+ } from 'react-native-screens/src/types';
+-import { ScreenStackHeaderConfig } from './ScreenStackHeaderConfig';
++import { ScreenStackHeaderConfig } from 'react-native-screens/src/components/ScreenStackHeaderConfig';
+ import Screen from './Screen';
+ import ScreenStack from './ScreenStack';
+@@ -27,5 +27,5 @@
+ import { FooterComponent } from 'react-native-screens/src/components/ScreenFooter';
+ import { SafeAreaViewProps } from 'react-native-screens/src/components/safe-area/SafeAreaView.types';
+-import { SafeAreaView } from 'react-native-screens/src/components/safe-area/SafeAreaView';
++import { SafeAreaView } from './safe-area';
+ import { featureFlags } from 'react-native-screens/src/flags';
+ import { isIOS26OrHigher } from 'react-native-screens/src/components/helpers/PlatformUtils';
+@@ -147,15 +147,8 @@
+             </SafeAreaView>
+           ) : (
+-            // children
+-           <View
+-             style={[debugContainerStyle, contentStyle]}
+-             >
+-            {children}
+-            </View>    
++            children
+           )}
+         </DebugContainer>
+       </EdgeInsetApplicationContext.Provider>
+-
+-
+       {/**
+        * `HeaderConfig` needs to be the direct child of `Screen` without any intermediate `View`
+--- /dev/null
++++ b/src/components/gamma/events.ts
+@@ -0,0 +1,23 @@
++import type {NativeSyntheticEvent} from 'react-native';
++
++// Components implemented using Harmony's RN primitives still expose the same
++// event shape as their native counterparts.
++export function makeEvent<T>(nativeEvent: T): NativeSyntheticEvent<T> {
++  return {
++    nativeEvent,
++    timeStamp: Date.now(),
++    currentTarget: 0,
++    target: 0,
++    bubbles: false,
++    cancelable: false,
++    defaultPrevented: false,
++    eventPhase: 2,
++    isTrusted: false,
++    type: 'screens',
++    preventDefault() {},
++    stopPropagation() {},
++    isDefaultPrevented: () => false,
++    isPropagationStopped: () => false,
++    persist() {},
++  } as unknown as NativeSyntheticEvent<T>;
++}
+--- /dev/null
++++ b/src/components/gamma/modals/form-sheet/index.tsx
+@@ -0,0 +1,268 @@
++'use client';
++
++import React from 'react';
++import {
++  Animated,
++  Modal,
++  PanResponder,
++  Pressable,
++  StyleSheet,
++  View,
++  useWindowDimensions,
++} from 'react-native';
++import type {FormSheetProps} from 'react-native-screens/src/components/gamma/modals/form-sheet';
++import {
++  resolveInitialDetentIndex,
++  resolveLargestUndimmedDetentIndex,
++} from 'react-native-screens/src/components/gamma/modals/form-sheet/FormSheetUtils';
++import {makeEvent} from '../../events';
++
++export type * from 'react-native-screens/src/components/gamma/modals/form-sheet';
++
++const DRAG_HANDLE_HEIGHT = 24;
++
++function getDetentFractions(detents: FormSheetProps['detents']): number[] {
++  if (!Array.isArray(detents) || detents.length === 0) return [1];
++  if (detents.some(value => !Number.isFinite(value) || value < 0 || value > 1)) {
++    console.error(
++      '[RNScreens] FormSheet detents must be in the range [0, 1]. Falling back to a full-height detent.',
++    );
++    return [1];
++  }
++  if (detents.some((value, index) => index > 0 && value <= detents[index - 1])) {
++    console.error(
++      '[RNScreens] FormSheet detents must be strictly ascending. Falling back to a full-height detent.',
++    );
++    return [1];
++  }
++  return detents;
++}
++
++// Use the Harmony RN Modal for window and back-button integration.
++export function FormSheet(props: FormSheetProps) {
++  const latest = React.useRef(props);
++  latest.current = props;
++  const {height: windowHeight} = useWindowDimensions();
++  const [visible, setVisible] = React.useState(false);
++  const [contentHeight, setContentHeight] = React.useState(0);
++  const [detentIndex, setDetentIndex] = React.useState(0);
++  const phase = React.useRef<'closed' | 'presenting' | 'opening' | 'open' | 'closing'>(
++    'closed',
++  );
++  const offset = React.useRef(new Animated.Value(windowHeight)).current;
++  const sheetHeight = React.useRef(new Animated.Value(windowHeight)).current;
++  const currentHeight = React.useRef(windowHeight);
++  const dragStart = React.useRef(windowHeight);
++  const reportedDetent = React.useRef<number | undefined>(undefined);
++  const fitToContents = props.detents === 'fitToContents';
++  const detentFractions = React.useMemo(
++    () => getDetentFractions(props.detents),
++    [props.detents],
++  );
++  const detents = fitToContents
++    ? [Math.min(windowHeight, contentHeight || windowHeight)]
++    : detentFractions.map(fraction => fraction * windowHeight);
++  const heights = React.useRef(detents);
++  heights.current = detents;
++
++  const settle = React.useCallback(
++    (index: number, animated = true) => {
++      const values = heights.current;
++      const bounded = Math.max(0, Math.min(values.length - 1, index));
++      currentHeight.current = values[bounded];
++      setDetentIndex(bounded);
++      Animated.timing(sheetHeight, {
++        toValue: values[bounded],
++        duration: animated ? 200 : 0,
++        useNativeDriver: false,
++      }).start();
++      if (reportedDetent.current !== bounded) {
++        reportedDetent.current = bounded;
++        latest.current.onDetentChanged?.(makeEvent({index: bounded}));
++      }
++    },
++    [sheetHeight],
++  );
++
++  const close = React.useCallback(
++    (native: boolean) => {
++      if (phase.current === 'closed' || phase.current === 'closing') return;
++      if (native && latest.current.preventNativeDismiss) {
++        latest.current.onNativeDismissPrevented?.(makeEvent({}));
++        settle(detentIndex);
++        return;
++      }
++      if (phase.current === 'presenting') {
++        phase.current = 'closed';
++        setVisible(false);
++        return;
++      }
++      phase.current = 'closing';
++      latest.current.onWillDisappear?.(makeEvent({}));
++      Animated.timing(offset, {
++        toValue: windowHeight,
++        duration: 220,
++        useNativeDriver: true,
++      }).start(({finished}) => {
++        if (!finished) return;
++        phase.current = 'closed';
++        setVisible(false);
++        latest.current.onDidDisappear?.(makeEvent({}));
++        (native ? latest.current.onNativeDismiss : latest.current.onDismiss)?.(
++          makeEvent({}),
++        );
++      });
++    },
++    [offset, windowHeight, settle, detentIndex],
++  );
++
++  const show = React.useCallback(() => {
++    phase.current = 'opening';
++    const initial = latest.current.initialDetentIndex;
++    const count = heights.current.length;
++    const index =
++      initial === 'last' ? count - 1 : resolveInitialDetentIndex(initial, count);
++    reportedDetent.current = undefined;
++    settle(index, false);
++    latest.current.onWillAppear?.(makeEvent({}));
++    Animated.timing(offset, {
++      toValue: 0,
++      duration: 220,
++      useNativeDriver: true,
++    }).start(({finished}) => {
++      if (!finished) return;
++      phase.current = 'open';
++      latest.current.onDidAppear?.(makeEvent({}));
++    });
++  }, [offset, settle]);
++
++  React.useEffect(() => {
++    if (props.isOpen) {
++      if (phase.current === 'closed') {
++        phase.current = 'presenting';
++        offset.setValue(windowHeight);
++        setVisible(true);
++      } else if (phase.current === 'closing') show();
++    } else close(false);
++    // Only isOpen transitions control presentation. Native dismissal while
++    // isOpen remains true must not cause the sheet to reopen itself.
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [props.isOpen]);
++
++  const detentsKey = detents.join(',');
++  React.useEffect(() => {
++    if (phase.current === 'opening' || phase.current === 'open') {
++      settle(detentIndex, phase.current === 'open');
++    }
++    // eslint-disable-next-line react-hooks/exhaustive-deps
++  }, [detentsKey]);
++  React.useEffect(
++    () => () => {
++      offset.stopAnimation();
++      sheetHeight.stopAnimation();
++    },
++    [offset, sheetHeight],
++  );
++
++  const pan = React.useMemo(
++    () =>
++      PanResponder.create({
++        onStartShouldSetPanResponder: () => true,
++        onPanResponderGrant: () => {
++          dragStart.current = currentHeight.current;
++        },
++        onPanResponderMove: (_event, gesture) => {
++          sheetHeight.setValue(
++            Math.max(
++              32,
++              Math.min(windowHeight, dragStart.current - gesture.dy),
++            ),
++          );
++        },
++        onPanResponderRelease: (_event, gesture) => {
++          const values = heights.current;
++          const target = dragStart.current - gesture.dy;
++          if (target < values[0] * 0.65 || gesture.vy > 1.5) close(true);
++          else
++            settle(
++              values.reduce(
++                (best, value, index) =>
++                  Math.abs(value - target) < Math.abs(values[best] - target)
++                    ? index
++                    : best,
++                0,
++              ),
++            );
++        },
++        onPanResponderTerminate: () => settle(detentIndex),
++      }),
++    [sheetHeight, windowHeight, close, settle, detentIndex],
++  );
++  const undimmed = props.largestUndimmedDetentIndex;
++  const dimmed =
++    undimmed !== 'last' &&
++    detentIndex > resolveLargestUndimmedDetentIndex(undimmed, detents.length);
++  const radius =
++    typeof props.preferredCornerRadius === 'number' &&
++    props.preferredCornerRadius >= 0
++      ? props.preferredCornerRadius
++      : 24;
++  return (
++    <Modal
++      visible={visible}
++      transparent
++      animationType="none"
++      onShow={() => {
++        if (latest.current.isOpen && phase.current === 'presenting') show();
++      }}
++      onRequestClose={() => close(true)}>
++      <View style={styles.window}>
++        <Pressable
++          accessibilityRole="button"
++          accessibilityLabel="Dismiss sheet"
++          style={[StyleSheet.absoluteFill, dimmed && styles.dim]}
++          onPress={() => close(true)}
++        />
++        <Animated.View style={{transform: [{translateY: offset}]}}>
++          <Animated.View
++            style={[
++              styles.sheet,
++              {
++                height: sheetHeight,
++                borderTopLeftRadius: radius,
++                borderTopRightRadius: radius,
++                backgroundColor:
++                  props.nativeContainerStyle?.backgroundColor ?? 'white',
++              },
++            ]}>
++            <View {...pan.panHandlers} style={styles.dragHandle}>
++              {props.prefersGrabberVisible && <View style={styles.grabber} />}
++            </View>
++            <View
++              style={!fitToContents && styles.content}
++              onLayout={
++                fitToContents
++                  ? event => {
++                      setContentHeight(
++                        event.nativeEvent.layout.height + DRAG_HANDLE_HEIGHT,
++                      );
++                    }
++                  : undefined
++              }>
++              {props.children}
++            </View>
++          </Animated.View>
++        </Animated.View>
++      </View>
++    </Modal>
++  );
++}
++
++const styles = StyleSheet.create({
++  window: {flex: 1, justifyContent: 'flex-end'},
++  dim: {backgroundColor: '#0006'},
++  sheet: {overflow: 'hidden'},
++  content: {flex: 1},
++  dragHandle: {height: DRAG_HANDLE_HEIGHT, alignItems: 'center', justifyContent: 'center'},
++  grabber: {width: 36, height: 5, borderRadius: 3, backgroundColor: '#888'},
++});
+--- /dev/null
++++ b/src/components/gamma/scroll-view-marker/index.tsx
+@@ -0,0 +1,17 @@
++'use client';
++
++import React from 'react';
++import {View} from 'react-native';
++import type {ScrollViewMarkerProps} from 'react-native-screens/src/components/gamma/scroll-view-marker';
++
++export type * from 'react-native-screens/src/components/gamma/scroll-view-marker';
++
++export function ScrollViewMarker({children, style}: ScrollViewMarkerProps) {
++  // UIScrollEdgeEffect is iOS 26-only. Keep the marker's layout and its direct
++  // scroll child on Harmony, without registering an unavailable UIKit view.
++  return (
++    <View collapsable={false} style={style}>
++      {children}
++    </View>
++  );
++}
+--- /dev/null
++++ b/src/components/gamma/split/index.tsx
+@@ -0,0 +1,297 @@
++'use client';
++
++import React from 'react';
++import {PanResponder, Pressable, StyleSheet, Text, View} from 'react-native';
++import type {ViewStyle} from 'react-native';
++import type {
++  SplitHostProps,
++  SplitScreenProps,
++  SplitNavigableColumn,
++  SplitDisplayMode,
++} from 'react-native-screens/src/components/gamma/split';
++import {makeEvent} from '../events';
++
++export type * from 'react-native-screens/src/components/gamma/split';
++
++type ColumnProps = SplitScreenProps & {visible?: boolean};
++
++function SplitColumn({
++  visible = true,
++  onWillAppear,
++  onDidAppear,
++  onWillDisappear,
++  onDidDisappear,
++  style,
++  ...props
++}: ColumnProps) {
++  const previous = React.useRef(false);
++  React.useEffect(() => {
++    if (previous.current === visible) return;
++    previous.current = visible;
++    const event = makeEvent({});
++    if (visible) {
++      onWillAppear?.(event);
++      onDidAppear?.(event);
++    } else {
++      onWillDisappear?.(event);
++      onDidDisappear?.(event);
++    }
++  }, [visible, onWillAppear, onDidAppear, onWillDisappear, onDidDisappear]);
++  return (
++    <View
++      {...props}
++      style={[styles.column, style, !visible && styles.hidden]}
++    />
++  );
++}
++
++function Inspector(props: ColumnProps) {
++  return <SplitColumn {...props} />;
++}
++
++function columnWidth(
++  preferred: number | undefined,
++  min: number,
++  max: number,
++  width: number,
++) {
++  const wanted =
++    preferred === undefined
++      ? min
++      : preferred <= 1
++      ? preferred * width
++      : preferred;
++  return Math.max(min, Math.min(max, wanted));
++}
++
++function SplitHost({
++  ref,
++  children,
++  style,
++  columnMetrics = {},
++  preferredDisplayMode = 'automatic',
++  preferredSplitBehavior = 'automatic',
++  primaryEdge = 'leading',
++  topColumnForCollapsing = 'secondary',
++  showInspector = false,
++  displayModeButtonVisibility = 'automatic',
++  showSecondaryToggleButton = false,
++  onCollapse,
++  onExpand,
++  onDisplayModeWillChange,
++  onInspectorHide,
++  onLayout,
++  orientation: _orientation,
++  colorScheme: _colorScheme,
++  primaryBackgroundStyle: _primaryBackgroundStyle,
++  presentsWithGesture = true,
++  ...viewProps
++}: SplitHostProps) {
++  const [width, setWidth] = React.useState(0);
++  const [requested, setRequested] = React.useState<
++    SplitNavigableColumn | undefined
++  >();
++  React.useImperativeHandle(ref, () => ({show: setRequested}), []);
++  React.useEffect(
++    () => setRequested(undefined),
++    [preferredDisplayMode, topColumnForCollapsing],
++  );
++
++  const elements = React.Children.toArray(children).filter(
++    React.isValidElement,
++  );
++  const columns = elements.filter(
++    child => child.type === SplitColumn,
++  ) as React.ReactElement<ColumnProps>[];
++  const inspectors = elements.filter(
++    child => child.type === Inspector,
++  ) as React.ReactElement<ColumnProps>[];
++  const metrics = columnMetrics;
++  const primaryWidth = columnWidth(
++    metrics.preferredPrimaryColumnWidthOrFraction,
++    metrics.minimumPrimaryColumnWidth ?? 280,
++    metrics.maximumPrimaryColumnWidth ?? 400,
++    width,
++  );
++  const supplementaryWidth = columnWidth(
++    metrics.preferredSupplementaryColumnWidthOrFraction,
++    metrics.minimumSupplementaryColumnWidth ?? 240,
++    metrics.maximumSupplementaryColumnWidth ?? 400,
++    width,
++  );
++  const inspectorWidth = columnWidth(
++    metrics.preferredInspectorColumnWidthOrFraction,
++    metrics.minimumInspectorColumnWidth ?? 240,
++    metrics.maximumInspectorColumnWidth ?? 400,
++    width,
++  );
++  const collapsed =
++    width > 0 &&
++    width < primaryWidth + (metrics.minimumSecondaryColumnWidth ?? 320);
++  const automaticMode: SplitDisplayMode =
++    columns.length > 2 &&
++    width >=
++      primaryWidth +
++        supplementaryWidth +
++        (metrics.minimumSecondaryColumnWidth ?? 320)
++      ? 'twoBesideSecondary'
++      : 'oneBesideSecondary';
++  let mode: SplitDisplayMode = collapsed
++    ? 'secondaryOnly'
++    : preferredDisplayMode === 'automatic'
++    ? automaticMode
++    : preferredDisplayMode;
++  if (requested === 'secondary') mode = 'secondaryOnly';
++  else if (requested)
++    mode =
++      requested === 'supplementary' && columns.length > 2
++        ? 'twoOverSecondary'
++        : 'oneOverSecondary';
++  const collapsedColumn = requested ?? topColumnForCollapsing;
++  const overlay = preferredSplitBehavior === 'overlay' || mode.includes('Over');
++  const displace =
++    preferredSplitBehavior === 'displace' || mode === 'twoDisplaceSecondary';
++  const two = mode.startsWith('two');
++  const previous = React.useRef({
++    collapsed: false,
++    mode: 'automatic' as string,
++    inspector: false,
++  });
++  React.useEffect(() => {
++    if (!width) return;
++    if (previous.current.mode !== mode) {
++      onDisplayModeWillChange?.(
++        makeEvent({
++          currentDisplayMode: previous.current.mode,
++          nextDisplayMode: mode,
++        }),
++      );
++    }
++    if (previous.current.collapsed !== collapsed) {
++      (collapsed ? onCollapse : onExpand)?.(makeEvent({}));
++    }
++    if (previous.current.inspector && !showInspector)
++      onInspectorHide?.(makeEvent({}));
++    previous.current = {collapsed, mode, inspector: showInspector};
++  }, [
++    width,
++    mode,
++    collapsed,
++    showInspector,
++    onCollapse,
++    onExpand,
++    onDisplayModeWillChange,
++    onInspectorHide,
++  ]);
++
++  const sideWidth =
++    mode === 'secondaryOnly'
++      ? 0
++      : primaryWidth + (two ? supplementaryWidth : 0);
++  const reverse = primaryEdge === 'trailing';
++  const pan = React.useMemo(
++    () =>
++      PanResponder.create({
++        onMoveShouldSetPanResponder: (_event, gesture) =>
++          presentsWithGesture &&
++          Math.abs(gesture.dx) > 30 &&
++          Math.abs(gesture.dx) > Math.abs(gesture.dy) * 2,
++        onPanResponderRelease: (_event, gesture) => {
++          if (Math.abs(gesture.dx) > 50) {
++            setRequested(gesture.dx > 0 !== reverse ? 'primary' : 'secondary');
++          }
++        },
++      }),
++    [presentsWithGesture, reverse],
++  );
++  return (
++    <View
++      {...viewProps}
++      {...pan.panHandlers}
++      style={[styles.host, style]}
++      onLayout={event => {
++        setWidth(event.nativeEvent.layout.width);
++        onLayout?.(event);
++      }}>
++      {(displayModeButtonVisibility === 'always' ||
++        (displayModeButtonVisibility === 'automatic' && collapsed) ||
++        showSecondaryToggleButton) && (
++        <Pressable
++          accessibilityRole="button"
++          accessibilityLabel="Toggle sidebar"
++          onPress={() =>
++            setRequested(mode === 'secondaryOnly' ? 'primary' : 'secondary')
++          }>
++          <Text style={styles.toggle}>☰</Text>
++        </Pressable>
++      )}
++      <View style={[styles.row, reverse && styles.reverse]}>
++        {columns.map((child, index) => {
++          const role =
++            index === columns.length - 1
++              ? 'secondary'
++              : index === 0
++              ? 'primary'
++              : 'supplementary';
++          const visible = collapsed
++            ? role === collapsedColumn
++            : role === 'secondary' ||
++              (mode !== 'secondaryOnly' && (role === 'primary' || two));
++          const columnStyle: ViewStyle =
++            role === 'secondary' || collapsed
++              ? {flex: 1}
++              : {
++                  flex: 0,
++                  width: role === 'primary' ? primaryWidth : supplementaryWidth,
++                };
++          if (!collapsed && (overlay || displace)) {
++            if (role === 'secondary') {
++              if (displace)
++                columnStyle.transform = [
++                  {translateX: reverse ? -sideWidth : sideWidth},
++                ];
++            } else {
++              columnStyle.position = 'absolute';
++              columnStyle.top = 0;
++              columnStyle.bottom = 0;
++              columnStyle.zIndex = 1;
++              columnStyle[reverse ? 'right' : 'left'] =
++                role === 'primary' ? 0 : primaryWidth;
++            }
++          }
++          return React.cloneElement(child, {
++            visible,
++            style: [child.props.style, columnStyle],
++          });
++        })}
++        {inspectors.map(child =>
++          React.cloneElement(child, {
++            visible: showInspector,
++            style: [
++              child.props.style,
++              collapsed
++                ? styles.inspectorOverlay
++                : {flex: 0, width: inspectorWidth},
++            ],
++          }),
++        )}
++      </View>
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({
++  host: {flex: 1},
++  row: {flex: 1, flexDirection: 'row', overflow: 'hidden'},
++  reverse: {flexDirection: 'row-reverse'},
++  column: {flex: 1},
++  hidden: {display: 'none'},
++  toggle: {padding: 12, fontSize: 20},
++  inspectorOverlay: {
++    ...StyleSheet.absoluteFill,
++    zIndex: 2,
++    backgroundColor: 'white',
++  },
++});
++
++export const Split = {Host: SplitHost, Column: SplitColumn, Inspector};
+--- /dev/null
++++ b/src/components/gamma/stack/index.tsx
+@@ -0,0 +1,158 @@
++'use client';
++
++import React from 'react';
++import {StyleSheet} from 'react-native';
++import type {
++  StackHostProps,
++  StackScreenProps,
++  StackHeaderConfigProps,
++  StackHeaderConfigRef,
++  StackScreenEventHandler,
++} from 'react-native-screens/src/components/gamma/stack';
++import {ScreenStackHeaderConfig} from 'react-native-screens/src/components/ScreenStackHeaderConfig';
++import Screen from '../../Screen';
++import ScreenStackNativeComponent from '../../../specs/ScreenStackNativeComponent';
++type StackEvent = Parameters<StackScreenEventHandler>[0];
++
++export type * from 'react-native-screens/src/components/gamma/stack';
++
++function StackHost({children, ref}: StackHostProps) {
++  return (
++    <ScreenStackNativeComponent
++      ref={ref}
++      experimentalStack
++      style={styles.container}>
++      {children}
++    </ScreenStackNativeComponent>
++  );
++}
++
++function StackScreen({
++  activityMode,
++  screenKey,
++  onWillAppear,
++  onDidAppear,
++  onWillDisappear,
++  onDidDisappear,
++  onDismiss,
++  onNativeDismiss,
++  onNativeDismissPrevented,
++  preventNativeDismiss,
++  children,
++}: StackScreenProps) {
++  const nativeDismissed = React.useRef(false);
++  const visible = React.useRef(false);
++  const wasAttached = React.useRef(activityMode === 'attached');
++  const callbacks = React.useRef({onDismiss, screenKey});
++  const mountGeneration = React.useRef(0);
++  callbacks.current = {onDismiss, screenKey};
++
++  React.useEffect(() => {
++    if (activityMode === 'attached') {
++      nativeDismissed.current = false;
++      wasAttached.current = true;
++    } else if (
++      wasAttached.current &&
++      !visible.current &&
++      !nativeDismissed.current
++    ) {
++      // An already covered page has no second hide transition when detached.
++      nativeDismissed.current = true;
++      callbacks.current.onDismiss?.(callbacks.current.screenKey);
++    }
++  }, [activityMode]);
++
++  React.useEffect(() => {
++    const generation = ++mountGeneration.current;
++    return () => {
++      // StrictMode replays effects without dismissing the native screen.
++      Promise.resolve().then(() => {
++        if (
++          mountGeneration.current === generation &&
++          wasAttached.current &&
++          !nativeDismissed.current
++        ) {
++          callbacks.current.onDismiss?.(callbacks.current.screenKey);
++        }
++      });
++    };
++  }, []);
++
++  return (
++    <Screen
++      enabled
++      // Gamma can move both ways between attached and detached. It must not
++      // use the stable native-stack's monotonic activityState protocol.
++      experimentalScreen
++      screenId={screenKey}
++      activityState={activityMode === 'attached' ? 2 : 0}
++      fullScreenSwipeEnabled
++      swipeDirection="horizontal"
++      // Detached preloads remain mounted in Fabric. Exclude their subtree from
++      // hit testing even though it has no ArkUI navigation destination yet.
++      pointerEvents={activityMode === 'attached' ? 'auto' : 'none'}
++      style={[
++        StyleSheet.absoluteFill,
++        {display: activityMode === 'attached' ? 'flex' : 'none'},
++      ]}
++      preventNativeDismiss={preventNativeDismiss}
++      onWillAppear={event => onWillAppear?.(event as unknown as StackEvent)}
++      onAppear={event => {
++        visible.current = true;
++        onDidAppear?.(event as unknown as StackEvent);
++      }}
++      onWillDisappear={event =>
++        onWillDisappear?.(event as unknown as StackEvent)
++      }
++      onDisappear={event => {
++        visible.current = false;
++        onDidDisappear?.(event as unknown as StackEvent);
++        if (activityMode === 'detached' && !nativeDismissed.current) {
++          nativeDismissed.current = true;
++          onDismiss?.(screenKey);
++        }
++      }}
++      onDismissed={() => {
++        if (!nativeDismissed.current) {
++          nativeDismissed.current = true;
++          onNativeDismiss?.(screenKey);
++        }
++      }}
++      onNativeDismissCancelled={event => {
++        // Zero denotes an ordinary cancelled swipe in the stable protocol.
++        if (event.nativeEvent.dismissCount > 0) {
++          onNativeDismissPrevented?.(event as unknown as StackEvent);
++        }
++      }}>
++      {children}
++    </Screen>
++  );
++}
++
++const StackHeaderConfig = React.forwardRef<
++  StackHeaderConfigRef,
++  StackHeaderConfigProps
++>(function StackHeaderConfig(
++  {title, hidden, transparent, backButtonHidden},
++  ref,
++) {
++  // The platform-specific `ios` and `android` options have no Harmony commands.
++  React.useImperativeHandle(ref, () => ({}), []);
++  return (
++    <ScreenStackHeaderConfig
++      title={title}
++      hidden={hidden}
++      translucent={transparent}
++      backgroundColor={transparent ? 'transparent' : undefined}
++      hideBackButton={backButtonHidden}
++    />
++  );
++});
++
++const styles = StyleSheet.create({container: {flex: 1}});
++
++export const Stack = {
++  Host: StackHost,
++  Screen: StackScreen,
++  HeaderConfig: StackHeaderConfig,
++};
+--- /dev/null
++++ b/src/components/safe-area/index.tsx
+@@ -0,0 +1,83 @@
++'use client';
++
++import React from 'react';
++import {I18nManager, StyleSheet, View} from 'react-native';
++import type {ViewStyle} from 'react-native';
++import type {SafeAreaViewProps} from 'react-native-screens/src/components/safe-area/SafeAreaView.types';
++import NativeSafeAreaView, {
++  type Insets,
++} from '../../specs/SafeAreaViewNativeComponent';
++
++export type * from 'react-native-screens/src/components/safe-area/SafeAreaView.types';
++
++// Insets are already relative to this view's position in the window. A nested
++// view below a native header therefore receives zero for its consumed top edge.
++export function SafeAreaView({
++  edges,
++  insetType: _insetType, // Upstream documents this selector as Android-only.
++  style,
++  ...props
++}: SafeAreaViewProps) {
++  const [width, setWidth] = React.useState(0);
++  const [insets, setInsets] = React.useState<Insets>({
++    top: 0,
++    right: 0,
++    bottom: 0,
++    left: 0,
++  });
++  const flattened = StyleSheet.flatten(style) ?? {};
++  const padding: ViewStyle = {};
++  for (const edge of ['top', 'right', 'bottom', 'left'] as const) {
++    if (!edges?.[edge] || insets[edge] === 0) continue;
++    const key = `padding${edge[0].toUpperCase()}${edge.slice(1)}` as
++      | 'paddingTop'
++      | 'paddingRight'
++      | 'paddingBottom'
++      | 'paddingLeft';
++    const horizontal = edge === 'left' || edge === 'right';
++    const logical =
++      edge === (I18nManager.isRTL ? 'right' : 'left')
++        ? flattened.paddingStart
++        : flattened.paddingEnd;
++    const value =
++      (horizontal ? logical : undefined) ??
++      flattened[key] ??
++      (horizontal ? flattened.paddingHorizontal : flattened.paddingVertical) ??
++      flattened.padding ??
++      0;
++    const amount =
++      typeof value === 'number'
++        ? value
++        : typeof value === 'string' && value.endsWith('%')
++        ? (parseFloat(value) * width) / 100
++        : 0;
++    const adjusted = insets[edge] + amount;
++    if (horizontal && logical !== undefined) {
++      padding[
++        edge === (I18nManager.isRTL ? 'right' : 'left')
++          ? 'paddingStart'
++          : 'paddingEnd'
++      ] = adjusted;
++    } else padding[key] = adjusted;
++  }
++  return (
++    <View
++      {...props}
++      style={[styles.flex, style, padding]}
++      onLayout={event => {
++        setWidth(event.nativeEvent.layout.width);
++        props.onLayout?.(event);
++      }}>
++      {/* Keep styling and touch handling on an ordinary RN View. */}
++      <NativeSafeAreaView
++        pointerEvents="none"
++        accessible={false}
++        style={StyleSheet.absoluteFill}
++        onInsetsChange={event => setInsets(event.nativeEvent)}
++      />
++      {props.children}
++    </View>
++  );
++}
++
++const styles = StyleSheet.create({flex: {flex: 1}});
+--- /dev/null
++++ b/src/experimental/index.ts
+@@ -0,0 +1,9 @@
++'use client';
++
++// Preserve the upstream type surface without evaluating its iOS/Android views.
++export type * from 'react-native-screens/src/experimental';
++export {Stack} from '../components/gamma/stack';
++export {SafeAreaView} from '../components/safe-area';
++export {Split} from '../components/gamma/split';
++export {ScrollViewMarker} from '../components/gamma/scroll-view-marker';
++export {FormSheet} from '../components/gamma/modals/form-sheet';
+--- /dev/null
++++ b/src/gesture-handler/GestureDetectorProvider.tsx
+@@ -0,0 +1,13 @@
++'use client';
++
++import React from 'react';
++
++export default function GestureDetectorProvider({
++  children,
++}: {
++  children: React.ReactNode;
++}) {
++  // Harmony's native Navigation handles back gestures. The upstream provider
++  // uses iOS-only Reanimated screen-transition commands and is not needed here.
++  return <>{children}</>;
++}
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -29,5 +29,5 @@
+   ScreenStackHeaderBackButtonImage,
+   ScreenStackHeaderSearchBarView,
+-} from "./components/ScreenStackHeaderConfig";
++} from 'react-native-screens/src/components/ScreenStackHeaderConfig';
+ export { default as SearchBar } from 'react-native-screens/src/components/SearchBar';
+ export { default as ScreenContainer } from './components/ScreenContainer';
+@@ -46,5 +46,5 @@
+ } from 'react-native-screens/src/flags';
+ export { default as useTransitionProgress } from 'react-native-screens/src/useTransitionProgress';
+-export { default as GestureDetectorProvider } from 'react-native-screens/src/gesture-handler/GestureDetectorProvider';
++export { default as GestureDetectorProvider } from './gesture-handler/GestureDetectorProvider';
+ 
+ // The public JavaScript shape follows 4.26.2. Harmony native tabs are not part
+--- /dev/null
++++ b/src/specs/SafeAreaViewNativeComponent.ts
+@@ -0,0 +1,17 @@
++'use client';
++
++import {codegenNativeComponent} from 'react-native';
++import type {CodegenTypes as CT, ViewProps} from 'react-native';
++
++export type Insets = Readonly<{
++  top: CT.Double;
++  right: CT.Double;
++  bottom: CT.Double;
++  left: CT.Double;
++}>;
++
++export interface NativeProps extends ViewProps {
++  onInsetsChange?: CT.DirectEventHandler<Insets>;
++}
++
++export default codegenNativeComponent<NativeProps>('RNSSafeAreaView');
+--- a/src/specs/ScreenNativeComponent.ts
++++ b/src/specs/ScreenNativeComponent.ts
+@@ -77,4 +77,5 @@
+ 
+ export interface NativeProps extends ViewProps {
++  experimentalScreen?: boolean | undefined;
+   onAppear?: CT.DirectEventHandler<ScreenEvent> | undefined;
+   onDisappear?: CT.DirectEventHandler<ScreenEvent> | undefined;
+--- a/src/specs/ScreenStackNativeComponent.ts
++++ b/src/specs/ScreenStackNativeComponent.ts
+@@ -25,4 +25,5 @@
+   isPreventKeyboardPopUp?: boolean | undefined;
+   activityStateSelfControl?: boolean | undefined;
++  experimentalStack?: boolean | undefined;
+ }
+ 

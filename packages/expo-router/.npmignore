@@ -1,0 +1,4 @@
+/third_party/*/README.md
+/third_party/*/patches/
+/third_party/*/scripts/
+/third_party/*/.build-*/

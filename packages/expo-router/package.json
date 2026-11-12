@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-router",
-  "version": "55.0.18-harmony.3",
+  "version": "57.0.29-harmony.0",
   "description": "HarmonyOS port of expo-router",
   "keywords": [
     "react-native",
@@ -19,35 +19,66 @@
   },
   "main": "index.js",
   "types": "index.d.ts",
+  "scripts": {
+    "build": "node third_party/react-native-ohos__react-native-screens/scripts/build.mjs",
+    "prepack": "node third_party/react-native-ohos__react-native-screens/scripts/build.mjs"
+  },
   "dependencies": {
     "@expo-harmony/expo-linking": "workspace:*",
     "@react-native-ohos/react-native-safe-area-context": "5.6.4",
-    "@react-native-ohos/react-native-screens": "https://raw.atomgit.com/baoshuo/rntpc_react-native-screens/blobs/4d7ff55b0d27067d85388e6fbe2074c7df7e49df/react-native-ohos-react-native-screens-4.26.2-rnoh084.0.tgz"
+    "@react-native-ohos/react-native-screens": "4.10.0-beta.4",
+    "react-freeze": "^1.0.0",
+    "warn-once": "^0.1.0"
   },
   "peerDependencies": {
     "@react-native-ohos/react-native-gesture-handler": "2.30.2",
     "@react-native-ohos/react-native-reanimated": "4.0.2",
-    "@react-native-ohos/react-native-worklets": "1.0.1",
-    "expo-router": "55.0.18"
+    "@react-native-ohos/react-native-worklets": "1.1.0-beta.1",
+    "expo-router": "57.0.29",
+    "react": ">=19.2.0",
+    "react-native": "0.86.3",
+    "react-native-screens": "4.26.2"
+  },
+  "peerDependenciesMeta": {
+    "@react-native-ohos/react-native-gesture-handler": {
+      "optional": true
+    },
+    "@react-native-ohos/react-native-reanimated": {
+      "optional": true
+    },
+    "@react-native-ohos/react-native-worklets": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@babel/core": "7.29.7",
-    "@react-native-oh/react-native-harmony": "0.84.1",
+    "@expo-harmony/expo-module-scripts": "workspace:*",
+    "@react-native-oh/react-native-harmony": "0.86.1",
+    "@react-native/metro-config": "0.86.3",
     "react": "19.2.3",
-    "react-native": "0.84.1",
-    "react-native-gesture-handler": "2.30.0",
-    "react-native-reanimated": "4.2.1",
+    "react-native": "0.86.3",
     "react-native-safe-area-context": "5.6.2",
     "react-native-screens": "4.26.2",
-    "react-native-worklets": "0.7.4"
+    "react-native-worklets": "0.11.4",
+    "tar": "7.5.22"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
   },
   "publishConfig": {
     "access": "public"
   },
   "harmony": {
+    "metro": {
+      "redirects": [
+        {
+          "upstream": "expo-router",
+          "origin": "build/getLinkingConfig.js",
+          "request": "./link/linking",
+          "target": "linking.js"
+        }
+      ]
+    },
     "modules": {
       "@react-native-ohos/react-native-gesture-handler": {
         "version": "2.30.2",
@@ -76,21 +107,16 @@
         "cmakeLibraryTargetName": "rnoh_safe_area"
       },
       "@react-native-ohos/react-native-screens": {
-        "version": "4.26.2-rnoh084.0",
+        "version": "4.10.0-beta.4",
+        "packageRoot": "third_party/react-native-ohos__react-native-screens/build",
         "mainHarPath": "harmony",
-        "ohPackageName": [
-          {
-            "harName": "screens.har",
-            "packageName": "@react-native-ohos/react-native-screens",
-            "version": "4.26.2"
-          }
-        ],
+        "ohPackageName": "@react-native-ohos/react-native-screens",
         "etsPackageClassName": "RNOHScreensPackage",
         "cppPackageClassName": "RnohReactNativeHarmonyScreensPackage",
         "cmakeLibraryTargetName": "rnoh_screens"
       },
       "@react-native-ohos/react-native-worklets": {
-        "version": "1.0.1",
+        "version": "1.1.0-beta.1",
         "mainHarPath": "harmony",
         "ohPackageName": "@react-native-ohos/react-native-worklets",
         "etsPackageClassName": "ReanimatedWorkletPackage",
