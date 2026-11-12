@@ -88,7 +88,7 @@ export class ByteSequence {
   }
 
   toBase64(): string {
-    return new util.Base64Helper().encodeToStringSync(this.bytes);
+    return this.bytes.length === 0 ? '' : new util.Base64Helper().encodeToStringSync(this.bytes);
   }
 
   toBytes(): Uint8Array { return this.bytes.slice(); }

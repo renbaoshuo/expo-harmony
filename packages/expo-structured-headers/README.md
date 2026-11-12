@@ -6,105 +6,187 @@
 
 ## 安装
 
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
 ```bash
 npm install @expo-harmony/expo-structured-headers
 ```
 
-本包适配 Expo SDK 55 的 `expo-structured-headers@55.0.2`，最低支持 HarmonyOS 5.0.1（API 13）。包内没有 React Native JavaScript 接口，只在原生代码中使用。解析和序列化在应用进程内完成，不同系统版本上行为一致。
-
-原生模块在自己的 `oh-package.json5` 中声明依赖：
-
-```json
-{
-  "dependencies": {
-    "@expo-harmony/expo-structured-headers": "55.0.2-harmony.0"
-  }
-}
-```
-
-原生 ArkTS 从 HAR 导入解析和序列化函数：
-
-```ts
-import { parseDictionary, serializeDictionary } from '@expo-harmony/expo-structured-headers';
-
-const fields = parseDictionary('keyid="main", enabled');
-const header = serializeDictionary(fields);
-```
-
-实现改写自 Evert Pot 的 MIT 许可库 `structured-headers`，原许可文件随源码保留。在 ArkTS 中标注参数类型时，用 `import { Parameters as HeaderParameters }` 导入，避免和 TypeScript 同名的工具类型混淆。
-
 ## API 对照表
 
-### Functions
+### Methods
 
-#### `parseDictionary(input)`
+除 `parseDictionary`、`parseList` 和 `parseItem` 可接受单个字符串或非空字符串数组外，顶层解析函数均接受单个字符串。字符串数组表示同一字段的多行内容，按逗号连接；字符串不能跨行。解析输入须为 ASCII，解析函数会检查完整内容；格式错误或存在未解析字符时抛出 `ParseError`。
 
-返回 `Dictionary`。没有取值的成员解析为 `[true, 参数]`。
+#### `parseDictionary(input: string | string[]): Dictionary`
 
-`parseDictionary()`、`parseList()`、`parseItem()` 的输入规则相同：接受单个字符串，也接受非空字符串数组表示同一个响应头的多行，多行按逗号拼接后解析，字符串字面量不允许跨行。完整字段允许首尾空格，列表和字典的成员之间允许逗号及可选的空格、制表符。输入必须是 ASCII，解析失败抛出 `ParseError`，`position` 为出错处的偏移量。`parseDictionary('')` 和 `parseList('')` 返回空容器，`parseItem('')` 和空的多行数组报错。字典和参数出现重复键时，键的位置保留第一次插入的，取值以最后一次出现为准。
+解析字典字段。无取值成员的值为 `[true, 参数]`；重复键使用最后一次的值，并保留首次插入位置。空字符串返回空字典，尾随逗号会导致 `ParseError`。
 
-#### `parseList(input)`
+#### `parseList(input: string | string[]): List`
 
-返回 `List`，成员为单项或内嵌列表。输入规则与 `parseDictionary()` 相同。
+解析列表字段，成员为 `Item` 或 `InnerList`；空字符串返回空列表，尾随逗号会导致 `ParseError`。
 
-#### `parseItem(input)`
+#### `parseItem(input: string | string[]): Item`
 
-返回一个 `Item`，输入必须是完整的单项字段值。输入规则与 `parseDictionary()` 相同。
+解析单项字段，返回 `[取值, 参数]`；空输入会导致 `ParseError`。
 
-#### 其余解析函数
+#### `parseBareItem(input: string): BareItem`
 
-以下函数按给定结构解析一个完整的字段值，只接受单个字符串，不忽略首尾空格，解析后不允许有剩余字符，失败时抛出 `ParseError`：
+解析整数、小数、字符串、Token、字节序列或布尔值，不包含参数。
 
-- `parseBareItem(input)`：返回 `BareItem`，按首字符识别类型。
-- `parseParameters(input)`：返回 `Parameters`。
-- `parseKey(input)`：返回 `string`。
-- `parseItemOrInnerList(input)`：返回 `Item | InnerList`，按首字符是否为 `(` 区分。
-- `parseInnerList(input)`：返回 `InnerList`。
-- `parseString(input)`、`parseToken(input)`、`parseByteSequence(input)`、`parseBoolean(input)`、`parseIntegerOrDecimal(input)`：返回带参数的 `Item`，取值按函数名对应的类型解析。
+#### `parseParameters(input: string): Parameters`
 
-#### `serializeDictionary(input)`
+解析参数；空字符串返回空 `Map`。重复参数使用最后一次的值，并保留首次插入位置。
 
-返回 `string`。输出顺序与 `Map` 的插入顺序一致，布尔成员输出为 `key` 而不是 `key=?1`。取值和参数的序列化规则与 `serializeItem()` 相同。
+#### `parseKey(input: string): string`
 
-#### `serializeList(input)`
+解析一个字典键或参数名。
 
-返回 `string`，成员之间用 `, ` 分隔。序列化规则与 `serializeItem()` 相同。
+#### `parseString(input: string): Item`
 
-#### `serializeItem(input)`
+解析字符串及其参数，返回值为字符串。
 
-返回 `string`，输出为取值加参数。整数范围 ±999,999,999,999,999，字符串只允许 ASCII，类型不支持时抛出 `SerializeError`。
+#### `parseToken(input: string): Item`
 
-### Classes
+解析 Token 及其参数，返回值为 `Token`。
 
-#### `Parser`
+#### `parseByteSequence(input: string): Item`
 
-解析器的类形式。`parseDictionary()`、`parseList()`、`parseItem()` 解析完整字段。其余方法在当前游标处解析一部分并推进游标，不自动验证输入结束。`parseString()`、`parseToken()`、`parseByteSequence()`、`parseBoolean()`、`parseIntegerOrDecimal()` 返回裸值，不读取取值后的参数，例如实例方法 `parseToken()` 直接返回 `Token`。结构方法 `parseInnerList()` 和 `parseItemOrInnerList()` 会读取参数。需要完整输入校验时使用顶层函数，或在完成分步解析后调用 `checkTrail()`。
+解析 Base64 字节序列及其参数，返回值为 `ByteSequence`。
 
-#### `Decimal`
+#### `parseBoolean(input: string): Item`
 
-以千分整数表示 RFC 8941 小数，固定三位小数精度。`Decimal.valueOf(1.0)` 从普通数值构造，按 RFC 8941 就近舍入到三位小数，恰好居中时舍入到偶数。`Decimal.fromPermille(1000)` 直接按千分值构造。`toNumber()` 返回普通数值。用作取值序列化时保留小数类型，`1.0` 不会写成 `1`，小数点后的前导零也会保留（如 `0.001`）。超出 ±999,999,999,999.999 范围抛出 `TypeError`。
+解析布尔值及其参数，返回值为 `boolean`。
 
-#### `ByteSequence`
+#### `parseIntegerOrDecimal(input: string): Item`
 
-字节序列。构造时接受 Base64 字符串或 `Uint8Array`，内容会复制一份。`toBase64()` 输出标准 Base64，`toBytes()` 返回字节副本。接受省略了全部末尾填充的合法 Base64，输出时补足标准填充；Base64URL 字母表、空白和错误的填充会被拒绝。Base64 不合法时抛出 `TypeError`。
+解析整数或小数及其参数；小数以 `Decimal` 返回。
 
-#### `Token`
+#### `parseInnerList(input: string): InnerList`
 
-Token 类型的包装。首字符为字母或 `*`，其余为 Token 允许的字符，不合法时抛出 `TypeError`。手工构造取值时用它区分 Token 和字符串，序列化时 Token 不加引号。
+解析内嵌列表及其列表参数。
 
-#### `ParseError`
+#### `parseItemOrInnerList(input: string): Item | InnerList`
 
-解析失败时抛出的错误，继承自 `Error`，`name` 为 `'ParseError'`，`position` 为出错处的偏移量，多行输入按拼接后的完整字符串计算。
+解析单项或内嵌列表；输入以 `(` 开始时解析为内嵌列表。
 
-#### `SerializeError`
+#### `serializeDictionary(input: Dictionary): string`
 
-序列化失败时抛出的错误，继承自 `Error`，`name` 为 `'SerializeError'`，`cause` 保留导致失败的原始错误。
+序列化字典，成员按 `Map` 插入顺序输出。键和参数名须以小写字母或 `*` 开头，后续字符可为小写字母、数字、`_`、`-`、`.` 或 `*`。值为 `true` 的成员只输出键名，值为 `false` 的成员输出为 `key=?0`。
+
+#### `serializeList(input: List): string`
+
+序列化列表，成员之间以 `, ` 分隔。
+
+#### `serializeItem(input: Item): string`
+
+序列化取值和参数。整数范围为 ±999,999,999,999,999；字符串只接受 ASCII 空格和可打印字符，并会转义引号和反斜线。布尔值输出为 `?1` 或 `?0`，字节序列用冒号包围 Base64。普通数值作为小数时按三位小数精度舍入；使用 `Decimal` 可保留小数类型，例如 `1.0` 不会序列化为 `1`。无法序列化的输入会抛出 `SerializeError`。
+
+#### `new Parser(input: string | string[])`
+
+创建分步解析器。字符串数组表示同一字段的多行内容，各行以逗号连接；数组不能为空，输入必须为 ASCII。解析器方法从当前游标读取内容；除完整字段方法外，不会检查输入是否已结束。
+
+#### `Parser.parseDictionary(): Dictionary`
+
+从当前游标解析字典字段并返回字典。
+
+#### `Parser.parseList(): List`
+
+从当前游标解析列表字段并返回列表。
+
+#### `Parser.parseItem(standalone = true): Item`
+
+从当前游标解析单项。`standalone` 为 `true` 时允许首尾空格并要求输入解析完毕；设为 `false` 时只读取当前单项。
+
+#### `Parser.parseItemOrInnerList(): Item | InnerList`
+
+从当前游标解析单项或内嵌列表，并返回对应结构。
+
+#### `Parser.parseInnerList(): InnerList`
+
+从当前游标解析内嵌列表及其参数。
+
+#### `Parser.parseBareItem(): BareItem`
+
+从当前游标解析一个不带参数的值。
+
+#### `Parser.parseParameters(): Parameters`
+
+从当前游标解析连续参数；当前位置没有参数时返回空 `Map`。
+
+#### `Parser.parseKey(): string`
+
+从当前游标解析一个键。
+
+#### `Parser.parseString(): string`
+
+从当前游标解析字符串值，不读取其后的参数。
+
+#### `Parser.parseToken(): Token`
+
+从当前游标解析 Token 值，不读取其后的参数。
+
+#### `Parser.parseByteSequence(): ByteSequence`
+
+从当前游标解析字节序列值，不读取其后的参数。
+
+#### `Parser.parseBoolean(): boolean`
+
+从当前游标解析布尔值，不读取其后的参数。
+
+#### `Parser.parseIntegerOrDecimal(): number | Decimal`
+
+从当前游标解析整数或小数，不读取其后的参数。
+
+#### `Parser.checkTrail(): void`
+
+检查输入是否已解析完毕；仍有未解析字符时抛出 `ParseError`。
+
+#### `Decimal.valueOf(value: number): Decimal`
+
+按 RFC 8941 精度将有限数值舍入到三位小数，恰好居中时舍入到偶数。
+
+#### `Decimal.fromPermille(permille: number): Decimal`
+
+按千分值构造小数。`permille` 必须是范围为 ±999,999,999,999,999 的整数；否则抛出 `TypeError`。
+
+#### `Decimal#valueOf(): number`
+
+返回该小数对应的普通数值。
+
+#### `Decimal#toNumber(): number`
+
+返回该小数对应的普通数值。
+
+#### `ByteSequence#toBase64(): string`
+
+返回标准 Base64 字符串；空字节序列返回空字符串。
+
+#### `ByteSequence#toBytes(): Uint8Array`
+
+返回字节内容的副本。
+
+#### `Token#toString(): string`
+
+返回 Token 字符串。
+
+#### `new ByteSequence(value: string | Uint8Array): ByteSequence`
+
+使用 Base64 字符串或字节数组构造字节序列；无效 Base64 会抛出 `TypeError`。
+
+#### `new Token(value: string): Token`
+
+构造 Token；不符合 Token 格式时抛出 `TypeError`。
 
 ### Types
 
+#### `Parser`
+
+分步解析器。构造参数为一个字符串，或表示同一字段多行内容的字符串数组。数组行以逗号连接；空数组或非 ASCII 输入会导致 `ParseError`。解析失败时也抛出 `ParseError`；`position` 为从零开始、相对于拼接后输入的偏移量。
+
 #### `Dictionary`
 
-`Map<string, Item | InnerList>`，保留插入顺序。
+`Map<string, Item | InnerList>`，按插入顺序保存字典成员。
 
 #### `List`
 
@@ -112,19 +194,39 @@ Token 类型的包装。首字符为字母或 `*`，其余为 Token 允许的字
 
 #### `Item`
 
-`[BareItem, Parameters]`，取值和参数组成的二元组。
+`[BareItem, Parameters]`，由取值和参数组成。
 
 #### `InnerList`
 
-`[Item[], Parameters]`，括号内的一组项加上整个内嵌列表的参数。
+`[Item[], Parameters]`，由内嵌项和该列表的参数组成。
 
 #### `Parameters`
 
-`Map<string, BareItem>`，值为 `true` 表示参数只有键名，没有取值。
+`Map<string, BareItem>`。值为 `true` 表示参数只有名称，没有取值。
 
 #### `BareItem`
 
-`number | Decimal | string | Token | ByteSequence | boolean`，对应 RFC 8941 的整数、小数、字符串、Token、字节序列和布尔。普通 `number` 传小数时按三位小数舍入，需要保留 `1.0` 这类形式时用 `Decimal`。
+`number | Decimal | string | Token | ByteSequence | boolean`。
+
+#### `Decimal`
+
+表示 RFC 8941 小数，范围为 ±999,999,999,999.999，精度为三位小数。使用 `Decimal` 序列化时保留小数类型，例如 `1.0` 不会变为 `1`；普通 `number` 表示小数时按三位小数舍入。非法或超出范围的值会抛出 `TypeError`。
+
+#### `ByteSequence`
+
+表示字节序列。构造参数为 Base64 字符串或 `Uint8Array`，字节数组会被复制。字符串接受标准 Base64，可省略末尾填充；Base64URL 字符、空白和错误填充会被拒绝。序列化时以冒号包围 Base64，空字节序列输出为 `::`。输入无效时抛出 `TypeError`。
+
+#### `Token`
+
+表示 Structured Field Token。首字符须为字母或 `*`，其余字符须符合 Token 格式；不合法时抛出 `TypeError`。作为值序列化时不加引号。
+
+#### `ParseError`
+
+解析失败时抛出的 `Error`，`name` 为 `'ParseError'`，并提供从零开始的 `position`。非 ASCII 字符或格式无效时会抛出此错误；顶层解析函数发现未解析字符时也会抛出此错误。
+
+#### `SerializeError`
+
+序列化失败时抛出的 `Error`，`name` 为 `'SerializeError'`；`cause` 在可用时保留导致失败的错误。
 
 ## Author
 

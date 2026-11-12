@@ -119,20 +119,19 @@ export class ParseError extends Error {
 export default class Parser {
   private readonly input: string;
   private pos: number;
-  private readonly boundaries: number[];
+  private readonly commas = new Set<number>();
 
   constructor(input: string | string[]) {
-    this.boundaries = [];
-
     if (Array.isArray(input)) {
       if (input.length === 0) throw new ParseError(0, 'Empty input');
 
       let joined = '';
+
       for (const [index, line] of input.entries()) {
         if (typeof line !== 'string') throw new TypeError('Field lines must be strings.');
 
         if (index > 0) {
-          this.boundaries.push(joined.length);
+          this.commas.add(joined.length);
           joined += ',';
         }
         joined += line;
@@ -307,7 +306,7 @@ export default class Parser {
   }
 
   parseIntegerOrDecimal(): number | Decimal {
-    let type: 'integer' | 'decimal' = 'integer';
+    let decimalPoint = -1;
     let sign = 1;
     let number = '';
     if (this.lookChar()==='-') {
@@ -322,40 +321,38 @@ export default class Parser {
     while(!this.eof()) {
       const char = this.getChar();
       if (isDigit(char)) {
-        number+=char;
-      } else if (type === 'integer' && char === '.') {
-        if (number.length>12) {
-          throw new ParseError(this.pos, 'Exceeded maximum decimal length');
+        number += char;
+      } else if (decimalPoint === -1 && char === '.') {
+        if (number.length > 12) {
+          throw new ParseError(this.pos - 1, 'Exceeded maximum decimal length');
         }
-        number+='.';
-        type = 'decimal';
+        decimalPoint = number.length;
+        number += '.';
       } else {
         this.pos--;
         break;
       }
 
-      if (type === 'integer' && number.length>15) {
-        throw new ParseError(this.pos, 'Exceeded maximum integer length');
+      if (decimalPoint === -1 && number.length > 15) {
+        throw new ParseError(this.pos - 1, 'Exceeded maximum integer length');
       }
-      if (type === 'decimal' && number.length>16) {
-        throw new ParseError(this.pos, 'Exceeded maximum decimal length');
+      if (decimalPoint !== -1 && number.length - decimalPoint - 1 > 3) {
+        throw new ParseError(this.pos - 1, 'Number of digits after the decimal point cannot exceed 3');
       }
     }
 
-    if (type === 'integer') {
+    if (decimalPoint === -1) {
       return parseInt(number, 10) * sign;
-    } else {
-      if (number.endsWith('.')) {
-        throw new ParseError(this.pos, 'Decimal cannot end on a period');
-      }
-      if (number.split('.')[1].length>3) {
-        throw new ParseError(this.pos, 'Number of digits after the decimal point cannot exceed 3');
-      }
-
-      const digits = number.split('.')[0] + number.split('.')[1].padEnd(3, '0');
-
-      return Decimal.fromPermille(parseInt(digits, 10) * sign);
     }
+
+    const fraction = number.slice(decimalPoint + 1);
+    if (!fraction) {
+      throw new ParseError(this.pos - 1, 'Decimal cannot end on a period');
+    }
+
+    const digits = number.slice(0, decimalPoint) + fraction.padEnd(3, '0');
+
+    return Decimal.fromPermille(parseInt(digits, 10) * sign);
   }
 
   parseString(): string {
@@ -364,28 +361,29 @@ export default class Parser {
     this.pos++;
 
     while(!this.eof()) {
-      if (this.boundaries.indexOf(this.pos) !== -1) {
+      if (this.commas.has(this.pos)) {
         throw new ParseError(this.pos, 'String crosses field line boundary');
       }
+
       const char = this.getChar();
       if (char==='\\') {
         if (this.eof()) {
           throw new ParseError(this.pos, 'Unexpected end of input');
         }
-        if (this.boundaries.indexOf(this.pos) !== -1) {
+        if (this.commas.has(this.pos)) {
           throw new ParseError(this.pos, 'String crosses field line boundary');
         }
 
         const next = this.getChar();
         if (next!=='\\' && next !== '"') {
-          throw new ParseError(this.pos, 'A backslash must be followed by another backslash or double quote');
+          throw new ParseError(this.pos - 1, 'A backslash must be followed by another backslash or double quote');
         }
 
         value+=next;
       } else if (char === '"') {
         return value;
       } else if (!isAscii(char)) {
-        throw new ParseError(this.pos, 'Strings must be in the ASCII range');
+        throw new ParseError(this.pos - 1, 'Strings must be in the ASCII range');
       } else {
         value += char;
       }
@@ -413,18 +411,20 @@ export default class Parser {
   parseByteSequence(): ByteSequence {
     this.expectChar(':');
     this.pos++;
-    const end = this.input.indexOf(':', this.pos);
+    const start = this.pos;
+    const end = this.input.indexOf(':', start);
     if (end === -1) {
-      throw new ParseError(this.pos, 'Could not find a closing ":" character to mark end of Byte Sequence');
+      throw new ParseError(this.input.length, 'Could not find a closing ":" character to mark end of Byte Sequence');
     }
 
-    const value = this.input.substring(this.pos, end);
-    this.pos += value.length+1;
+    const value = this.input.substring(start, end);
+    this.pos = end + 1;
 
     try {
       return new ByteSequence(value);
     } catch (_) {
-      throw new ParseError(end, 'Invalid Base64 byte sequence');
+      const invalid = value.search(/[^A-Za-z0-9+/=]/);
+      throw new ParseError(invalid === -1 ? end : start + invalid, 'Invalid Base64 byte sequence');
     }
   }
 
@@ -432,14 +432,13 @@ export default class Parser {
     this.expectChar('?');
     this.pos++;
 
-    const char = this.getChar();
-    if (char === '1') {
-      return true;
+    const char = this.lookChar();
+    if (char !== '0' && char !== '1') {
+      throw new ParseError(this.pos, 'Unexpected character. Expected a "1" or a "0"');
     }
-    if (char === '0') {
-      return false;
-    }
-    throw new ParseError(this.pos, 'Unexpected character. Expected a "1" or a "0"');
+    this.pos++;
+
+    return char === '1';
   }
 
   parseKey(): string {

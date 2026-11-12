@@ -7,7 +7,7 @@
 
 {
   "name": "@expo-harmony/expo-structured-headers",
-  "version": "55.0.2-harmony.4",
+  "version": "57.0.1-harmony.0",
   "description": "HarmonyOS port of expo-structured-headers",
   "keywords": [
     "react-native",
