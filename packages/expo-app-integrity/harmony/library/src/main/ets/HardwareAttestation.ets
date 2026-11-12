@@ -17,12 +17,13 @@ const KEY_PREFIX: string = 'expo.app-integrity.';
 const PREFERENCES_NAME: string = 'expo.app-integrity.certificates';
 const MAX_KEY_ALIAS_BYTES: number = 128;
 const KEY_OPTIONS: huks.HuksOptions = { properties: [] };
+
 // Shared across RN runtimes so a reload cannot overlap replacement and certificate reads.
-let operations: Promise<void> = Promise.resolve();
+let queue: Promise<void> = Promise.resolve();
 
 function serialized<T>(operation: () => Promise<T>): Promise<T> {
-  const result = operations.then(operation);
-  operations = result.then(
+  const result = queue.then(operation);
+  queue = result.then(
     (): void => {},
     (): void => {},
   );
@@ -32,7 +33,10 @@ function serialized<T>(operation: () => Promise<T>): Promise<T> {
 
 export function isHardwareAttestationSupported(): boolean {
   return (
-    canIUse('SystemCapability.Security.Huks.Core') && canIUse('SystemCapability.Security.Huks.Extension') && canIUse('SystemCapability.Security.Cert')
+    canIUse('SystemCapability.Security.Huks.Core') &&
+    canIUse('SystemCapability.Security.Huks.Extension') &&
+    canIUse('SystemCapability.Security.Cert') &&
+    canIUse('SystemCapability.DistributedDataManager.Preferences.Core')
   );
 }
 
@@ -42,10 +46,16 @@ function checkedAlias(name: string): string {
   }
 
   const alias = KEY_PREFIX + name;
-  if (name.length === 0 || new util.TextEncoder().encodeInto(alias).length > MAX_KEY_ALIAS_BYTES) {
+  // Preferences persists aliases as XML attributes, where these characters cannot round-trip.
+  const invalidXml = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/;
+  if (
+    name.length === 0 ||
+    invalidXml.test(name) ||
+    new util.TextEncoder().encodeInto(alias).length > MAX_KEY_ALIAS_BYTES
+  ) {
     throw new ExpoAppIntegrityError(
       IntegrityErrorCode.INVALID_INPUT,
-      'The key alias must be nonempty and fit within the HUKS 128-byte limit, including the module prefix.',
+      'The key alias must be nonempty, contain only XML-compatible characters, and fit within the HUKS 128-byte limit including the module prefix.',
     );
   }
 
@@ -80,6 +90,7 @@ async function certificatesToBase64(chain: string[] | undefined, encoding: buffe
         data: Uint8Array.from(bytes.values()),
         encodingFormat: value.startsWith('-----BEGIN CERTIFICATE-----') ? cert.EncodingFormat.FORMAT_PEM : cert.EncodingFormat.FORMAT_DER,
       });
+
       const encoded = await certificate.getEncoded();
       result.push(buffer.from(encoded.data).toString('base64'));
     }
@@ -99,6 +110,7 @@ export class HardwareAttestation {
 
   async generate(name: string, challenge: string): Promise<void> {
     const alias = checkedAlias(name);
+
     const bytes = new util.TextEncoder().encodeInto(challenge);
     const options = keyGenerationOptions();
 
@@ -110,9 +122,12 @@ export class HardwareAttestation {
       try {
         store = await preferences.getPreferences(this.context, { name: PREFERENCES_NAME });
 
-        // Invalidate the previous chain durably before changing its key.
-        await store.delete(alias);
+        // A failed flush can leave the cached alias absent while its old chain remains on disk.
+        // Put and delete to make every invalidation dirty before changing the key.
+        store.putSync(alias, '');
+        store.deleteSync(alias);
         await store.flush();
+
         if (await huks.hasKeyItem(alias, KEY_OPTIONS)) {
           await huks.deleteKeyItem(alias, KEY_OPTIONS);
         }
