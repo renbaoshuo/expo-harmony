@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-build-properties",
-  "version": "55.0.18-harmony.3",
+  "version": "57.0.22-harmony.0",
   "keywords": [
     "react-native",
     "expo",
@@ -29,15 +29,24 @@
       "require": "./build/index.js",
       "default": "./build/index.js"
     },
+    "./plugin": {
+      "types": "./build/plugin.d.ts",
+      "require": "./build/plugin.js",
+      "default": "./build/plugin.js"
+    },
+    "./internal": {
+      "types": "./build/internal.d.ts",
+      "require": "./build/internal.js",
+      "default": "./build/internal.js"
+    },
     "./app.plugin.js": "./app.plugin.js",
     "./package.json": "./package.json"
   },
   "dependencies": {
-    "@expo-harmony/config-plugins": "workspace:*",
-    "@expo/config": "55.0.17"
+    "@expo-harmony/config-plugins": "workspace:*"
   },
   "peerDependencies": {
-    "expo": "55.0.31"
+    "expo": "57.0.31"
   },
   "devDependencies": {
     "@types/node": "18.19.0",
@@ -49,5 +58,5 @@
   "publishConfig": {
     "access": "public"
   },
-  "description": "HarmonyOS config plugin for native build properties"
+  "description": "HarmonyOS port of expo-build-properties"
 }

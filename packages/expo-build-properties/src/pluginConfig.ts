@@ -68,12 +68,23 @@ function boolean(value: unknown, field: string): boolean {
   return value;
 }
 
+function definedFields(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined));
+}
+
 function strings(value: unknown, field: string): string[] {
-  if (!Array.isArray(value) || value.some(item => typeof item !== 'string' || !item.trim() || /[\r\n\0]/.test(item))) {
-    throw new ExpoBuildPropertiesError(`${field} must be an array of non-empty strings.`);
+  const message = `${field} must be an array of non-empty strings.`;
+  if (!Array.isArray(value)) throw new ExpoBuildPropertiesError(message);
+
+  const items = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== 'string' || !item.trim() || /[\r\n\0]/.test(item)) {
+      throw new ExpoBuildPropertiesError(message);
+    }
+    items.add(item);
   }
 
-  return [...new Set(value as string[])];
+  return [...items];
 }
 
 function validateBuildProperties(value: unknown): HarmonyBuildProperties {
@@ -110,7 +121,7 @@ function validateBuildProperties(value: unknown): HarmonyBuildProperties {
 
     if (native.filter !== undefined) {
       const filter = object(native.filter, 'nativeLib.filter');
-      const output: NativeLibFilter = { ...filter };
+      const output: NativeLibFilter = definedFields(filter);
 
       for (const key of ['excludes', 'pickFirsts', 'pickLasts'] as const) {
         if (filter[key] !== undefined) output[key] = strings(filter[key], `nativeLib.filter.${key}`);
@@ -129,7 +140,7 @@ function validateBuildProperties(value: unknown): HarmonyBuildProperties {
       const symbol = object(release.debugSymbol, 'release.debugSymbol');
 
       result.release.debugSymbol = {
-        ...symbol,
+        ...definedFields(symbol),
         ...(symbol.strip === undefined ? {} : { strip: boolean(symbol.strip, 'release.debugSymbol.strip') }),
         ...(symbol.exclude === undefined ? {} : { exclude: strings(symbol.exclude, 'release.debugSymbol.exclude') }),
       };
@@ -138,9 +149,11 @@ function validateBuildProperties(value: unknown): HarmonyBuildProperties {
     if (release.obfuscation !== undefined) {
       const rules = object(release.obfuscation, 'release.obfuscation', ['enable', 'files']);
       const enable = boolean(rules.enable, 'release.obfuscation.enable');
-      const files = rules.files === undefined ? [] : strings(rules.files, 'release.obfuscation.files');
-
-      result.release.obfuscation = { enable, files: [...new Set(files.map(file => path.normalize(file)))] };
+      result.release.obfuscation = { enable };
+      if (rules.files !== undefined) {
+        const files = strings(rules.files, 'release.obfuscation.files');
+        result.release.obfuscation.files = [...new Set(files.map(file => path.normalize(file)))];
+      }
     }
   }
 
@@ -150,6 +163,10 @@ function validateBuildProperties(value: unknown): HarmonyBuildProperties {
 export function validatePluginConfig(value: unknown): HarmonyBuildProperties {
   const config = object(value, 'build-properties', ['harmony']);
   return validateBuildProperties(config.harmony === undefined ? {} : config.harmony);
+}
+
+export function getBuildProperties(config: Pick<ExpoConfigWithHarmony, '_internal'>): HarmonyBuildProperties | undefined {
+  return config._internal?.harmonyBuildProperties;
 }
 
 export function applyBuildPropertiesConfig<Config extends ExpoConfigWithHarmony>(

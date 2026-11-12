@@ -1,135 +1,114 @@
 # @expo-harmony/expo-build-properties
 
-配置 HarmonyOS 应用的 SDK 版本、CPU 架构、原生编译器、SO 打包和 release 构建选项。配置通过 Prebuild 生效。
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-build-properties)
 
-## 使用
+为 HarmonyOS 上的 React Native 应用提供 Expo Build Properties 的 HarmonyOS 构建配置，与官方同版本的 `expo-build-properties` 配套使用。
 
-在已接入 Expo Harmony 的应用中安装：
+## 安装
+
+本包适配 Expo SDK 57。
 
 ```sh
 npm install @expo-harmony/expo-build-properties
 ```
 
-在 `app.json` 的 `plugins` 中添加配置：
+## API 对照表
 
-```json
-{
-  "expo": {
-    "name": "Example",
-    "slug": "example",
-    "platforms": ["harmony"],
-    "harmony": { "bundleName": "com.example.app" },
-    "plugins": [
-      "@expo-harmony/prebuild-config",
-      [
-        "@expo-harmony/expo-build-properties",
-        {
-          "harmony": {
-            "compatibleSdkVersion": 21,
-            "targetSdkVersion": 24,
-            "abiFilters": ["arm64-v8a", "x86_64"]
-          }
-        }
-      ]
-    ]
-  }
-}
-```
+这是一个配置插件，不提供应用运行时 API。以下 API 用于 HarmonyOS 构建配置。
 
-生成或更新原生工程：
+### Methods
 
-```sh
-npx expo-harmony prebuild
-```
+#### `withBuildProperties`
 
-修改配置后，需要重新执行 Prebuild 并构建应用。
+HarmonyOS 构建属性配置插件。可选配置参数的类型为 [`PluginConfigType`](#pluginconfigtype)。
 
-## 参数
+#### `withBuildPropertiesDefaults`
 
-参数填写在插件选项的 `harmony` 对象中。
+在 HarmonyOS 构建配置中应用该包的默认构建属性，不接收配置参数。
 
-| 参数 | 说明 | 默认值 |
-| --- | --- | --- |
-| `compatibleSdkVersion` | 最低兼容 SDK 版本，接受 API 数字或 SDK 版本字符串 | `20` |
-| `targetSdkVersion` | 目标 SDK 版本，接受 API 数字或 SDK 版本字符串 | `24` |
-| `abiFilters` | CPU 架构字符串数组，支持范围由原生工具链决定 | `["arm64-v8a", "x86_64"]` |
-| `nativeCompiler` | 原生编译器名称，由原生工具链解析 | `"BiSheng"` |
-| `nativeLib.filter` | SO 筛选与冲突处理规则，见下文 | 不设置 |
-| `compressNativeLibs` | 是否压缩包内的 SO，类型为 `boolean` | 平台默认值 `false` |
-| `extractNativeLibs` | 安装时是否解压 SO，类型为 `boolean` | 平台默认值 `true` |
-| `release.debugSymbol` | release 构建的 SO 符号处理，见下文 | 由 Hvigor 决定 |
-| `release.obfuscation` | release 构建的 ArkTS 混淆，见下文 | 不开启 |
+### Types
 
-### SDK 版本
+#### `PluginConfigType`
 
-SDK 版本的兼容性由原生工具链和应用使用的原生依赖决定。插件不强制最低 API 版本，也不会自动提高配置的值。
+插件配置对象。`harmony` 可省略；其配置项见 [`HarmonyBuildProperties`](#harmonybuildproperties)。
 
-API 13、14、20、21、23、24 可用数字表示，也可使用完整的 SDK 版本字符串。例如，`24` 与 `"6.1.1(24)"` 表示同一版本。API 26 之前的其他版本需填写带 API 级别的完整 SDK 版本字符串。
+#### `HarmonyBuildProperties`
 
-API 26 起使用 `"26.0.0"` 这样的版本字符串，数字 `26` 等同于 `"26.0.0"`。指定次版本时填写完整版本，例如 `"26.1.0"`。
+`harmony` 对象支持以下配置项。
 
-所选 SDK 必须由本地工具链支持。编译 SDK 使用 DevEco 配套 SDK 的默认值，本插件不提供 `compileSdkVersion` 参数。
+##### `compatibleSdkVersion`
 
-### SO 打包与筛选
+应用兼容的最低 HarmonyOS SDK 版本，类型为 `number | string`，默认 API 20。该值须符合应用原生依赖的最低要求，且所选版本须由本机 DevEco 环境提供。
 
-`compressNativeLibs` 和 `extractNativeLibs` 同时为 `false` 时，平台才允许安装时免解压 SO。
+API 13、14、20、21、23 和 24 可用数字表示，也可写为带 API 级别的完整 SDK 版本字符串，例如 `24` 或 `"6.1.1(24)"`。其他低于 API 26 的版本需使用完整版本字符串。API 26 起可使用数字或点分隔版本字符串，例如 `26`、`"26.0.0"` 或 `"26.1.0"`。
 
-`nativeLib.filter` 支持以下字段：
+##### `targetSdkVersion`
 
-| 字段 | 类型 |
-| --- | --- |
-| `excludes` | `string[]` |
-| `pickFirsts` | `string[]` |
-| `pickLasts` | `string[]` |
-| `enableOverride` | `boolean` |
+应用目标 HarmonyOS SDK 版本，类型和版本格式与 `compatibleSdkVersion` 相同，默认 API 24。
 
-筛选规则遵循 [Hvigor 的 SO 配置](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/ide-hvigor-cpp)，匹配模式可写为 `"**/libexample.so"`。
+##### `abiFilters`
 
-### SO 符号
+指定要构建的原生库 CPU 架构，类型为 `string[]`，默认值为 `["arm64-v8a", "x86_64"]`。Hvigor 支持的架构包括 `arm64-v8a` 和 `x86_64`。
 
-`release.debugSymbol` 用于设置 release 构建的符号剥离。以下示例剥离 SO 符号，但保留 `libexample.so` 的符号。示例内容填写在插件选项中：
+##### `nativeCompiler`
 
-```json
-{
-  "harmony": {
-    "release": {
-      "debugSymbol": {
-        "strip": true,
-        "exclude": ["**/libexample.so"]
-      }
-    }
-  }
-}
-```
+指定 C/C++ 原生编译器名称，类型为 `string`，默认值为 `"BiSheng"`。
 
-`strip` 和 `exclude` 均可省略，缺省值由 Hvigor 决定。`strip: true` 时，`exclude` 中的匹配项保留符号；`strip: false` 时，仅剥离 `exclude` 中匹配项的符号。其他原生符号处理字段会一并保留。
+##### `nativeLib.filter`
 
-### ArkTS 混淆
+原生 `.so` 文件筛选规则，类型为 [`NativeLibFilter`](#nativelibfilter)。筛选语法遵循 [Hvigor 原生库配置](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/ide-hvigor-cpp)，例如 `"**/libexample.so"`。
 
-`release.obfuscation` 控制 release 构建的 ArkTS 混淆，不影响 JavaScript 压缩。在插件选项中添加：
+##### `compressNativeLibs`
 
-```json
-{
-  "harmony": {
-    "release": {
-      "obfuscation": {
-        "enable": true,
-        "files": ["./config/harmony-obfuscation-rules.txt"]
-      }
-    }
-  }
-}
-```
+是否将 `.so` 库压缩后打包进 HAP，类型为 `boolean`，默认值为 `false`。
 
-`enable` 必填。设为 `true` 时开启混淆，`files` 可省略；设为 `false` 时关闭混淆。
+##### `extractNativeLibs`
 
-规则文件可使用相对应用根目录的路径或绝对路径，包括共享规则和原生工程内的规则。插件会将路径转换为相对原生模块目录的路径，文件由 Hvigor 在构建时读取，因此也可以由其他插件生成。
+安装时是否将 `.so` 库解压到应用安装目录，类型为 `boolean`，默认值为 `true`。从 HarmonyOS API 20 起支持此配置。`compressNativeLibs` 和 `extractNativeLibs` 同时设为 `false` 时，应用安装时不解压 `.so` 库。详见 [模块配置文件](https://developer.huawei.com/consumer/cn/doc/HarmonyOS-Guides/module-configuration-file/)。
 
-规则内容参见 [ArkTS 混淆配置](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/ide-build-obfuscation)。规则中的 keep、namecache 等相对路径以规则文件所在目录为基准。
+##### `release.debugSymbol`
 
-## 从旧配置迁移
+设置 release 构建的 `.so` 符号处理，类型为 [`DebugSymbol`](#debugsymbol)。未指定时保留已有构建设置；若没有已有设置，则使用 Hvigor 的默认值。
 
-`expo.harmony` 下的 `targetApiVersion`、`targetSdkVersion`、`compatibleSdkVersion` 和 `abiFilters` 仍可使用。迁移时，将这些参数移到本插件的 `harmony` 选项中，并将 `targetApiVersion` 改为 `targetSdkVersion`。插件选项会覆盖旧配置，重复应用插件时，后面的同名选项覆盖前面的选项。
+##### `release.obfuscation`
+
+设置 release 构建的 ArkTS 混淆，支持 `enable: boolean` 和可选的 `files: string[]`。`enable` 为必填项；`files` 指定混淆规则文件路径，可使用相对于应用根目录的路径或绝对路径。未指定此项时不新增混淆设置。规则语法参见[ArkTS 混淆配置](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/ide-build-obfuscation)。
+
+##### `compileSdkVersion`
+
+- 不提供此配置项；编译 SDK 使用 DevEco 配套 SDK 的默认版本。
+
+#### `NativeLibFilter`
+
+`nativeLib.filter` 的筛选字段。
+
+##### `excludes`
+
+匹配的 `.so` 文件不会打入 HAP，类型为 `string[]`。
+
+##### `pickFirsts`
+
+匹配的 `.so` 文件优先打包，类型为 `string[]`。
+
+##### `pickLasts`
+
+匹配的 `.so` 文件最后打包，类型为 `string[]`。
+
+##### `enableOverride`
+
+同名 `.so` 文件存在优先级差异时，是否允许高优先级文件覆盖低优先级文件，类型为 `boolean`，默认值为 `false`。
+
+#### `DebugSymbol`
+
+release 构建的 `.so` 符号处理字段。Hvigor 配置详情见[原生库配置](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/ide-hvigor-cpp)。
+
+##### `strip`
+
+是否剥离符号表和调试信息，类型为 `boolean`。未指定时沿用 Hvigor 默认值。
+
+##### `exclude`
+
+匹配的 `.so` 文件符号保留或剥离，类型为 `string[]`。`strip: true` 时，匹配项保留符号；`strip: false` 时，仅剥离匹配项的符号。
 
 ## Author
 
