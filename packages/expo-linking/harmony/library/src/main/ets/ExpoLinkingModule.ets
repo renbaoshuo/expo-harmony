@@ -7,9 +7,9 @@
 
 import { bundleManager } from '@kit.AbilityKit';
 import type { Want, common } from '@kit.AbilityKit';
+import { uri, url } from '@kit.ArkTS';
+import type { BusinessError } from '@kit.BasicServicesKit';
 import { call, sms } from '@kit.TelephonyKit';
-import uri from '@ohos.uri';
-import wantConstant from '@ohos.ability.wantConstant';
 import {
   ExpoAbilityLifecycleSubscriber,
   ExpoFunction,
@@ -23,6 +23,18 @@ import {
 const URL_EVENT: string = 'onURLReceived';
 const DIALER_CAPABILITY: string = 'SystemCapability.Applications.Contacts';
 const SMS_CAPABILITY: string = 'SystemCapability.Telephony.SmsMms';
+
+// https://developer.huawei.com/consumer/cn/doc/doccenter-dev-faq/faqs-access-control-16
+const SETTINGS_BUNDLE_NAME: string = 'com.huawei.hmos.settings';
+const SETTINGS_ABILITY_NAME: string = 'com.huawei.hmos.settings.MainAbility';
+const APPLICATION_DETAILS_URI: string = 'application_info_entry';
+
+// https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/telephony-sms
+const SMS_BUNDLE_NAME: string = 'com.ohos.mms';
+const SMS_VIEW_ACTION: string = 'ohos.want.action.viewData';
+const SMS_ABILITY_NAME: string = 'com.ohos.mms.MainAbility';
+const SMS_COMPOSER_PAGE: string = 'conversation';
+const NO_MATCHING_ABILITY: number = 16000019;
 
 class URLReceivedEvent {
   url: string;
@@ -156,12 +168,14 @@ export class ExpoLinkingModule extends ExpoModule {
     return new ExpoModuleDefinition()
       .name('ExpoLinking')
       .events([URL_EVENT])
+      .syncFunction('getInitialURL', (): string | null => this.state === undefined ? null : nonEmptyURL(this.context.launchUri))
       .syncFunction('getLinkingURL', (): string | null => this.state?.getURL() ?? null)
       .syncFunction('clearInitialURL', (): void => this.state?.clear())
       .asyncFunction(
         'openURL',
         ExpoFunction.typed1(ExpoValueTypes.string(), async (url: string): Promise<boolean> => {
           await this.openURL(url);
+
           return true;
         }).returns(ExpoValueTypes.boolean()),
       )
@@ -209,6 +223,7 @@ export class ExpoLinkingModule extends ExpoModule {
 
   private async openURL(url: string): Promise<void> {
     const scheme = schemeForURL(url);
+
     if (this.context.isHeadless) throw new ExpoModuleError('ERR_LINKING_UNAVAILABLE', 'Opening a URL requires a UIAbility.');
 
     try {
@@ -229,10 +244,7 @@ export class ExpoLinkingModule extends ExpoModule {
           throw new ExpoModuleError('ERR_LINKING_UNAVAILABLE', 'This device cannot compose SMS messages.');
         }
 
-        await this.context.uiAbilityContext.startAbility({
-          action: wantConstant.Action.ACTION_SEND_SMS,
-          uri: url,
-        });
+        await this.openSMS(url);
 
         return;
       }
@@ -263,12 +275,30 @@ export class ExpoLinkingModule extends ExpoModule {
     }
   }
 
+  private async openSMS(value: string): Promise<void> {
+    const url = normalizeSMSURL(value);
+    const context = this.context.uiAbilityContext;
+
+    try {
+      await context.startAbility({ bundleName: SMS_BUNDLE_NAME, action: SMS_VIEW_ACTION, uri: url });
+    } catch (error) {
+      if ((error as BusinessError).code !== NO_MATCHING_ABILITY) {
+        throw new ExpoModuleError('ERR_LINKING_OPEN_URL', "Unable to open URL with scheme 'sms'.", error as Object);
+      }
+
+      // Older system SMS apps may only expose the explicit composer entry.
+      await context.startAbility(legacySMSWant(url));
+    }
+  }
+
   private async openSettings(): Promise<void> {
     if (this.context.isHeadless) throw new ExpoModuleError('ERR_LINKING_UNAVAILABLE', 'Opening settings requires a UIAbility.');
 
     try {
       await this.context.uiAbilityContext.startAbility({
-        action: wantConstant.Action.ACTION_APPLICATION_DETAILS_SETTINGS,
+        bundleName: SETTINGS_BUNDLE_NAME,
+        abilityName: SETTINGS_ABILITY_NAME,
+        uri: APPLICATION_DETAILS_URI,
         parameters: {
           settingsParamBundleName: this.context.uiAbilityContext.abilityInfo.bundleName,
         },
@@ -279,22 +309,59 @@ export class ExpoLinkingModule extends ExpoModule {
   }
 }
 
+function normalizeSMSURL(value: string): string {
+  // Accept the legacy SMS separator used by React Native's LinkingManager.
+  const boundary = value.search(/[?#]/);
+  const body = value.indexOf('&body=');
+  const legacy = body >= 0 && (boundary < 0 || body < boundary);
+  const end = legacy ? body : (boundary < 0 ? value.length : boundary);
+
+  // RFC 5724 uses a literal leading '+' for international recipients.
+  const recipients = value.slice(value.indexOf(':') + 1, end).replace(/(^|,)%2B/gi, '$1+');
+  const suffix = legacy ? `?${value.slice(end + 1)}` : value.slice(end);
+
+  return `sms:${recipients}${suffix}`;
+}
+
+function legacySMSWant(value: string): Want {
+  const parsed = url.URL.parseURL(value);
+  const contacts: string[] = parsed.pathname
+    .split(',')
+    .filter((telephone: string): boolean => telephone.length > 0)
+    .map((encoded: string): string => {
+      const telephone = decodeURIComponent(encoded);
+      // The legacy composer uses commas as recipient separators after decoding.
+      if (telephone.includes(',')) {
+        throw new ExpoModuleError('ERR_LINKING_INVALID_URL', 'An SMS recipient cannot contain a comma.');
+      }
+
+      // These external keys must survive the application's property obfuscation.
+      return `{"telephone":${JSON.stringify(telephone)}}`;
+    });
+
+  const parameters = JSON.parse(`{
+    "contactObjects": ${JSON.stringify(`[${contacts.join(',')}]`)},
+    "pageFlag": ${JSON.stringify(SMS_COMPOSER_PAGE)},
+    "content": ${JSON.stringify(parsed.params.get('body') ?? '')}
+  }`) as Record<string, Object>;
+
+  return {
+    bundleName: SMS_BUNDLE_NAME,
+    abilityName: SMS_ABILITY_NAME,
+    parameters,
+  };
+}
+
 function schemeForURL(value: string): string {
   if (value.trim().length === 0) {
     throw new ExpoModuleError('ERR_LINKING_INVALID_URL', 'A URL cannot be empty.');
   }
 
-  let scheme: string;
-
-  try {
-    scheme = new uri.URI(value).scheme.toLowerCase();
-  } catch (error) {
-    throw new ExpoModuleError('ERR_LINKING_INVALID_URL', `Invalid URL: '${value}'.`, error as Object);
-  }
-
-  if (scheme.length === 0) {
+  // Classify the protocol without parsing the rest of the system-owned link.
+  const scheme = /^([a-z][a-z\d+.-]*):/i.exec(value)?.[1];
+  if (scheme === undefined) {
     throw new ExpoModuleError('ERR_LINKING_INVALID_URL', `URL is missing a scheme: '${value}'.`);
   }
 
-  return scheme;
+  return scheme.toLowerCase();
 }

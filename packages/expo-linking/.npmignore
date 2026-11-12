@@ -1,3 +1,4 @@
+/tsconfig.json
 harmony/*
 !harmony/library.har
 !harmony/library/
