@@ -57,6 +57,7 @@ export class SplashScreenStateMachine {
 
   destroy(): boolean {
     if (this.destroyed) return false;
+
     this.destroyed = true;
     this.hidden = true;
     return true;
@@ -64,6 +65,10 @@ export class SplashScreenStateMachine {
 
   isVisible(): boolean {
     return this.visible;
+  }
+
+  isHiding(): boolean {
+    return this.hidden && this.visible && !this.destroyed;
   }
 
   isDestroyed(): boolean {

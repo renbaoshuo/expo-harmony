@@ -1,18 +1,22 @@
 # @expo-harmony/expo-splash-screen
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-splash-screen) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/splash-screen/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-splash-screen) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/splash-screen/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo SplashScreen 的原生实现，与官方同版本的 `expo-splash-screen` 配套使用。支持控制启动画面的自动隐藏、手动隐藏和淡出过渡，以及通过配置插件设置启动图片、背景色和深色模式资源。
+为 HarmonyOS 上的 React Native 应用提供 Expo Splash Screen 的原生实现，与官方同版本的 `expo-splash-screen` 配套使用。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
 ```bash
-npm install @expo-harmony/expo-splash-screen expo-splash-screen@55.0.25
+npm install @expo-harmony/expo-splash-screen expo-splash-screen
 ```
 
-本包适配 Expo SDK 55 的 `expo-splash-screen`，原生模块通过 Expo Harmony 自动链接。最低支持 HarmonyOS 5.0.1（API 13），宿主的 `compatibleSdkVersion` 也需满足此要求。
+## 配置
 
-启动画面的外观在预构建时生成，需要在 `app.json` 的 `plugins` 中传入 `@expo-harmony/expo-splash-screen`：
+在 `app.json` 的 `plugins` 中添加 `@expo-harmony/expo-splash-screen`，即可设置启动画面的外观：
 
 ```json
 {
@@ -36,13 +40,33 @@ npm install @expo-harmony/expo-splash-screen expo-splash-screen@55.0.25
 }
 ```
 
-插件把背景色和图片写入应用资源，冷启动时先由系统启动窗口显示，应用窗口就绪后由应用内的启动画面接续，直到自动隐藏或被 `hide()` 隐藏。应用内的启动画面覆盖整个窗口，显示期间拦截触摸事件。不注册这个插件时，鸿蒙上没有应用内的启动画面。
+也可以在 `app.config.ts` 中调用插件函数，并通过 `harmony` 单独设置鸿蒙外观：
 
-`backgroundColor` 接受 `#RRGGBB` 或 `#RRGGBBAA`，默认 `#FFFFFF`。`image` 支持 png、jpg、jpeg、svg、webp、gif，未配置时只显示背景色。`resizeMode` 支持 `contain`（默认，按 `imageWidth` 等比缩放后居中显示，宽度默认 100）、`cover`（铺满窗口，超出部分裁剪）和 `native`（原始尺寸居中显示）。
+```ts
+import splashScreen from '@expo-harmony/expo-splash-screen/plugin';
 
-深色模式在 `dark` 中单独配置，背景色缺省时沿用 `backgroundColor`，未配置深色图片时深色模式沿用基础图片。`expo.userInterfaceStyle` 设为 `automatic` 时深浅色资源分开生成，不设置或固定为 `light`、`dark` 时深浅色使用同一套外观。这些选项也可以放在 `harmony` 键下，只对鸿蒙生效。修改配置后需要重新 prebuild。
+export default {
+  expo: {
+    plugins: [
+      splashScreen({
+        backgroundColor: '#FFFFFF',
+        image: './assets/splash.png',
+        harmony: { resizeMode: 'contain' },
+      }),
+    ],
+  },
+};
+```
 
-运行时启动画面默认在首帧内容出现后自动隐藏。要等字体、接口数据等准备就绪后再隐藏，在模块顶层调用 `SplashScreen.preventAutoHideAsync()`，就绪后调用 `SplashScreen.hide()`：
+`backgroundColor` 接受 `#RRGGBB` 或 `#RRGGBBAA`，默认值为 `#FFFFFF`。`image` 接受项目中的 png、jpg、jpeg、svg、webp 或 gif 文件路径；未配置时只显示背景色。`resizeMode` 支持 `contain`、`cover` 和 `native`。`contain` 按 `imageWidth` 等比缩放后居中显示，默认宽度为 100；`cover` 铺满窗口并裁剪超出的部分；`native` 按原始尺寸居中显示。
+
+可在 `dark` 中设置深色模式的背景色和图片。深色背景色未设置时沿用 `backgroundColor`，深色图片未设置时沿用基础图片。`expo.userInterfaceStyle` 设为 `automatic` 时，启动画面会使用对应的深浅色资源；设为 `light` 或 `dark` 时会固定使用相应外观。修改启动画面配置后，需要重新生成原生工程。
+
+冷启动时会先显示系统启动窗口，应用窗口准备好后会显示应用内启动画面，直到它自动隐藏或调用隐藏方法。应用内启动画面覆盖整个窗口，显示期间会拦截触摸事件。不注册插件时只显示系统启动窗口。
+
+## 使用
+
+启动画面默认会在应用窗口准备好后自动隐藏。若要等字体或接口数据加载完成后再隐藏，可在模块顶层调用 `SplashScreen.preventAutoHideAsync()`，就绪后调用 `SplashScreen.hide()`：
 
 ```ts
 import * as SplashScreen from 'expo-splash-screen';
@@ -50,7 +74,7 @@ import * as SplashScreen from 'expo-splash-screen';
 SplashScreen.preventAutoHideAsync();
 
 // 加载字体、请求接口等
-await SplashScreen.hide();
+SplashScreen.hide();
 ```
 
 ## API 对照表
@@ -59,30 +83,34 @@ await SplashScreen.hide();
 
 #### `SplashScreen.hide()`
 
-隐藏启动画面。默认在 `duration` 毫秒内淡出，`fade` 为 `false` 或 `duration` 为 0 时直接消失。启动画面未显示时调用无效果。应用内容尚未就绪时调用会直接露出应用界面。
+同步发起隐藏请求，返回 `void`。默认在 `400` 毫秒内淡出；可用 `setOptions()` 设置动画。`fade` 为 `false` 或 `duration` 为 `0` 时直接隐藏。启动画面未显示时调用无效果；应用内容尚未准备好时调用也会隐藏启动画面。
 
 #### `SplashScreen.hideAsync()`
 
-返回 `Promise<void>`。`hide()` 的异步版本，行为一致，官方为向后兼容保留。
+发出与 `hide()` 相同的隐藏请求，返回 `Promise<void>`。Promise 不等待淡出动画结束。
 
 #### `SplashScreen.preventAutoHideAsync()`
 
-返回 `Promise<boolean>`，恒为 `true`。阻止启动画面自动隐藏，直到调用 `hide()` 或 `hideAsync()`，不调用隐藏方法的话启动画面会一直显示。官方建议在模块顶层尽早调用、不要等待结果；放在组件或 Hook 里可能调用过晚，启动画面已经自动隐藏，之后再调用也不会让它重新出现。
+返回 `Promise<boolean>`，成功时解析为 `true`。调用后会阻止启动画面自动隐藏，直到调用 `hide()` 或 `hideAsync()`；若启动画面已经隐藏，此方法不会重新显示它。
 
 #### `SplashScreen.setOptions(options)`
 
-设置隐藏启动画面时的淡出动画，在隐藏前设置才有效果。参数为 `SplashScreenOptions`，每次调用整体生效，省略的字段恢复默认值，取值不合法时抛出 `ERR_SPLASH_SCREEN_OPTIONS`。
+设置隐藏启动画面时的动画，返回 `void`。需要在隐藏前设置才会生效；每次调用会应用整组选项，省略的字段恢复默认值。参数类型为 `SplashScreenOptions`。
 
 ### Types
 
 #### `SplashScreenOptions`
 
-| 属性       | 类型      | 说明                                        |
-| ---------- | --------- | ------------------------------------------- |
-| `duration` | `number`  | 淡出动画时长，毫秒，取非负数值，默认 `400` |
-| `fade`     | `boolean` | 是否以淡出动画隐藏启动画面，默认 `true`     |
+| 属性 | 类型 | 说明 |
+| --- | --- | --- |
+| `duration` | `number` | 淡出时长，单位为毫秒，须为 `0` 到 `2147483547` 范围内的有限数值，默认值为 `400`。 |
+| `fade` | `boolean` | 是否淡出隐藏启动画面，默认值为 `true`。 |
 
-`fade` 在官方文档中标注为 iOS 专属、默认 `false`；鸿蒙上该选项生效且默认开启。
+### Error codes
+
+#### `ERR_SPLASH_SCREEN_OPTIONS`
+
+`setOptions()` 的 `duration` 不是有限数值或超出 `0` 到 `2147483547` 的范围，或 `fade` 不是布尔值时抛出。
 
 ## Author
 

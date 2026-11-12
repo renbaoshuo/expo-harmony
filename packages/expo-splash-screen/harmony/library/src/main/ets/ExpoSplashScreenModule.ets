@@ -9,15 +9,16 @@ import { ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, Expo
 
 import {
   bindSplashScreenRuntime,
+  DEFAULT_FADE_DURATION_MS,
   endSplashScreenRuntime,
   ExpoSplashScreenError,
   findSplashScreenRuntime,
-  prepareSplashScreenRuntimeReload,
+  MAX_FADE_DURATION_MS,
   SplashScreenRuntimeOwner,
 } from './SplashScreenLifecycle';
 
 class SplashScreenOptions {
-  duration: number = 400;
+  duration: number = DEFAULT_FADE_DURATION_MS;
   fade: boolean = true;
 }
 
@@ -64,13 +65,9 @@ export class ExpoSplashScreenModule extends ExpoModule {
           this.resolveOwner()?.internalMaybeHide();
         })
         .onCreate((): void => this.initialize())
-        // A WindowStage can be recreated while this runtime remains alive. The
-        // native subscriber owns window setup; this callback only rebinds JS APIs.
-        .onWindowStageSetup((): void => this.initialize())
         .onContentAppeared((): void => this.contentAppeared())
-        .onPrepareForReload(async (): Promise<void> => {
-          if (!this.destroyed) prepareSplashScreenRuntimeReload(this.context.runtimeEpoch);
-        })
+        // Core also invokes this hook when a runtime is suspended or destroyed.
+        .onPrepareForReload(async (): Promise<void> => this.destroy())
         .onDestroy((): void => this.destroy())
     );
   }
@@ -106,8 +103,8 @@ function decodeOptions(value: ESObject, path: string): SplashScreenOptions {
   const fade: ESObject = input['fade'];
 
   if (duration !== undefined && duration !== null) {
-    if (typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0) {
-      throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_OPTIONS', `${path}.duration expected a non-negative finite number.`);
+    if (typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0 || duration > MAX_FADE_DURATION_MS) {
+      throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_OPTIONS', `${path}.duration expected a number from 0 to ${MAX_FADE_DURATION_MS}.`);
     }
   }
   if (fade !== undefined && fade !== null) {

@@ -8,6 +8,9 @@
 import { common } from '@kit.AbilityKit';
 
 import { attachSplashScreenView, ExpoSplashScreenError, SplashScreenRenderState } from './SplashScreenLifecycle';
+
+const SPLASH_OVERLAY_Z_INDEX: number = 2147483647;
+
 @Component
 export struct ExpoSplashScreenView {
   @State private state: SplashScreenRenderState = SplashScreenRenderState.hidden();
@@ -56,7 +59,7 @@ export struct ExpoSplashScreenView {
       .backgroundColor(this.state.backgroundColor)
       .opacity(this.state.opacity)
       .hitTestBehavior(HitTestMode.Block)
-      .zIndex(2147483647);
+      .zIndex(SPLASH_OVERLAY_Z_INDEX);
     }
   }
 }
