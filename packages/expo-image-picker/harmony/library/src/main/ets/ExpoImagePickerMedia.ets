@@ -8,9 +8,10 @@
 import { util } from '@kit.ArkTS';
 import { uniformTypeDescriptor } from '@kit.ArkData';
 import { deviceInfo } from '@kit.BasicServicesKit';
-import { fileUriFromPath } from '@expo-harmony/expo-modules-core';
+import { filePathFromUri, fileUriFromPath } from '@expo-harmony/expo-modules-core';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
+import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { media } from '@kit.MediaKit';
 
 import { EXIF_KEYS, decodeExifProperties, orientationCode } from './ExpoImagePickerExif';
@@ -20,12 +21,10 @@ const CACHE_DIRECTORY: string = 'expo-image-picker';
 const AV_METADATA_CAPABILITY: string = 'SystemCapability.Multimedia.Media.AVMetadataExtractor';
 const READ_CHUNK_SIZE: number = 64 * 1024;
 const JPEG_MIME_TYPE: string = 'image/jpeg';
-const VIDEO_MP4_MIME_TYPE: string = 'video/mp4';
 const PNG_MIME_TYPE: string = 'image/png';
 const GIF_MIME_TYPE: string = 'image/gif';
 const BMP_MIME_TYPE: string = 'image/bmp';
 const WEBP_MIME_TYPE: string = 'image/webp';
-const FILE_URI_PREFIX: string = 'file://';
 const ROTATED_ORIENTATIONS: number[] = [5, 6, 7, 8];
 const CODE_CAPTURE_FILE: string = 'ERR_IMAGE_PICKER_CAPTURE_FILE';
 const CODE_MEDIA_PROCESSING: string = 'ERR_IMAGE_PICKER_MEDIA_PROCESSING';
@@ -34,6 +33,7 @@ const CODE_CACHE: string = 'ERR_IMAGE_PICKER_CACHE';
 const CODE_UNAVAILABLE: string = 'ERR_IMAGE_PICKER_UNAVAILABLE';
 
 export type PickerMediaType = 'image' | 'video';
+type ImagePickerAssetType = PickerMediaType | 'livePhoto' | 'pairedVideo';
 
 export interface ProcessingOptions {
   quality: number;
@@ -47,6 +47,7 @@ interface ImageInfo {
   mimeType: string;
   fileSize: number;
   fileName?: string;
+  exif?: Record<string, ESObject>;
 }
 
 interface VideoInfo {
@@ -54,26 +55,26 @@ interface VideoInfo {
   height: number;
   duration: number | null;
   rotation: number | null;
-  mimeType: string;
-  fileSize: number;
+  mimeType?: string;
   fileName?: string;
 }
 
 export class ImagePickerAsset {
   assetId: string | null = null;
-  type: PickerMediaType;
+  type: ImagePickerAssetType;
   uri: string;
   width: number;
   height: number;
   fileName: string;
   fileSize: number;
-  mimeType: string;
+  mimeType?: string;
   base64?: string;
   exif?: Record<string, ESObject>;
   duration?: number | null;
   rotation?: number | null;
+  pairedVideoAsset?: ImagePickerAsset;
 
-  constructor(type: PickerMediaType, uri: string, width: number, height: number, fileName: string, fileSize: number, mimeType: string) {
+  constructor(type: ImagePickerAssetType, uri: string, width: number, height: number, fileName: string, fileSize: number, mimeType?: string) {
     this.type = type;
     this.uri = uri;
     this.width = width;
@@ -93,8 +94,7 @@ export async function createCapture(cache: string, type: PickerMediaType): Promi
   const dir = `${cache}/${CACHE_DIRECTORY}`;
   await ensureDirectory(dir);
 
-  const mime = type === 'video' ? VIDEO_MP4_MIME_TYPE : JPEG_MIME_TYPE;
-  const path = `${dir}/${uniqueFilename('capture', extensionForMime(mime, 'tmp'))}`;
+  const path = `${dir}/${uniqueFilename('capture', type === 'video' ? 'mp4' : 'jpg')}`;
   let file: fileIo.File | undefined;
 
   try {
@@ -122,7 +122,7 @@ export async function exportImage(uri: string, cache: string, options: Processin
   let path: string | undefined;
 
   try {
-    const source = await inspectImage(uri);
+    const source = await inspectImage(uri, options.exif);
 
     const compress = options.quality < 1;
     const mime = compress ? compressionMimeType(source.mimeType) : source.mimeType;
@@ -140,15 +140,23 @@ export async function exportImage(uri: string, cache: string, options: Processin
     }
 
     const output = await inspectImage(path);
+    if (output.mimeType !== mime) {
+      throw new ExpoImagePickerError(CODE_MEDIA_PROCESSING, `Expected ${mime}, but the exported image is ${output.mimeType}.`);
+    }
+
     const original = name ?? source.fileName ?? filename;
     const display = mime === source.mimeType ? original : replaceExtension(original, filename);
     const asset = new ImagePickerAsset('image', fileUriFromPath(path), output.width, output.height, display, output.fileSize, output.mimeType);
 
     if (options.base64) {
-      asset.base64 = compress && mime !== JPEG_MIME_TYPE ? await encodeJpegBase64(path, options.quality) : await readBase64(path);
+      // Reuse JPEG bytes already encoded at the requested quality. For other
+      // exports, encode from the original to avoid a second compression pass.
+      asset.base64 = compress && mime === JPEG_MIME_TYPE
+        ? await readJpegBase64(path)
+        : await encodeJpegBase64(uri, path, options.quality);
     }
 
-    if (options.exif) asset.exif = await readExif(path);
+    if (options.exif) asset.exif = source.exif;
 
     return asset;
   } catch (cause) {
@@ -171,24 +179,14 @@ export async function exportVideo(uri: string, cache: string, name?: string): Pr
     const dir = `${cache}/${CACHE_DIRECTORY}`;
     await ensureDirectory(dir);
 
-    const filename = uniqueFilename('video', extensionForMime(info.mimeType, 'video'));
+    const display = name ?? info.fileName;
+    const fallback = display?.match(/\.([a-zA-Z0-9]+)$/)?.[1] ?? 'video';
+    const filename = uniqueFilename('video', info.mimeType === undefined ? fallback : extensionForMime(info.mimeType, fallback));
     path = `${dir}/${filename}`;
 
     await copyFile(uri, path);
 
-    const asset = new ImagePickerAsset(
-      'video',
-      fileUriFromPath(path),
-      info.width,
-      info.height,
-      name ?? info.fileName ?? filename,
-      checkedFileSize((await fileIo.stat(path)).size),
-      info.mimeType,
-    );
-    asset.duration = info.duration;
-    asset.rotation = info.rotation;
-
-    return asset;
+    return await videoAsset('video', path, display ?? filename, info);
   } catch (cause) {
     if (path !== undefined) await removeFile(path);
 
@@ -200,15 +198,74 @@ export async function exportVideo(uri: string, cache: string, name?: string): Pr
   }
 }
 
-export async function removeAssets(assets: ImagePickerAsset[]): Promise<void> {
-  for (const asset of assets) {
-    if (asset.uri.startsWith(FILE_URI_PREFIX)) {
-      await removeFile(new fileUri.FileUri(asset.uri).path);
+export async function exportMovingPhoto(
+  photo: photoAccessHelper.MovingPhoto,
+  cache: string,
+  options: ProcessingOptions,
+  name: string,
+): Promise<ImagePickerAsset> {
+  const dir = `${cache}/${CACHE_DIRECTORY}`;
+  const stem = `live-photo-${util.generateRandomUUID(true)}`;
+  const imageExtension = name.match(/\.([a-zA-Z0-9]+)$/)?.[1] ?? 'jpg';
+  let imagePath = `${dir}/${stem}-image.${imageExtension}`;
+  let videoPath = `${dir}/${stem}-video.mp4`;
+
+  try {
+    await ensureDirectory(dir);
+    // MovingPhoto requires sandbox URIs with the app authority.
+    await photo.requestContent(fileUri.getUriFromPath(imagePath), fileUri.getUriFromPath(videoPath));
+
+    const imageInfo = await inspectImage(imagePath, options.exif);
+    const videoInfo = await inspectVideo(videoPath);
+    const coverExtension = extensionForMime(imageInfo.mimeType, imageExtension);
+    const videoExtension = videoInfo.mimeType === undefined ? 'mp4' : extensionForMime(videoInfo.mimeType, 'mp4');
+    if (coverExtension !== imageExtension) {
+      const target = `${dir}/${stem}-image.${coverExtension}`;
+      await fileIo.rename(imagePath, target);
+      imagePath = target;
     }
+    if (videoExtension !== 'mp4') {
+      const target = `${dir}/${stem}-video.${videoExtension}`;
+      await fileIo.rename(videoPath, target);
+      videoPath = target;
+    }
+    const coverName = name || `${stem}.${coverExtension}`;
+    const asset = new ImagePickerAsset('livePhoto', fileUriFromPath(imagePath), imageInfo.width, imageInfo.height, coverName,
+      imageInfo.fileSize, imageInfo.mimeType);
+    asset.pairedVideoAsset = await videoAsset('pairedVideo', videoPath, replaceExtension(coverName, videoPath), videoInfo);
+    if (options.exif) asset.exif = imageInfo.exif;
+    if (options.base64) {
+      asset.base64 = imageInfo.mimeType === JPEG_MIME_TYPE
+        ? await readJpegBase64(imagePath)
+        : await encodeJpegBase64(imagePath, imagePath, 1);
+    }
+
+    return asset;
+  } catch (cause) {
+    await removeFile(imagePath);
+    await removeFile(videoPath);
+    if (cause instanceof ExpoImagePickerError) throw new ExpoImagePickerError(cause.code, cause.message, cause);
+    throw new ExpoImagePickerError(CODE_MEDIA_PROCESSING, `Failed to export the selected moving photo: ${String(cause)}`, cause as Object);
   }
 }
 
-async function inspectImage(uri: string): Promise<ImageInfo> {
+async function videoAsset(type: ImagePickerAssetType, path: string, name: string, info: VideoInfo): Promise<ImagePickerAsset> {
+  const size = checkedFileSize((await fileIo.stat(path)).size);
+  const asset = new ImagePickerAsset(type, fileUriFromPath(path), info.width, info.height, name, size, info.mimeType);
+  asset.duration = info.duration;
+  asset.rotation = info.rotation;
+
+  return asset;
+}
+
+export async function removeAssets(assets: ImagePickerAsset[]): Promise<void> {
+  for (const asset of assets) {
+    await removeFile(filePathFromUri(asset.uri));
+    if (asset.pairedVideoAsset !== undefined) await removeFile(filePathFromUri(asset.pairedVideoAsset.uri));
+  }
+}
+
+async function inspectImage(uri: string, includeExif: boolean = false): Promise<ImageInfo> {
   let file: fileIo.File | undefined;
   let source: image.ImageSource | undefined;
 
@@ -218,15 +275,21 @@ async function inspectImage(uri: string): Promise<ImageInfo> {
     source = image.createImageSource(file.fd);
 
     const info = await source.getImageInfo();
+    const mimeType = normalizedMimeType(info.mimeType);
+    if (mimeType === undefined || !mimeType.startsWith('image/')) {
+      throw new ExpoImagePickerError(CODE_MEDIA_PROCESSING, 'The selected image has no supported MIME type.');
+    }
+
     const orientation = await readOrientation(source);
     const rotated = orientation !== undefined && ROTATED_ORIENTATIONS.includes(orientation);
 
     return {
       width: rotated ? info.size.height : info.size.width,
       height: rotated ? info.size.width : info.size.height,
-      mimeType: requireMimeType(info.mimeType, 'image/'),
+      mimeType,
       fileSize: checkedFileSize(stat.size),
       fileName: file.name.length > 0 ? file.name : undefined,
+      exif: includeExif ? await readExif(source, mimeType) : undefined,
     };
   } finally {
     await releaseImageSource(source);
@@ -256,27 +319,33 @@ async function inspectVideo(uri: string): Promise<VideoInfo> {
 
   try {
     file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
-    const stat = await fileIo.stat(file.fd);
+    const size = checkedFileSize((await fileIo.stat(file.fd)).size);
+    if (size === 0) throw new ExpoImagePickerError(CODE_FILE_READ, 'The selected video is empty.');
+
     extractor = await media.createAVMetadataExtractor();
-    extractor.fdSrc = { fd: file.fd, offset: 0, length: stat.size };
+    extractor.fdSrc = { fd: file.fd, offset: 0, length: size };
 
     const data = await extractor.fetchMetadata();
+    if (data == null) {
+      throw new ExpoImagePickerError(CODE_MEDIA_PROCESSING, 'The system did not return metadata for the selected video.');
+    }
+
     let width = nonNegativeInteger(data.videoWidth) ?? 0;
     let height = nonNegativeInteger(data.videoHeight) ?? 0;
     const rotation = integerValue(data.videoOrientation);
-    if (rotation !== undefined && Math.abs(rotation) % 180 !== 0) {
+    if (rotation !== undefined && Math.abs(rotation) % 180 === 90) {
       const previous = width;
       width = height;
       height = previous;
     }
 
+    const mimeType = normalizedMimeType(data.mimeType);
     return {
       width,
       height,
       duration: nonNegativeInteger(data.duration) ?? null,
       rotation: rotation ?? null,
-      mimeType: requireMimeType(data.mimeType, 'video/'),
-      fileSize: checkedFileSize(stat.size),
+      mimeType: mimeType?.startsWith('video/') ? mimeType : undefined,
       fileName: file.name.length > 0 ? file.name : undefined,
     };
   } finally {
@@ -293,9 +362,13 @@ async function packImage(uri: string, path: string, mime: string, quality: numbe
 
   try {
     input = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
-    output = await fileIo.open(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
     source = image.createImageSource(input.fd);
     packer = image.createImagePacker();
+    if (!packer.supportedFormats.includes(mime)) {
+      throw new ExpoImagePickerError(CODE_MEDIA_PROCESSING, `This device cannot encode ${mime}.`);
+    }
+
+    output = await fileIo.open(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
 
     await packer.packToFile(source, output.fd, {
       format: mime,
@@ -310,12 +383,8 @@ async function packImage(uri: string, path: string, mime: string, quality: numbe
   }
 }
 
-async function readExif(path: string): Promise<Record<string, ESObject>> {
-  let source: image.ImageSource | undefined;
-
+async function readExif(source: image.ImageSource, mime: string): Promise<Record<string, ESObject>> {
   try {
-    source = image.createImageSource(path);
-    const mime = (await source.getImageInfo()).mimeType;
     // ImageKit's EXIF APIs support JPEG/PNG/HEIF at the minimum SDK; WebP and
     // DNG are added at API 23. Missing EXIF must not fail an otherwise valid GIF.
     const supported =
@@ -329,57 +398,52 @@ async function readExif(path: string): Promise<Record<string, ESObject>> {
   } catch (_) {
     // ImageKit can reject the entire batch when the image has no EXIF fields.
     return {};
-  } finally {
-    await releaseImageSource(source);
   }
 }
 
-async function encodeJpegBase64(uri: string, quality: number): Promise<string> {
+async function encodeJpegBase64(uri: string, cachedPath: string, quality: number): Promise<string> {
   // File encoding has no ImagePacker.packToData 25 MB buffer ceiling.
-  const path = `${uri}.${util.generateRandomUUID(true)}.jpg`;
+  const path = `${cachedPath}.${util.generateRandomUUID(true)}.jpg`;
   try {
     await packImage(uri, path, JPEG_MIME_TYPE, quality);
-    return await readBase64(path);
+    return await readJpegBase64(path);
   } finally {
     await removeFile(path);
   }
 }
 
-async function readBase64(path: string): Promise<string> {
-  const data = await readBuffer(path);
-  return await new util.Base64Helper().encodeToString(new Uint8Array(data));
+async function readJpegBase64(path: string): Promise<string> {
+  const data = new Uint8Array(await readBuffer(path));
+  if (data.byteLength < 3 || data[0] !== 0xff || data[1] !== 0xd8 || data[2] !== 0xff) {
+    throw new ExpoImagePickerError(CODE_MEDIA_PROCESSING, 'The image encoder did not produce JPEG data.');
+  }
+  return await new util.Base64Helper().encodeToString(data);
 }
 
 async function readBuffer(path: string): Promise<ArrayBuffer> {
-  const stat = await fileIo.stat(path);
-  if (!Number.isSafeInteger(stat.size) || stat.size < 0) {
-    throw new ExpoImagePickerError(CODE_FILE_READ, 'The selected image has an invalid file size.');
-  }
-
-  const data = new ArrayBuffer(stat.size);
-  const view = new Uint8Array(data);
   let file: fileIo.File | undefined;
-  let offset = 0;
 
   try {
     file = await fileIo.open(path, fileIo.OpenMode.READ_ONLY);
+    const size = checkedFileSize((await fileIo.stat(file.fd)).size);
+    const data = new ArrayBuffer(size);
+    const view = new Uint8Array(data);
+    const chunk = new ArrayBuffer(Math.min(READ_CHUNK_SIZE, size));
+    let offset = 0;
+
     while (offset < data.byteLength) {
-      const chunk = new ArrayBuffer(Math.min(READ_CHUNK_SIZE, data.byteLength - offset));
-      const count = await fileIo.read(file.fd, chunk, { length: chunk.byteLength });
-      if (count <= 0) break;
+      const length = Math.min(chunk.byteLength, data.byteLength - offset);
+      const count = await fileIo.read(file.fd, chunk, { length });
+      if (count <= 0) throw new ExpoImagePickerError(CODE_FILE_READ, 'The selected image could not be read completely.');
 
       view.set(new Uint8Array(chunk, 0, count), offset);
       offset += count;
     }
+
+    return data;
   } finally {
     await closeFile(file);
   }
-
-  if (offset !== data.byteLength) {
-    throw new ExpoImagePickerError(CODE_FILE_READ, 'The selected image could not be read completely.');
-  }
-
-  return data;
 }
 
 async function copyFile(uri: string, path: string): Promise<void> {
@@ -469,25 +533,17 @@ function extensionForMime(mime: string, fallback: string): string {
   return extension === undefined ? fallback : extension.slice(1);
 }
 
-function requireMimeType(value: string | undefined, prefix: string): string {
-  const mime = normalizedMimeType(value);
-  if (mime === undefined || !mime.startsWith(prefix)) {
-    throw new ExpoImagePickerError(CODE_MEDIA_PROCESSING, 'The selected media has no supported MIME type.');
-  }
-  return mime;
-}
-
 function normalizedMimeType(value?: string): string | undefined {
-  if (value === undefined) return undefined;
+  if (value == null) return undefined;
   const mime = value.split(';')[0].trim().toLowerCase();
   return mime.length > 0 ? mime : undefined;
 }
 
 function integerValue(value?: string): number | undefined {
-  if (value === undefined) return undefined;
+  if (value == null) return undefined;
   if (value.trim().length === 0) return undefined;
   const parsed = Number(value);
-  return Number.isInteger(parsed) ? parsed : undefined;
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 function nonNegativeInteger(value?: string): number | undefined {

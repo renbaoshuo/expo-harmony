@@ -90,7 +90,7 @@ export function selectsImages(options: ImagePickerOptions): boolean {
 }
 
 export function validateEditing(options: ImagePickerOptions, camera: boolean): void {
-  if (!options.allowsEditing || options.allowsMultipleSelection) return;
+  if (!options.allowsEditing || options.allowsMultipleSelection || !selectsImages(options)) return;
   if (camera || options.aspect !== undefined || options.shape !== 'rectangle') {
     throw new ExpoImagePickerError(
       'ERR_IMAGE_PICKER_UNSUPPORTED_EDITING',
