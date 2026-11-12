@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-dev-client",
-  "version": "55.0.40-harmony.4",
+  "version": "57.0.20-harmony.0",
   "description": "HarmonyOS port of expo-dev-client",
   "keywords": [
     "react-native",
@@ -20,7 +20,7 @@
   "main": "index.js",
   "types": "index.d.ts",
   "peerDependencies": {
-    "expo-dev-client": "55.0.40"
+    "expo-dev-client": "57.0.20"
   },
   "engines": {
     "node": ">=20"
