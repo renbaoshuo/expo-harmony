@@ -9,15 +9,18 @@ import { scanBarcode, scanCore } from '@kit.ScanKit';
 import { bundleManager } from '@kit.AbilityKit';
 import type { common } from '@kit.AbilityKit';
 import type { BusinessError } from '@kit.BasicServicesKit';
+import { pasteboard } from '@kit.BasicServicesKit';
 import type { JSBundleProvider } from '@rnoh/react-native-openharmony';
 import { FileJSBundleProvider } from '@rnoh/react-native-openharmony';
 import { Manifest } from '@expo-harmony/expo-manifests';
-import { DevMenuAppMetadata } from '@expo-harmony/expo-dev-menu';
+import { DevMenuAppMetadata, DevMenuPreference, DevMenuPreferences } from '@expo-harmony/expo-dev-menu';
 import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
-import type { DevToolsController } from '@rnoh/react-native-openharmony/src/main/ets/RNOH/DevToolsController';
 import { UpdatesControllerRegistry, UpdatesDevLauncherInterface, UpdatesInterfaceCallbacks } from '@expo-harmony/expo-updates-interface';
 import { DevLauncherManifestLoader, LaunchSelection } from './DevLauncherManifestLoader';
-import { DevLauncherError, displayError, LAUNCH_MODE_METADATA, resolveDevelopmentURL } from './DevLauncherProtocol';
+import {
+  DEFAULT_LAUNCH_URL_METADATA, EMBEDDED_BUNDLE_METADATA, DevLauncherError, displayError,
+  hasEnabledFlag, isLauncherHomeLink, resolveDevelopmentURL,
+} from './DevLauncherProtocol';
 import { DevServerDiscovery, DiscoveredServer } from './DevServerDiscovery';
 import { RecentApp, RecentApps } from './RecentApps';
 import { sendRuntimeError } from './DevLauncherRemoteLogs';
@@ -31,17 +34,50 @@ export class DevLauncherViewState {
   readonly error?: string;
   readonly recent: RecentApp[];
   readonly servers: DiscoveredServer[];
+  readonly searching: boolean;
+  readonly discoveryError?: string;
+  readonly hasEmbeddedBundle: boolean;
+  readonly canRetry: boolean;
+  readonly settings: Record<string, boolean>;
+  readonly filterBySlug: string;
 
-  constructor(loading: boolean, progress: number, error: string | undefined, recent: RecentApp[], servers: DiscoveredServer[]) {
+  constructor(
+    loading: boolean, progress: number, error: string | undefined, recent: RecentApp[], servers: DiscoveredServer[],
+    searching: boolean = false, discoveryError: string | undefined = undefined, hasEmbeddedBundle: boolean = false,
+    canRetry: boolean = false, settings: Record<string, boolean> = {}, filterBySlug: string = '',
+  ) {
     this.loading = loading;
     this.progress = progress;
     this.error = error;
     this.recent = recent;
     this.servers = servers;
+    this.searching = searching;
+    this.discoveryError = discoveryError;
+    this.hasEmbeddedBundle = hasEmbeddedBundle;
+    this.canRetry = canRetry;
+    this.settings = settings;
+    this.filterBySlug = filterBySlug;
   }
 }
 
 type StateListener = (state: DevLauncherViewState) => void;
+
+class LaunchRequest {
+  readonly url?: string;
+  readonly link?: string;
+
+  constructor(url?: string, link?: string) {
+    this.url = url;
+    this.link = link;
+  }
+}
+
+interface RuntimeRegistration {
+  id: number;
+  selection?: LaunchSelection;
+  suspend: () => Promise<void>;
+  reload: (reason: string) => Promise<void>;
+}
 
 export class DevLauncherController {
   private static readonly controllers = new Map<string, DevLauncherController>();
@@ -60,18 +96,20 @@ export class DevLauncherController {
   private resolveReady?: () => void;
   private homeTransition?: Promise<void>;
   private readonly history: RecentApps;
+  private readonly preferences: DevMenuPreferences;
   private readonly listeners = new Set<StateListener>();
   private ability?: common.UIAbilityContext;
   private discovery?: DevServerDiscovery;
   private detachDiscovery?: () => void;
-  private manager?: DevToolsController;
   private updatesCallbacks?: UpdatesInterfaceCallbacks;
   private provider?: JSBundleProvider;
   private selection?: LaunchSelection;
+  private selectedRequest?: LaunchRequest;
   private active = false;
   private foregrounded = false;
-  private loading = false;
-  private loadingURL?: string;
+  private loadingRequest?: LaunchRequest;
+  private loadPromise?: Promise<void>;
+  private manifestLoad?: Promise<LaunchSelection>;
   private progress = 0;
   private error?: string;
   private recoveryChecked = false;
@@ -80,7 +118,12 @@ export class DevLauncherController {
   private servers: DiscoveredServer[] = [];
   private loadSerial = 0;
   private settledInitialSelection = false;
-  private pendingURL?: string;
+  private initialSelectionStarted = false;
+  private pendingRequest?: LaunchRequest;
+  private failedRequest?: LaunchRequest;
+  private embeddedProvider?: JSBundleProvider;
+  private runtime?: RuntimeRegistration;
+  private runtimeOwner?: RuntimeRegistration;
   private pendingReloadReason?: string;
   private readonly context: common.ApplicationContext;
   private readonly bundleName: string;
@@ -89,6 +132,8 @@ export class DevLauncherController {
     this.context = context;
     this.bundleName = bundleName;
     this.history = new RecentApps(context);
+    this.preferences = new DevMenuPreferences(context);
+    this.preferences.subscribe((): void => this.publish());
     this.recent = this.history.all();
     this.selectionReady = new Promise<void>((resolve: () => void): void => {
       this.resolveReady = resolve;
@@ -112,6 +157,38 @@ export class DevLauncherController {
   }
   get manifestURL(): string | null {
     return this.selection?.manifestURL ?? null;
+  }
+  private get loading(): boolean {
+    return this.loadingRequest !== undefined;
+  }
+
+  setEmbeddedProvider(provider: JSBundleProvider | undefined): void {
+    this.embeddedProvider = provider;
+    this.publish();
+  }
+
+  registerRuntime(id: number, suspend: () => Promise<void>, reload: (reason: string) => Promise<void>): () => void {
+    const runtime: RuntimeRegistration = { id, selection: this.selection, suspend, reload };
+    this.runtime = runtime;
+    // The owner remains available while the previous instance is being replaced.
+    this.runtimeOwner = runtime;
+    const reason = this.pendingReloadReason;
+    if (reason !== undefined) {
+      this.pendingReloadReason = undefined;
+      this.requestReload(reason);
+    }
+
+    return (): void => {
+      if (this.runtime === runtime) this.runtime = undefined;
+    };
+  }
+
+  private metadata(name: string): string | undefined {
+    return this.ability?.currentHapModuleInfo.metadata?.find((entry): boolean => entry.name === name)?.value;
+  }
+
+  private hasEmbeddedBundle(): boolean {
+    return this.metadata(EMBEDDED_BUNDLE_METADATA) === 'true' && this.embeddedProvider !== undefined;
   }
 
   getDevMenuAppInfo(): DevMenuAppMetadata {
@@ -168,12 +245,14 @@ export class DevLauncherController {
 
   detachAbility(ability?: common.UIAbilityContext): void {
     if (ability !== undefined && this.ability !== ability) return;
-    if (this.loadingURL !== undefined && this.pendingURL === undefined) this.pendingURL = this.loadingURL;
+    this.pendingRequest ??= this.loadingRequest;
     this.loadSerial += 1;
-    this.loading = false;
-    this.loadingURL = undefined;
+    this.loadingRequest = undefined;
     this.progress = 0;
-    this.manager = undefined;
+    this.runtime = undefined;
+    this.runtimeOwner = undefined;
+    this.pendingReloadReason = undefined;
+    this.foregrounded = false;
     this.discovery?.stop();
     this.detachDiscovery?.();
     this.detachDiscovery = undefined;
@@ -183,31 +262,30 @@ export class DevLauncherController {
     this.publish();
   }
 
-  foreground(): void {
+  foreground(ability: common.UIAbilityContext): void {
+    if (this.ability !== ability || this.foregrounded) return;
     this.foregrounded = true;
     if (this.active) this.discovery?.start();
   }
 
-  background(): void {
+  background(ability: common.UIAbilityContext): void {
+    if (this.ability !== ability || !this.foregrounded) return;
     this.foregrounded = false;
     this.discovery?.stop();
-  }
-
-  setDevToolsManager(manager: DevToolsController): void {
-    this.manager = manager;
-    this.connectUpdates();
-    const reason = this.pendingReloadReason;
-    if (reason !== undefined) {
-      this.pendingReloadReason = undefined;
-      manager.reload(reason);
-    }
   }
 
   connectUpdates(): void {
     const updates = UpdatesControllerRegistry.controller as UpdatesDevLauncherInterface | undefined;
     if (updates !== undefined && typeof updates.fetchUpdateWithConfiguration === 'function') {
       if (this.updatesCallbacks === undefined) {
-        this.updatesCallbacks = new UpdatesRelaunchCallbacks(this.manager);
+        this.updatesCallbacks = new UpdatesRelaunchCallbacks((): void => {
+          const request = this.selectedRequest;
+          if (request?.url === undefined || this.runtime?.selection !== this.selection
+            || this.loading || this.homeTransition !== undefined) return;
+
+          // An Updates relaunch selects again so the server can provide a newer update.
+          this.loadRequest(request).catch((): void => {});
+        });
       }
       updates.updatesInterfaceCallbacks = this.updatesCallbacks;
     }
@@ -216,36 +294,73 @@ export class DevLauncherController {
   startInitialSelection(): void {
     if (!this.active || this.loading) return;
 
-    const pending = this.pendingURL;
+    const pending = this.pendingRequest;
     if (pending !== undefined) {
-      this.pendingURL = undefined;
-      this.load(pending).catch((): void => {});
+      this.pendingRequest = undefined;
+      this.loadRequest(pending).catch((): void => {});
       return;
     }
-    if (this.settledInitialSelection || this.recoveredFailure) return;
+    if (this.initialSelectionStarted || this.settledInitialSelection || this.recoveredFailure) return;
+    this.initialSelectionStarted = true;
+    this.launchInitialSelection().catch((): void => {});
+  }
 
-    const metadata = this.ability?.currentHapModuleInfo.metadata;
-    const mode = metadata?.find((entry): boolean => entry.name === LAUNCH_MODE_METADATA)?.value;
-    if (mode === 'launcher') return;
+  private async launchInitialSelection(): Promise<void> {
+    const recent = this.preferences.get(DevMenuPreference.TryToLaunchLastBundle) ? this.recent[0] : undefined;
+    if (recent !== undefined) {
+      const serial = this.loadSerial + 1;
+      try {
+        await this.load(recent.url);
+        return;
+      } catch (_) {}
+      if (this.loadSerial !== serial) return;
+    }
+    // A newer link or a return-home action supersedes the startup fallback.
+    if (this.selection !== undefined || this.pendingRequest !== undefined || this.loading) return;
 
-    const recent = this.recent[0];
-    if (recent !== undefined) this.load(recent.url).catch((): void => {});
+    const fallback = this.metadata(DEFAULT_LAUNCH_URL_METADATA);
+    if (fallback !== undefined && fallback.length > 0) await this.load(fallback);
   }
 
   receiveLink(value: string): void {
-    this.pendingURL = value;
-    if (this.active && !this.loading) {
-      this.pendingURL = undefined;
-      this.load(value).catch((): void => {});
+    let request = new LaunchRequest(value);
+    if (isLauncherHomeLink(value)) {
+      const fallback = this.metadata(DEFAULT_LAUNCH_URL_METADATA);
+      if (fallback === undefined || fallback.length === 0) {
+        this.initialSelectionStarted = true;
+        const suspend = this.runtimeOwner?.suspend;
+        if (this.settledInitialSelection) {
+          this.showLauncher(suspend ?? (async (): Promise<void> => {})).catch((): void => {});
+        } else {
+          ++this.loadSerial;
+          this.pendingRequest = undefined;
+          this.loadingRequest = undefined;
+          this.progress = 0;
+          this.error = undefined;
+          this.failedRequest = undefined;
+          this.publish();
+        }
+        return;
+      }
+      request = new LaunchRequest(fallback, value);
     }
+    if (this.active) this.loadRequest(request).catch((): void => {});
+    else this.pendingRequest = request;
   }
 
   subscribe(listener: StateListener): () => void {
     this.listeners.add(listener);
     listener(this.state());
+
     return (): void => {
       this.listeners.delete(listener);
     };
+  }
+
+  async showLauncherForRuntime(id: number): Promise<void> {
+    const runtime = this.runtime;
+    if (runtime?.id !== id || runtime.selection !== this.selection) return;
+    await this.showLauncher(runtime.suspend);
   }
 
   async showLauncher(suspend: () => Promise<void>): Promise<void> {
@@ -262,25 +377,31 @@ export class DevLauncherController {
   }
 
   private async returnToLauncher(suspend: () => Promise<void>): Promise<void> {
-    // Invalidate in-flight manifest/history results before releasing the running app.
-    ++this.loadSerial;
-    this.loading = false;
-    this.loadingURL = undefined;
-    this.pendingURL = undefined;
+    const serial = ++this.loadSerial;
+    this.loadingRequest = undefined;
+    this.pendingRequest = undefined;
     this.pendingReloadReason = undefined;
     this.progress = 0;
     this.error = undefined;
+    this.failedRequest = undefined;
+
     try {
-      await suspend();
-      // A queued reload may still need the current selection to complete before
-      // suspend can run. Install the new gate only after that queue has drained.
-      this.selectionReady = new Promise<void>((resolve: () => void): void => {
-        this.resolveReady = resolve;
-      });
+      if (this.selection !== undefined) {
+        await suspend();
+        if (serial !== this.loadSerial) return;
+        // A queued reload may still need the current selection to complete before
+        // suspend can run. Install the new gate only after that queue has drained.
+        this.selectionReady = new Promise<void>((resolve: () => void): void => {
+          this.resolveReady = resolve;
+        });
+      }
       this.selection = undefined;
+      this.selectedRequest = undefined;
       this.provider = undefined;
+      if (this.manifestLoad === undefined) this.resetUpdates();
       this.publish();
     } catch (error) {
+      if (serial !== this.loadSerial) return;
       this.error = displayError(error as Object);
       this.publish();
       throw new DevLauncherError(
@@ -291,62 +412,114 @@ export class DevLauncherController {
   }
 
   async load(value: string): Promise<void> {
+    await this.loadRequest(new LaunchRequest(value));
+  }
+
+  async loadEmbeddedBundle(): Promise<void> {
+    await this.loadRequest(new LaunchRequest());
+  }
+
+  private async loadRequest(request: LaunchRequest): Promise<void> {
     if (this.homeTransition !== undefined) await this.homeTransition;
     if (!this.active) throw new DevLauncherError('ERR_DEV_LAUNCHER_UNAVAILABLE', 'Expo Dev Launcher is available only in debug builds.');
     if (this.loading) {
-      this.pendingURL = value;
-      return;
+      this.pendingRequest = request;
+      return await this.loadPromise;
     }
 
     const serial = ++this.loadSerial;
-
+    this.loadingRequest = request;
+    const pending = Promise.resolve().then((): Promise<void> => this.loadSelection(request, serial));
+    this.loadPromise = pending;
     try {
-      const url = resolveDevelopmentURL(value);
-      this.loading = true;
-      this.loadingURL = url;
+      await pending;
+    } finally {
+      if (this.loadPromise === pending) this.loadPromise = undefined;
+    }
+  }
+
+  private takePendingRequest(): LaunchRequest | undefined {
+    const request = this.pendingRequest;
+    if (request !== undefined) {
+      this.pendingRequest = undefined;
+      this.loadingRequest = undefined;
+    }
+
+    return request;
+  }
+
+  private async loadSelection(request: LaunchRequest, serial: number): Promise<void> {
+    if (serial !== this.loadSerial) return;
+
+    const value = request.url;
+    try {
+      const url = value === undefined ? undefined : resolveDevelopmentURL(value);
       this.progress = 0;
       this.error = undefined;
       this.publish();
       this.connectUpdates();
 
-      const selection = await new DevLauncherManifestLoader(this.context, []).load(url, (progress: number): void => {
+      // A previous request may still be finishing after Home or ability teardown.
+      // Let it finish before resetting or starting another Updates selection.
+      if (this.manifestLoad !== undefined) {
+        await this.manifestLoad.catch((): void => {});
         if (serial !== this.loadSerial) return;
-        this.progress = progress;
-        this.publish();
-      });
+      }
+      let selection: LaunchSelection;
+      if (url === undefined) {
+        if (!this.hasEmbeddedBundle() || this.embeddedProvider === undefined) {
+          throw new DevLauncherError('ERR_DEV_LAUNCHER_EMBEDDED_BUNDLE', 'Embedded bundle loading requires embeddedBundle: true and a bundle supplied by the application host.');
+        }
+        selection = new LaunchSelection(this.embeddedProvider, undefined, undefined, 'Embedded bundle', false);
+      } else {
+        const pending = new DevLauncherManifestLoader(this.context, []).load(url, (progress: number): void => {
+          if (serial !== this.loadSerial) return;
+          this.progress = progress;
+          this.publish();
+        });
+        this.manifestLoad = pending;
+        try {
+          selection = await pending;
+        } finally {
+          this.manifestLoad = undefined;
+          if (serial !== this.loadSerial && this.selection === undefined) this.resetUpdates();
+        }
+      }
       if (serial !== this.loadSerial) return;
 
-      const pending = this.pendingURL;
+      const pending = this.takePendingRequest();
       if (pending !== undefined) {
-        this.pendingURL = undefined;
-        this.loading = false;
-        this.loadingURL = undefined;
         // Let the next load own its error; this load's serial is now obsolete.
-        return this.load(pending);
+        return this.loadRequest(pending);
       }
       try {
-        await this.history.remember(url, selection.name);
-        this.recent = this.history.all();
+        if (url !== undefined) {
+          await this.applyMenuURLPreferences(value!, url, request.link);
+          if (serial === this.loadSerial && this.pendingRequest === undefined) {
+            await this.history.remember(url, selection.name);
+            this.recent = this.history.all();
+          }
+        }
       } catch (error) {
         console.warn(`Unable to save Expo Dev Launcher history: ${String(error)}`);
       }
       if (serial !== this.loadSerial) return;
 
-      const queued = this.pendingURL;
+      const queued = this.takePendingRequest();
       if (queued !== undefined) {
-        this.pendingURL = undefined;
-        this.loading = false;
-        this.loadingURL = undefined;
-        return this.load(queued);
+        return this.loadRequest(queued);
       }
+      if (selection.activateUpdate !== undefined) selection.activateUpdate();
+      else if (url === undefined || selection.useDeveloperSupport) this.resetUpdates();
       this.selection = selection;
+      this.selectedRequest = request;
       this.recoveredFailure = false;
       this.history.clearFailure();
       this.provider = selection.provider;
-      this.loading = false;
-      this.loadingURL = undefined;
+      this.loadingRequest = undefined;
       this.progress = 1;
       this.error = undefined;
+      this.failedRequest = undefined;
       this.publish();
 
       const first = !this.settledInitialSelection;
@@ -356,23 +529,19 @@ export class DevLauncherController {
         this.settledInitialSelection = true;
       } else {
         const reason = `Opened ${selection.name} from Expo Dev Launcher.`;
-        if (this.manager === undefined) this.pendingReloadReason = reason;
-        else this.manager.reload(reason);
+        this.requestReload(reason);
       }
     } catch (error) {
       if (serial !== this.loadSerial) return;
 
-      const pending = this.pendingURL;
+      const pending = this.takePendingRequest();
       if (pending !== undefined) {
-        this.pendingURL = undefined;
-        this.loading = false;
-        this.loadingURL = undefined;
-        return this.load(pending);
+        return this.loadRequest(pending);
       }
-      this.loading = false;
-      this.loadingURL = undefined;
+      this.loadingRequest = undefined;
       this.progress = 0;
       this.error = displayError(error as Object);
+      this.failedRequest = request;
       this.publish();
       throw new DevLauncherError(
         error instanceof DevLauncherError || error instanceof ExpoModuleError ? error.code : 'ERR_DEV_LAUNCHER_RUNTIME',
@@ -381,16 +550,97 @@ export class DevLauncherController {
     }
   }
 
-  async scan(): Promise<void> {
+  private async requestReload(reason: string): Promise<void> {
+    const owner = this.runtimeOwner;
+    if (owner === undefined) {
+      this.pendingReloadReason = reason;
+      return;
+    }
+
+    const selection = this.selection;
     try {
-      const ability = this.ability;
-      if (ability === undefined) throw new DevLauncherError('ERR_DEV_LAUNCHER_ABILITY', 'No foreground UIAbility is available for QR scanning.');
+      await owner.reload(reason);
+    } catch (error) {
+      if (this.runtimeOwner !== owner || this.selection !== selection || this.homeTransition !== undefined || this.loading) return;
+      this.failedRequest = this.selectedRequest;
+      this.error = displayError(error as Object);
+      this.publish();
+    }
+  }
+
+  private resetUpdates(): void {
+    const updates = UpdatesControllerRegistry.controller as UpdatesDevLauncherInterface | undefined;
+    if (typeof updates?.fetchUpdateWithConfiguration === 'function') updates.reset();
+  }
+
+  private async applyMenuURLPreferences(original: string, target: string, link?: string): Promise<void> {
+    const flag = (name: string): boolean => hasEnabledFlag(original, name) || (link !== undefined && hasEnabledFlag(link, name));
+    const changes = new Map<DevMenuPreference, boolean>();
+    if (flag('disableOnboarding') || hasEnabledFlag(target, 'disableOnboarding') || flag('disableAutoLaunch')) {
+      changes.set(DevMenuPreference.OnboardingFinished, true);
+    }
+    if (flag('disableFab')) changes.set(DevMenuPreference.ShowFab, false);
+    if (flag('disableAutoLaunch')) changes.set(DevMenuPreference.ShowsAtLaunch, false);
+    for (const entry of changes) {
+      try {
+        await this.preferences.set(entry[0], entry[1]);
+      } catch (error) {
+        console.warn(`Unable to persist Dev Menu preference ${entry[0]}: ${displayError(error as Object)}`);
+      }
+    }
+  }
+
+  async setPreference(key: DevMenuPreference, value: boolean): Promise<void> {
+    try {
+      await this.preferences.set(key, value);
+    } catch (error) {
+      this.error = displayError(error as Object);
+      this.publish();
+    }
+  }
+
+  refreshServers(): void {
+    if (this.active && this.foregrounded) this.discovery?.restart();
+  }
+
+  async setDiscoveryFilter(value: string): Promise<void> {
+    try {
+      await this.discovery?.setFilterBySlug(value);
+    } catch (error) {
+      this.error = displayError(error as Object);
+      this.publish();
+    }
+  }
+
+  async retry(): Promise<void> {
+    if (this.failedRequest !== undefined) await this.loadRequest(this.failedRequest);
+  }
+
+  async copyError(): Promise<void> {
+    if (this.error === undefined) return;
+    try {
+      const url = this.failedRequest?.url;
+      const text = url === undefined ? this.error : `${url}\n${this.error}`;
+      await pasteboard.getSystemPasteboard().setData(pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text));
+    } catch (error) {
+      this.error = `Unable to copy error details. ${displayError(error as Object)}`;
+      this.publish();
+    }
+  }
+
+  async scan(): Promise<void> {
+    const ability = this.ability;
+    try {
+      if (ability === undefined) throw new DevLauncherError('ERR_DEV_LAUNCHER_ABILITY', 'No foreground UIAbility is available for QR scanning.');;
       if (!canIUse(SCAN_CAPABILITY))
         throw new DevLauncherError('ERR_DEV_LAUNCHER_SCANNER_UNAVAILABLE', 'QR scanning is not supported on this device.');
+
       const result = await scanBarcode.startScanForResult(ability, { scanTypes: [scanCore.ScanType.QR_CODE] });
+      if (this.ability !== ability) return;
       if (result.originalValue.length === 0) throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_QR', 'The QR code is empty.');
       await this.load(result.originalValue);
     } catch (error) {
+      if (this.ability !== ability) return;
       if (error !== null && typeof error === 'object' && (error as BusinessError).code === SCANNER_CANCELLED_ERROR_CODE) return;
 
       const code = error instanceof DevLauncherError ? error.code : 'ERR_DEV_LAUNCHER_SCANNER';
@@ -408,16 +658,22 @@ export class DevLauncherController {
     this.publish();
   }
 
-  reportReactError(error: Error): void {
-    if (!this.active) return;
+  reportReactError(id: number, error: Error): void {
+    if (!this.active || this.runtime?.id !== id || this.runtime.selection !== this.selection || this.selection === undefined) return;
     this.history.rememberFailure(error);
     if (this.selection?.useDeveloperSupport && this.provider !== undefined) sendRuntimeError(this.provider.getURL(), error);
+    if (this.loading) return;
+    this.failedRequest = this.selectedRequest;
     this.error = error.message;
     this.publish();
   }
 
   private state(): DevLauncherViewState {
-    return new DevLauncherViewState(this.loading, this.progress, this.error, this.recent.slice(), this.servers.slice());
+    return new DevLauncherViewState(
+      this.loading, this.progress, this.error, this.recent.slice(), this.servers.slice(),
+      this.discovery?.searching ?? false, this.discovery?.error, this.hasEmbeddedBundle(),
+      this.failedRequest !== undefined, this.preferences.snapshot(), this.discovery?.filterBySlug ?? '',
+    );
   }
 
   private publish(): void {
@@ -427,13 +683,13 @@ export class DevLauncherController {
 }
 
 class UpdatesRelaunchCallbacks implements UpdatesInterfaceCallbacks {
-  private readonly manager: DevToolsController | undefined;
+  private readonly reload: () => void;
 
-  constructor(manager: DevToolsController | undefined) {
-    this.manager = manager;
+  constructor(reload: () => void) {
+    this.reload = reload;
   }
 
   onRequestRelaunch(): void {
-    this.manager?.reload('Expo Updates requested a development-client reload.');
+    this.reload();
   }
 }

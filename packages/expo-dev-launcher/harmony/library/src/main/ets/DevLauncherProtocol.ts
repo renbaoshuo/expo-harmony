@@ -8,17 +8,58 @@
 import uri from '@ohos.uri';
 import url from '@ohos.url';
 
-export const DEV_LAUNCHER_PACKAGE = '@expo-harmony/expo-dev-launcher';
 export const DEEP_LINK_SCHEME = 'expo-harmony';
 export const DEEP_LINK_HOST = 'open';
 export const EXPO_DEV_CLIENT_HOST = 'expo-development-client';
 export const MANIFEST_PATH = '/manifest';
 export const HARMONY_PLATFORM = 'harmony';
 export const RUNTIME_CONTRACT_ASSET = 'expo-harmony-runtime.json';
-export const LAUNCH_MODE_METADATA = 'expo.devLauncher.launchMode';
+export const DEFAULT_LAUNCH_URL_METADATA = 'DEV_CLIENT_DEFAULT_LAUNCHER_URL';
+export const EMBEDDED_BUNDLE_METADATA = 'EXDevClientEmbeddedBundle';
 export const EXPO_MDNS_SERVICE = '_expo._tcp';
 export const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
 export const NETWORK_TIMEOUT_MS = 60_000;
+
+export function hasEnabledFlag(value: string, name: string): boolean {
+  return decodeQueryValue(new uri.URI(value.trim()).encodedQuery ?? '', name) === '1';
+}
+
+function isLauncherURI(parsed: uri.URI): boolean {
+  const scheme = (parsed.scheme ?? '').toLowerCase();
+  const host = (parsed.host ?? '').toLowerCase();
+  return scheme === DEEP_LINK_SCHEME ? host === DEEP_LINK_HOST : host === EXPO_DEV_CLIENT_HOST;
+}
+
+export function isLauncherLink(value: string): boolean {
+  try {
+    return isLauncherURI(new uri.URI(value.trim()));
+  } catch (_) {
+    return false;
+  }
+}
+
+export function isLauncherHomeLink(value: string): boolean {
+  try {
+    const parsed = new uri.URI(value.trim());
+    decodeURIComponent(value);
+    return isLauncherURI(parsed) && !value.includes('#') && !(parsed.authority ?? '').includes('@')
+      && decodeQueryValue(parsed.encodedQuery ?? '', 'url') === undefined;
+  } catch (_) {
+    return false;
+  }
+}
+
+export function bundleURL(value: string): string {
+  const target = new url.URL(normalizedNetworkURL(value));
+  if (target.pathname === '' || target.pathname === '/') {
+    target.pathname = '/index.bundle';
+    target.searchParams.set('dev', 'true');
+    target.searchParams.set('minify', 'false');
+  }
+  target.searchParams.set('platform', HARMONY_PLATFORM);
+
+  return target.toString();
+}
 
 export class DevLauncherError extends Error {
   readonly code: string;
@@ -50,30 +91,56 @@ function normalizedNetworkURL(value: string): string {
   const trimmed = value.trim();
   if (trimmed.length === 0) throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_URL', 'The development URL is empty.');
 
-  const normalized = trimmed.startsWith('exp://')
+  const lower = trimmed.toLowerCase();
+  const normalized = lower.startsWith('exp://')
     ? `http://${trimmed.slice('exp://'.length)}`
-    : trimmed.startsWith('exps://')
+    : lower.startsWith('exps://')
       ? `https://${trimmed.slice('exps://'.length)}`
       : trimmed;
+
+  return parseNetworkURI(normalized).toString();
+}
+
+function parseNetworkURI(value: string): uri.URI {
+  try {
+    decodeURIComponent(value);
+  } catch (error) {
+    throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_URL', 'The development URL contains invalid percent encoding.', error as Object);
+  }
 
   let parsed: uri.URI;
 
   try {
-    parsed = new uri.URI(normalized);
+    parsed = new uri.URI(value);
   } catch (error) {
     throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_URL', 'The development URL is malformed.', error as Object);
   }
 
   const scheme = (parsed.scheme ?? '').toLowerCase();
   const authority = parsed.authority ?? '';
-  if ((scheme !== 'http' && scheme !== 'https') || authority.length === 0 || authority.includes('@') || (parsed.fragment ?? '').length > 0) {
+  if ((scheme !== 'http' && scheme !== 'https') || !(parsed.host ?? '').length
+    || authority.includes('@') || value.includes('#')) {
     throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_URL', 'Development URLs must use HTTP or HTTPS without credentials or fragments.');
   }
-  return parsed.toString();
+  return parsed;
+}
+
+export function parseHTTPURL(value: string): url.URL {
+  const parsed = new url.URL(parseNetworkURI(value).toString());
+  if (parsed.username || parsed.password) {
+    throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_URL', 'Development URLs must not contain credentials.');
+  }
+  return parsed;
 }
 
 export function resolveDevelopmentURL(value: string): string {
   let parsed: uri.URI;
+
+  try {
+    decodeURIComponent(value.trim());
+  } catch (error) {
+    throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_URL', 'The development URL contains invalid percent encoding.', error as Object);
+  }
 
   try {
     parsed = new uri.URI(value.trim());
@@ -82,18 +149,17 @@ export function resolveDevelopmentURL(value: string): string {
   }
 
   const scheme = (parsed.scheme ?? '').toLowerCase();
-  const host = (parsed.host ?? '').toLowerCase();
-  const harmonyLink = scheme === DEEP_LINK_SCHEME;
-  const expoLink = host === EXPO_DEV_CLIENT_HOST;
-  if (!harmonyLink && !expoLink) return normalizedNetworkURL(value);
-  if ((parsed.fragment ?? '').length > 0) {
-    throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_URL', 'Development-client links must not contain fragments.');
+  if (!isLauncherURI(parsed)) {
+    if (scheme === DEEP_LINK_SCHEME) {
+      throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_URL', `Expected ${DEEP_LINK_SCHEME}://${DEEP_LINK_HOST}.`);
+    }
+    return normalizedNetworkURL(value);
   }
-  if (harmonyLink && host !== DEEP_LINK_HOST) {
-    throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_URL', `Expected ${DEEP_LINK_SCHEME}://${DEEP_LINK_HOST}.`);
+  if (value.includes('#') || (parsed.authority ?? '').includes('@')) {
+    throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_URL', 'Development-client links must not contain credentials or fragments.');
   }
 
-  const target = decodeQueryValue(parsed.query ?? '', 'url');
+  const target = decodeQueryValue(parsed.encodedQuery ?? '', 'url');
   if (target === undefined || target.length === 0) {
     throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_URL', 'The development-client link is missing its url parameter.');
   }
@@ -103,14 +169,15 @@ export function resolveDevelopmentURL(value: string): string {
 export function manifestURL(value: string): string {
   const source = resolveDevelopmentURL(value);
   const parsed = new uri.URI(source);
-  const sourcePath = parsed.path ?? '';
+  const sourcePath = parsed.encodedPath ?? '';
   if (sourcePath.endsWith('.bundle') || sourcePath.endsWith('.js')) return source;
   if (sourcePath === '' || sourcePath === '/' || sourcePath === MANIFEST_PATH || sourcePath === '/index.exp') {
     try {
-      decodeURIComponent(parsed.query ?? '');
+      decodeURIComponent(parsed.encodedQuery ?? '');
       const target = new url.URL(source);
       target.searchParams.delete('platform');
       target.searchParams.append('platform', HARMONY_PLATFORM);
+
       return canonicalDevelopmentManifestURL(target.toString());
     } catch (error) {
       throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_URL', 'The development URL contains invalid percent encoding.', error as Object);
@@ -122,10 +189,8 @@ export function manifestURL(value: string): string {
 // Strict identity validation is separate from user-input normalization: never
 // silently repair a manifest's wrong/duplicate platform or discard its query.
 export function canonicalDevelopmentManifestURL(value: string): string {
-  const target = new url.URL(value);
-  decodeURIComponent(target.search);
-  if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password || target.hash
-    || !['/', MANIFEST_PATH, '/index.exp'].includes(target.pathname)
+  const target = parseHTTPURL(value);
+  if (!['/', MANIFEST_PATH, '/index.exp'].includes(target.pathname)
     || target.searchParams.getAll('platform').length !== 1 || target.searchParams.get('platform') !== HARMONY_PLATFORM) {
     throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_URL', 'Expected an HTTP(S) Harmony manifest URL without credentials or fragments.');
   }

@@ -29,7 +29,7 @@ export class DevLauncherDevMenuDelegate implements DevMenuHostDelegate, DevMenuA
 
   devMenuNavigateHome(): void {
     this.controller
-      .showLauncher((): Promise<void> => this.runtime.suspend())
+      .showLauncherForRuntime(this.runtime.instance.getId())
       .catch((error: Error): void => {
         this.runtime.core.logger.warn(`Unable to return to Expo Dev Launcher: ${error.message}`);
       });
@@ -48,12 +48,19 @@ export class ExpoDevLauncherDevMenuBinding implements ReactRuntimeBinding {
     const id = context.instance.getId();
     const delegate = new DevLauncherDevMenuDelegate(controller, context);
     const release = ExpoDevMenuRuntime.registerHostDelegate(id, delegate);
+    const unbind = controller.registerRuntime(
+      id,
+      (): Promise<void> => context.suspend(),
+      (reason: string): Promise<void> => context.reload(reason),
+    );
     let unregister: () => void;
 
     try {
       unregister = ExpoDevMenuRuntime.registerAppInfoProvider(id, delegate);
     } catch (error) {
+      unbind();
       release();
+
       throw new ExpoModuleError(
         error instanceof ExpoModuleError ? error.code : 'ERR_DEV_LAUNCHER_DELEGATE',
         error instanceof Error ? error.message : String(error),
@@ -62,6 +69,7 @@ export class ExpoDevLauncherDevMenuBinding implements ReactRuntimeBinding {
     }
 
     return (): void => {
+      unbind();
       try {
         unregister();
       } finally {

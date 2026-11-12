@@ -6,9 +6,8 @@
  */
 
 import type { common } from '@kit.AbilityKit';
-import type { DevToolsController } from '@rnoh/react-native-openharmony/src/main/ets/RNOH/DevToolsController';
 import type { JSBundleProvider, RNInstance } from '@rnoh/react-native-openharmony';
-import type { ReactNativeHostHandler } from '@expo-harmony/expo-modules-core';
+import type { ReactNativeHost, ReactNativeHostHandler } from '@expo-harmony/expo-modules-core';
 import { DevLauncherController } from './DevLauncherController';
 
 export class ExpoDevLauncherReactNativeHostHandler implements ReactNativeHostHandler {
@@ -22,6 +21,11 @@ export class ExpoDevLauncherReactNativeHostHandler implements ReactNativeHostHan
     this.controller.activate(debug);
   }
 
+  onDidCreateReactHost(context: common.Context, host: ReactNativeHost): void {
+    const provider = host.hasEmbeddedJSBundle?.(context) === false ? undefined : host.createEmbeddedJSBundleProvider?.(context);
+    this.controller.setEmbeddedProvider(provider);
+  }
+
   getUseDeveloperSupport(): boolean | undefined {
     return this.controller.useDeveloperSupport;
   }
@@ -33,12 +37,8 @@ export class ExpoDevLauncherReactNativeHostHandler implements ReactNativeHostHan
     return this.controller.selectedProvider;
   }
 
-  onDidCreateDevSupportManager(manager: DevToolsController): void {
-    this.controller.setDevToolsManager(manager);
-  }
-
   get onReactInstanceException(): ((_debug: boolean, instance: RNInstance, error: Error) => void) | undefined {
     if (!this.controller.enabled) return undefined;
-    return (_debug: boolean, _instance: RNInstance, error: Error): void => this.controller.reportReactError(error);
+    return (_debug: boolean, instance: RNInstance, error: Error): void => this.controller.reportReactError(instance.getId(), error);
   }
 }

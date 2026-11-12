@@ -5,12 +5,11 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import uri from '@ohos.uri';
 import type { Want, common } from '@kit.AbilityKit';
 import { bundleManager } from '@kit.AbilityKit';
 import { ExpoAbilityLifecycleSubscriber } from '@expo-harmony/expo-modules-core';
 import { DevLauncherController } from './DevLauncherController';
-import { DEEP_LINK_SCHEME, EXPO_DEV_CLIENT_HOST } from './DevLauncherProtocol';
+import { isLauncherLink } from './DevLauncherProtocol';
 
 export class ExpoDevLauncherLifecycleSubscriber extends ExpoAbilityLifecycleSubscriber {
   private readonly controller: DevLauncherController;
@@ -20,7 +19,7 @@ export class ExpoDevLauncherLifecycleSubscriber extends ExpoAbilityLifecycleSubs
     super(context);
     this.debug = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION).appInfo.debug;
     this.controller = DevLauncherController.get(context.getApplicationContext());
-    this.controller.attachAbility(context);
+    if (this.debug) this.controller.attachAbility(context);
   }
 
   override onWillReceiveWant(want: Want): void {
@@ -28,19 +27,19 @@ export class ExpoDevLauncherLifecycleSubscriber extends ExpoAbilityLifecycleSubs
   }
 
   override onForeground(): void {
-    this.controller.foreground();
+    this.controller.foreground(this.context);
   }
 
   override onDidForeground(): void {
-    this.controller.foreground();
+    this.controller.foreground(this.context);
   }
 
   override onBackground(): void {
-    this.controller.background();
+    this.controller.background(this.context);
   }
 
   override onDidBackground(): void {
-    this.controller.background();
+    this.controller.background(this.context);
   }
 
   override onDestroy(): void {
@@ -51,17 +50,10 @@ export class ExpoDevLauncherLifecycleSubscriber extends ExpoAbilityLifecycleSubs
     if (!this.debug) return;
 
     const value = want.uri;
-    if (value === undefined || value.length === 0) return;
+    if (value === undefined || !isLauncherLink(value)) return;
 
-    try {
-      const link = new uri.URI(value);
-
-      if ((link.scheme ?? '').toLowerCase() === DEEP_LINK_SCHEME || (link.host ?? '').toLowerCase() === EXPO_DEV_CLIENT_HOST) {
-        this.controller.receiveLink(value);
-
-        // Clear the URI before RNOH caches it; preserve the original Want parameters.
-        want.uri = undefined;
-      }
-    } catch (_) {}
+    // Clear the URI before RNOH caches it; preserve the original Want parameters.
+    want.uri = undefined;
+    this.controller.receiveLink(value);
   }
 }

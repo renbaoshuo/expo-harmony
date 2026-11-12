@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { canonicalDevelopmentManifestURL, DevLauncherError, RUNTIME_CONTRACT_ASSET } from './DevLauncherProtocol';
+import { canonicalDevelopmentManifestURL, DevLauncherError, parseHTTPURL, RUNTIME_CONTRACT_ASSET } from './DevLauncherProtocol';
 import { resourceManager } from '@kit.LocalizationKit';
 import util from '@ohos.util';
 import url from '@ohos.url';
@@ -139,18 +139,18 @@ export function validateDevelopmentManifest(client: JsonObject, manifest: JsonOb
   let asset: url.URL;
 
   try {
-    asset = new url.URL(bundle);
-    decodeURIComponent(asset.search);
+    asset = parseHTTPURL(bundle);
   } catch (_) {
     throw new DevLauncherError('ERR_HARMONY_INCOMPATIBLE', 'The bundle URL is invalid.');
   }
-  if (asset.origin !== origin || asset.username || asset.password || !asset.pathname.endsWith('.bundle') || asset.hash) {
+  if (asset.origin !== origin || !asset.pathname.endsWith('.bundle')) {
     throw new DevLauncherError('ERR_HARMONY_INCOMPATIBLE', 'Manifest and bundle must use the same HTTP(S) origin and a .bundle launch asset.');
   }
 
   const expected: Record<string, string> = {
     platform: 'harmony', dev: 'true', 'transform.engine': 'hermes', 'transform.bytecode': '0',
   };
+
   for (const [name, value] of Object.entries(expected)) {
     const matches = asset.searchParams.getAll(name);
     if (matches.length !== 1 || matches[0] !== value) throw new DevLauncherError('ERR_HARMONY_INCOMPATIBLE', `Bundle query parameter ${name} must be ${value}.`);

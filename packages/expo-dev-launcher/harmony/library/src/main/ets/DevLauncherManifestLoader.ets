@@ -8,7 +8,6 @@
 import http from '@ohos.net.http';
 import uri from '@ohos.uri';
 import util from '@ohos.util';
-import { EASClientID } from '@expo-harmony/expo-eas-client';
 import { Manifest } from '@expo-harmony/expo-manifests';
 import {
   UpdatesControllerRegistry,
@@ -18,7 +17,8 @@ import {
 } from '@expo-harmony/expo-updates-interface';
 import type { common } from '@kit.AbilityKit';
 import { FileJSBundleProvider, JSBundleProvider, MetroJSBundleProvider } from '@rnoh/react-native-openharmony';
-import { DevLauncherError, HARMONY_PLATFORM, MAX_MANIFEST_BYTES, NETWORK_TIMEOUT_MS, manifestURL } from './DevLauncherProtocol';
+import { getOrCreateInstallationID } from './DevLauncherInstallationID';
+import { bundleURL, DevLauncherError, HARMONY_PLATFORM, MANIFEST_PATH, MAX_MANIFEST_BYTES, NETWORK_TIMEOUT_MS, manifestURL, resolveDevelopmentURL } from './DevLauncherProtocol';
 import { readClientRuntime, validateDevelopmentManifest } from './HarmonyRuntimeCompatibility';
 
 type JsonObject = Record<string, ESObject>;
@@ -26,16 +26,19 @@ type JsonObject = Record<string, ESObject>;
 export class LaunchSelection {
   readonly provider: JSBundleProvider;
   readonly manifest: JsonObject | undefined;
-  readonly manifestURL: string;
+  readonly manifestURL: string | undefined;
   readonly name: string;
   readonly useDeveloperSupport: boolean;
+  readonly activateUpdate?: () => void;
 
-  constructor(provider: JSBundleProvider, manifest: JsonObject | undefined, manifestURL: string, name: string, useDeveloperSupport: boolean) {
+  constructor(provider: JSBundleProvider, manifest: JsonObject | undefined, manifestURL: string | undefined, name: string,
+    useDeveloperSupport: boolean, activateUpdate?: () => void) {
     this.provider = provider;
     this.manifest = manifest;
     this.manifestURL = manifestURL;
     this.name = name;
     this.useDeveloperSupport = useDeveloperSupport;
+    this.activateUpdate = activateUpdate;
   }
 }
 
@@ -68,29 +71,30 @@ function appName(manifest: Manifest, fallback: string): string {
 }
 
 export class DevLauncherManifestLoader {
-  private readonly clientID: string;
+  private readonly clientID: Promise<string>;
   private readonly context: common.ApplicationContext;
   readonly appKeys: string[];
 
   constructor(context: common.ApplicationContext, appKeys: string[]) {
     this.context = context;
     this.appKeys = appKeys;
-    this.clientID = new EASClientID(context).clientID;
+    this.clientID = getOrCreateInstallationID(context);
   }
 
   async load(input: string, progress: (value: number) => void): Promise<LaunchSelection> {
-    const url = manifestURL(input);
+    const target = resolveDevelopmentURL(input);
+    const path = new uri.URI(target).encodedPath ?? '';
+    const url = manifestURL(target);
     const updates = UpdatesControllerRegistry.controller as UpdatesDevLauncherInterface | undefined;
-    if (updates !== undefined && typeof updates.fetchUpdateWithConfiguration === 'function') updates.reset();
-    if (url.split('?')[0].endsWith('.bundle') || url.split('?')[0].endsWith('.js')) {
-      return new LaunchSelection(new MetroJSBundleProvider(url, this.appKeys), undefined, url, url, true);
+    if (path.endsWith('.bundle') || path.endsWith('.js')) {
+      return new LaunchSelection(new MetroJSBundleProvider(bundleURL(url), this.appKeys), undefined, url, url, true);
     }
-    if (await this.rawBundleAt(url)) {
-      return new LaunchSelection(new MetroJSBundleProvider(url, this.appKeys), undefined, url, url, true);
+    if (path !== MANIFEST_PATH && path !== '/index.exp' && await this.rawBundleAt(target)) {
+      return new LaunchSelection(new MetroJSBundleProvider(bundleURL(target), this.appKeys), undefined, target, target, true);
     }
 
     if (updates !== undefined && typeof updates.fetchUpdateWithConfiguration === 'function') {
-      const configuration = this.updatesConfiguration(updates, url);
+      const configuration = await this.updatesConfiguration(updates, url);
       if (configuration !== undefined) return await this.loadWithUpdates(url, updates, configuration, progress);
     }
 
@@ -107,11 +111,12 @@ export class DevLauncherManifestLoader {
     );
   }
 
-  private headers(): Record<string, string> {
+  private async headers(): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
     headers.accept = 'application/expo+json,application/json';
     headers['expo-platform'] = HARMONY_PLATFORM;
-    headers['expo-dev-client-id'] = this.clientID;
+    headers['expo-dev-client-id'] = await this.clientID;
+
     return headers;
   }
 
@@ -121,7 +126,7 @@ export class DevLauncherManifestLoader {
     try {
       const response = await request.request(url, {
         method: http.RequestMethod.HEAD,
-        header: this.headers(),
+        header: await this.headers(),
         expectDataType: http.HttpDataType.STRING,
         usingCache: false,
         connectTimeout: NETWORK_TIMEOUT_MS,
@@ -132,6 +137,7 @@ export class DevLauncherManifestLoader {
         response.responseCode >= 200 &&
         response.responseCode < 300 &&
         headerValue(response.header, 'exponent-server') === undefined &&
+        headerValue(response.header, 'expo-protocol-version') === undefined &&
         isRawBundle(headerValue(response.header, 'content-type'))
       );
     } catch (_) {
@@ -147,7 +153,7 @@ export class DevLauncherManifestLoader {
     try {
       const response = await request.request(url, {
         method: http.RequestMethod.GET,
-        header: this.headers(),
+        header: await this.headers(),
         expectDataType: http.HttpDataType.ARRAY_BUFFER,
         usingCache: false,
         connectTimeout: NETWORK_TIMEOUT_MS,
@@ -186,17 +192,18 @@ export class DevLauncherManifestLoader {
     return new LaunchSelection(new MetroJSBundleProvider(manifest.getBundleURL(), this.appKeys), json, url, appName(manifest, url), true);
   }
 
-  private updatesConfiguration(controller: UpdatesDevLauncherInterface, url: string): JsonObject | undefined {
+  private async updatesConfiguration(controller: UpdatesDevLauncherInterface, url: string): Promise<JsonObject | undefined> {
     const runtimeVersion = controller.runtimeVersion;
     if (runtimeVersion === null) return undefined;
 
     const headers: JsonObject = {};
     headers['Expo-Updates-Environment'] = 'DEVELOPMENT';
-    headers['Expo-Dev-Client-ID'] = this.clientID;
+    headers['Expo-Dev-Client-ID'] = await this.clientID;
 
     const configuration: JsonObject = {};
     configuration.updateUrl = url;
-    configuration.scopeKey = this.projectScopeURL(url, controller.updateUrl);
+    const configuredURL = controller.configuredUpdateUrl === undefined ? controller.updateUrl : controller.configuredUpdateUrl;
+    configuration.scopeKey = this.projectScopeURL(url, configuredURL);
     configuration.enabled = true;
     configuration.useEmbeddedUpdate = false;
     configuration.fallbackToCacheTimeout = NETWORK_TIMEOUT_MS;
@@ -222,7 +229,7 @@ export class DevLauncherManifestLoader {
     progress: (value: number) => void,
   ): Promise<LaunchSelection> {
     return await new Promise<LaunchSelection>((resolve, reject): void => {
-      controller.fetchUpdateWithConfiguration(configuration, new UpdatesFetchCallbacks(this, url, progress, resolve, reject));
+      controller.fetchUpdateWithConfiguration(configuration, new UpdatesFetchCallbacks(this, url, progress, resolve, reject), true);
     });
   }
 }
@@ -258,6 +265,7 @@ class UpdatesFetchCallbacks implements UpdatesDevLauncherCallback {
 
   onSuccess(update: UpdatesDevLauncherResult | null): void {
     if (this.settled) return;
+
     try {
       if (update === null) {
         if (this.developmentManifest === undefined) {
@@ -291,16 +299,16 @@ class UpdatesFetchCallbacks implements UpdatesDevLauncherCallback {
       }
 
       const parsed = Manifest.fromManifestJson(manifest);
-      this.settled = true;
-      this.resolve(
-        new LaunchSelection(
-          new FileJSBundleProvider(update.launchAssetPath, this.loader.appKeys),
-          manifest,
-          this.url,
-          appName(parsed, this.url),
-          false,
-        ),
+      const selection = new LaunchSelection(
+        new FileJSBundleProvider(update.launchAssetPath, this.loader.appKeys),
+        manifest,
+        this.url,
+        appName(parsed, this.url),
+        false,
+        update.activate,
       );
+      this.settled = true;
+      this.resolve(selection);
     } catch (error) {
       if (this.settled) return;
       this.settled = true;

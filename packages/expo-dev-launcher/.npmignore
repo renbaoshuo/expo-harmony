@@ -1,3 +1,5 @@
+scripts/
+*.tgz
 harmony/*
 !harmony/library.har
 !harmony/library/
