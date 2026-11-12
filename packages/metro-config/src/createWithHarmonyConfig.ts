@@ -8,10 +8,10 @@
 import crypto from 'node:crypto';
 import type { InputConfigT } from 'metro-config';
 
-import { DefaultReactNativeHarmonyPackage, HarmonyPlatform, HarmonyPlatformExtensions } from './constants';
+import { DefaultReactNativeHarmonyPackage, HarmonyBuildArtifacts, HarmonyPlatform, HarmonyPlatformExtensions } from './constants';
 import { ExpoHarmonyMetroError } from './errors';
 import { createResolver, getEntries, type HarmonyResolverOptions } from './resolver';
-import { createHarmonyPathNormalizer, getBootstrapModules } from './runtime';
+import { createHarmonyPathNormalizer, getBootstrapModules, getHarmonyPackageRoot } from './runtime';
 import { composeSerializer } from './serializer';
 
 export interface HarmonyMetroConfigOptions {
@@ -161,23 +161,28 @@ function normalizeServer(
 function mergeBlockLists(
   base: RegExp | RegExp[] | undefined,
   harmony: RegExp | RegExp[] | undefined
-): RegExp[] | undefined {
+): RegExp[] {
   const toArray = (value: RegExp | RegExp[] | undefined): RegExp[] => {
     if (value === undefined || value === null) return [];
     return Array.isArray(value) ? value : [value];
   };
-  const entries = [
-    ...toArray(base),
-    ...toArray(harmony),
+  const basePatterns = toArray(base);
+  const harmonyPatterns = toArray(harmony);
+  const flags = basePatterns[0]?.flags ?? harmonyPatterns[0]?.flags ?? '';
+  // Metro combines the block list into one regex and requires identical flags.
+  return [
+    ...basePatterns,
+    ...[...harmonyPatterns, HarmonyBuildArtifacts].map(pattern =>
+      flags && !pattern.flags ? new RegExp(pattern.source, flags) : pattern
+    ),
   ];
-
-  return entries.length > 0 ? entries : undefined;
 }
 
 function readPlatformExtensions(
   resolver: unknown
 ): Record<string, readonly string[] | undefined> {
   if (!resolver || typeof resolver !== 'object') return {};
+
   const value = (resolver as { unstable_platformExtensions?: unknown }).unstable_platformExtensions;
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, readonly string[] | undefined>
@@ -190,14 +195,15 @@ export function createWithHarmonyConfig({
 }: ConfigFactories) {
   if (typeof createHarmonyMetroConfig !== 'function' || typeof mergeConfig !== 'function') {
     throw new ExpoHarmonyMetroError(
-      'ERR_EXPO_HARMONY_INVALID_FACTORIES',
-      'createWithHarmonyConfig requires Metro configuration functions.'
+      'ERR_EXPO_HARMONY_INCOMPATIBLE_PEER_DEPENDENCY',
+      '@expo-harmony/metro-config requires mergeConfig() from Metro and createHarmonyMetroConfig() from RNOH.'
     );
   }
 
   return function withHarmonyConfig<T extends InputConfigT>(
     config: T,
-    options: WithHarmonyConfigOptions = {}
+    options: WithHarmonyConfigOptions = {},
+    getScreensPackageRoot?: () => string
   ): T & InputConfigT {
     assertObject(config, 'config');
     validateOptions(options);
@@ -209,26 +215,39 @@ export function createWithHarmonyConfig({
       ...options.harmonyConfigOptions,
       reactNativeHarmonyPackageName: harmonyPackage,
     });
-    const merged = mergeConfig(config, native);
     const baseResolver = config.resolver?.resolveRequest;
-    const harmonyResolver = merged.resolver?.resolveRequest;
+    const harmonyResolver = native?.resolver?.resolveRequest;
     if (typeof harmonyResolver !== 'function') {
       throw new ExpoHarmonyMetroError(
         'ERR_EXPO_HARMONY_INCOMPATIBLE_PEER_DEPENDENCY',
-        'createHarmonyMetroConfig() did not return a resolver.resolveRequest function.'
+        'createHarmonyMetroConfig() must return a resolver.resolveRequest function.'
       );
+    }
+
+    const merged = mergeConfig(config, native);
+    const baseTransform = config.transformer?.getTransformOptions;
+    const harmonyTransform = native.transformer?.getTransformOptions;
+    const transformer = { ...merged.transformer };
+    if (baseTransform && harmonyTransform) {
+      transformer.getTransformOptions = function (entryPoints, options, getDependencies) {
+        const getTransformOptions = options.platform === HarmonyPlatform
+          ? harmonyTransform
+          : baseTransform;
+        return getTransformOptions.call(this, entryPoints, options, getDependencies);
+      };
     }
 
     const conditions = options.conditions ?? ['harmony', 'react-native'];
     const existing = merged.resolver?.unstable_conditionsByPlatform?.[HarmonyPlatform] ?? [];
-    const existingPlatformExtensions = readPlatformExtensions(merged.resolver);
+    const extensions = readPlatformExtensions(merged.resolver);
     const blockList = mergeBlockLists(config.resolver?.blockList, native.resolver?.blockList);
     const root = options.projectRoot ?? merged.projectRoot ?? process.cwd();
-    const normalizePath = createHarmonyPathNormalizer(harmonyPackage, root);
+    const harmonyPackageRoot = getHarmonyPackageRoot(harmonyPackage, root);
+    const reactPackage = getEntries<string>(options.aliases, 'options.aliases').find(([name]) => name === 'react')?.[1] || 'react';
+    const normalizePath = createHarmonyPathNormalizer(harmonyPackage, root, reactPackage);
     const bootstrap = getBootstrapModules(harmonyPackage, root);
     const rewriteRequestUrl = wrapRequestUrl(merged.server?.rewriteRequestUrl);
     const server = normalizeServer(merged.server, rewriteRequestUrl);
-    const reactPackage = getEntries(options.aliases, 'options.aliases').find(([name]) => name === 'react')?.[1] || 'react';
     const environment = Object.keys(process.env).filter(key => key.startsWith('EXPO_PUBLIC_')).sort()
       .map(key => [key, process.env[key]]);
     const cache = process.env.NODE_ENV === 'production'
@@ -250,10 +269,11 @@ export function createWithHarmonyConfig({
       ...merged,
       cacheVersion: cache,
       serializer,
+      transformer,
       ...(server ? { server } : {}),
       resolver: {
         ...merged.resolver,
-        ...(blockList ? { blockList } : {}),
+        blockList,
         platforms: [...new Set([
           ...(config.resolver?.platforms ?? []),
           ...(native.resolver?.platforms ?? []),
@@ -264,14 +284,11 @@ export function createWithHarmonyConfig({
           ...merged.resolver?.unstable_conditionsByPlatform,
           [HarmonyPlatform]: [...new Set([...existing, ...conditions])],
         },
-        // Register `harmony` through Expo's out-of-tree platform channel. Expo CLI
-        // 55.0.33+ folds these extensions into platform-less strict resolution
-        // (server routes, DOM components) via `constructPlatformExtensions`, the
-        // same mechanism it uses for tvos/macos. Older CLIs ignore the field.
+        // Expo uses these extensions for platform-less strict resolution of server and DOM entries.
         unstable_platformExtensions: {
-          ...existingPlatformExtensions,
+          ...extensions,
           [HarmonyPlatform]: [
-            ...(existingPlatformExtensions[HarmonyPlatform] ?? HarmonyPlatformExtensions),
+            ...(extensions[HarmonyPlatform] ?? HarmonyPlatformExtensions),
           ],
         },
         resolveRequest: Object.assign(createResolver({
@@ -280,7 +297,12 @@ export function createWithHarmonyConfig({
           normalizePath,
           options,
           projectRoot: root,
-        }), { harmonyRuntime: { reactPackage, harmonyPackage } }),
+          harmonyPackage,
+          harmonyPackageRoot,
+          getScreensPackageRoot,
+          baseAssetRegistryPath: config.transformer?.assetRegistryPath,
+          harmonyAssetRegistryPath: native.transformer?.assetRegistryPath,
+        }), { harmonyRuntime: { reactPackage, harmonyPackage, harmonyPackageRoot } }),
       },
     } as unknown as T & InputConfigT;
   };

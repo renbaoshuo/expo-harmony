@@ -10,7 +10,7 @@ import path from 'node:path';
 
 import type { InputConfigT } from 'metro-config';
 
-import { HarmonyPlatform } from './constants';
+import { DefaultReactNativeHarmonyPackage, HarmonyPlatform, HarmonyScreensPackage } from './constants';
 import { ExpoHarmonyMetroError } from './errors';
 import type { PathNormalizer } from './runtime';
 
@@ -93,9 +93,15 @@ interface ResolverOptions {
   normalizePath: PathNormalizer;
   options: HarmonyResolverOptions;
   projectRoot: string;
+  harmonyPackage: string;
+  harmonyPackageRoot: string;
+  getScreensPackageRoot?: () => string;
+  baseAssetRegistryPath?: string;
+  harmonyAssetRegistryPath?: string;
 }
 
 const NoResolution = Symbol('NoResolution');
+const HarmonySourceCode = path.join(__dirname, 'NativeSourceCode.harmony.js');
 interface OriginPackage {
   harmonyAlias: string | null;
   name: string | null;
@@ -272,9 +278,15 @@ export function createResolver({
   normalizePath,
   options,
   projectRoot,
+  harmonyPackage,
+  harmonyPackageRoot,
+  getScreensPackageRoot,
+  baseAssetRegistryPath,
+  harmonyAssetRegistryPath,
 }: ResolverOptions): MetroResolver {
   const aliases = getEntries<string>(options.aliases, 'options.aliases')
     .sort(([left], [right]) => right.length - left.length);
+  const runtimeSourceCode = path.join(harmonyPackageRoot, 'Libraries/NativeModules/specs/NativeSourceCode.js');
 
   return function resolveRequest(context, moduleName, platform) {
     const metroResolver = context.resolveRequest;
@@ -283,6 +295,17 @@ export function createResolver({
       targetPlatform: string | null = platform,
       targetContext: HarmonyResolutionContext = context
     ): HarmonyResolution => {
+      if (platform === HarmonyPlatform) {
+        // Bind the default runtime to Core even when the app has another copy.
+        if (harmonyPackage === DefaultReactNativeHarmonyPackage
+          && (targetModuleName === harmonyPackage || targetModuleName.startsWith(`${harmonyPackage}/`))) {
+          targetModuleName = path.join(harmonyPackageRoot, targetModuleName.slice(harmonyPackage.length));
+        } else if (getScreensPackageRoot && targetModuleName.startsWith(`${HarmonyScreensPackage}/src/`)) {
+          // RNOH also redirects relative imports inside the upstream Screens package.
+          targetModuleName = path.join(getScreensPackageRoot(), targetModuleName.slice(HarmonyScreensPackage.length));
+        }
+      }
+
       if (!baseResolver) {
         return metroResolver(targetContext, targetModuleName, targetPlatform);
       }
@@ -294,7 +317,12 @@ export function createResolver({
       );
     };
 
-    if (platform !== HarmonyPlatform) return resolveBase(moduleName, platform);
+    if (platform !== HarmonyPlatform) {
+      // Harmony's transformer uses a different registry for bundle-owned assets.
+      // Keep Expo's registry in web/DOM bundles from the same Metro server.
+      const target = moduleName === harmonyAssetRegistryPath ? baseAssetRegistryPath ?? moduleName : moduleName;
+      return resolveBase(target, platform);
+    }
 
     const resolveHarmony = (
       targetModuleName: string = moduleName,
@@ -315,7 +343,7 @@ export function createResolver({
       return harmonyResolver(harmonyContext, targetModuleName, targetPlatform);
     };
 
-    return normalizeResolution(resolveConfiguredRequest(
+    const resolution = normalizeResolution(resolveConfiguredRequest(
       options,
       aliases,
       {
@@ -327,5 +355,12 @@ export function createResolver({
         resolveHarmony,
       }
     ), normalizePath);
+
+    if (context.dev && resolution.type === 'sourceFile' && resolution.filePath === runtimeSourceCode
+      && context.originModulePath !== HarmonySourceCode) {
+      return { ...resolution, filePath: HarmonySourceCode };
+    }
+
+    return resolution;
   };
 }

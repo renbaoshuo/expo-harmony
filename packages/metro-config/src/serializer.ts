@@ -63,16 +63,21 @@ export function composeSerializer(
             + 'the required Harmony bootstrap cannot be preserved.'
           );
         }
+
         modules.push(...result);
       }
 
-      const normalized = unique(modules.map(normalizePath));
-      if (!bootstrap) return normalized;
-
-      const required = [bootstrap.initializeCore, bootstrap.expoWinter, bootstrap.metroRuntime];
-      const requiredSet = new Set(required);
-
-      return [...required, ...normalized.filter(module => !requiredSet.has(module))];
+      const required = bootstrap ? [bootstrap.initializeCore, bootstrap.expoWinter, bootstrap.metroRuntime] : [];
+      const variants = modules.map(module => [module, normalizePath(module)] as const);
+      // The hook has no platform argument. Metro runs only paths in the current
+      // graph, so keep the original paths next to their Harmony variants.
+      return unique([
+        ...required.flatMap(module => [
+          module,
+          ...variants.filter(([, normalized]) => normalized === module).map(([original]) => original),
+        ]),
+        ...variants.flat(),
+      ]);
     };
   }
 

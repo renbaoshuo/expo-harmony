@@ -1,186 +1,137 @@
 # @expo-harmony/metro-config
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/metro-config)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/metro-config) | [Expo Metro 配置文档](https://docs.expo.dev/guides/customizing-metro/)
 
-用于将 Expo Metro 配置与 React Native OpenHarmony（RNOH）组合起来，使 Expo 项目能够同时支持 HarmonyOS。
+本包用于在 Expo 项目的 Metro 配置中加入 HarmonyOS 支持。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
 ```bash
-npm install @expo-harmony/metro-config @expo/metro-runtime@^55.0.0 @react-native-oh/react-native-harmony@0.84.1 metro-config@^0.83.0
+npm install @expo-harmony/metro-config @expo-harmony/expo-modules-core
 ```
 
-这个包会隔离 Expo 与 RNOH 的 resolver 调用链：
+## 配置 Metro
 
-- Android、iOS 和 Web 请求继续使用 Expo 原有的 resolver。
-- Harmony 请求先经过项目自定义的重定向规则，再进入 RNOH resolver。
-- 当 RNOH 需要解析具体文件或依赖时，会重新委托给原有的 Expo resolver，因而能够保留 Expo Router、TypeScript paths 等 Expo 能力。
-
-## 基础用法
-
-按照下面的逻辑修改项目的 `metro.config.js`：
+在项目根目录的 `metro.config.js` 中，将 Expo 默认配置传给 `withHarmonyConfig`：
 
 ```js
-'use strict';
+const { getDefaultConfig } = require('expo/metro-config');
+const { withHarmonyConfig } = require('@expo-harmony/metro-config');
 
+const projectRoot = __dirname;
+const config = getDefaultConfig(projectRoot);
+
+module.exports = withHarmonyConfig(config, { projectRoot });
+```
+
+如果同一份 Metro 配置也用于 Android 或 iOS，可以只在 HarmonyOS 构建时启用 HarmonyOS 配置：
+
+```js
 const { getDefaultConfig } = require('expo/metro-config');
 const { withHarmonyConfig } = require('@expo-harmony/metro-config');
 
 const projectRoot = __dirname;
 const isHarmony = process.env.EXPO_METRO_TARGET === 'harmony';
-let config = getDefaultConfig(projectRoot);
+const config = getDefaultConfig(projectRoot);
 
-config = withHarmonyConfig(config, {
+module.exports = withHarmonyConfig(config, {
   enabled: isHarmony,
   projectRoot,
 });
-
-module.exports = config;
 ```
 
-当 `enabled` 为 `false` 时，`withHarmonyConfig` 会直接返回传入的配置，且不会加载 RNOH 依赖。因此，应用可以将 `@react-native-oh/react-native-harmony` 放在 `optionalDependencies` 中，没有安装 Harmony 工具链的 Android、iOS 开发者也不会受到影响。
+`enabled` 默认为 `true`。设为 `false` 时会原样返回传入的 Metro 配置。通过 `expo-harmony start` 启动 HarmonyOS 开发服务时，CLI 会设置 `EXPO_METRO_TARGET=harmony`。
 
-安装 `@expo-harmony/cli` 后，使用 `expo-harmony start` 启动 Metro，它会自动设置 `EXPO_METRO_TARGET=harmony`，再由 Harmony 原生应用发起 Harmony bundle 请求：
+## 替换 HarmonyOS 模块
 
-```json
-{
-  "scripts": {
-    "start": "expo start",
-    "start:harmony": "expo-harmony start"
-  }
-}
-```
+如果某个依赖没有适配 HarmonyOS，可以用 `aliases` 指向适配文件，或用 `redirects` 替换单个模块。`redirects` 的目标可以是模块名；设为 `false` 时，该模块会解析为空模块。`emptyModules` 则可以按模块名、正则表达式或函数匹配需要留空的模块。
 
-Harmony 原生端通过 Expo virtual entry 请求 bundle：
-
-```text
-/.expo/.virtual-metro-entry.bundle?platform=harmony&dev=true&minify=false&modulesOnly=false&runModule=true
-```
-
-Expo Metro 会把这个 URL 重写到 `package.json#main` 解析出的实际入口。不要向 Expo CLI 传递 `--harmony`，这样会导致无法正常启动。
-
-## 配置
-
-配置项覆盖了实际 Expo/RNOH 项目常见的适配场景：
+这些规则只影响 HarmonyOS bundle，Android 和 iOS 仍使用 Expo 的模块解析配置。
 
 ```js
 const path = require('node:path');
+const { getDefaultConfig } = require('expo/metro-config');
+const { withHarmonyConfig } = require('@expo-harmony/metro-config');
 
-config = withHarmonyConfig(config, {
-  // 是否启用 Harmony 配置，默认为 true。
-  // false 时原样返回 config，且不会加载 RNOH 和 metro-config peer dependencies。
-  enabled: isHarmony,
+const projectRoot = __dirname;
+const config = getDefaultConfig(projectRoot);
 
-  // 项目根目录。
-  // 默认依次使用 config.projectRoot 和 process.cwd()。
+module.exports = withHarmonyConfig(config, {
   projectRoot,
-
-  // 指定 RNOH 用来替代 react-native 的包名。
-  // 不配置时默认使用 @react-native-oh/react-native-harmony。
-  reactNativeHarmonyPackageName: '@react-native-oh/react-native-harmony',
-
-  // 向 RNOH createHarmonyMetroConfig 透传当前 RNOH 版本支持的额外参数。
-  // 顶层 reactNativeHarmonyPackageName 会覆盖这里的同名配置。
-  harmonyConfigOptions: {
-    // 在这里填写 RNOH 的高级 Metro 配置。
-  },
-
-  // 追加 Harmony 平台的 package exports conditions。
-  // 默认为 ['harmony', 'react-native']；原有 conditions 会被保留并去重。
-  conditions: ['harmony', 'react-native'],
-
-  // 加载配置时写入 process.env 的额外变量。
-  // 仅在显式配置时写入；默认不会污染共享 Metro 进程的环境变量。
-  // 也可设为 false，明确禁止本次调用修改环境变量。
-  env: {
-    IS_HARMONY: 'true',
-  },
-
-  // 模块前缀别名，支持普通对象或 Map、精确匹配和子路径匹配。
-  // 多项同时匹配时使用最长前缀；例如：
-  // react/jsx-runtime 会变成 react-harmony/jsx-runtime，
-  // @/components 会变成 <projectRoot>/components。
   aliases: {
-    '@': projectRoot,
-    api: path.join(projectRoot, 'api'),
-    components: path.join(projectRoot, 'components'),
-    react: 'react-harmony',
+    'my-library': path.resolve(projectRoot, 'src/harmony/my-library'),
   },
-
-  // 精确模块重定向，支持普通对象或 Map。每个目标可以是：
-  // - 字符串会交给原有的 Expo resolver 解析；
-  // - false 会返回 Metro 的 empty 结果；
-  // - Metro resolution 对象；
-  // - 接收当前请求并返回上述结果的函数；
-  // - null/undefined 会继续尝试 aliases，最后进入 RNOH resolver。
   redirects: {
-    'expo-blur': path.join(projectRoot, 'harmony-adapters/expo-blur.harmony.js'),
-    'react-native-screens/experimental': false,
-    '@/components/toolbox-icons': {
-      type: 'sourceFile',
-      filePath: path.join(projectRoot, 'components/toolbox-icons.harmony.tsx'),
-    },
+    'legacy-module': 'my-library',
+    'unsupported-module': false,
   },
-
-  // 将匹配项解析为空模块，可用于屏蔽 Harmony 不支持的依赖。
-  // 每项可以是精确模块名、正则表达式，或接收当前请求并返回布尔值的函数。
   emptyModules: [/MaterialSymbols/u],
+});
+```
 
-  // 只处理 Harmony 请求，适合根据导入来源进行动态重定向。
-  // redirects 中的动态函数和 emptyModules 的函数项也会收到相同结构的请求。
-  // 可以返回 Metro resolution、交给 Expo resolver 解析的模块名或 false；
-  // 返回 null/undefined 会继续尝试 redirects、aliases，最后进入 RNOH resolver。
-  // resolve() 可直接调用 Expo resolver；resolveHarmony() 可跳过自定义规则调用 RNOH resolver。
-  resolveRequest({
-    // 当前 Metro 解析上下文，可通过 originModulePath 判断导入来源。
-    context,
-    // 当前尚未解析的 import 模块标识符。
-    moduleName,
-    // 当前请求平台；这个 hook 被调用时始终为 harmony。
-    platform,
-    // withHarmonyConfig 最终使用的绝对项目根目录。
-    projectRoot: root,
-    // 使用原有的 Expo/Metro resolver 解析模块；platform 可选，默认使用当前请求值。
-    resolve,
-    // 跳过所有自定义规则直接调用 RNOH resolver；参数可选，默认使用当前请求值。
-    resolveHarmony,
-  }) {
-    if (moduleName === './SplashScreen' && context.originModulePath.includes(`${path.sep}expo-splash-screen${path.sep}`)) {
-      return {
-        type: 'sourceFile',
-        filePath: path.join(root, 'harmony-adapters/SplashScreen.native.js'),
-      };
+需要根据导入来源选择不同模块时，可以使用 `resolveRequest`。例如，下面的配置会在 `screens` 目录中的文件导入 `my-library` 时，改为解析 HarmonyOS 入口：
+
+```js
+const path = require('node:path');
+const { getDefaultConfig } = require('expo/metro-config');
+const { withHarmonyConfig } = require('@expo-harmony/metro-config');
+
+const projectRoot = __dirname;
+const config = getDefaultConfig(projectRoot);
+
+module.exports = withHarmonyConfig(config, {
+  projectRoot,
+  resolveRequest({ context, moduleName, resolve }) {
+    const screensPath = `${path.sep}screens${path.sep}`;
+    if (moduleName === 'my-library' && context.originModulePath.includes(screensPath)) {
+      return resolve('my-library/harmony');
     }
+    return null;
   },
 });
 ```
 
-Harmony 请求的 resolver 匹配顺序如下：
+返回 `null` 或 `undefined` 时，会继续使用其他 HarmonyOS 模块解析规则。`resolve` 可以调用 Expo 的默认解析过程；需要跳过自定义规则并直接解析 HarmonyOS 模块时，可以使用 `resolveHarmony`。
 
-1. `emptyModules`
-2. `resolveRequest`
-3. 精确匹配的 `redirects`
-4. 前缀匹配的 `aliases`，优先使用最长匹配项
-5. RNOH resolver
+配置项按 `emptyModules`、`resolveRequest`、`redirects`、`aliases` 的顺序处理，未匹配的模块会交给 HarmonyOS 模块解析器继续查找。`aliases` 支持模块名前缀，多个别名都匹配时会使用最长前缀。
 
-声明了 `harmony.alias` 的适配包可以直接导入同名官方包或其子路径。
+## 调整 HarmonyOS 模块解析
 
-## 与其他 Metro enhancer 组合
-
-通用的 Metro enhancer 应在 `withHarmonyConfig` 之后应用：
+`conditions` 用于补充 HarmonyOS 的 package exports 条件，默认包含 `harmony` 和 `react-native`。如果项目使用其他 React Native HarmonyOS 包，可以通过 `reactNativeHarmonyPackageName` 指定包名；该包提供额外 Metro 选项时，可以放在 `harmonyConfigOptions` 中：
 
 ```js
+const { getDefaultConfig } = require('expo/metro-config');
+const { withHarmonyConfig } = require('@expo-harmony/metro-config');
+
+const config = getDefaultConfig(__dirname);
+
+module.exports = withHarmonyConfig(config, {
+  conditions: ['harmony', 'react-native'],
+  reactNativeHarmonyPackageName: '@react-native-oh/react-native-harmony',
+  harmonyConfigOptions: {
+    // 填写所用 React Native HarmonyOS 包支持的 Metro 选项。
+  },
+});
+```
+
+## 与其他 Metro 配置组合
+
+如果项目还使用 NativeWind 等 Metro 配置增强器，先将 Expo 默认配置传给 `withHarmonyConfig`，再将结果传给其他增强器：
+
+```js
+const { getDefaultConfig } = require('expo/metro-config');
+const { withHarmonyConfig } = require('@expo-harmony/metro-config');
 const { withNativeWind } = require('nativewind/metro');
 
-config = withHarmonyConfig(config, harmonyOptions);
+const config = withHarmonyConfig(getDefaultConfig(__dirname));
 module.exports = withNativeWind(config, { input: './global.css' });
 ```
 
-这样 `env` 中的 Harmony 环境变量也能在 NativeWind 等后续配置读取时生效。
-
 ## Author
 
-**expo-harmony** © [Baoshuo](https://github.com/renbaoshuo), Released under the [MIT](./LICENSE) License.<br>
+**expo-harmony** © [Baoshuo](https://github.com/renbaoshuo), Released under the MIT License.<br>
 Authored and maintained by Baoshuo with help from [contributors](https://github.com/renbaoshuo/expo-harmony/contributors).
 
 > [Personal Website](https://baoshuo.ren) · [Blog](https://blog.baoshuo.ren) · GitHub [@renbaoshuo](https://github.com/renbaoshuo) · Twitter [@renbaoshuo](https://twitter.com/renbaoshuo)

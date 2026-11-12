@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
+import { DefaultReactNativeHarmonyPackage } from './constants';
 import { ExpoHarmonyMetroError } from './errors';
 
 export type PathNormalizer = (file: string) => string;
@@ -20,8 +21,8 @@ export interface BootstrapModules {
   metroRuntime: string;
 }
 
-const localRequire = createRequire(__filename);
 const HarmonySingletonPackages = [
+  '@react-native/assets-registry',
   '@expo/metro-runtime',
   'expo',
   'expo-modules-core',
@@ -51,7 +52,13 @@ function isFile(file: string): boolean {
 
 function getPackageRoot(packageName: string, projectRoot: string): string | null {
   try {
-    return path.dirname(localRequire.resolve(`${packageName}/package.json`, { paths: [projectRoot] }));
+    const project = createRequire(path.join(projectRoot, 'package.json'));
+    const require = packageName === DefaultReactNativeHarmonyPackage
+      ? createRequire(project.resolve('@expo-harmony/expo-modules-core/package.json'))
+      : packageName === '@react-native/assets-registry'
+        ? createRequire(project.resolve('react-native/package.json'))
+        : project;
+    return path.dirname(require.resolve(`${packageName}/package.json`));
   } catch (cause) {
     const code = getErrorCode(cause);
     if (code !== 'MODULE_NOT_FOUND' && code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
@@ -64,6 +71,37 @@ function getPackageRoot(packageName: string, projectRoot: string): string | null
 
     return null;
   }
+}
+
+function getMetroRuntimeEntry(projectRoot: string, expoRoot: string | null): string | null {
+  const routerRoot = getPackageRoot('expo-router', projectRoot);
+  // Match Expo's project, Router, and Expo fallback order for unhoisted peers.
+  for (const root of [projectRoot, routerRoot, expoRoot]) {
+    if (root === null) continue;
+    try {
+      return createRequire(path.join(root, 'package.json')).resolve('@expo/metro-runtime');
+    } catch (cause) {
+      const code = getErrorCode(cause);
+      if (code !== 'MODULE_NOT_FOUND' && code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+        throw new ExpoHarmonyMetroError(
+          'ERR_EXPO_HARMONY_RESOLVE_ERROR', `Failed to resolve @expo/metro-runtime from ${root}.`, { cause }
+        );
+      }
+    }
+  }
+  return null;
+}
+
+export function getHarmonyPackageRoot(harmonyPackage: string, projectRoot: string): string {
+  const root = getPackageRoot(harmonyPackage, projectRoot);
+  if (!root) {
+    throw new ExpoHarmonyMetroError(
+      'ERR_EXPO_HARMONY_MISSING_PEER_DEPENDENCY',
+      `Cannot resolve ${harmonyPackage} from the Harmony SDK toolchain in ${projectRoot}.`
+    );
+  }
+
+  return root;
 }
 
 function createPackagePathNormalizer(
@@ -81,6 +119,7 @@ function createPackagePathNormalizer(
     for (const marker of markers) {
       const markerIndex = file.lastIndexOf(marker);
       if (markerIndex < 0) continue;
+
       const suffix = file.slice(markerIndex + marker.length);
       if (suffix.length > 0 && !suffix.startsWith(path.sep)) continue;
       // Nested dependencies belong to their own package, not to the aliased runtime.
@@ -93,10 +132,12 @@ function createPackagePathNormalizer(
   };
 }
 
-export function createHarmonyPathNormalizer(harmonyPackage: string, projectRoot: string): PathNormalizer {
+export function createHarmonyPathNormalizer(harmonyPackage: string, projectRoot: string, reactPackage = 'react'): PathNormalizer {
   const normalizers = [
     createPackagePathNormalizer(harmonyPackage, projectRoot, [harmonyPackage, 'react-native']),
-    ...HarmonySingletonPackages.map(packageName => createPackagePathNormalizer(packageName, projectRoot)),
+    ...HarmonySingletonPackages.map(packageName => packageName === 'react'
+      ? createPackagePathNormalizer(reactPackage, projectRoot, ['react', reactPackage])
+      : createPackagePathNormalizer(packageName, projectRoot)),
   ];
 
   return file => normalizers.reduce((normalized, normalize) => normalize(normalized), file);
@@ -106,12 +147,12 @@ export function getBootstrapModules(harmonyPackage: string, projectRoot: string)
   const harmonyRoot = getPackageRoot(harmonyPackage, projectRoot);
   const coreRoot = getPackageRoot('@expo-harmony/expo-modules-core', projectRoot);
   const expoRoot = getPackageRoot('expo', projectRoot);
-  const runtimeRoot = getPackageRoot('@expo/metro-runtime', projectRoot);
+  const metroRuntime = getMetroRuntimeEntry(projectRoot, expoRoot);
   const packages: [string, string | null][] = [
     [harmonyPackage, harmonyRoot],
     ['@expo-harmony/expo-modules-core', coreRoot],
     ['expo', expoRoot],
-    ['@expo/metro-runtime', runtimeRoot],
+    ['@expo/metro-runtime', metroRuntime],
   ];
   const missingPackage = packages.find(([, root]) => root === null);
   if (missingPackage) {
@@ -126,7 +167,7 @@ export function getBootstrapModules(harmonyPackage: string, projectRoot: string)
     runtimeInstaller: path.join(coreRoot!, 'install-runtime.js'),
     initializeCore: path.join(harmonyRoot!, 'Libraries/Core/InitializeCore.js'),
     expoWinter: path.join(expoRoot!, 'src/winter/index.ts'),
-    metroRuntime: path.join(runtimeRoot!, 'src/index.ts'),
+    metroRuntime: metroRuntime!,
   };
   const missingFile = Object.entries(files).find(([, file]) => !isFile(file));
   if (missingFile) {
