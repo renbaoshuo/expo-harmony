@@ -6,6 +6,7 @@
  */
 
 import { util } from '@kit.ArkTS';
+import { isRnohRawfileResourceUri, rawResourcePathFromUri } from '@expo-harmony/expo-modules-core';
 
 export enum ImageLoaderSourceType {
   HTTP,
@@ -17,10 +18,12 @@ export enum ImageLoaderSourceType {
 export class ImageLoaderSource {
   readonly type: ImageLoaderSourceType;
   readonly value: string;
+  readonly fallback?: string;
 
-  constructor(type: ImageLoaderSourceType, value: string) {
+  constructor(type: ImageLoaderSourceType, value: string, fallback?: string) {
     this.type = type;
     this.value = value;
+    this.fallback = fallback;
   }
 }
 
@@ -29,37 +32,50 @@ export function resolveImageLoaderSource(url: string): ImageLoaderSource {
 
   if (/^https?:\/\//i.test(url)) return new ImageLoaderSource(ImageLoaderSourceType.HTTP, url);
   if (/^data:/i.test(url)) return new ImageLoaderSource(ImageLoaderSourceType.DATA, url);
-  if (url.startsWith('/')) return new ImageLoaderSource(ImageLoaderSourceType.FILE, url);
-  if (/^file:\/\//i.test(url)) {
-    return new ImageLoaderSource(ImageLoaderSourceType.FILE, `file://${url.slice('file://'.length)}`);
+  if (url.startsWith('/') || /^file:\/\//i.test(url)) return new ImageLoaderSource(ImageLoaderSourceType.FILE, url);
+  if (isRnohRawfileResourceUri(url)) {
+    return new ImageLoaderSource(ImageLoaderSourceType.RAW_RESOURCE, rawResourcePathFromUri(url));
   }
 
   const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(url);
   if (scheme !== null && !/^(?:asset|rawfile):\/\//i.test(url)) throw new Error('The image URI scheme is unsupported.');
 
-  const encoded = url
-    .replace(/^(?:asset|rawfile):\/\//i, '')
-    .replace(/^\/+/, '')
-    .split(/[?#]/, 1)[0];
-
-  if (/%(?:00|2f|5c)/i.test(encoded) || encoded.includes('\\')) throw new Error('The packaged image path is invalid.');
-
-  const path = decodeURIComponent(encoded);
-
-  if (path.split('/').some((part: string): boolean => part.length === 0 || part === '.' || part === '..')) {
-    throw new Error('The packaged image path is invalid.');
+  if (!/^asset:\/\//i.test(url)) {
+    return new ImageLoaderSource(ImageLoaderSourceType.RAW_RESOURCE, rawResourcePathFromUri(url, true));
   }
 
-  return new ImageLoaderSource(ImageLoaderSourceType.RAW_RESOURCE, /^asset:\/\//i.test(url) ? `assets/${path}` : path);
+  // RNOH can emit either literal or URL-encoded asset names.
+  let path: string;
+  try {
+    path = rawResourcePathFromUri(url);
+  } catch (_) {
+    return new ImageLoaderSource(ImageLoaderSourceType.RAW_RESOURCE, rawResourcePathFromUri(url, true));
+  }
+
+  let fallback: string | undefined;
+  try {
+    const decoded = rawResourcePathFromUri(url, true);
+    if (decoded !== path) fallback = decoded;
+  } catch (_) {}
+
+  return new ImageLoaderSource(ImageLoaderSourceType.RAW_RESOURCE, path, fallback);
 }
 
-export function decodeImageDataURL(url: string): ArrayBuffer {
+export async function decodeImageDataURL(url: string): Promise<ArrayBuffer> {
   const comma = url.indexOf(',');
   if (comma < 0 || !/^data:image\/[a-z0-9!#$%&'*+.^_`{|}~-]+(?:;[^,]*)?;base64$/i.test(url.slice(0, comma))) {
     throw new Error('Expected a base64-encoded image data URI.');
   }
 
-  const bytes = new util.Base64Helper().decodeSync(url.slice(comma + 1).replace(/\s/g, ''));
+  let encoded = url.slice(comma + 1).replace(/\s/g, '');
+  const remainder = encoded.length % 4;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || remainder === 1 || (remainder !== 0 && encoded.endsWith('='))) {
+    throw new Error('Invalid base64 image data.');
+  }
+
+  // Base64Helper expects complete four-character groups.
+  if (remainder !== 0) encoded = encoded.padEnd(encoded.length + 4 - remainder, '=');
+  const bytes = await new util.Base64Helper().decode(encoded);
 
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }

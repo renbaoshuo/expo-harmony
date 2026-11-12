@@ -5,16 +5,19 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ExpoFileAccessKey, ExpoModuleError, ExpoService, ExpoServiceContext, ExpoServiceKey } from '@expo-harmony/expo-modules-core';
+import { ExpoFileAccessKey, ExpoFileAccessRegistry, ExpoModuleError, ExpoService, ExpoServiceContext, ExpoServiceKey, resolveFileReadSource } from '@expo-harmony/expo-modules-core';
+import type { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
 import { http } from '@kit.NetworkKit';
 
 import { ImageLoaderInterface, ImageLoaderInterfaceKey, ImageLoaderResultListener } from './ImageLoaderInterface';
 import { applyImageOrientation } from './ImageLoaderOrientation';
-import { decodeImageDataURL, ImageLoaderSourceType, resolveImageLoaderSource } from './ImageLoaderSource';
+import { decodeImageDataURL, ImageLoaderSource, ImageLoaderSourceType, resolveImageLoaderSource } from './ImageLoaderSource';
 
 const MAX_HTTP_RESPONSE_BYTES: number = 100 * 1024 * 1024;
+const NO_STORE_HEADERS: Record<string, string> = { 'cache-control': 'no-store' };
+const RAW_RESOURCE_NOT_FOUND: number = 9001005;
 
 export class ImageLoaderService extends ExpoService implements ImageLoaderInterface {
   static readonly key = new ExpoServiceKey<ImageLoaderService>('ImageLoaderService');
@@ -57,31 +60,46 @@ export class ImageLoaderService extends ExpoService implements ImageLoaderInterf
         const source = resolveImageLoaderSource(url);
 
         switch (source.type) {
-          case ImageLoaderSourceType.HTTP:
-            decoder = image.createImageSource(await this.download(source.value, cache));
+          case ImageLoaderSourceType.HTTP: {
+            const bytes = await this.download(source.value, cache);
+            this.context.assertActive();
+            decoder = image.createImageSource(bytes);
             break;
-          case ImageLoaderSourceType.DATA:
-            decoder = image.createImageSource(decodeImageDataURL(source.value));
+          }
+          case ImageLoaderSourceType.DATA: {
+            const bytes = await decodeImageDataURL(source.value);
+            this.context.assertActive();
+            decoder = image.createImageSource(bytes);
             break;
+          }
           case ImageLoaderSourceType.RAW_RESOURCE: {
-            const bytes = await this.context.uiAbilityContext.resourceManager.getRawFileContent(source.value);
-
+            const bytes = await this.readResource(source);
+            this.context.assertActive();
             decoder = image.createImageSource(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
             break;
           }
-          case ImageLoaderSourceType.FILE:
-            file = await fileIo.open(source.value, fileIo.OpenMode.READ_ONLY);
-
-            this.context.services.get(ExpoFileAccessKey)?.assertAccess(file.path, 'read');
-
+          case ImageLoaderSourceType.FILE: {
+            const target = resolveFileReadSource(source.value, this.context.uiAbilityContext.cacheDir);
+            const access = this.context.services.get(ExpoFileAccessKey);
+            ExpoFileAccessRegistry.assertAccess(this.context.runtimeId, target, 'read', access);
+            file = await fileIo.open(target, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
+            this.context.assertActive();
+            ExpoFileAccessRegistry.assertReadDescriptor(this.context.runtimeId, target, file, access);
+            if (!(await fileIo.stat(file.fd)).isFile()) throw new Error('The local image must be a regular file.');
+            this.context.assertActive();
             decoder = image.createImageSource(file.fd);
             break;
+          }
         }
 
         this.context.assertActive();
         if (decoder === undefined || decoder === null) throw new Error('Unable to create an image decoder.');
 
-        pixel = await decoder.createPixelMap({ editable: true, desiredPixelFormat: image.PixelMapFormat.RGBA_8888 });
+        pixel = await decoder.createPixelMap({
+          editable: true,
+          desiredPixelFormat: image.PixelMapFormat.RGBA_8888,
+          desiredDynamicRange: image.DecodingDynamicRange.SDR,
+        });
         this.context.assertActive();
 
         await applyImageOrientation(decoder, pixel);
@@ -123,6 +141,19 @@ export class ImageLoaderService extends ExpoService implements ImageLoaderInterf
     }
   }
 
+  private async readResource(source: ImageLoaderSource): Promise<Uint8Array> {
+    const resources = this.context.uiAbilityContext.resourceManager;
+
+    try {
+      return await resources.getRawFileContent(source.value);
+    } catch (error) {
+      if (source.fallback === undefined || (error as BusinessError).code !== RAW_RESOURCE_NOT_FOUND) throw error as Error;
+
+      this.context.assertActive();
+      return resources.getRawFileContent(source.fallback);
+    }
+  }
+
   private async download(url: string, cache: boolean): Promise<ArrayBuffer> {
     this.context.assertActive();
 
@@ -139,6 +170,8 @@ export class ImageLoaderService extends ExpoService implements ImageLoaderInterf
             method: http.RequestMethod.GET,
             expectDataType: http.HttpDataType.ARRAY_BUFFER,
             usingCache: cache,
+            // Network Kit can still store a response when cache reads are disabled.
+            header: cache ? undefined : NO_STORE_HEADERS,
             maxLimit: MAX_HTTP_RESPONSE_BYTES,
           })
           .then(resolve, reject);
@@ -148,6 +181,9 @@ export class ImageLoaderService extends ExpoService implements ImageLoaderInterf
         throw new Error(`The image request failed with HTTP status ${response.responseCode}.`);
       }
       if (!(response.result instanceof ArrayBuffer)) throw new Error('The image response did not contain binary data.');
+      if (response.result.byteLength > MAX_HTTP_RESPONSE_BYTES) {
+        throw new Error('The image response exceeds the 100 MiB limit.');
+      }
 
       return response.result;
     } finally {

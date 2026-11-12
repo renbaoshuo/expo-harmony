@@ -2,41 +2,16 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-image-loader)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo ImageLoader 的原生实现，与官方同版本的 `expo-image-loader` 配套使用。这个包没有 JavaScript 接口，向外提供一个图片加载服务，应用内的 ArkTS 模块可以按地址取到图片。
+为 HarmonyOS 上的 React Native 应用提供 Expo ImageLoader 的原生实现，与官方同版本的 `expo-image-loader` 配套使用。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
 ```bash
-npm install @expo-harmony/expo-image-loader expo-image-loader@55.0.1
-```
-
-本包适配 Expo SDK 55 的 `expo-image-loader`，原生服务通过 Expo Harmony 自动链接。最低支持 HarmonyOS 5.0.1（API 13），宿主的 `compatibleSdkVersion` 也要满足这一要求。
-
-HAR 已经声明 `ohos.permission.INTERNET`，加载远程图片时应用不必另行申请网络权限。加载本地图片只校验应用已经拿到的访问授权，本包不申请相册或文件权限。
-
-这个包供应用内的 ArkTS 模块使用。模块在自己的 `oh-package.json5` 中声明依赖：
-
-```json
-{
-  "dependencies": {
-    "@expo-harmony/expo-image-loader": "55.0.1-harmony.0"
-  }
-}
-```
-
-运行时从服务容器取出加载服务，再调用加载方法：
-
-```ts
-import { ImageLoaderInterfaceKey } from '@expo-harmony/expo-image-loader';
-
-const loader = this.context.services.require(ImageLoaderInterfaceKey);
-const pixel = await loader.loadImageForManipulationFromURL(uri);
-
-try {
-  const info = await pixel.getImageInfo();
-} finally {
-  await pixel.release();
-}
+npm install @expo-harmony/expo-image-loader expo-image-loader
 ```
 
 ## API 对照表
@@ -45,62 +20,64 @@ try {
 
 #### `ImageLoaderInterfaceKey`
 
-类型：`ExpoServiceKey<ImageLoaderInterface>`
-
-服务容器中图片加载服务的键。`services.require(ImageLoaderInterfaceKey)` 返回当前的加载服务。
+类型：`ExpoServiceKey<ImageLoaderInterface>`。用于取得 `ImageLoaderInterface` 接口。
 
 ### Methods
 
 #### `ImageLoaderInterface.loadImageForDisplayFromURL(url)`
 
-返回 `Promise<image.PixelMap>`，加载用于展示的图片。`url` 支持这几种形式：
+参数 `url` 的类型为 `string`。返回 `Promise<image.PixelMap>`，解析为供展示的图片。返回图片保持原始尺寸，不做降采样；动画图片只取第一帧，系统能读到 EXIF 方向时按方向摆正。
 
-- `http://`、`https://` 远程地址。
+支持以下地址形式：
+
+- `http://`、`https://` 远程地址，使用系统 HTTP 缓存，响应大小不能超过 100 MiB。
 - 应用沙箱内的绝对路径，以 `/` 开头。
-- `file://` 地址，需要应用已经获得该路径的访问授权。
-- base64 编码的图片 `data:` 地址。
-- `asset://path` 对应 `rawfile/assets/path`；`rawfile://path` 或相对资源名对应 `rawfile/path`。
+- `file://` 地址，需要应用已经获得该文件的访问授权。
+- `data:image/<subtype>[;参数];base64,<数据>` 地址。协议、媒体类型和 `base64` 标记不区分大小写；数据中的空白会被忽略，末尾填充字符 `=` 可以省略。
+- `asset://path` 对应 `rawfile/assets/path`；`resource://RAWFILE/path`、`rawfile://path`、`rawfile:path` 和相对资源名对应 `rawfile/path`。
 
-返回的是原始尺寸的图片，不做降采样。动画图片只取第一帧，系统能读到 EXIF 方向时按方向摆正。
-
-`data:` 地址须使用 `data:image/<subtype>[;参数];base64,<数据>` 形式，协议、媒体类型和 `base64` 标记不区分大小写。缺少图片子类型或未使用 base64 编码的地址会被拒绝。
-
-远程图片走系统的 HTTP 缓存，响应体上限 100 MiB，超过时加载失败，这个上限不作用于本地图片。
-
-地址为空、协议不受支持、打包资源路径非法、`data:` 地址不是 base64 图片、HTTP 响应码不在 2xx 范围内、解码失败等情况抛出 `ERR_IMAGE_LOADER`。
+地址为空、协议或打包资源路径无效、`data:` 地址未使用 base64 编码、HTTP 响应码不在 2xx 范围内，或图片解码失败时，Promise 会以 `ERR_IMAGE_LOADER` 拒绝。
 
 #### `ImageLoaderInterface.loadImageForDisplayFromURL(url, listener)`
 
-无返回值，结果通过 `ImageLoaderResultListener` 回调返回，加载行为与 Promise 版本一致。从 `onSuccess` 被调用起，PixelMap 的释放责任归调用方，回调内抛出异常也一样。
+参数为 `url: string` 和 `listener: ImageLoaderResultListener`。返回 `void`，加载方式与 Promise 形式相同；成功或失败结果分别通过 `onSuccess`、`onFailure` 回调。
 
 #### `ImageLoaderInterface.loadImageForManipulationFromURL(url)`
 
-返回 `Promise<image.PixelMap>`，加载用于编辑的图片。地址形式、方向摆正和大小上限与展示加载一致。每次调用返回一份独立的图片，修改其中一张不影响另一张；不使用 HTTP 缓存，每次调用都会重新下载远程图片。
+参数 `url` 的类型为 `string`。返回 `Promise<image.PixelMap>`，加载供编辑的图片。支持的地址形式和方向处理与展示加载相同，图片保持原始尺寸，不做降采样；每次调用返回独立图片，远程图片每次都会重新请求，不使用缓存。
+
+加载失败时，Promise 会以 `ERR_IMAGE_LOADER` 拒绝。
 
 #### `ImageLoaderInterface.loadImageForManipulationFromURL(url, listener)`
 
-无返回值，结果通过 `ImageLoaderResultListener` 回调返回。PixelMap 的释放责任与展示加载的回调版本相同。
+参数为 `url: string` 和 `listener: ImageLoaderResultListener`。返回 `void`，加载方式与 Promise 形式相同；成功或失败结果分别通过 `onSuccess`、`onFailure` 回调。
 
-### Interfaces
+### Types
 
 #### `ImageLoaderInterface`
 
-图片加载服务的接口，用 `ImageLoaderInterfaceKey` 取得。加载结果都是可编辑的 `image.PixelMap`，不再使用时调用 `release()` 释放。运行时销毁后，新的调用和进行中的请求都会失败，尚未交付的图片由服务释放。
+提供上述图片加载方法。方法成功时返回可编辑的 `image.PixelMap`；图片不再使用时，调用方须调用 `release()` 释放。
 
 #### `ImageLoaderResultListener`
 
-回调方式的监听器，由调用方实现。
+供调用方实现的图片加载结果监听器。加载成功时调用 `onSuccess`，失败时调用 `onFailure`。
 
-| 成员        | 类型                              | 说明                                          |
-| ----------- | --------------------------------- | --------------------------------------------- |
-| `onSuccess` | `(pixel: image.PixelMap) => void` | 加载成功，PixelMap 的释放责任从这时起归调用方 |
-| `onFailure` | `(cause: Error) => void`          | 加载失败，错误码为 `ERR_IMAGE_LOADER`         |
+| 成员        | 类型                              | 说明                                              |
+| ----------- | --------------------------------- | ------------------------------------------------- |
+| `onSuccess` | `(pixel: image.PixelMap) => void` | 图片加载成功后调用；调用方负责释放收到的 `PixelMap` |
+| `onFailure` | `(cause: Error) => void`          | 图片加载失败时调用；错误码为 `ERR_IMAGE_LOADER`      |
 
 ### Error codes
 
 #### `ERR_IMAGE_LOADER`
 
-加载失败时抛出，覆盖地址不受支持、地址为空、打包资源路径非法、`data:` 地址不是 base64 图片、HTTP 响应码不在 2xx 范围内、响应体超过大小上限，以及解码失败等情况。
+地址、资源、文件访问、`data:` 内容、HTTP 状态或 100 MiB 响应上限导致加载失败，以及图片解码失败时，Promise 会以此错误码拒绝，listener 重载会通过 `onFailure` 收到对应错误。
+
+### Permissions
+
+#### `ohos.permission.INTERNET`
+
+用于加载 HTTP(S) 图片，由本包的 HarmonyOS 模块声明。
 
 ## Author
 
