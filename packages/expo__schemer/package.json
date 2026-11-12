@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo__schemer",
-  "version": "2.1.4-harmony.3",
+  "version": "2.3.0-harmony.0",
   "description": "HarmonyOS port of @expo/schemer",
   "keywords": [
     "react-native",
@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/schemer": "2.1.4"
+    "@expo/schemer": "2.3.0"
   },
   "engines": {
     "node": ">=20"
