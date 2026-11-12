@@ -33,9 +33,10 @@ npm run harmony:inspect  # 输出解析后的模块配置和约定路径
 
 ## 示例应用
 
-`example/` 是一个通过 `file:..` 依赖本模块的最小 Expo 应用。在该目录下执行：
+`example/` 是一个通过 `file:..` 依赖本模块的最小 Expo 应用。先在模块根目录执行 `npm install --legacy-peer-deps`，安装构建工具并生成 facade 和 HAR，再进入 `example/` 运行以下命令。
 
 ```sh
+npm install --legacy-peer-deps
 npm run prebuild:harmony  # 生成 HarmonyOS 工程
 npm run harmony           # 构建并运行到设备或模拟器
 ```

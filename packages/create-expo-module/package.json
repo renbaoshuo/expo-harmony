@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/create-expo-module",
-  "version": "55.0.0-harmony.4",
+  "version": "57.0.1-harmony.0",
   "keywords": [
     "react-native",
     "expo",
@@ -21,8 +21,11 @@
   "bin": {
     "create-expo-harmony-module": "src/bin/create-expo-harmony-module.js"
   },
+  "dependencies": {
+    "semver": "7.7.3"
+  },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >=25.0.0"
   },
   "publishConfig": {
     "access": "public"

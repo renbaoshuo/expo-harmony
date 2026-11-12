@@ -129,7 +129,7 @@ export class {{MODULE_BASE}}Module extends ExpoModule {
       ).returns(ExpoValueTypes.number()));
 
     return new ExpoModuleDefinition()
-      .name('{{MODULE_NAME}}')
+      .name({{MODULE_NAME_JSON}})
       .constant('platform', 'harmony')
       .sharedObjectClass(counterClass)
       .view(nativeView)

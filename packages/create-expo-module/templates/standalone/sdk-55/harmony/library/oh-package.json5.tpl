@@ -11,6 +11,6 @@
   "main": "Index.ets",
   "license": "MIT",
   "dependencies": {
-    "@expo-harmony/expo-modules-core": "55.0.25-harmony.1"
+    "@expo-harmony/expo-modules-core": "{{HARMONY_CORE_VERSION}}"
   }
 }

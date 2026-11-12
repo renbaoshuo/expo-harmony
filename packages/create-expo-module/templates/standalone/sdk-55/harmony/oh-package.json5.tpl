@@ -14,7 +14,7 @@
     "{{NPM_NAME}}": "./library"
   },
   "overrides": {
-    "@expo-harmony/expo-modules-core": "55.0.25-harmony.1",
-    "@rnoh/react-native-openharmony": "0.84.1"
+    "@expo-harmony/expo-modules-core": "{{HARMONY_CORE_VERSION}}",
+    "@rnoh/react-native-openharmony": "{{RNOH_VERSION}}"
   }
 }

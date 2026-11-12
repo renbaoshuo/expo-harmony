@@ -11,15 +11,15 @@
     "prepare": "expo-harmony-module prepare"
   },
   "peerDependencies": {
-    "@expo-harmony/expo-modules-core": "^55.0.25-harmony.0",
+    "@expo-harmony/expo-modules-core": "{{HARMONY_CORE_VERSION}}",
     "expo-modules-core": "^55.0.0",
     "react": "*",
     "react-native": "*"
   },
   "devDependencies": {
-    "@expo-harmony/expo-module-scripts": "^55.0.0-harmony.0"
+    "@expo-harmony/expo-module-scripts": "{{MODULE_SCRIPTS_VERSION}}"
   },
   "engines": {
-    "node": ">=20"
+    "node": "{{NODE_VERSION}}"
   }
 }
