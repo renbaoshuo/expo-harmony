@@ -1,16 +1,18 @@
 # @expo-harmony/expo-battery
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-battery) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/battery/)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-battery) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/battery/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Battery 的原生实现，与官方同版本的 `expo-battery` 配套使用。支持读取设备电量、充电状态和低电量模式，以及订阅对应的状态变化。
+为 HarmonyOS 上的 React Native 应用提供 Expo Battery 的原生实现，与官方同版本的 `expo-battery` 配套使用。
 
 ## 安装
 
-```bash
-npm install @expo-harmony/expo-battery expo-battery@55.0.17
-```
+本包适配 Expo SDK 57。
 
-本包适配 Expo SDK 55 的 `expo-battery`，与官方包配合使用。原生模块通过 Expo Harmony 自动链接，业务代码继续从 `expo-battery` 导入。最低支持 HarmonyOS 5.0.1（API 13），宿主应用的 `compatibleSdkVersion` 也要满足这一要求。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+
+```bash
+npm install @expo-harmony/expo-battery expo-battery
+```
 
 ## API 对照表
 
@@ -18,104 +20,101 @@ npm install @expo-harmony/expo-battery expo-battery@55.0.17
 
 #### `useBatteryLevel()`
 
-返回 `number`，电量比例，取值 0 到 1。初始值为 `-1`，读取完成后更新，之后跟随电量事件变化。
+无参数，返回 `number`。电量比例范围为 `0` 到 `1`；设备没有电池或电量未知时为 `-1`。首次读取完成后更新，之后在电量变化时更新。
 
 #### `useBatteryState()`
 
-返回 `BatteryState`。初始值为 `BatteryState.UNKNOWN`，读取完成后更新，之后跟随电池状态事件变化。
+无参数，返回 `BatteryState`。初始值为 `BatteryState.UNKNOWN`，首次读取完成后更新，之后在电池状态变化时更新。
 
 #### `useLowPowerMode()`
 
-返回 `boolean`。初始值为 `false`，读取完成后更新，之后跟随低电量模式事件变化。
+无参数，返回 `boolean`。初始值为 `false`，首次读取完成后更新，之后在低电量模式状态变化时更新。
 
 #### `usePowerState()`
 
-返回 `PowerState`，包含电量、电池状态和低电量模式。三项分别读取，之后各自跟随对应事件变化。
+无参数，返回 `PowerState`，包含电量、电池状态和低电量模式。初始值分别为 `-1`、`BatteryState.UNKNOWN` 和 `false`；首次读取完成后，各字段分别在对应状态变化时更新。
 
 ### Methods
 
 #### `Battery.isAvailableAsync()`
 
-返回 `Promise<boolean>`，恒为 `true`。设备是否带电池不影响该值。
+无参数，返回 `Promise<boolean>`。始终为 `true`，即使设备没有电池。
 
 #### `Battery.getBatteryLevelAsync()`
 
-返回 `Promise<number>`，电量比例，取值 0 到 1。设备没有电池，或系统给出的电量不在 0 到 100 之间时返回 `-1`。读取失败时拒绝。
+无参数，返回 `Promise<number>`。电量比例范围为 `0` 到 `1`；设备没有电池或系统电量值无效时返回 `-1`。读取失败时以 `ERR_BATTERY_LEVEL` 拒绝。
 
 #### `Battery.getBatteryStateAsync()`
 
-返回 `Promise<BatteryState>`。设备没有电池时返回 `BatteryState.UNKNOWN`。系统充电状态按以下方式映射：充电中为 `CHARGING`，未充电为 `UNPLUGGED`，已充满为 `FULL`，其他取值为 `UNKNOWN`。
+无参数，返回 `Promise<BatteryState>`。设备没有电池时返回 `BatteryState.UNKNOWN`。未充电且未连接电源时返回 `UNPLUGGED`，充电中返回 `CHARGING`，已充满返回 `FULL`。已连接 AC、USB 或无线充电器但未充电时返回 `NOT_CHARGING`；无法识别的状态返回 `UNKNOWN`。读取失败时以 `ERR_BATTERY_STATE` 拒绝。
 
 #### `Battery.isLowPowerModeEnabledAsync()`
 
-返回 `Promise<boolean>`，系统是否处于省电模式。普通省电和超级省电返回 `true`；API 20 起自定义省电模式也返回 `true`。其他电源模式返回 `false`。
+无参数，返回 `Promise<boolean>`。普通省电模式和超级省电模式返回 `true`；HarmonyOS API 20 及以上的自定义省电模式也返回 `true`，其他电源模式返回 `false`。读取失败时以 `ERR_BATTERY_POWER_MODE` 拒绝。
 
 #### `Battery.isBatteryOptimizationEnabledAsync()`
 
-返回 `Promise<boolean>`，恒为 `false`。HarmonyOS 没有针对单个应用的电池优化开关，Android 上的这一概念在这里不适用。返回 `false` 不表示系统不会限制应用的后台活动。
+无参数，返回 `Promise<boolean>`，始终为 `false`。HarmonyOS 不提供应用级电池优化状态查询；此值不表示系统不会限制应用在后台运行。
 
 #### `Battery.getPowerStateAsync()`
 
-返回 `Promise<PowerState>`，一次读取电量、电池状态和低电量模式，取值分别与对应方法一致，三项不保证来自同一时刻。任一项读取失败时整体拒绝。
+无参数，返回 `Promise<PowerState>`，并行读取电量、电池状态和低电量模式。三项分别读取，不保证来自同一时刻；任一项读取失败时整体拒绝。
 
-### Event Subscriptions
+### Event subscriptions
 
 #### `Battery.addBatteryLevelListener(listener)`
 
-订阅电量变化，回调收到 `BatteryLevelEvent`。返回 `Subscription`，调用 `remove()` 取消订阅。
-
-只在应用处于前台时监听系统事件，切到后台会停止监听，回到前台后补发期间发生的变化。订阅后不会立即回调，只在数值变化时触发。
+参数 `listener: (event: BatteryLevelEvent) => void`，订阅电量变化。返回 `Subscription`，调用 `remove()` 取消订阅。订阅后不会立即回调；只有电量值变化时才触发。应用处于后台时暂停监听，回到前台后若电量值与此前不同则触发事件。
 
 #### `Battery.addBatteryStateListener(listener)`
 
-订阅电池状态变化，回调收到 `BatteryStateEvent`。返回 `Subscription`。前后台行为与电量事件一致，状态没有变化时不触发。
+参数 `listener: (event: BatteryStateEvent) => void`，订阅电池状态变化。返回 `Subscription`，调用 `remove()` 取消订阅。订阅后不会立即回调；应用处于后台时暂停监听，回到前台后若电池状态与此前不同则触发事件。
 
 #### `Battery.addLowPowerModeListener(listener)`
 
-订阅低电量模式变化，回调收到 `PowerModeEvent`。返回 `Subscription`。前后台行为与电量事件一致，模式没有变化时不触发。
+参数 `listener: (event: PowerModeEvent) => void`，订阅低电量模式变化。返回 `Subscription`，调用 `remove()` 取消订阅。订阅后不会立即回调；应用处于后台时暂停监听，回到前台后若 `lowPowerMode` 的值与此前不同则触发事件。
 
 ### Types
 
 #### `BatteryLevelEvent`
 
-| 属性           | 类型     |
-| -------------- | -------- |
-| `batteryLevel` | `number` |
+包含 `batteryLevel: number`，表示电量比例，范围为 `0` 到 `1`；电量未知时为 `-1`。
 
 #### `BatteryStateEvent`
 
-| 属性           | 类型           |
-| -------------- | -------------- |
-| `batteryState` | `BatteryState` |
+包含 `batteryState: BatteryState`，表示当前电池状态。
 
 #### `PowerModeEvent`
 
-| 属性           | 类型      |
-| -------------- | --------- |
-| `lowPowerMode` | `boolean` |
+包含 `lowPowerMode: boolean`，表示系统是否处于低电量模式。
 
 #### `PowerState`
 
-| 属性           | 类型           |
-| -------------- | -------------- |
-| `batteryLevel` | `number`       |
-| `batteryState` | `BatteryState` |
-| `lowPowerMode` | `boolean`      |
+包含 `batteryLevel: number`、`batteryState: BatteryState` 和 `lowPowerMode: boolean`，分别表示电量比例、电池状态和低电量模式状态。电量未知时 `batteryLevel` 为 `-1`。
 
 #### `Subscription`
 
-监听句柄，调用 `remove()` 取消订阅，返回 `void`。
+事件订阅句柄。调用 `remove()` 取消订阅，返回 `void`。
 
 ### Enums
 
 #### `BatteryState`
 
-| 成员        | 值  | 含义                                           |
-| ----------- | --- | ---------------------------------------------- |
-| `UNKNOWN`   | `0` | 无法判断，设备没有电池或充电状态不在已知取值内 |
-| `UNPLUGGED` | `1` | 未充电                                         |
-| `CHARGING`  | `2` | 充电中                                         |
-| `FULL`      | `3` | 已充满                                         |
+`UNKNOWN` 为 `0`，表示状态未知或无法判断；`UNPLUGGED` 为 `1`，表示未连接电源且未充电；`CHARGING` 为 `2`，表示正在充电；`FULL` 为 `3`，表示电量已满；`NOT_CHARGING` 为 `4`，表示已连接电源但当前未充电。
+
+### Error codes
+
+#### `ERR_BATTERY_LEVEL`
+
+读取电量失败时抛出。
+
+#### `ERR_BATTERY_STATE`
+
+读取电池状态失败时抛出。
+
+#### `ERR_BATTERY_POWER_MODE`
+
+读取系统电源模式失败时抛出。
 
 ## Author
 

@@ -16,6 +16,7 @@ export class ExpoBatteryState {
   static readonly UNPLUGGED: number = 1;
   static readonly CHARGING: number = 2;
   static readonly FULL: number = 3;
+  static readonly NOT_CHARGING: number = 4;
 }
 
 export type ExpoBatteryStateValue = number;
@@ -30,9 +31,20 @@ export function batteryLevelFromSoc(soc: number): number {
 
 export function batteryStateFromChargeState(
   state: batteryInfo.BatteryChargeState,
+  plugged: batteryInfo.BatteryPluggedType,
 ): ExpoBatteryStateValue {
+  if (state === batteryInfo.BatteryChargeState.NONE) return ExpoBatteryState.UNPLUGGED;
   if (state === batteryInfo.BatteryChargeState.ENABLE) return ExpoBatteryState.CHARGING;
-  if (state === batteryInfo.BatteryChargeState.DISABLE) return ExpoBatteryState.UNPLUGGED;
+
+  if (state === batteryInfo.BatteryChargeState.DISABLE) {
+    // DISABLE also covers charging paused by battery protection while plugged in.
+    if (plugged === batteryInfo.BatteryPluggedType.NONE) return ExpoBatteryState.UNPLUGGED;
+    if (plugged === batteryInfo.BatteryPluggedType.AC || plugged === batteryInfo.BatteryPluggedType.USB
+      || plugged === batteryInfo.BatteryPluggedType.WIRELESS) return ExpoBatteryState.NOT_CHARGING;
+
+    return ExpoBatteryState.UNKNOWN;
+  }
+
   if (state === batteryInfo.BatteryChargeState.FULL) return ExpoBatteryState.FULL;
 
   return ExpoBatteryState.UNKNOWN;

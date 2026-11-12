@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-battery",
-  "version": "55.0.17-harmony.3",
+  "version": "57.0.3-harmony.0",
   "description": "HarmonyOS port of expo-battery",
   "keywords": [
     "react-native",
@@ -26,20 +26,19 @@
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo-battery": "55.0.17"
+    "expo-battery": "57.0.3"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "@react-native-oh/react-native-harmony": "0.84.1",
-    "expo": "55.0.31",
-    "expo-battery": "55.0.17",
-    "expo-modules-core": "55.0.26",
+    "expo": "57.0.30",
+    "expo-battery": "57.0.3",
+    "expo-modules-core": "57.0.23",
     "react": "19.2.3",
-    "react-native": "0.84.1"
+    "react-native": "0.86.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
   },
   "publishConfig": {
     "access": "public"
