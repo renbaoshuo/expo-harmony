@@ -6,7 +6,7 @@
  */
 
 import { resourceManager } from '@kit.LocalizationKit';
-import { BusinessError } from '@kit.BasicServicesKit';
+import type { BusinessError } from '@kit.BasicServicesKit';
 import {
   ExpoFunction,
   ExpoModule,
@@ -34,6 +34,10 @@ const SYMBOL_TYPE_VALUES: Record<string, SymbolType> = {
   'multicolor': SymbolType.Multicolor,
 };
 const SYMBOL_TYPE = ExpoValueTypes.enumerable<SymbolType>('SymbolType', SYMBOL_TYPE_VALUES);
+
+const INVALID_RESOURCE_NAME = 9001003;
+const RESOURCE_NOT_FOUND = 9001004;
+
 const WEIGHTS: Record<string, number> = {
   'unspecified': 400,
   'ultraLight': 100,
@@ -56,7 +60,7 @@ function isSymbolAvailable(name: string): boolean {
     const failure = error as BusinessError;
     const code = Number(failure.code);
 
-    if (code === 9001003 || code === 9001004) return false;
+    if (code === INVALID_RESOURCE_NAME || code === RESOURCE_NOT_FOUND) return false;
 
     throw new ExpoModuleError('ERR_SYMBOL_RESOURCE', `ResourceManager (${failure.code}): ${failure.message}`);
   }

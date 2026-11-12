@@ -1,121 +1,151 @@
 # @expo-harmony/expo-symbols
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-symbols) | [官方文档](https://docs.expo.dev/versions/v55.0.0/sdk/symbols/) | [鸿蒙图标库](https://developer.huawei.com/consumer/cn/design/harmonyos-symbol)
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-symbols) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/symbols/) | [鸿蒙图标库](https://developer.huawei.com/consumer/cn/design/harmonyos-symbol)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Symbols 的原生实现，与官方同版本的 `expo-symbols` 配套使用。支持显示鸿蒙系统图标、调整尺寸与字重，以及单色、分层和多色渲染。
+为 HarmonyOS 上的 React Native 应用提供 Expo Symbols 的原生实现，与官方同版本的 `expo-symbols` 配套使用。
 
 ## 安装
 
+本包适配 Expo SDK 57。
+
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 20（HarmonyOS 6.0.0）。
+
 ```bash
-npm install @expo-harmony/expo-symbols expo-symbols@55.0.9
+npm install @expo-harmony/expo-symbols expo-symbols
 ```
-
-本包适配 Expo SDK 55 的 `expo-symbols`，原生模块通过 Expo Harmony 自动链接。最低支持 HarmonyOS 6.0.0（API 20），宿主的 `compatibleSdkVersion` 也要满足这一要求。
-
-业务代码从官方包导入，分别指定各平台的图标名称：
-
-```tsx
-import { SymbolView } from 'expo-symbols';
-
-const home = {
-  ios: 'house.fill',
-  android: 'home',
-  web: 'home',
-  harmony: 'house_fill',
-} as const;
-
-<SymbolView name={home} size={24} tintColor="#007AFF" />;
-```
-
-只提供鸿蒙名称时，使用本包的类型声明：
-
-```tsx
-import { SymbolView } from 'expo-symbols';
-import type { HarmonySymbolName } from '@expo-harmony/expo-symbols/src';
-
-const home: HarmonySymbolName = { harmony: 'house_fill' };
-
-<SymbolView name={home} />;
-```
-
-上游 TypeScript 声明不包含 `harmony` 字段，需使用上述变量写法，不能直接在上游组件上内联 `name={{ harmony: 'house_fill' }}`。
 
 ## API 对照表
 
-### Component
+### Components
 
 #### `SymbolView`
 
-显示鸿蒙系统图标的视图，除下列属性外还接受 `ViewProps`。
+显示 HarmonyOS 系统图标，接受下列属性及 React Native `ViewProps`。
 
-#### `name`
+##### `name`
 
 类型：`string | HarmonySymbolName`，必填
 
-只读取对象形式中的 `harmony` 字段，值为鸿蒙系统图标的短名称，例如 `house_fill`。名称为空、写法无效或系统中没有对应资源时渲染 `fallback`。
+对象形式读取 `harmony` 字段作为系统图标名称，例如 `house_fill`。字符串、没有 `harmony` 字段的对象、空名称、格式无效的名称或系统没有对应图标时渲染 `fallback`。不同 HarmonyOS 版本提供的系统图标可能不同。
 
-传字符串时保持上游的 SF Symbols 语义，在鸿蒙上渲染 `fallback`。对象中只有 `ios`、`android` 或 `web` 字段时同样渲染 `fallback`，不做名称转换。不支持 `sys.symbol.` 前缀、资源 ID、Unicode 字符和 `app.symbol` 自定义资源。
-
-系统图标库随 HarmonyOS 版本扩充。较旧系统上缺少新图标的资源，也会渲染 `fallback`。
-
-#### `fallback`
+##### `fallback`
 
 类型：`React.ReactNode`
 
-`name` 没有取到鸿蒙图标时渲染的内容，不设置时不渲染任何元素。
+系统中没有 `name` 对应图标时显示的内容；未设置时不渲染内容。
 
-#### `size`
+##### `size`
 
 类型：`number`，默认 `24`
 
-图标字号，单位 vp，不随系统字体大小设置变化。接受非负的有限数值，`0` 隐藏图形，负数或非有限数值抛出 `RangeError`。名称缺失或图标不可用时渲染 `fallback`，不校验字号和颜色。
+图标字号，单位 vp，不随系统字体大小变化。接受非负有限数值；`0` 隐藏图形，负数或非有限数值抛出 `RangeError`。名称无效或图标不可用时会先显示 `fallback`，此时不校验字号。
 
-容器默认为 `size × size`，`style` 中的尺寸优先。容器大于图形时字形不会随之放大，在容器内居中显示。
+默认容器尺寸为 `size × size`，`style` 中的宽高可覆盖容器尺寸。图形保持 `size` 指定的字号，并在容器中居中。
 
-#### `weight`
+##### `weight`
 
-类型：`SymbolWeight | { ios, android }`，默认 `'unspecified'`
+类型：`SymbolWeight` 或对象形式，默认 `'unspecified'`
 
-接受上游的字重字符串，`ultraLight` 到 `black` 映射为系统字重 100 到 900。省略、`unspecified` 或传入对象时按 400 显示，不读取其他平台的字重值。
+字符串值对应系统字重：`ultraLight`、`thin`、`light`、`regular`、`medium`、`semibold`、`bold`、`heavy` 和 `black` 分别映射到 100 至 900。省略、`unspecified` 或对象形式按 400 显示。实际字重效果取决于系统图标资源；未提供多种字重的图标保持资源默认外观。
 
-能否变重由图标资源决定，部分图标没有提供多字重，仍按资源的默认字重显示。
-
-#### `type`
+##### `type`
 
 类型：`SymbolType`，默认 `'monochrome'`
 
-`monochrome` 单色渲染，`hierarchical` 按图层透明度分层，`palette` 使用 `colors` 调色板，`multicolor` 使用系统多色。同一名称的图标与 SF Symbols 的图层划分和配色不同，实际效果以鸿蒙图标资源为准。
+- `monochrome`：单色显示。
+- `hierarchical`：按图层透明度分层显示。
+- `palette`：使用 `colors` 提供的调色板。
+- `multicolor`：使用系统图标的多色样式。
 
-#### `tintColor`
+可用图层和颜色由 HarmonyOS 系统图标资源决定。
+
+##### `tintColor`
 
 类型：`ColorValue`
 
-接受 React Native 颜色，包括透明色。无法转换的颜色抛出 `TypeError`，例如部分动态颜色对象。
+设置图标颜色，支持带透明度的 React Native 颜色。无法转换的颜色会抛出 `TypeError`。设置后优先于 `colors`；`hierarchical` 保留图层透明度，其他类型以指定颜色显示。移除后恢复调色板或系统配色。
 
-设置后整体着色，优先于 `colors`。`hierarchical` 类型保留分层透明度，其余类型整图使用同一颜色。移除属性后恢复 `colors` 调色板或系统默认配色。
-
-#### `colors`
+##### `colors`
 
 类型：`ColorValue | ColorValue[]`
 
-接受单个颜色或颜色数组，仅在 `type` 为 `palette` 且没有设置 `tintColor` 时生效。与上游 iOS 一致，至少两个颜色才应用调色板，最多使用前三个。未提供颜色或只有一个颜色时保持默认单色渲染，需要系统多色时改用 `type="multicolor"`。
+仅当 `type` 为 `palette` 且未设置 `tintColor` 时，颜色数组才生效。数组至少包含两个颜色，最多使用前三个；单个颜色或少于两个颜色时不应用调色板。要使用系统多色样式，请设置 `type="multicolor"`。可通过 `style.opacity` 调整整个图标的透明度。
 
-> **未实现的内容**
->
-> - `scale`、`resizeMode`：忽略，保持固定字号和居中显示。
-> - `animationSpec`：忽略，图标静态显示。
+##### `scale`
+
+- HarmonyOS 不提供独立的符号缩放级别；图形字号由 `size` 设置。
+
+##### `resizeMode`
+
+- HarmonyOS 按指定字号在容器中居中显示图形，不应用此属性的缩放模式。
+
+##### `animationSpec`
+
+- HarmonyOS 上图标静态显示，此属性不触发动画。
 
 ### Methods
 
 #### `unstable_getMaterialSymbolSourceAsync(symbol, size, color)`
 
-返回 `Promise<null>`，与上游在 iOS 上的行为一致。鸿蒙没有 Material 图标，也不会通过这个接口导出鸿蒙图标。
+接收图标标识、字号和颜色，返回 `Promise<ImageSourcePropType | null>`。HarmonyOS 不提供 Material 图标资源，因此始终返回 `null`。
 
 ### Types
 
 #### `HarmonySymbolName`
 
-在上游平台名称对象的基础上增加可选的 `harmony?: string`，从 `@expo-harmony/expo-symbols/src` 以 `import type` 导入。其余公共类型复用上游声明。
+用于声明 HarmonyOS 系统图标名称的类型，`harmony` 字段为可选字符串。可从 `@expo-harmony/expo-symbols/src` 通过 `import type` 导入。
+
+#### `SymbolViewProps`
+
+`SymbolView` 的属性类型，包含上述图标属性并继承 React Native `ViewProps`。
+
+#### `SymbolType`
+
+图标样式类型，取值为 `'monochrome'`、`'hierarchical'`、`'palette'` 或 `'multicolor'`；各值的显示效果见 `SymbolView.type`。
+
+#### `SymbolWeight`
+
+图标字重类型，取值为 `'unspecified'`、`'ultraLight'`、`'thin'`、`'light'`、`'regular'`、`'medium'`、`'semibold'`、`'bold'`、`'heavy'` 或 `'black'`。HarmonyOS 上的字重映射见 `SymbolView.weight`。
+
+#### `SymbolScale`
+
+符号缩放级别类型，取值为 `'default'`、`'unspecified'`、`'small'`、`'medium'` 或 `'large'`。
+
+- HarmonyOS 不应用这些缩放级别，图形字号由 `SymbolView.size` 设置。
+
+#### `ContentMode`
+
+容器内容显示方式类型，包含 `'scaleToFill'`、`'scaleAspectFit'`、`'scaleAspectFill'`、`'redraw'`、`'center'`、`'top'`、`'bottom'`、`'left'`、`'right'`、`'topLeft'`、`'topRight'`、`'bottomLeft'` 和 `'bottomRight'`。
+
+- HarmonyOS 不应用这些显示方式，图形按 `size` 指定的字号在容器中居中显示。
+
+#### `AnimationSpec`
+
+`animationSpec` 属性的类型，包含 `effect`、`repeating`、`repeatCount`、`speed` 和 `variableAnimationSpec` 等动画配置字段。
+
+- HarmonyOS 上图标静态显示，这些配置不触发动画。
+
+#### `AnimationEffect`
+
+动画效果的配置类型，包含 `type`、`wholeSymbol` 和 `direction` 字段。
+
+#### `AnimationType`
+
+动画效果类型，取值为 `'bounce'`、`'pulse'` 或 `'scale'`。
+
+#### `VariableAnimationSpec`
+
+图标图层动画的配置类型，包含 `reversing`、`nonReversing`、`cumulative`、`iterative`、`hideInactiveLayers` 和 `dimInactiveLayers` 字段。HarmonyOS 上这些配置不产生动画效果。
+
+### Error codes
+
+#### `ERR_SYMBOL_RESOURCE`
+
+查询系统图标资源失败时抛出。图标名称格式无效或系统中不存在对应图标时会显示 `fallback`，不抛出此错误。
+
+#### `ERR_SYMBOL_WEIGHT`
+
+传入无法识别的字重值时抛出。
 
 ## Author
 
