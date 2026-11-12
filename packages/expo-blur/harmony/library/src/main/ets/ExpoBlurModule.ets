@@ -193,10 +193,7 @@ export class ExpoBlurModule extends ExpoModule {
           view.tint = tint;
         },
         ExpoBlurTint.DEFAULT,
-      )
-      .prop('blurTargetId', ExpoValueTypes.number().nullable(), (_view: ExpoBlurView, _target: number | null): void => {}, null)
-      .prop('blurReductionFactor', ExpoValueTypes.number(), (_view: ExpoBlurView, _factor: number): void => {}, 4)
-      .prop('blurMethod', ExpoValueTypes.string(), (_view: ExpoBlurView, _method: string): void => {}, 'none');
+      );
 
     return new ExpoModuleDefinition().name('ExpoBlur').view(view);
   }
