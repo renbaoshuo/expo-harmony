@@ -57,31 +57,113 @@ const OPTIONS = ExpoValueTypes.shapedRecord<BlobOptions>(
   },
 );
 
-class BlobObject extends ExpoSharedObject {
-  private readonly parts: Uint8Array[];
+type BlobDataPart = Uint8Array | BlobData;
+
+class BlobDataCursor {
+  index: number = 0;
+  offset: number;
+  readonly data: BlobData;
+
+  constructor(data: BlobData, offset: number) {
+    this.data = data;
+    this.offset = offset;
+  }
+}
+
+class BlobData {
+  private readonly parts: BlobDataPart[];
   readonly size: number;
-  readonly type: string;
 
-  constructor(context: ExpoModuleContext, parts: Uint8Array[], type: string) {
-    super(context);
-
+  constructor(parts: BlobDataPart[]) {
     let size = 0;
 
     for (const part of parts) {
-      if (part.byteLength > Number.MAX_SAFE_INTEGER - size) {
+      const length = part instanceof BlobData ? part.size : part.byteLength;
+      if (length > Number.MAX_SAFE_INTEGER - size) {
         throw new RangeError('Blob size exceeds the safe integer range.');
       }
 
-      size += part.byteLength;
+      size += length;
     }
 
     this.parts = parts;
     this.size = size;
+  }
+
+  slice(start: number, end: number): BlobData {
+    if (start === 0 && end === this.size) return this;
+
+    const parts: BlobDataPart[] = [];
+    this.visitRange(start, end, (part: BlobDataPart, from: number, to: number): boolean => {
+      if (part instanceof BlobData) {
+        if (from !== 0 || to !== part.size) return false;
+        parts.push(part);
+      } else {
+        // A short slice must not retain the original backing buffer.
+        parts.push(from === 0 && to === part.byteLength ? part : part.slice(from, to));
+      }
+      return true;
+    });
+
+    return new BlobData(parts);
+  }
+
+  bytes(): Uint8Array {
+    const bytes = new Uint8Array(this.size);
+    let offset = 0;
+
+    this.visitRange(0, this.size, (part: BlobDataPart): boolean => {
+      if (part instanceof BlobData) return false;
+      bytes.set(part, offset);
+      offset += part.byteLength;
+
+      return true;
+    });
+
+    return bytes;
+  }
+
+  private visitRange(start: number, end: number, visit: (part: BlobDataPart, start: number, end: number) => boolean): void {
+    if (start >= end) return;
+
+    // Keep nested data shared and traverse it without using the call stack.
+    const stack: BlobDataCursor[] = [new BlobDataCursor(this, 0)];
+
+    while (stack.length > 0) {
+      const cursor = stack[stack.length - 1];
+      if (cursor.index === cursor.data.parts.length || cursor.offset >= end) {
+        stack.pop();
+        continue;
+      }
+
+      const part = cursor.data.parts[cursor.index++];
+      const offset = cursor.offset;
+      const length = part instanceof BlobData ? part.size : part.byteLength;
+      cursor.offset += length;
+      if (cursor.offset <= start) continue;
+
+      const handled = visit(part, Math.max(start - offset, 0), Math.min(end - offset, length));
+      if (!handled && part instanceof BlobData) stack.push(new BlobDataCursor(part, offset));
+    }
+  }
+}
+
+class BlobObject extends ExpoSharedObject {
+  private readonly data: BlobData;
+  readonly type: string;
+
+  constructor(context: ExpoModuleContext, data: BlobData, type: string) {
+    super(context);
+    this.data = data;
     this.type = normalizeContentType(type);
   }
 
+  get size(): number {
+    return this.data.size;
+  }
+
   static fromParts(context: ExpoModuleContext, input: BlobPart[], options: BlobOptions): BlobObject {
-    const parts: Uint8Array[] = [];
+    const parts: BlobDataPart[] = [];
 
     for (const part of input) {
       if (part.first !== undefined) {
@@ -90,7 +172,7 @@ class BlobObject extends ExpoSharedObject {
         // Harmony's encodeInto('') may return undefined despite its declared type.
         if (text.length > 0) parts.push(new util.TextEncoder('utf-8').encodeInto(text));
       } else if (part.second !== undefined) {
-        for (const bytes of part.second.parts) parts.push(bytes);
+        if (part.second.size > 0) parts.push(part.second.data);
       } else {
         const view = part.third as ExpoNumericTypedArray;
 
@@ -100,46 +182,18 @@ class BlobObject extends ExpoSharedObject {
       }
     }
 
-    return new BlobObject(context, parts, options.type);
+    return new BlobObject(context, new BlobData(parts), options.type);
   }
 
   slice(start?: number | null, end?: number | null, type?: string | null): BlobObject {
     const from = start === undefined || start === null ? 0 : resolveSliceIndex(start, this.size);
     const to = end === undefined || end === null ? this.size : resolveSliceIndex(end, this.size);
 
-    const parts: Uint8Array[] = [];
-
-    if (from < to) {
-      let offset = 0;
-
-      for (const part of this.parts) {
-        const next = offset + part.byteLength;
-
-        if (next > from && offset < to) {
-          const begin = Math.max(from - offset, 0);
-          const stop = Math.min(to - offset, part.byteLength);
-
-          parts.push(begin === 0 && stop === part.byteLength ? part : part.slice(begin, stop));
-        }
-
-        offset = next;
-        if (offset >= to) break;
-      }
-    }
-
-    return new BlobObject(this.context, parts, type ?? '');
+    return new BlobObject(this.context, this.data.slice(from, to), type ?? '');
   }
 
   bytes(): Uint8Array {
-    const bytes = new Uint8Array(this.size);
-    let offset = 0;
-
-    for (const part of this.parts) {
-      bytes.set(part, offset);
-      offset += part.byteLength;
-    }
-
-    return bytes;
+    return this.data.bytes();
   }
 
   text(): string {

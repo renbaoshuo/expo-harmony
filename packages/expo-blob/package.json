@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-blob",
-  "version": "55.0.17-harmony.3",
+  "version": "57.0.2-harmony.0",
   "description": "HarmonyOS port of expo-blob",
   "keywords": [
     "react-native",
@@ -18,6 +18,7 @@
   "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-blob#readme",
   "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "main": "index.js",
+  "react-native": "src/index.ts",
   "types": "index.d.ts",
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
@@ -26,22 +27,24 @@
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo-blob": "55.0.17"
+    "expo-blob": "57.0.2"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "@react-native-oh/react-native-harmony": "0.84.1",
-    "expo": "55.0.31",
-    "expo-blob": "55.0.17",
-    "expo-modules-core": "55.0.26",
+    "expo": "57.0.31",
+    "expo-blob": "57.0.2",
+    "expo-modules-core": "57.0.24",
     "react": "19.2.3",
-    "react-native": "0.84.1"
+    "react-native": "0.86.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "harmony": {
+    "alias": "expo-blob"
   }
 }
