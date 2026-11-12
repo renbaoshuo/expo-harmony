@@ -23,6 +23,7 @@ import {
 } from './HapticsSemantics';
 import type { HapticPreset, HapticPresetName, HapticRecipe, HapticUsage } from './HapticsSemantics';
 
+const VIBRATOR_CAPABILITY: string = 'SystemCapability.Sensors.MiscDevice';
 const UNSUPPORTED_CODE: number = 801;
 const ERROR_DESTROYED: string = 'ERR_HAPTICS_DESTROYED';
 const ERROR_INVALID_ARGUMENT: string = 'ERR_HAPTICS_INVALID_ARGUMENT';
@@ -49,12 +50,17 @@ class ExpoHapticsError extends ExpoModuleError {
 
 export class ExpoHapticsModule extends ExpoModule {
   private destroyed: boolean = false;
+  private pending: Promise<void> = Promise.resolve();
 
   constructor(context: ExpoModuleContext) {
     super(context);
   }
 
   definition(): ExpoModuleDefinition {
+    const destroy = (): void => {
+      this.destroyed = true;
+    };
+
     return new ExpoModuleDefinition()
       .name('ExpoHaptics')
       .asyncFunction(
@@ -68,7 +74,7 @@ export class ExpoHapticsModule extends ExpoModule {
             throw new ExpoHapticsError(ERROR_INVALID_ARGUMENT, `'type' must be one of ['success', 'warning', 'error']. Obtained '${type}'.`);
           }
 
-          await this.vibrate(recipe);
+          await this.enqueue(recipe);
         }),
       )
       .asyncFunction(
@@ -85,16 +91,16 @@ export class ExpoHapticsModule extends ExpoModule {
             );
           }
 
-          await this.vibrate(recipe);
+          await this.enqueue(recipe);
         }),
       )
       .asyncFunction('selectionAsync', async (): Promise<void> => {
         this.assertActive();
-        await this.vibrate(selectionRecipe());
+        await this.enqueue(selectionRecipe());
       })
-      .onDestroy((): void => {
-        this.destroyed = true;
-      });
+      .onPrepareForReload(async (): Promise<void> => destroy())
+      .onAbilityDestroy(destroy)
+      .onDestroy(destroy);
   }
 
   private assertActive(): void {
@@ -103,9 +109,20 @@ export class ExpoHapticsModule extends ExpoModule {
     }
   }
 
-  private async vibrate(recipe: HapticRecipe): Promise<void> {
-    this.assertActive();
+  private enqueue(recipe: HapticRecipe): Promise<void> {
+    // A fallback for an older request must start before the newer request.
+    const request = this.pending.then(async (): Promise<void> => {
+      if (this.destroyed || !canIUse(VIBRATOR_CAPABILITY)) return;
 
+      await this.vibrate(recipe);
+    });
+
+    this.pending = request.catch((): void => {});
+
+    return request;
+  }
+
+  private async vibrate(recipe: HapticRecipe): Promise<void> {
     const first: HapticPreset | undefined = recipe.presets[0];
     const notice: boolean = first !== undefined && isNoticePreset(first.name);
 
@@ -115,21 +132,18 @@ export class ExpoHapticsModule extends ExpoModule {
 
     if (recipe.pattern !== undefined && deviceInfo.sdkApiVersion >= PATTERN_API) {
       try {
-        const builder = new vibrator.VibratorPatternBuilder();
+        if (vibrator.isHdHapticSupported()) {
+          const builder = new vibrator.VibratorPatternBuilder();
 
-        for (const pulse of recipe.pattern) {
-          builder.addContinuousEvent(pulse.startMs, pulse.durationMs, { intensity: pulse.intensity });
+          for (const pulse of recipe.pattern) {
+            builder.addContinuousEvent(pulse.startMs, pulse.durationMs, { intensity: pulse.intensity });
+          }
+
+          await vibrator.startVibration({ type: 'pattern', pattern: builder.build() }, { usage: recipe.usage });
+          return;
         }
-
-        const pattern = builder.build();
-
-        if (this.destroyed) return;
-
-        await vibrator.startVibration({ type: 'pattern', pattern }, { usage: recipe.usage });
-
-        return;
       } catch (error) {
-        if (!isUnavailable(error)) this.warnFallback('pattern', error);
+        rejectUnlessUnsupported(error);
       }
     }
 
@@ -146,9 +160,7 @@ export class ExpoHapticsModule extends ExpoModule {
     try {
       await vibrator.startVibration({ type: 'time', duration: recipe.fallbackMs }, { usage: recipe.usage });
     } catch (error) {
-      if (isUnavailable(error)) return;
-
-      throw new ExpoHapticsError(ERROR_VIBRATION, `Unable to trigger HarmonyOS haptic feedback: ${errorMessage(error)}`);
+      rejectUnlessUnsupported(error);
     }
   }
 
@@ -157,9 +169,12 @@ export class ExpoHapticsModule extends ExpoModule {
 
     const id: string | undefined = presetId(preset.name);
 
-    if (id === undefined || !supports(id) || this.destroyed) return false;
+    if (id === undefined) return false;
 
     try {
+      // The asynchronous query can report service failures as unsupported effects.
+      if (!vibrator.isSupportEffectSync(id)) return false;
+
       if (isNoticePreset(preset.name)) {
         await vibrator.startVibration({ type: 'preset', effectId: id, count: preset.count }, { usage });
       } else {
@@ -168,32 +183,21 @@ export class ExpoHapticsModule extends ExpoModule {
 
       return true;
     } catch (error) {
-      if (!isUnavailable(error)) this.warnFallback(`preset '${id}'`, error);
-
+      rejectUnlessUnsupported(error);
       return false;
     }
-  }
-
-  private warnFallback(stage: string, error: Object): void {
-    if (!this.destroyed) {
-      this.context.logger.warn(`HarmonyOS haptics ${stage} failed; trying a fallback: ${errorMessage(error)}`);
-    }
-  }
-}
-
-function supports(id: string): boolean {
-  try {
-    return vibrator.isSupportEffectSync(id);
-  } catch (error) {
-    if (isUnavailable(error)) return false;
-
-    throw new ExpoHapticsError(ERROR_VIBRATION, `Unable to query HarmonyOS haptic preset '${id}': ${errorMessage(error)}`);
   }
 }
 
 interface CodedError {
   readonly code?: number;
   readonly message?: string;
+}
+
+function rejectUnlessUnsupported(error: Object): void {
+  if (!isUnavailable(error)) {
+    throw new ExpoHapticsError(ERROR_VIBRATION, `Unable to trigger HarmonyOS haptic feedback: ${errorMessage(error)}`);
+  }
 }
 
 function isUnavailable(error: Object): boolean {

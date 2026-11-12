@@ -37,6 +37,7 @@ export const PATTERN_API: number = 18;
 const ANDROID_MAX_AMPLITUDE: number = 255;
 const HARMONY_MAX_INTENSITY: number = 100;
 
+// Android amplitudes use [0, 255]; HarmonyOS pattern intensity uses [0, 100].
 function notificationIntensity(amplitude: number): number {
   return Math.round(amplitude * HARMONY_MAX_INTENSITY / ANDROID_MAX_AMPLITUDE);
 }
@@ -64,6 +65,7 @@ export interface HapticRecipe {
 }
 
 export function notificationRecipe(type: string): HapticRecipe | undefined {
+  // Patterns retain SDK 57 HapticsNotificationType's timings, pauses and relative amplitudes.
   switch (type) {
     case NOTIFICATION_SUCCESS:
       return {
@@ -111,6 +113,7 @@ export function notificationRecipe(type: string): HapticRecipe | undefined {
 }
 
 export function impactRecipe(style: string): HapticRecipe | undefined {
+  // Timed fallbacks retain SDK 57 HapticsImpactType's oldSDKPattern durations.
   switch (style) {
     case IMPACT_LIGHT:
       return {
