@@ -15,6 +15,8 @@ const RETRY_BASE_DELAY_MS: number = 500;
 const RETRY_MAX_DELAY_MS: number = 8000;
 const RETRY_LIMIT: number = 5;
 const FALLBACK_IP: string = '0.0.0.0';
+// NetworkKit reserves 0 for no default network. Assigned IDs start at 100.
+const FIRST_NETWORK_ID: number = 100;
 const SERVICE_UNAVAILABLE: number = 2100002;
 const INTERNAL_ERROR: number = 2100003;
 // NetAddress.family uses 1 for IPv4 (also its documented default), 2 for IPv6.
@@ -52,6 +54,8 @@ export class ExpoNetworkModule extends ExpoModule {
   private attempt: number = 0;
   private observing: boolean = false;
   private destroyed: boolean = false;
+  private readonly lostNetworkIds: Set<number> = new Set<number>();
+  private pendingNetworkLoss: boolean = false;
 
   constructor(context: ExpoModuleContext) {
     super(context);
@@ -89,12 +93,20 @@ export class ExpoNetworkModule extends ExpoModule {
     if (this.destroyed || !this.observing || this.observer !== undefined) return;
 
     let observer: connection.NetConnection | undefined;
+
     try {
       const current = connection.createNetConnection();
       observer = current;
+      this.lostNetworkIds.clear();
+      this.pendingNetworkLoss = false;
 
-      current.on('netAvailable', (_: connection.NetHandle): void => this.scheduleNetworkStateEvent(current));
-      current.on('netLost', (_: connection.NetHandle): void => this.scheduleNetworkStateEvent(current));
+      current.on('netAvailable', (handle: connection.NetHandle): void => {
+        if (this.destroyed || !this.observing || this.observer !== current) return;
+
+        this.lostNetworkIds.delete(handle.netId);
+        this.scheduleNetworkStateEvent(current);
+      });
+      current.on('netLost', (handle: connection.NetHandle): void => this.scheduleNetworkStateEvent(current, handle.netId));
       current.on('netUnavailable', (): void => this.scheduleNetworkStateEvent(current));
       current.on('netCapabilitiesChange', (_: connection.NetCapabilityInfo): void => this.scheduleNetworkStateEvent(current));
 
@@ -152,8 +164,7 @@ export class ExpoNetworkModule extends ExpoModule {
   }
 
   private unregisterObserver(observer: connection.NetConnection, attempt: number = 0): void {
-    // A late successful registration will unregister itself. Calling unregister before
-    // register completes can fail with "not registered" and leak the later subscription.
+    // Unregistering before registration completes can leak the late subscription.
     if (this.registering.has(observer)) return;
     if (this.pending.has(observer) && attempt === 0) return;
 
@@ -179,7 +190,6 @@ export class ExpoNetworkModule extends ExpoModule {
     }
 
     if (isTransientNetworkError(error) && attempt < RETRY_LIMIT) {
-      // Finish native cleanup even after module destruction; this never emits JS events.
       const delay = Math.min(RETRY_BASE_DELAY_MS * Math.pow(2, attempt), RETRY_MAX_DELAY_MS);
 
       setTimeout((): void => this.unregisterObserver(observer, attempt + 1), delay);
@@ -190,6 +200,8 @@ export class ExpoNetworkModule extends ExpoModule {
 
   private stopObserving(): void {
     this.observing = false;
+    this.lostNetworkIds.clear();
+    this.pendingNetworkLoss = false;
     this.revision += 1;
 
     this.timers.forEach((timer: number): void => clearTimeout(timer));
@@ -215,9 +227,13 @@ export class ExpoNetworkModule extends ExpoModule {
     this.stopObserving();
   }
 
-  private scheduleNetworkStateEvent(observer: connection.NetConnection): void {
+  private scheduleNetworkStateEvent(observer: connection.NetConnection, lostNetworkId?: number): void {
     if (this.destroyed || !this.observing || this.observer !== observer) return;
 
+    if (lostNetworkId !== undefined) {
+      this.lostNetworkIds.add(lostNetworkId);
+      this.pendingNetworkLoss = true;
+    }
     const revision = ++this.revision;
 
     this.timers.forEach((timer: number): void => clearTimeout(timer));
@@ -231,7 +247,7 @@ export class ExpoNetworkModule extends ExpoModule {
           this.context.logger.warn(`Unable to publish an Expo Network state change: ${String(error)}`);
         }
       });
-    }, CHANGE_DELAY_MS);
+    }, this.pendingNetworkLoss ? 0 : CHANGE_DELAY_MS);
 
     this.timers.add(timer);
   }
@@ -239,30 +255,42 @@ export class ExpoNetworkModule extends ExpoModule {
   private async publishNetworkState(observer: connection.NetConnection, revision: number): Promise<void> {
     if (this.destroyed || !this.observing || this.observer !== observer) return;
 
-    const state = await this.readNetworkState();
+    const state = await this.readNetworkState(revision);
 
     if (this.destroyed || !this.observing || this.observer !== observer || revision !== this.revision) return;
 
+    this.pendingNetworkLoss = false;
     this.sendEvent(STATE_EVENT, state);
   }
 
-  private async readNetworkState(): Promise<NetworkState> {
+  private async readNetworkState(eventRevision?: number): Promise<NetworkState> {
     let handle: connection.NetHandle;
+
     try {
       handle = await connection.getDefaultNet();
     } catch (_) {
       return unknownState();
     }
 
-    if (handle.netId === 0) return disconnectedState();
-    if (handle.netId < 0) return unknownState();
+    if (handle.netId === 0) {
+      if (eventRevision === this.revision) this.lostNetworkIds.clear();
+      return disconnectedState();
+    }
+    if (handle.netId < FIRST_NETWORK_ID) return unknownState();
+
+    // Callback history affects observers only. Direct queries use the system snapshot.
+    if (eventRevision !== undefined) {
+      if (eventRevision !== this.revision) return unknownState();
+      if (this.lostNetworkIds.has(handle.netId)) return disconnectedState();
+    }
 
     try {
       const capabilities = await connection.getNetCapabilities(handle);
-
       const type = networkType(capabilities.bearerTypes);
+      const state = new NetworkState(type, type !== NetworkStateType.UNKNOWN, isInternetReachable(capabilities));
+      if (eventRevision === this.revision) this.lostNetworkIds.clear();
 
-      return new NetworkState(type, type !== NetworkStateType.UNKNOWN, true);
+      return state;
     } catch (_) {
       return unknownState();
     }
@@ -270,6 +298,7 @@ export class ExpoNetworkModule extends ExpoModule {
 
   private async readIpAddress(): Promise<string> {
     let handle: connection.NetHandle;
+
     try {
       handle = await connection.getDefaultNet();
     } catch (error) {
@@ -277,11 +306,12 @@ export class ExpoNetworkModule extends ExpoModule {
     }
 
     if (handle.netId === 0) return FALLBACK_IP;
-    if (handle.netId < 0) {
+    if (handle.netId < FIRST_NETWORK_ID) {
       throw new ExpoModuleError('ERR_NETWORK_IP_ADDRESS', 'HarmonyOS returned an invalid network handle.');
     }
 
     let properties: connection.ConnectionProperties;
+
     try {
       properties = await connection.getConnectionProperties(handle);
     } catch (error) {
@@ -298,6 +328,7 @@ export class ExpoNetworkModule extends ExpoModule {
 
   private async readAirplaneMode(): Promise<boolean> {
     let value: string;
+
     try {
       value = settings.getValueSync(this.context.uiAbilityContext, settings.general.AIRPLANE_MODE_STATUS, '0');
     } catch (error) {
@@ -331,6 +362,19 @@ function networkType(bearers: connection.NetBearType[]): NetworkStateType {
   if (bearers.includes(connection.NetBearType.BEARER_ETHERNET)) return NetworkStateType.ETHERNET;
   if (bearers.includes(connection.NetBearType.BEARER_VPN)) return NetworkStateType.VPN;
   return NetworkStateType.UNKNOWN;
+}
+
+function isInternetReachable(capabilities: connection.NetCapabilities): boolean {
+  const networkCapabilities = capabilities.networkCap ?? [];
+  // NetworkKit may still report VALIDATED while a connectivity check is in progress.
+  if (!networkCapabilities.includes(connection.NetCap.NET_CAPABILITY_INTERNET) ||
+    !networkCapabilities.includes(connection.NetCap.NET_CAPABILITY_VALIDATED) ||
+    networkCapabilities.includes(connection.NetCap.NET_CAPABILITY_CHECKING_CONNECTIVITY)) return false;
+
+  // HarmonyOS does not expose Android's NOT_SUSPENDED capability. The default
+  // network handle and the system's validation result supply the available state.
+  return !capabilities.bearerTypes.includes(connection.NetBearType.BEARER_VPN) ||
+    (capabilities.linkDownBandwidthKbps ?? 0) !== 0;
 }
 
 function isUsableIpv4Address(address: connection.NetAddress): boolean {
