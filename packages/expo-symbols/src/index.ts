@@ -5,16 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import type { AndroidSymbol } from 'expo-symbols';
-import type { ImageSourcePropType } from 'react-native';
+export { unstable_getMaterialSymbolSourceAsync } from 'expo-symbols';
 
-export { SymbolView } from './SymbolView';
+export { SymbolView } from './SymbolView.harmony';
 export type * from './SymbolModule.types';
-
-export async function unstable_getMaterialSymbolSourceAsync(
-  _symbol: AndroidSymbol | null,
-  _size: number,
-  _color: string
-): Promise<ImageSourcePropType | null> {
-  return null;
-}

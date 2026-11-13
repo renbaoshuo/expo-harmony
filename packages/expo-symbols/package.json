@@ -63,10 +63,18 @@
   },
   "harmony": {
     "metro": {
-      "entrypoints": [
+      "redirects": [
         {
           "upstream": "expo-symbols",
-          "target": "src/index.ts"
+          "origin": "build/index.js",
+          "request": "./SymbolView",
+          "target": "src/SymbolView.harmony.tsx"
+        },
+        {
+          "upstream": "expo-symbols",
+          "origin": "build/index.js",
+          "request": "./materialImageSource",
+          "upstreamTarget": "build/materialImageSource.ios.js"
         }
       ]
     }
