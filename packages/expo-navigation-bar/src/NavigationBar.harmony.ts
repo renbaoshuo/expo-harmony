@@ -5,19 +5,24 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import type { EventSubscription } from 'expo-modules-core';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Appearance, useColorScheme } from 'react-native';
-
-import ExpoNavigationBar from './ExpoNavigationBar';
+import { type EventSubscription, requireNativeModule } from 'expo-modules-core';
 import type {
   NavigationBarProps,
   NavigationBarStyle,
   NavigationBarVisibility,
   NavigationBarVisibilityEvent,
-} from './NavigationBar.types';
+} from 'expo-navigation-bar';
+import { useEffect, useRef, useState } from 'react';
+import { Appearance, useColorScheme } from 'react-native';
 
 type ResolvedBarStyle = 'light' | 'dark';
+
+const ExpoNavigationBar = requireNativeModule<{
+  addListener(event: 'ExpoNavigationBar.didChange', listener: (event: NavigationBarVisibilityEvent) => void): EventSubscription;
+  setStyle(style: ResolvedBarStyle): Promise<void>;
+  setHidden(hidden: boolean): Promise<void>;
+  getVisibilityAsync(): Promise<NavigationBarVisibility>;
+}>('ExpoNavigationBar');
 
 function isLightColorScheme() {
   const colorScheme = Appearance?.getColorScheme() ?? 'light';
@@ -40,7 +45,7 @@ const defaultProps: Required<NavigationBarProps> = {
   hidden: false,
 };
 
-function mergeEntriesStack(entriesStack: NavigationBarProps[]) {
+function mergeEntriesStack() {
   return entriesStack.reduce<Required<NavigationBarProps>>(
     (prev, cur) => ({
       style: cur.style ?? prev.style,
@@ -48,10 +53,6 @@ function mergeEntriesStack(entriesStack: NavigationBarProps[]) {
     }),
     { ...defaultProps }
   );
-}
-
-function createStackEntry({ style, hidden }: NavigationBarProps): NavigationBarProps {
-  return { style, hidden };
 }
 
 const entriesStack: NavigationBarProps[] = [];
@@ -115,62 +116,33 @@ function updateEntriesStack() {
 
   updateImmediate = setImmediate(() => {
     updateImmediate = null;
-    const { style, hidden } = mergeEntriesStack(entriesStack);
+    const { style, hidden } = mergeEntriesStack();
 
     void applyStyle(style);
     void applyHidden(hidden);
   });
 }
 
-function pushStackEntry(props: NavigationBarProps): NavigationBarProps {
-  const entry = createStackEntry(props);
-  entriesStack.push(entry);
-  updateEntriesStack();
-  return entry;
-}
-
-function popStackEntry(entry: NavigationBarProps): void {
-  const index = entriesStack.indexOf(entry);
-  if (index !== -1) {
-    entriesStack.splice(index, 1);
-  }
-  updateEntriesStack();
-}
-
-function replaceStackEntry(
-  entry: NavigationBarProps,
-  props: NavigationBarProps
-): NavigationBarProps {
-  const newEntry = createStackEntry(props);
-  const index = entriesStack.indexOf(entry);
-  if (index !== -1) {
-    entriesStack[index] = newEntry;
-  }
-  updateEntriesStack();
-  return newEntry;
-}
-
 export function NavigationBar({ style, hidden }: NavigationBarProps) {
   const colorScheme = useColorScheme();
-  const props = useMemo<NavigationBarProps>(() => ({ style, hidden }), [style, hidden]);
-  const entry = useRef<NavigationBarProps | null>(null);
+  const entry = useRef<NavigationBarProps>({});
 
   useEffect(() => {
-    entry.current = pushStackEntry(props);
+    const props = entry.current;
+    entriesStack.push(props);
 
     return () => {
-      if (entry.current) {
-        popStackEntry(entry.current);
-        entry.current = null;
-      }
+      const index = entriesStack.indexOf(props);
+      if (index !== -1) entriesStack.splice(index, 1);
+      updateEntriesStack();
     };
   }, []);
 
   useEffect(() => {
-    if (entry.current) {
-      entry.current = replaceStackEntry(entry.current, props);
-    }
-  }, [colorScheme, props]);
+    entry.current.style = style;
+    entry.current.hidden = hidden;
+    updateEntriesStack();
+  }, [colorScheme, style, hidden]);
 
   return null;
 }

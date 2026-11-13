@@ -18,7 +18,6 @@
     "directory": "packages/expo-navigation-bar"
   },
   "main": "index.js",
-  "react-native": "src/index.ts",
   "types": "index.d.ts",
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
@@ -55,7 +54,15 @@
     "access": "public"
   },
   "harmony": {
-    "alias": "expo-navigation-bar",
-    "redirectInternalImports": true
+    "metro": {
+      "redirects": [
+        {
+          "upstream": "expo-navigation-bar",
+          "origin": "src/index.ts",
+          "request": "./NavigationBar",
+          "target": "src/NavigationBar.harmony.ts"
+        }
+      ]
+    }
   }
 }
