@@ -18,7 +18,6 @@
   "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__package-manager#readme",
   "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "main": "index.js",
-  "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
     "@expo/package-manager": "~1.13.1"
