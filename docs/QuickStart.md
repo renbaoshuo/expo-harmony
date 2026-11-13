@@ -209,8 +209,6 @@ HarmonyOS 打包时，`withHarmonyConfig` 应用 Harmony 重定向并接入 RNOH
 
 Demo 使用 React Native Screens `4.26.2` 和 Safe Area Context `5.6.2` 的 JS 接口。Harmony 侧原生包由 Expo Harmony Router 带入，分别是 Screens `4.10.0-beta.4` 和 Safe Area Context `5.6.4`。Worklets JS 使用 `0.11.4`，Core 带入 Harmony Worklets `1.1.0-beta.1`。
 
-适配包可通过 `harmony.alias` 和内部重定向提供同名入口。纯 JS 库可沿用原有依赖。其他解析选项见 [Metro 配置说明](../packages/metro-config/README.md)。
-
 ### 业务代码里的平台判断
 
 `Platform.OS === 'harmony'`。Metro 注册了 harmony 平台，`.harmony.tsx`、`.harmony.ts` 这类平台后缀文件也按 RN 的后缀规则解析。demo 的 `app/_layout.tsx` 里有一个状态栏颜色的判断可以参照。

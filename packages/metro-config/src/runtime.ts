@@ -25,6 +25,8 @@ const HarmonySingletonPackages = [
   '@react-native/assets-registry',
   '@expo/metro-runtime',
   'expo',
+  'expo-asset',
+  'expo-location',
   'expo-modules-core',
   'expo-router',
   'react',

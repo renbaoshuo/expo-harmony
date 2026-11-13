@@ -38,7 +38,7 @@ type WithHarmonyConfig = ReturnType<typeof createWithHarmonyConfig>;
 
 const Implementations = new Map<string, WithHarmonyConfig>();
 const RouterPackage = '@expo-harmony/expo-router';
-const RedirectCarriers = ['@expo-harmony/expo', RouterPackage];
+const RedirectCarriers = ['@expo-harmony/expo', '@expo-harmony/expo-modules-core', RouterPackage];
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- semver does not bundle TypeScript declarations.
 const { satisfies } = require('semver') as { satisfies(version: string, range: string): boolean };
 
@@ -60,10 +60,11 @@ interface EntryRedirect {
   target: string;
 }
 
-interface ScopedRedirect extends EntryRedirect {
+type ScopedRedirect = {
+  upstream: string;
   origin: string;
   request: string;
-}
+} & ({ target: string; upstreamTarget?: never } | { target?: never; upstreamTarget: string });
 
 function patchAutolinking(root: string, runtime: string): void {
   const require = createRequire(path.join(root, 'package.json'));
@@ -204,40 +205,67 @@ function addScopedRedirects(
   redirects: Map<string, HarmonyRedirect>,
   hasAlias: (name: string) => boolean
 ): void {
-  const originsByRequest = new Map<string, Map<string, string>>();
+  const byRequest = new Map<string, {
+    upstream: string;
+    range: string;
+    origin: string;
+    target?: string;
+    upstreamTarget?: string;
+  }[]>();
   for (const manifestPath of manifestPaths) {
     const manifest = require(manifestPath) as PackageManifest;
-    const carrierRequire = createRequire(manifestPath);
     const entries = manifest.harmony?.metro?.redirects;
     if (!Array.isArray(entries)) continue;
 
     for (const entry of entries) {
       if (!entry || typeof entry.request !== 'string' || typeof entry.upstream !== 'string'
+        || typeof entry.origin !== 'string'
         || redirects.has(entry.request) || hasAlias(entry.request)) continue;
 
-      const target = resolvePackageFile(path.dirname(manifestPath), entry.target);
-      if (!target) continue;
+      const range = manifest.peerDependencies?.[entry.upstream];
+      if (typeof range !== 'string') continue;
 
-      for (const upstream of resolveCompatibleUpstreams(require, carrierRequire, manifest, entry.upstream)) {
-        const origin = resolvePackageFile(upstream, entry.origin);
-        if (!origin) continue;
+      const target = entry.target && resolvePackageFile(path.dirname(manifestPath), entry.target);
+      if (!target && !entry.upstreamTarget) continue;
 
-        const origins = originsByRequest.get(entry.request) ?? new Map<string, string>();
-        const previous = origins.get(origin);
-        if (previous !== undefined && previous !== target) {
-          throw new ExpoHarmonyMetroError(
-            'ERR_EXPO_HARMONY_CONFLICTING_REDIRECT',
-            `Conflicting Harmony redirects for "${entry.request}" from ${origin}: ${previous} and ${target}.`
-          );
-        }
-
-        origins.set(origin, target);
-        originsByRequest.set(entry.request, origins);
-      }
+      const rules = byRequest.get(entry.request) ?? [];
+      rules.push({
+        upstream: entry.upstream,
+        origin: path.normalize(entry.origin),
+        range,
+        target,
+        upstreamTarget: entry.upstreamTarget,
+      });
+      byRequest.set(entry.request, rules);
     }
   }
-  for (const [request, origins] of originsByRequest) {
-    redirects.set(request, ({ context }) => origins.get(context.originModulePath));
+  for (const [request, rules] of byRequest) {
+    redirects.set(request, ({ context }) => {
+      // Resolve against the importing copy, including nested copies of the Expo peer.
+      const origin = context.getPackageForModule(context.originModulePath);
+      if (!origin) return;
+
+      const { name, version } = origin.packageJson as PackageManifest;
+      if (typeof version !== 'string') return;
+
+      let target: string | undefined;
+      for (const rule of rules) {
+        if (name !== rule.upstream || origin.packageRelativePath !== rule.origin
+          || !satisfies(version, rule.range)) continue;
+
+        const next = rule.upstreamTarget ? resolvePackageFile(origin.rootPath, rule.upstreamTarget) : rule.target;
+        if (!next) continue;
+
+        if (target && target !== next) {
+          throw new ExpoHarmonyMetroError(
+            'ERR_EXPO_HARMONY_CONFLICTING_REDIRECT',
+            `Conflicting Harmony redirects for "${request}" from ${context.originModulePath}: ${target} and ${next}.`
+          );
+        }
+        target = next;
+      }
+      return target;
+    });
   }
 }
 
