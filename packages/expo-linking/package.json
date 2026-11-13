@@ -50,6 +50,27 @@
     "access": "public"
   },
   "harmony": {
-    "alias": "expo-linking"
+    "metro": {
+      "entrypoints": [
+        {
+          "upstream": "expo-linking",
+          "target": "src/index.ts"
+        }
+      ],
+      "redirects": [
+        {
+          "upstream": "expo-linking",
+          "origin": "build/Linking.js",
+          "request": "./RNLinking",
+          "target": "src/RNLinking.ts"
+        },
+        {
+          "upstream": "expo-linking",
+          "origin": "build/Linking.js",
+          "request": "./validateURL",
+          "target": "src/RNLinking.ts"
+        }
+      ]
+    }
   }
 }
