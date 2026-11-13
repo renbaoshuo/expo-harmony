@@ -5,4 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-export * from 'expo-asset';
+import { pickScale } from 'react-native/Libraries/Image/AssetUtils';
+
+// Expo's AssetSources calls the static picker, which RNOH exposes separately.
+export default { pickScale };
