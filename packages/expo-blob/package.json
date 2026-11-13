@@ -18,7 +18,6 @@
   "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-blob#readme",
   "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "main": "index.js",
-  "react-native": "src/index.ts",
   "types": "index.d.ts",
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
@@ -45,6 +44,15 @@
     "access": "public"
   },
   "harmony": {
-    "alias": "expo-blob"
+    "metro": {
+      "redirects": [
+        {
+          "upstream": "expo-blob",
+          "origin": "build/index.js",
+          "request": "./ExpoBlob",
+          "target": "src/ExpoBlob.ts"
+        }
+      ]
+    }
   }
 }

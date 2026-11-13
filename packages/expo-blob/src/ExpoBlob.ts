@@ -5,9 +5,9 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { Blob as ExpoBlob } from 'expo-blob';
+import { Blob as ExpoBlob } from 'expo-blob/build/ExpoBlob';
 
-export * from 'expo-blob';
+export * from 'expo-blob/build/ExpoBlob';
 
 const DEFAULT_CHUNK_SIZE = 64 * 1024;
 
