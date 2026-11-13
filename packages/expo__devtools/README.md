@@ -1,8 +1,6 @@
 # @expo-harmony/expo__devtools
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__devtools) | [官方文档](https://docs.expo.dev/debugging/devtools-plugins/)
-
-为 HarmonyOS 上的 React Native 应用提供 Expo DevTools 插件支持，与官方 `@expo/devtools` 配套使用。
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__devtools)
 
 ## 安装
 
