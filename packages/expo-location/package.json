@@ -49,10 +49,17 @@
   "engines": {
     "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
   },
-  "react-native": "src/index.ts",
   "harmony": {
-    "alias": "expo-location",
-    "redirectInternalImports": true
+    "metro": {
+      "redirects": [
+        {
+          "upstream": "expo-location",
+          "origin": "build/index.js",
+          "request": "./Location",
+          "target": "src/Location.harmony.ts"
+        }
+      ]
+    }
   },
   "publishConfig": {
     "access": "public"
