@@ -18,7 +18,6 @@
     "directory": "packages/expo-live-photo"
   },
   "main": "index.js",
-  "react-native": "src/index.ts",
   "types": "index.d.ts",
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
@@ -49,7 +48,15 @@
     "access": "public"
   },
   "harmony": {
-    "alias": "expo-live-photo",
-    "redirectInternalImports": true
+    "metro": {
+      "redirects": [
+        {
+          "upstream": "expo-live-photo",
+          "origin": "src/index.ts",
+          "request": "./LivePhotoView",
+          "target": "src/LivePhotoView.harmony.tsx"
+        }
+      ]
+    }
   }
 }
