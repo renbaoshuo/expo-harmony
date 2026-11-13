@@ -2,13 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__image-utils)
 
-为 HarmonyOS 项目的 Expo 配置提供图像处理支持，与官方 `@expo/image-utils` 配套使用。
-
 ## 安装
-
-本包适配 Expo SDK 57。
-
-在项目目录执行以下命令安装本包及配套的 Expo 图片工具：
 
 ```bash
 npm install @expo-harmony/expo__image-utils @expo/image-utils@~0.11.6

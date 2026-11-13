@@ -18,7 +18,6 @@
   "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__image-utils#readme",
   "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "main": "index.js",
-  "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
     "@expo/image-utils": "~0.11.6"
