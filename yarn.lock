@@ -1974,13 +1974,11 @@ __metadata:
   dependencies:
     "@expo-harmony/expo-module-scripts": "workspace:*"
     "@expo-harmony/expo-modules-core": "workspace:*"
-    "@types/react": "npm:19.2.2"
     expo: "npm:~57.0.31"
     expo-intent-launcher: "npm:~57.0.1"
     expo-modules-core: "npm:~57.0.24"
     react: "npm:19.2.3"
     react-native: "npm:0.86.3"
-    typescript: "npm:6.0.3"
   peerDependencies:
     "@expo-harmony/expo-modules-core": "workspace:*"
     expo: ~57.0.31

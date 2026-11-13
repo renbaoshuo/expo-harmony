@@ -22,8 +22,7 @@
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
     "harmony:build": "expo-harmony-module prepare",
-    "prepack": "expo-harmony-module prepack",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "prepack": "expo-harmony-module prepack"
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
@@ -34,13 +33,11 @@
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "@types/react": "19.2.2",
     "expo": "~57.0.31",
     "expo-intent-launcher": "~57.0.1",
     "expo-modules-core": "~57.0.24",
     "react": "19.2.3",
-    "react-native": "0.86.3",
-    "typescript": "6.0.3"
+    "react-native": "0.86.3"
   },
   "engines": {
     "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >= 25.0.0"
@@ -48,9 +45,16 @@
   "publishConfig": {
     "access": "public"
   },
-  "react-native": "src/index.ts",
   "harmony": {
-    "alias": "expo-intent-launcher",
-    "redirectInternalImports": true
+    "metro": {
+      "redirects": [
+        {
+          "upstream": "expo-intent-launcher",
+          "origin": "build/IntentLauncher.js",
+          "request": "./ExpoIntentLauncher",
+          "upstreamTarget": "build/ExpoIntentLauncher.android.js"
+        }
+      ]
+    }
   }
 }
