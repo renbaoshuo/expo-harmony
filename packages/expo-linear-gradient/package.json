@@ -18,7 +18,6 @@
     "directory": "packages/expo-linear-gradient"
   },
   "main": "index.js",
-  "react-native": "src/index.ts",
   "types": "index.d.ts",
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
