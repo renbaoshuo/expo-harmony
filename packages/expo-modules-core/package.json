@@ -18,7 +18,6 @@
   "homepage": "https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-modules-core#readme",
   "bugs": "https://github.com/renbaoshuo/expo-harmony/issues",
   "main": "index.js",
-  "react-native": "src/index.ts",
   "types": "index.d.ts",
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
@@ -47,8 +46,16 @@
     "access": "public"
   },
   "harmony": {
-    "alias": "expo-modules-core",
-    "redirectInternalImports": true,
+    "metro": {
+      "redirects": [
+        {
+          "upstream": "expo-modules-core",
+          "origin": "src/index.ts",
+          "request": "./NativeViewManagerAdapter",
+          "target": "src/NativeViewManagerAdapter.js"
+        }
+      ]
+    },
     "autolinking": {
       "mainHarPath": "harmony",
       "ohPackageName": "@expo-harmony/expo-modules-core",
