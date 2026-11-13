@@ -2,8 +2,6 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__pkcs12)
 
-为 HarmonyOS 上的 Expo 项目提供 PKCS#12 证书工具，与官方 `@expo/pkcs12` 配套使用。
-
 ## 安装
 
 ```bash
