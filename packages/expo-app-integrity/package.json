@@ -44,9 +44,16 @@
   "publishConfig": {
     "access": "public"
   },
-  "react-native": "src/index.ts",
   "harmony": {
-    "alias": "@expo/app-integrity",
-    "redirectInternalImports": true
+    "metro": {
+      "redirects": [
+        {
+          "upstream": "@expo/app-integrity",
+          "origin": "build/index.js",
+          "request": "./AppIntegrity",
+          "target": "src/AppIntegrity.harmony.ts"
+        }
+      ]
+    }
   }
 }

@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import ExpoAppIntegrity from './ExpoAppIntegrity';
+import ExpoAppIntegrity from '@expo/app-integrity/build/ExpoAppIntegrity';
 
 export const isSupported = ExpoAppIntegrity.isSupported;
 export const generateKeyAsync = ExpoAppIntegrity.generateKeyAsync.bind(ExpoAppIntegrity);
