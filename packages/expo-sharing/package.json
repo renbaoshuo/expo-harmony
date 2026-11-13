@@ -18,7 +18,6 @@
     "directory": "packages/expo-sharing"
   },
   "main": "index.js",
-  "react-native": "src/index.ts",
   "types": "index.d.ts",
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
@@ -55,6 +54,15 @@
     "access": "public"
   },
   "harmony": {
-    "alias": "expo-sharing"
+    "metro": {
+      "redirects": [
+        {
+          "upstream": "expo-sharing",
+          "origin": "build/index.js",
+          "request": "./useIncomingShare",
+          "target": "src/useIncomingShare.ts"
+        }
+      ]
+    }
   }
 }

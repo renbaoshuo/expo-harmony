@@ -11,7 +11,7 @@ import {
   clearSharedPayloads,
   getResolvedSharedPayloadsAsync,
   getSharedPayloads,
-} from 'expo-sharing';
+} from 'expo-sharing/build/Sharing';
 import type {
   ResolvedSharePayload,
   SharePayload,
