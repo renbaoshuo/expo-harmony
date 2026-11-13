@@ -1,8 +1,6 @@
 # @expo-harmony/expo__config-types
 
-[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__config-types) | [Expo 应用配置文档](https://docs.expo.dev/versions/v57.0.0/config/app/)
-
-为 HarmonyOS 项目提供 Expo 应用配置类型，并与 Expo SDK 57 的配置类型配套使用。
+[**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__config-types)
 
 ## 安装
 
