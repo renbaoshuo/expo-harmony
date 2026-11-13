@@ -49,9 +49,22 @@
   "publishConfig": {
     "access": "public"
   },
-  "react-native": "src/index.ts",
   "harmony": {
-    "alias": "expo-audio",
-    "redirectInternalImports": true
+    "metro": {
+      "redirects": [
+        {
+          "upstream": "expo-audio",
+          "origin": "build/index.js",
+          "request": "./ExpoAudio",
+          "target": "src/ExpoAudio.harmony.ts"
+        },
+        {
+          "upstream": "expo-audio",
+          "origin": "build/ExpoAudio.js",
+          "request": "./utils/options",
+          "target": "src/utils/options.harmony.ts"
+        }
+      ]
+    }
   }
 }

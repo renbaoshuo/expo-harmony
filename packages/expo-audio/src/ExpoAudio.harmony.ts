@@ -5,11 +5,11 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import AudioModule from 'expo-audio/src/AudioModule';
+import { AudioModule } from 'expo-audio/build/ExpoAudio';
 
-export * from 'expo-audio/src/index';
+export * from 'expo-audio/build/ExpoAudio';
 
 // The upstream wrapper only exposes the notification request on Android.
 export async function requestNotificationPermissionsAsync() {
-  return await AudioModule.requestNotificationPermissionsAsync();
+  return AudioModule.requestNotificationPermissionsAsync();
 }

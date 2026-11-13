@@ -6,7 +6,7 @@
  */
 
 import type { RecordingOptions } from 'expo-audio';
-import { createRecordingOptions as createUpstreamRecordingOptions } from 'expo-audio/src/utils/options';
+import { createRecordingOptions as createUpstreamRecordingOptions } from 'expo-audio/build/utils/options';
 
 // Upstream treats other platforms as web and omits native recording directories.
 export function createRecordingOptions(options: RecordingOptions) {
