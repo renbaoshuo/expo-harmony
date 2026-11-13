@@ -11,7 +11,7 @@
 引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
 
 ```bash
-npm install @expo-harmony/expo-sqlite expo-sqlite
+npm install @expo-harmony/expo-sqlite expo-sqlite@~57.0.4
 ```
 
 ## API 对照表

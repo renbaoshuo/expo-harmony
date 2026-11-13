@@ -28,6 +28,6 @@
     "@expo-harmony/expo-constants": "./library"
   },
   "overrides": {
-    "@rnoh/react-native-openharmony": "0.86.1"
+    "@rnoh/react-native-openharmony": "~0.86.1"
   }
 }

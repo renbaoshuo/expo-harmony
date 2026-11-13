@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/metro-runtime": "57.0.17"
+    "@expo/metro-runtime": "~57.0.17"
   },
   "engines": {
     "node": ">=20"

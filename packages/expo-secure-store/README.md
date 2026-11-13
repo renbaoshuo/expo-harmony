@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-secure-store) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/securestore/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo SecureStore 的原生实现，与官方同版本的 `expo-secure-store` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo SecureStore 的原生实现，与官方 `expo-secure-store` 配套使用。
 
 ## 安装
 
@@ -11,7 +11,7 @@
 引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
 
 ```bash
-npm install @expo-harmony/expo-secure-store expo-secure-store
+npm install @expo-harmony/expo-secure-store expo-secure-store@~57.0.4
 ```
 
 ## API 对照表

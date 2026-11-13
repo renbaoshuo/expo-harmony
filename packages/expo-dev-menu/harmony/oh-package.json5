@@ -31,6 +31,6 @@
   "overrides": {
     "@expo-harmony/expo-dev-menu-interface": "57.0.0-harmony.0",
     "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
-    "@rnoh/react-native-openharmony": "0.86.1"
+    "@rnoh/react-native-openharmony": "~0.86.1"
   }
 }

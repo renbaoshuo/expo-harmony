@@ -20,7 +20,7 @@
   "main": "index.js",
   "types": "index.d.ts",
   "peerDependencies": {
-    "expo-dev-client": "57.0.20"
+    "expo-dev-client": "~57.0.20"
   },
   "engines": {
     "node": ">=20"

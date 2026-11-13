@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/config-types": "57.0.2"
+    "@expo/config-types": "~57.0.2"
   },
   "engines": {
     "node": ">=20"

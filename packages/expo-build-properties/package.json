@@ -46,7 +46,7 @@
     "@expo-harmony/config-plugins": "workspace:*"
   },
   "peerDependencies": {
-    "expo": "57.0.31"
+    "expo": "~57.0.31"
   },
   "devDependencies": {
     "@types/node": "18.19.0",

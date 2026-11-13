@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/config": "57.0.10"
+    "@expo/config": "~57.0.10"
   },
   "engines": {
     "node": ">=20"
@@ -43,6 +43,6 @@
     "./package.json": "./package.json"
   },
   "dependencies": {
-    "@expo/env": "2.4.3"
+    "@expo/env": "~2.4.3"
   }
 }

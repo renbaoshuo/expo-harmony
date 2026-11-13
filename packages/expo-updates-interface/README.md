@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-updates-interface)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Updates 状态接口的原生实现，与官方同版本的 `expo-updates-interface` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo Updates 状态接口的原生实现，与官方 `expo-updates-interface` 配套使用。
 
 ## 安装
 

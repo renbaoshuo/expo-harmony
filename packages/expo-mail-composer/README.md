@@ -2,12 +2,12 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-mail-composer) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/mail-composer/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Mail Composer 的原生实现，与官方同版本的 `expo-mail-composer` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo Mail Composer 的原生实现，与官方 `expo-mail-composer` 配套使用。
 
 ## 安装
 
 ```bash
-npm install @expo-harmony/expo-mail-composer expo-mail-composer
+npm install @expo-harmony/expo-mail-composer expo-mail-composer@~57.0.2
 ```
 
 本包适配 Expo SDK 57。

@@ -27,17 +27,17 @@
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo": "^57.0.0",
-    "expo-modules-core": "57.0.24",
-    "expo-tracking-transparency": "57.0.2"
+    "expo": "~57.0.0",
+    "expo-modules-core": "~57.0.24",
+    "expo-tracking-transparency": "~57.0.2"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
     "@types/react": "19.2.2",
-    "expo": "57.0.31",
-    "expo-modules-core": "57.0.24",
-    "expo-tracking-transparency": "57.0.2",
+    "expo": "~57.0.31",
+    "expo-modules-core": "~57.0.24",
+    "expo-tracking-transparency": "~57.0.2",
     "react": "19.2.3",
     "react-native": "0.86.3",
     "typescript": "6.0.3"

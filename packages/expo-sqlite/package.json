@@ -53,14 +53,14 @@
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo-sqlite": "57.0.4"
+    "expo-sqlite": "~57.0.4"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo": "57.0.31",
-    "expo-modules-core": "57.0.24",
-    "expo-sqlite": "57.0.4",
+    "expo": "~57.0.31",
+    "expo-modules-core": "~57.0.24",
+    "expo-sqlite": "~57.0.4",
     "react": "19.2.3",
     "react-native": "0.86.3"
   },

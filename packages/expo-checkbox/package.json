@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "expo-checkbox": "57.0.0",
+    "expo-checkbox": "~57.0.0",
     "react": "*",
     "react-native": "*",
     "react-native-web": "*"

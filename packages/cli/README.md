@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/cli) | [Expo CLI 文档](https://docs.expo.dev/more/expo-cli/)
 
-为 HarmonyOS 上的 React Native 应用提供项目所需的 Expo CLI，与官方同版本的 `@expo/cli` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供项目所需的 Expo CLI，与官方 `@expo/cli` 配套使用。
 
 ## 安装
 

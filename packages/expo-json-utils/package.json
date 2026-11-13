@@ -34,6 +34,6 @@
     "access": "public"
   },
   "dependencies": {
-    "expo-json-utils": "57.0.2"
+    "expo-json-utils": "~57.0.2"
   }
 }

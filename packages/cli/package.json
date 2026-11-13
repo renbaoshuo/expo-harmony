@@ -56,15 +56,15 @@
     "@expo-harmony/expo-modules-autolinking": "workspace:*",
     "@expo-harmony/expo__config": "workspace:*",
     "@expo-harmony/prebuild-config": "workspace:*",
-    "@expo/config": "57.0.10",
-    "@expo/fingerprint": "0.20.14",
+    "@expo/config": "~57.0.10",
+    "@expo/fingerprint": "~0.20.14",
     "cross-spawn": "^7.0.6",
     "json5": "2.2.3",
     "mime-types": "3.0.2",
     "minimatch": "^10.2.2"
   },
   "peerDependencies": {
-    "expo": "57.0.31"
+    "expo": "~57.0.31"
   },
   "peerDependenciesMeta": {
     "expo": {
@@ -74,7 +74,7 @@
   "devDependencies": {
     "@types/mime-types": "3.0.1",
     "@types/node": "22.14.0",
-    "expo": "57.0.31",
+    "expo": "~57.0.31",
     "react": "19.2.3",
     "react-native": "0.86.3",
     "typescript": "6.0.3"

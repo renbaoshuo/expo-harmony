@@ -35,7 +35,7 @@
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@react-native/metro-config": "0.86.3",
     "@types/node": "22.14.0",
-    "expo-modules-core": "57.0.23",
+    "expo-modules-core": "~57.0.23",
     "react": "19.2.3",
     "react-native": "0.86.3",
     "react-native-worklets": "0.11.4"
@@ -70,7 +70,7 @@
     }
   },
   "dependencies": {
-    "@react-native-oh/react-native-harmony": "0.86.1",
+    "@react-native-oh/react-native-harmony": "~0.86.1",
     "@react-native-ohos/react-native-worklets": "1.1.0-beta.1"
   }
 }

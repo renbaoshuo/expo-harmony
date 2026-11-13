@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-navigation-bar) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/navigation-bar/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Navigation Bar 的原生实现，与官方同版本的 `expo-navigation-bar` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo Navigation Bar 的原生实现，与官方 `expo-navigation-bar` 配套使用。
 
 ## 安装
 
@@ -11,7 +11,7 @@
 引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
 
 ```bash
-npm install @expo-harmony/expo-navigation-bar expo-navigation-bar
+npm install @expo-harmony/expo-navigation-bar expo-navigation-bar@~57.0.3
 ```
 
 ## API 对照表

@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-sensors) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/sensors/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Sensors 原生实现，与官方同版本的 `expo-sensors` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo Sensors 原生实现，与官方 `expo-sensors` 配套使用。
 
 ## 安装
 
@@ -13,7 +13,7 @@
 在 Expo 应用项目目录中运行以下命令安装：
 
 ```bash
-npm install @expo-harmony/expo-sensors expo-sensors
+npm install @expo-harmony/expo-sensors expo-sensors@~57.0.3
 ```
 
 ## API 对照表

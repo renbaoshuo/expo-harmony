@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-screen-orientation) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/screen-orientation/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo ScreenOrientation 的原生实现，与官方同版本的 `expo-screen-orientation` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo ScreenOrientation 的原生实现，与官方 `expo-screen-orientation` 配套使用。
 
 ## 安装
 
@@ -11,7 +11,7 @@
 引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
 
 ```bash
-npm install @expo-harmony/expo-screen-orientation expo-screen-orientation
+npm install @expo-harmony/expo-screen-orientation expo-screen-orientation@~57.0.3
 ```
 
 ## API 对照表

@@ -40,10 +40,10 @@
     "@expo-harmony/cli": "workspace:*",
     "@expo-harmony/config-plugins": "workspace:*",
     "@expo-harmony/expo-modules-autolinking": "workspace:*",
-    "@expo/config-plugins": "57.0.11"
+    "@expo/config-plugins": "~57.0.11"
   },
   "peerDependencies": {
-    "expo": "57.0.31"
+    "expo": "~57.0.31"
   },
   "devDependencies": {
     "@types/node": "22.14.0",

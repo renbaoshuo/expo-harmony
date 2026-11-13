@@ -2,14 +2,14 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__require-utils)
 
-为 HarmonyOS 项目的 Expo 配置工具提供模块加载支持，与官方同版本的 `@expo/require-utils` 配套使用。
+为 HarmonyOS 项目的 Expo 配置工具提供模块加载支持，与官方 `@expo/require-utils` 配套使用。
 
 ## 安装
 
 本包适配 Expo SDK 57。
 
 ```bash
-npm install @expo-harmony/expo__require-utils @expo/require-utils@57.0.6
+npm install @expo-harmony/expo__require-utils @expo/require-utils@~57.0.6
 ```
 
 ## Author

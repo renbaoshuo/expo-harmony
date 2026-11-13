@@ -26,6 +26,6 @@
   "main": "Index.ets",
   "dependencies": {
     "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
-    "@rnoh/react-native-openharmony": "0.86.1"
+    "@rnoh/react-native-openharmony": "~0.86.1"
   }
 }

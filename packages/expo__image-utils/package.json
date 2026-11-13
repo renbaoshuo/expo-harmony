@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/image-utils": "0.11.6"
+    "@expo/image-utils": "~0.11.6"
   },
   "engines": {
     "node": ">=20"

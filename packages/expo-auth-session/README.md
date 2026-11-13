@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-auth-session) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/auth-session/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo AuthSession 的 HarmonyOS 实现，与官方同版本的 `expo-auth-session` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo AuthSession 的 HarmonyOS 实现，与官方 `expo-auth-session` 配套使用。
 
 ## 安装
 
@@ -11,17 +11,17 @@
 引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 14（HarmonyOS 5.0.2）。
 
 ```bash
-npm install @expo-harmony/expo-auth-session expo-auth-session \
-  @expo-harmony/expo-constants expo-constants \
-  @expo-harmony/expo-crypto expo-crypto \
-  @expo-harmony/expo-linking expo-linking \
-  @expo-harmony/expo-web-browser expo-web-browser
+npm install @expo-harmony/expo-auth-session expo-auth-session@~57.0.16 \
+  @expo-harmony/expo-constants expo-constants@~57.0.22 \
+  @expo-harmony/expo-crypto expo-crypto@~57.0.4 \
+  @expo-harmony/expo-linking expo-linking@~57.0.13 \
+  @expo-harmony/expo-web-browser expo-web-browser@~57.0.3
 ```
 
 使用 Google 提供方时，还需安装：
 
 ```bash
-npm install @expo-harmony/expo-application expo-application
+npm install @expo-harmony/expo-application expo-application@~57.0.3
 ```
 
 ## API 对照表

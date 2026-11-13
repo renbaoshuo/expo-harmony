@@ -22,7 +22,7 @@
   "types": "index.d.ts",
   "peerDependencies": {
     "expo-gl": "~57.0.2",
-    "expo-processing": "57.0.20",
+    "expo-processing": "~57.0.20",
     "react": "*"
   },
   "engines": {

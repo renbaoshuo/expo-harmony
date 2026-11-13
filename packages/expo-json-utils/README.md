@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-json-utils)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo JSON Utils 的原生实现，与官方同版本的 `expo-json-utils` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo JSON Utils 的原生实现，与官方 `expo-json-utils` 配套使用。
 
 ## 安装
 

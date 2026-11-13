@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__local-build-cache-provider)
 
-为 HarmonyOS 项目的 Expo 构建工具提供依赖缓存，与官方同版本的 `@expo/local-build-cache-provider` 配套使用。
+为 HarmonyOS 项目的 Expo 构建工具提供依赖缓存，与官方 `@expo/local-build-cache-provider` 配套使用。
 
 ## 安装
 

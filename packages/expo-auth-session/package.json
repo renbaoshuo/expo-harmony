@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "expo-auth-session": "57.0.16",
+    "expo-auth-session": "~57.0.16",
     "react": "*",
     "react-native": "*"
   },

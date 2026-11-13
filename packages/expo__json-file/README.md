@@ -9,7 +9,7 @@
 本包适配 Expo SDK 57。
 
 ```bash
-npm install @expo-harmony/expo__json-file @expo/json-file@11.0.1
+npm install @expo-harmony/expo__json-file @expo/json-file@~11.0.1
 ```
 
 ## Author

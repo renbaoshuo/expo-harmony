@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-network) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/network/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Network 的原生实现，与官方同版本的 `expo-network` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo Network 的原生实现，与官方 `expo-network` 配套使用。
 
 ## 安装
 
@@ -11,7 +11,7 @@
 引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
 
 ```bash
-npm install expo-network @expo-harmony/expo-network
+npm install expo-network@~57.0.3 @expo-harmony/expo-network
 ```
 
 ## API 对照表

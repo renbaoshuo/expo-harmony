@@ -2,12 +2,12 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__metro-runtime)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Metro Runtime 支持，与官方同版本的 `@expo/metro-runtime` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo Metro Runtime 支持，与官方 `@expo/metro-runtime` 配套使用。
 
 ## 安装
 
 ```bash
-npm install @expo-harmony/expo__metro-runtime @expo/metro-runtime@57.0.17
+npm install @expo-harmony/expo__metro-runtime @expo/metro-runtime@~57.0.17
 ```
 
 ## Author

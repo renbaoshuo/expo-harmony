@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/schemer": "2.3.0"
+    "@expo/schemer": "~2.3.0"
   },
   "engines": {
     "node": ">=20"

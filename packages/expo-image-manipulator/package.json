@@ -26,14 +26,14 @@
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo-image-manipulator": "57.0.21"
+    "expo-image-manipulator": "~57.0.21"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo": "57.0.31",
-    "expo-image-manipulator": "57.0.21",
-    "expo-modules-core": "57.0.23",
+    "expo": "~57.0.31",
+    "expo-image-manipulator": "~57.0.21",
+    "expo-modules-core": "~57.0.23",
     "react": "19.2.3",
     "react-native": "0.86.3"
   },

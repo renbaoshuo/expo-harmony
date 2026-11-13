@@ -35,18 +35,18 @@
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "^57.0.23-harmony.0",
-    "@expo/metro-runtime": "^57.0.17",
-    "expo": "^57.0.31",
+    "@expo/metro-runtime": "~57.0.17",
+    "expo": "~57.0.31",
     "metro-config": "^0.84.3"
   },
   "devDependencies": {
     "@babel/core": "7.29.7",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "@expo/metro-runtime": "57.0.17",
+    "@expo/metro-runtime": "~57.0.17",
     "@react-native/metro-config": "0.86.3",
     "@types/node": "22.14.0",
-    "expo": "57.0.31",
-    "expo-modules-core": "57.0.24",
+    "expo": "~57.0.31",
+    "expo-modules-core": "~57.0.24",
     "metro-config": "0.84.3",
     "react": "19.2.3",
     "react-native": "0.86.3",

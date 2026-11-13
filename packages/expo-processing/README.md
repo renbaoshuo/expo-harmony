@@ -9,7 +9,7 @@
 本包适配 Expo SDK 57。
 
 ```bash
-npm install @expo-harmony/expo-processing expo-processing@57.0.20 expo-gl@~57.0.2 processing-js
+npm install @expo-harmony/expo-processing expo-processing@~57.0.20 expo-gl@~57.0.2 processing-js
 ```
 
 ## Author

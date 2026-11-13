@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/require-utils": "57.0.6"
+    "@expo/require-utils": "~57.0.6"
   },
   "engines": {
     "node": ">=20"

@@ -26,14 +26,14 @@
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo-task-manager": "57.0.21"
+    "expo-task-manager": "~57.0.21"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo": "57.0.31",
-    "expo-modules-core": "57.0.24",
-    "expo-task-manager": "57.0.21",
+    "expo": "~57.0.31",
+    "expo-modules-core": "~57.0.24",
+    "expo-task-manager": "~57.0.21",
     "react": "19.2.3",
     "react-native": "0.86.3"
   },

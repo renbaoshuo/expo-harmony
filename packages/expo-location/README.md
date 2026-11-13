@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-location) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/location/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Location 的原生实现，与官方同版本的 `expo-location` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo Location 的原生实现，与官方 `expo-location` 配套使用。
 
 ## 安装
 
@@ -11,7 +11,7 @@
 引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
 
 ```bash
-npm install @expo-harmony/expo-location expo-location
+npm install @expo-harmony/expo-location expo-location@~57.0.22
 ```
 
 ## API 对照表

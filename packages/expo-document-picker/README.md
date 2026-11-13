@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-document-picker) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/document-picker/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo DocumentPicker 的原生实现，与官方同版本的 `expo-document-picker` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo DocumentPicker 的原生实现，与官方 `expo-document-picker` 配套使用。
 
 ## 安装
 
@@ -11,7 +11,7 @@
 引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
 
 ```bash
-npm install @expo-harmony/expo-document-picker expo-document-picker
+npm install @expo-harmony/expo-document-picker expo-document-picker@~57.0.3
 ```
 
 ## API 对照表

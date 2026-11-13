@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/pkcs12": "0.6.0"
+    "@expo/pkcs12": "~0.6.0"
   },
   "engines": {
     "node": ">=20"

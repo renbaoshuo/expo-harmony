@@ -2,12 +2,12 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__pkcs12)
 
-为 HarmonyOS 上的 Expo 项目提供 PKCS#12 证书工具，与官方同版本的 `@expo/pkcs12` 配套使用。
+为 HarmonyOS 上的 Expo 项目提供 PKCS#12 证书工具，与官方 `@expo/pkcs12` 配套使用。
 
 ## 安装
 
 ```bash
-npm install @expo-harmony/expo__pkcs12 @expo/pkcs12@0.6.0
+npm install @expo-harmony/expo__pkcs12 @expo/pkcs12@~0.6.0
 ```
 
 ## Author

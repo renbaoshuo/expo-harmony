@@ -2,12 +2,12 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-checkbox) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/checkbox/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Checkbox 的原生实现，与官方同版本的 `expo-checkbox` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo Checkbox 的原生实现，与官方 `expo-checkbox` 配套使用。
 
 ## 安装
 
 ```bash
-npm install @expo-harmony/expo-checkbox expo-checkbox
+npm install @expo-harmony/expo-checkbox expo-checkbox@~57.0.0
 ```
 
 ## Author

@@ -25,6 +25,6 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@rnoh/react-native-openharmony": "0.86.1"
+    "@rnoh/react-native-openharmony": "~0.86.1"
   }
 }

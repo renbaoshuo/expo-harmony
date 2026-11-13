@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-background-fetch) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/background-fetch/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Background Fetch 的原生实现，与官方同版本的 `expo-background-fetch` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo Background Fetch 的原生实现，与官方 `expo-background-fetch` 配套使用。
 
 ## 安装
 
@@ -13,7 +13,7 @@
 在项目目录执行以下命令，安装本包及其 Expo 依赖：
 
 ```bash
-npm install @expo-harmony/expo-background-fetch expo-background-fetch expo-task-manager
+npm install @expo-harmony/expo-background-fetch expo-background-fetch@~57.0.21 expo-task-manager@~57.0.21
 ```
 
 ## 配置

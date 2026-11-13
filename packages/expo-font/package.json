@@ -38,7 +38,7 @@
   },
   "dependencies": {
     "@expo-harmony/config-plugins": "workspace:*",
-    "@expo/config-plugins": "57.0.11"
+    "@expo/config-plugins": "~57.0.11"
   },
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
@@ -47,15 +47,15 @@
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo": "57.0.31",
-    "expo-font": "57.0.4"
+    "expo": "~57.0.31",
+    "expo-font": "~57.0.4"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo": "57.0.31",
-    "expo-font": "57.0.4",
-    "expo-modules-core": "57.0.24",
+    "expo": "~57.0.31",
+    "expo-font": "~57.0.4",
+    "expo-modules-core": "~57.0.24",
     "react": "19.2.3",
     "react-native": "0.86.3"
   },

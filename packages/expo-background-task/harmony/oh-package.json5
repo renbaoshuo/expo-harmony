@@ -30,6 +30,6 @@
   "overrides": {
     "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
     "@expo-harmony/expo-task-manager": "57.0.21-harmony.0",
-    "@rnoh/react-native-openharmony": "0.86.1"
+    "@rnoh/react-native-openharmony": "~0.86.1"
   }
 }

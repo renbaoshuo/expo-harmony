@@ -2,12 +2,12 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo__config) | [Expo 应用配置文档](https://docs.expo.dev/versions/v57.0.0/config/app/)
 
-用于在 HarmonyOS 项目中读取 Expo 应用配置，与官方同版本的 `@expo/config` 配套使用。
+用于在 HarmonyOS 项目中读取 Expo 应用配置，与官方 `@expo/config` 配套使用。
 
 ## 安装
 
 ```bash
-npm install @expo-harmony/expo__config @expo/config@57.0.10
+npm install @expo-harmony/expo__config @expo/config@~57.0.10
 ```
 
 ## Author

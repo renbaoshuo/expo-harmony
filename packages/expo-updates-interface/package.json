@@ -20,7 +20,7 @@
   "main": "index.js",
   "types": "index.d.ts",
   "peerDependencies": {
-    "expo": "*"
+    "expo": "~57.0.31"
   },
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
@@ -29,7 +29,7 @@
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
-    "expo": "57.0.31",
+    "expo": "~57.0.31",
     "react": "19.2.3",
     "react-native": "0.86.3"
   },

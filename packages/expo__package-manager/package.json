@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/package-manager": "1.13.1"
+    "@expo/package-manager": "~1.13.1"
   },
   "engines": {
     "node": ">=20"

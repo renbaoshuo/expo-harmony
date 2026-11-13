@@ -22,8 +22,8 @@
   "dependencies": {
     "@expo-harmony/config-plugins": "workspace:*",
     "@expo-harmony/expo__config": "workspace:*",
-    "@expo/config": "57.0.10",
-    "@expo/config-plugins": "57.0.10"
+    "@expo/config": "~57.0.10",
+    "@expo/config-plugins": "~57.0.10"
   },
   "scripts": {
     "harmony:clean": "expo-harmony-module prepare --clean-only",
@@ -33,14 +33,14 @@
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
     "expo": "~57.0.30",
-    "expo-constants": "57.0.22"
+    "expo-constants": "~57.0.22"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo": "57.0.30",
-    "expo-constants": "57.0.22",
-    "expo-modules-core": "57.0.23",
+    "expo": "~57.0.30",
+    "expo-constants": "~57.0.22",
+    "expo-modules-core": "~57.0.23",
     "react": "19.2.3",
     "react-native": "0.86.3"
   },

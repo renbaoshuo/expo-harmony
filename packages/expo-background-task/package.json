@@ -27,20 +27,20 @@
   "dependencies": {
     "@expo-harmony/config-plugins": "workspace:*",
     "@expo-harmony/expo-task-manager": "workspace:*",
-    "@expo/config-plugins": "57.0.11"
+    "@expo/config-plugins": "~57.0.11"
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo-background-task": "57.0.21",
-    "expo-task-manager": "57.0.21"
+    "expo-background-task": "~57.0.21",
+    "expo-task-manager": "~57.0.21"
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo": "57.0.31",
-    "expo-background-task": "57.0.21",
-    "expo-modules-core": "57.0.24",
-    "expo-task-manager": "57.0.21",
+    "expo": "~57.0.31",
+    "expo-background-task": "~57.0.21",
+    "expo-modules-core": "~57.0.24",
+    "expo-task-manager": "~57.0.21",
     "react": "19.2.3",
     "react-native": "0.86.3"
   },

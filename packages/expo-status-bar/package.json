@@ -31,8 +31,8 @@
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
-    "expo": "57.0.31",
-    "expo-status-bar": "57.0.1",
+    "expo": "~57.0.31",
+    "expo-status-bar": "~57.0.1",
     "react": "*",
     "react-native": "*"
   },
@@ -40,8 +40,8 @@
     "@expo-harmony/expo-module-scripts": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
     "@types/react": "19.2.2",
-    "expo": "57.0.31",
-    "expo-status-bar": "57.0.1",
+    "expo": "~57.0.31",
+    "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-native": "0.86.3",
     "typescript": "6.0.3"

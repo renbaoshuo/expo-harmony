@@ -30,6 +30,6 @@
     "@expo-harmony/expo-structured-headers": "57.0.1-harmony.0",
     "@expo-harmony/expo-updates-interface": "57.0.2-harmony.0",
     "@expo-harmony/expo-eas-client": "57.0.5-harmony.0",
-    "@rnoh/react-native-openharmony": "0.86.1"
+    "@rnoh/react-native-openharmony": "~0.86.1"
   }
 }

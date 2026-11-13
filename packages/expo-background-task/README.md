@@ -2,7 +2,7 @@
 
 [**GitHub 仓库**](https://github.com/renbaoshuo/expo-harmony/tree/master/packages/expo-background-task) | [官方文档](https://docs.expo.dev/versions/v57.0.0/sdk/background-task/)
 
-为 HarmonyOS 上的 React Native 应用提供 Expo Background Task 的原生实现，与官方同版本的 `expo-background-task` 配套使用。
+为 HarmonyOS 上的 React Native 应用提供 Expo Background Task 的原生实现，与官方 `expo-background-task` 配套使用。
 
 ## 安装
 
@@ -13,7 +13,7 @@
 安装时需同时添加本包、`expo-background-task` 和 `expo-task-manager`：
 
 ```bash
-npm install @expo-harmony/expo-background-task expo-background-task expo-task-manager
+npm install @expo-harmony/expo-background-task expo-background-task@~57.0.21 expo-task-manager@~57.0.21
 ```
 
 ## 项目配置

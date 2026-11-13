@@ -21,7 +21,7 @@
   "react-native": "src/index.ts",
   "types": "index.d.ts",
   "peerDependencies": {
-    "@expo/fingerprint": "0.20.14"
+    "@expo/fingerprint": "~0.20.14"
   },
   "engines": {
     "node": ">=20"
