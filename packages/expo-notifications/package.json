@@ -48,12 +48,25 @@
   "publishConfig": {
     "access": "public"
   },
-  "react-native": "src/index.ts",
   "dependencies": {
     "@expo-harmony/config-plugins": "workspace:*"
   },
   "harmony": {
-    "alias": "expo-notifications",
-    "redirectInternalImports": true
+    "metro": {
+      "redirects": [
+        {
+          "upstream": "expo-notifications",
+          "origin": "build/index.js",
+          "request": "./getExpoPushTokenAsync",
+          "target": "src/getExpoPushTokenAsync.ts"
+        },
+        {
+          "upstream": "expo-notifications",
+          "origin": "build/index.js",
+          "request": "./DevicePushTokenAutoRegistration.fx",
+          "target": "src/getExpoPushTokenAsync.ts"
+        }
+      ]
+    }
   }
 }

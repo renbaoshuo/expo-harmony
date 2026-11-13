@@ -13,3 +13,5 @@ export async function getExpoPushTokenAsync(..._args: unknown[]): Promise<never>
     'Expo Push Service is not supported on HarmonyOS. Use getDevicePushTokenAsync() with Huawei Push Kit.'
   );
 }
+
+export { getExpoPushTokenAsync as setAutoServerRegistrationEnabledAsync };
