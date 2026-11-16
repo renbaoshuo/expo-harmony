@@ -6,8 +6,9 @@
  */
 
 import { bundleManager } from '@kit.AbilityKit';
-import type { Want, common } from '@kit.AbilityKit';
+import type { Want } from '@kit.AbilityKit';
 import { uri, url } from '@kit.ArkTS';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import type { BusinessError } from '@kit.BasicServicesKit';
 import { call, sms } from '@kit.TelephonyKit';
 import {
@@ -22,7 +23,9 @@ import {
 
 const URL_EVENT: string = 'onURLReceived';
 const DIALER_CAPABILITY: string = 'SystemCapability.Applications.Contacts';
+const VOICE_CALL_CAPABILITY: string = 'SystemCapability.Telephony.CallManager';
 const SMS_CAPABILITY: string = 'SystemCapability.Telephony.SmsMms';
+const TEL_URI_API_VERSION: number = 15;
 
 // https://developer.huawei.com/consumer/cn/doc/doccenter-dev-faq/faqs-access-control-16
 const SETTINGS_BUNDLE_NAME: string = 'com.huawei.hmos.settings';
@@ -34,7 +37,10 @@ const SMS_BUNDLE_NAME: string = 'com.ohos.mms';
 const SMS_VIEW_ACTION: string = 'ohos.want.action.viewData';
 const SMS_ABILITY_NAME: string = 'com.ohos.mms.MainAbility';
 const SMS_COMPOSER_PAGE: string = 'conversation';
+const SEND_TO_DATA_ACTION: string = 'ohos.want.action.sendToData';
 const NO_MATCHING_ABILITY: number = 16000019;
+const INVALID_LINK: number = 17700055;
+const SCHEME_NOT_DECLARED: number = 17700056;
 
 class URLReceivedEvent {
   url: string;
@@ -45,12 +51,14 @@ class URLReceivedEvent {
 }
 
 class AbilityLinkingState {
+  readonly initialURL: string | null;
   private url: string | null;
   private destroyed: boolean = false;
   private readonly listeners: Set<(url: string) => void> = new Set();
 
-  constructor(url: string | null) {
-    this.url = url;
+  constructor(initialURL: string | null) {
+    this.initialURL = initialURL;
+    this.url = initialURL;
   }
 
   getURL(): string | null {
@@ -96,29 +104,18 @@ class AbilityLinkingState {
 const states: WeakMap<Object, AbilityLinkingState> = new WeakMap();
 
 export class ExpoLinkingLifecycleSubscriber extends ExpoAbilityLifecycleSubscriber {
-  private readonly state: AbilityLinkingState = new AbilityLinkingState(null);
-
-  constructor(context: common.UIAbilityContext) {
-    super(context);
-    states.set(context, this.state);
-  }
-
   override onCreate(want: Want): void {
-    this.receive(want);
+    states.set(this.context, new AbilityLinkingState(nonEmptyURL(want.uri)));
   }
 
   override onNewWant(want: Want): void {
-    this.receive(want);
+    const url = nonEmptyURL(want.uri);
+    if (url !== null) states.get(this.context)?.receive(url);
   }
 
   override onDestroy(): void {
-    this.state.destroy();
+    states.get(this.context)?.destroy();
     states.delete(this.context);
-  }
-
-  private receive(want: Want): void {
-    const url = nonEmptyURL(want.uri);
-    if (url !== null) this.state.receive(url);
   }
 }
 
@@ -147,7 +144,15 @@ function linkingState(context: ExpoModuleContext): AbilityLinkingState {
 }
 
 function nonEmptyURL(value: string | undefined): string | null {
-  return value !== undefined && value.length > 0 ? value : null;
+  return value !== undefined && value.trim().length > 0 ? value : null;
+}
+
+function canOpenDialer(): boolean {
+  return canIUse(DIALER_CAPABILITY) && canIUse(VOICE_CALL_CAPABILITY) && call.hasVoiceCapability();
+}
+
+function canOpenSMSComposer(): boolean {
+  return canIUse(SMS_CAPABILITY) && sms.hasSmsCapability();
 }
 
 export class ExpoLinkingModule extends ExpoModule {
@@ -168,7 +173,7 @@ export class ExpoLinkingModule extends ExpoModule {
     return new ExpoModuleDefinition()
       .name('ExpoLinking')
       .events([URL_EVENT])
-      .syncFunction('getInitialURL', (): string | null => this.state === undefined ? null : nonEmptyURL(this.context.launchUri))
+      .syncFunction('getInitialURL', (): string | null => this.state?.initialURL ?? null)
       .syncFunction('getLinkingURL', (): string | null => this.state?.getURL() ?? null)
       .syncFunction('clearInitialURL', (): void => this.state?.clear())
       .asyncFunction(
@@ -221,35 +226,51 @@ export class ExpoLinkingModule extends ExpoModule {
     this.state?.receive(url);
   }
 
-  private async openURL(url: string): Promise<void> {
-    const scheme = schemeForURL(url);
-
+  private async openURL(value: string): Promise<void> {
+    const scheme = schemeForURL(value);
     if (this.context.isHeadless) throw new ExpoModuleError('ERR_LINKING_UNAVAILABLE', 'Opening a URL requires a UIAbility.');
 
+    const link = `${scheme}${value.slice(scheme.length)}`;
+
     try {
+      const context = this.context.uiAbilityContext;
+
       if (scheme === 'tel') {
-        if (!canIUse(DIALER_CAPABILITY)) {
+        if (!canOpenDialer()) {
           throw new ExpoModuleError('ERR_LINKING_UNAVAILABLE', 'This device cannot open the phone dialer.');
         }
 
-        const number = new uri.URI(url).ssp;
-
-        await call.makeCall(this.context.uiAbilityContext, number);
+        const number = deviceInfo.sdkApiVersion >= TEL_URI_API_VERSION
+          ? link
+          : new uri.URI(link).ssp;
+        await call.makeCall(context, number);
 
         return;
       }
 
       if (scheme === 'sms') {
-        if (!canIUse(SMS_CAPABILITY) || !sms.hasSmsCapability()) {
+        if (!canOpenSMSComposer()) {
           throw new ExpoModuleError('ERR_LINKING_UNAVAILABLE', 'This device cannot compose SMS messages.');
         }
 
-        await this.openSMS(url);
+        await this.openSMS(link);
 
         return;
       }
 
-      await this.context.uiAbilityContext.openLink(url);
+      if (scheme === 'mailto') {
+        try {
+          await context.startAbility({ action: SEND_TO_DATA_ACTION, uri: link });
+
+          return;
+        } catch (error) {
+          if ((error as BusinessError).code !== NO_MATCHING_ABILITY) {
+            throw new ExpoModuleError('ERR_LINKING_OPEN_URL', `Unable to open URL with scheme '${scheme}'.`, error as Object);
+          }
+        }
+      }
+
+      await context.openLink(link);
     } catch (error) {
       if (error instanceof ExpoModuleError) {
         throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
@@ -262,15 +283,20 @@ export class ExpoLinkingModule extends ExpoModule {
   private canOpenURL(url: string): boolean {
     const scheme = schemeForURL(url);
 
-    if (scheme === 'tel') return canIUse(DIALER_CAPABILITY);
-
-    if (scheme === 'sms') {
-      return canIUse(SMS_CAPABILITY) && sms.hasSmsCapability();
-    }
-
     try {
-      return bundleManager.canOpenLink(url);
+      if (scheme === 'tel') return canOpenDialer();
+      if (scheme === 'sms') return canOpenSMSComposer();
+
+      return bundleManager.canOpenLink(`${scheme}${url.slice(scheme.length)}`);
     } catch (error) {
+      const code = (error as BusinessError).code;
+      if (code === INVALID_LINK) {
+        throw new ExpoModuleError('ERR_LINKING_INVALID_URL', 'The URL is invalid.', error as Object);
+      }
+      if (code === SCHEME_NOT_DECLARED) {
+        throw new ExpoModuleError('ERR_LINKING_CAN_OPEN_URL', `Declare '${scheme}' in HarmonyOS querySchemes before querying it.`, error as Object);
+      }
+
       throw new ExpoModuleError('ERR_LINKING_CAN_OPEN_URL', `Unable to determine whether URL scheme '${scheme}' can be opened.`, error as Object);
     }
   }
@@ -295,13 +321,15 @@ export class ExpoLinkingModule extends ExpoModule {
     if (this.context.isHeadless) throw new ExpoModuleError('ERR_LINKING_UNAVAILABLE', 'Opening settings requires a UIAbility.');
 
     try {
-      await this.context.uiAbilityContext.startAbility({
+      const context = this.context.uiAbilityContext;
+      const parameters: Record<string, Object> = {};
+      parameters['settingsParamBundleName'] = context.abilityInfo.bundleName;
+
+      await context.startAbility({
         bundleName: SETTINGS_BUNDLE_NAME,
         abilityName: SETTINGS_ABILITY_NAME,
         uri: APPLICATION_DETAILS_URI,
-        parameters: {
-          settingsParamBundleName: this.context.uiAbilityContext.abilityInfo.bundleName,
-        },
+        parameters,
       });
     } catch (error) {
       throw new ExpoModuleError('ERR_LINKING_OPEN_SETTINGS', 'Unable to open the HarmonyOS application settings page.', error as Object);
@@ -357,10 +385,9 @@ function schemeForURL(value: string): string {
     throw new ExpoModuleError('ERR_LINKING_INVALID_URL', 'A URL cannot be empty.');
   }
 
-  // Classify the protocol without parsing the rest of the system-owned link.
   const scheme = /^([a-z][a-z\d+.-]*):/i.exec(value)?.[1];
   if (scheme === undefined) {
-    throw new ExpoModuleError('ERR_LINKING_INVALID_URL', `URL is missing a scheme: '${value}'.`);
+    throw new ExpoModuleError('ERR_LINKING_INVALID_URL', 'URL is missing a scheme.');
   }
 
   return scheme.toLowerCase();

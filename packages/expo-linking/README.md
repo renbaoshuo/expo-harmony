@@ -34,7 +34,7 @@ npm install @expo-harmony/expo-linking expo-linking@~57.0.13
 
 #### `Linking.canOpenURL(url)`
 
-参数 `url` 为待查询的 URL；返回 `Promise<boolean>`，表示 HarmonyOS 是否能找到处理该 URL 的应用。`tel:` 检查拨号能力，`sms:` 检查短信能力和短信功能；这些检查不代表设备插有可用的 SIM 卡。其他 scheme 由系统查询。默认可查询 `http`、`https`、`tel`、`sms` 和应用配置的 scheme；查询其他自定义 scheme 前，需在 `app.json` 的 `expo.harmony.querySchemes` 中声明。系统无法查询时抛出 `ERR_LINKING_CAN_OPEN_URL`。
+参数 `url` 为待查询的 URL，返回 `Promise<boolean>`。`tel:` 检查系统拨号和语音通话能力，`sms:` 检查短信能力。这些检查无法确认 SIM 卡是否可用。其余 scheme 由 `bundleManager.canOpenLink()` 查询。Expo Harmony 的预构建流程会声明 `http`、`https`、`tel`、`sms` 和应用配置的 scheme。查询更多 scheme（包括 `mailto`）时，请在 `expo.harmony.querySchemes` 中声明。手动维护 HarmonyOS 工程时，在宿主 `module.json5` 中配置 `querySchemes`。
 
 #### `Linking.collectManifestSchemes()`
 
@@ -66,7 +66,7 @@ npm install @expo-harmony/expo-linking expo-linking@~57.0.13
 
 #### `Linking.openURL(url)`
 
-参数 `url` 为要打开的 URL；返回 `Promise<true>`。`tel:` 交给系统拨号能力处理，`sms:` 打开系统短信编辑界面；其他 scheme 交给系统打开。`sms:` 支持 `sms:号码1,号码2?body=正文` 和 `sms:号码&body=正文`，多个号码以逗号分隔，国际号码使用 `+` 前缀；号码和正文中的特殊字符需进行 URL 编码。设备缺少拨号或短信能力时抛出 `ERR_LINKING_UNAVAILABLE`；系统无法打开 URL 时抛出 `ERR_LINKING_OPEN_URL`。Promise 成功表示系统已接受打开请求，电话或短信的后续操作由用户在系统应用中完成。
+参数 `url` 为要打开的 URL，返回 `Promise<true>`。`tel:` 打开系统拨号器，`sms:` 打开系统短信编辑界面，`mailto:` 通过系统邮件链接打开邮件编辑界面。其他 scheme 交给 HarmonyOS 的 `openLink()`。`sms:` 支持 `sms:号码1,号码2?body=正文` 和 `sms:号码&body=正文`，多个号码以逗号分隔，国际号码使用 `+` 前缀。号码和正文的特殊字符需进行 URL 编码。Promise 成功表示系统已接受打开请求，后续操作由用户在系统界面完成。
 
 #### `Linking.parse(url)`
 
@@ -136,7 +136,7 @@ npm install @expo-harmony/expo-linking expo-linking@~57.0.13
 
 #### `ERR_LINKING_INVALID_URL`
 
-`openURL()` 或 `canOpenURL()` 收到空 URL 或缺少 scheme 的 URL 时抛出。
+`openURL()` 或 `canOpenURL()` 收到空 URL 或缺少 scheme 的 URL 时抛出。系统拒绝查询无效链接时，`canOpenURL()` 也会抛出此错误。
 
 #### `ERR_LINKING_ABILITY_NOT_INITIALIZED`
 
