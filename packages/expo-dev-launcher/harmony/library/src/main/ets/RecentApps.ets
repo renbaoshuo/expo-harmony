@@ -7,16 +7,21 @@
 
 import { preferences } from '@kit.ArkData';
 import type { common } from '@kit.AbilityKit';
+import { getQueryValue, isEASUpdateURL } from './DevLauncherProtocol';
 
 export class RecentApp {
   readonly url: string;
   readonly name: string;
   readonly openedAt: number;
+  readonly branchName?: string;
+  readonly updateMessage?: string;
 
-  constructor(url: string, name: string, openedAt: number) {
+  constructor(url: string, name: string, openedAt: number, branchName?: string, updateMessage?: string) {
     this.url = url;
     this.name = name;
     this.openedAt = openedAt;
+    this.branchName = branchName;
+    this.updateMessage = updateMessage;
   }
 }
 
@@ -51,7 +56,9 @@ export class RecentApps {
         if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
         const value = item as Record<string, ESObject>;
         if (typeof value.url !== 'string' || typeof value.name !== 'string' || !Number.isSafeInteger(value.openedAt)) continue;
-        result.push(new RecentApp(value.url, value.name, value.openedAt));
+        const branchName = typeof value.branchName === 'string' ? value.branchName : undefined;
+        const updateMessage = typeof value.updateMessage === 'string' ? value.updateMessage : undefined;
+        result.push(new RecentApp(value.url, value.name, value.openedAt, branchName, updateMessage));
       }
 
       const threshold = Date.now() - RECENT_RETENTION_MS;
@@ -64,16 +71,29 @@ export class RecentApps {
     }
   }
 
-  async remember(url: string, name: string): Promise<void> {
+  async remember(url: string, name: string, manifest: Record<string, ESObject> | undefined, link: string): Promise<void> {
     if (this.store === undefined) return;
-    const recent = [new RecentApp(url, name || url, Date.now()), ...this.all().filter((item: RecentApp): boolean => item.url !== url)];
-    await this.store.put(RECENT_KEY, JSON.stringify(recent));
+
+    const recent = this.all();
+    let branchName: string | undefined;
+    let updateMessage: string | undefined;
+    if (isEASUpdateURL(url)) {
+      const previous = recent.find((app: RecentApp): boolean => app.url === url);
+      const branch: ESObject = manifest?.metadata?.branchName;
+      branchName = typeof branch === 'string' ? branch : previous?.branchName;
+      updateMessage = getQueryValue(link, 'updateMessage') ?? previous?.updateMessage;
+    }
+
+    const next = new RecentApp(url, name || url, Date.now(), branchName, updateMessage);
+    const others = recent.filter((item: RecentApp): boolean => item.url !== url);
+
+    this.store.putSync(RECENT_KEY, JSON.stringify([next, ...others]));
     await this.store.flush();
   }
 
   async clear(): Promise<void> {
     if (this.store === undefined) return;
-    await this.store.delete(RECENT_KEY);
+    this.store.deleteSync(RECENT_KEY);
     await this.store.flush();
   }
 

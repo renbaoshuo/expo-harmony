@@ -44,11 +44,11 @@ HarmonyOS 启动器配置项：
 
 ### Permissions
 
-注册插件后，HarmonyOS 应用清单会声明 `ohos.permission.INTERNET`，用于加载开发项目；同时声明 `ohos.permission.GET_NETWORK_INFO`，用于发现局域网内的开发服务。
+注册插件后，HarmonyOS 应用清单会声明 `ohos.permission.INTERNET`，用于连接开发服务器和加载开发项目。
 
 ## 插件配置
 
-如果同时使用 `@expo-harmony/expo-dev-client`，还需要在 Expo 配置中单独注册本包的插件。
+`@expo-harmony/expo-dev-client` 的配置插件会调用本包的插件。单独使用 Dev Launcher 时，请在 Expo 配置中注册本包的插件。
 
 ```json
 {
@@ -85,7 +85,7 @@ export default { plugins: [devLauncher({ launchMode: 'launcher', skipOnboarding:
 
 ## 启动器
 
-启动器会列出最近打开的项目和局域网内发现的开发服务，也可手动输入项目地址或扫码。失效的服务会从列表中移除，用户可以手动刷新。最近项目按地址去重并保存三天。扫码使用系统扫码界面，无需额外申请相机权限；设备不支持扫码时会显示错误。
+启动器会列出最近打开的项目和局域网内发现的开发服务，也可手动输入项目地址或扫码。失效的服务会从列表中移除，用户可以手动刷新。项目的 JavaScript bundle 成功运行后才写入历史记录，按地址去重并保存三天。扫码使用系统扫码界面，无需额外申请相机权限；设备不支持扫码时会显示错误。
 
 开发构建可通过 `expo-harmony://open?url=...` 链接打开项目，应用自己的深链接仍可正常使用。链接可附带 `disableOnboarding=1`、`disableFab=1` 或 `disableAutoLaunch=1`，分别用于跳过引导、隐藏浮动工具按钮或关闭启动时自动打开菜单。发布版本不会打开开发链接。
 

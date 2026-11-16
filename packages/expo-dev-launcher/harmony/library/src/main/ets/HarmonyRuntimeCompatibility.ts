@@ -99,16 +99,16 @@ function requireObject(parent: JsonObject, field: string): JsonObject {
 }
 
 export async function readClientRuntime(manager: resourceManager.ResourceManager): Promise<JsonObject> {
+  let value: ESObject;
+
   try {
     const bytes = await manager.getRawFileContent(RUNTIME_CONTRACT_ASSET);
-
-    const text = util.TextDecoder.create('utf-8').decodeToString(bytes);
-
-    return validate(JSON.parse(text), 'client');
+    value = JSON.parse(util.TextDecoder.create('utf-8').decodeToString(bytes));
   } catch (error) {
-    if (error instanceof DevLauncherError) throw new DevLauncherError(error.code, error.message);
     throw new DevLauncherError('ERR_HARMONY_RUNTIME_CONTRACT', `Unable to read ${RUNTIME_CONTRACT_ASSET}.`, error as Object);
   }
+
+  return validate(value, 'client');
 }
 
 export function validateDevelopmentManifest(client: JsonObject, manifest: JsonObject, requested: string): void {
@@ -117,21 +117,24 @@ export function validateDevelopmentManifest(client: JsonObject, manifest: JsonOb
   const harmony = requireObject(extra, 'harmony');
   const requirements = validate(harmony.requirements, 'requirements');
   const bundle = launch.url;
+
   if (launch.key !== 'bundle' || launch.contentType !== 'application/javascript' || typeof bundle !== 'string') {
     throw new DevLauncherError('ERR_HARMONY_INCOMPATIBLE', 'Expected a Harmony development JavaScript source launch asset.');
   }
 
-  let origin: string;
+  let origin: string | undefined;
 
   try {
-    if (typeof harmony.manifestUrl !== 'string'
-      || canonicalDevelopmentManifestURL(harmony.manifestUrl) !== canonicalDevelopmentManifestURL(requested)) {
-      throw new DevLauncherError('ERR_HARMONY_INCOMPATIBLE', 'The development manifest URL does not match the requested URL.');
+    if (typeof harmony.manifestUrl === 'string'
+      && canonicalDevelopmentManifestURL(harmony.manifestUrl) === canonicalDevelopmentManifestURL(requested)) {
+      origin = parseHTTPURL(requested).origin;
     }
-    origin = new url.URL(requested).origin;
-  } catch (_) {
+  } catch (_) {}
+
+  if (origin === undefined) {
     throw new DevLauncherError('ERR_HARMONY_INCOMPATIBLE', 'The development manifest URL does not match the requested URL.');
   }
+
   if (manifest.runtimeVersion !== requirements.runtimeVersion) throw new DevLauncherError('ERR_HARMONY_INCOMPATIBLE', 'Manifest and native runtime versions differ.');
 
   checkCompatibility(validate(client, 'client'), requirements);
@@ -143,6 +146,7 @@ export function validateDevelopmentManifest(client: JsonObject, manifest: JsonOb
   } catch (_) {
     throw new DevLauncherError('ERR_HARMONY_INCOMPATIBLE', 'The bundle URL is invalid.');
   }
+
   if (asset.origin !== origin || !asset.pathname.endsWith('.bundle')) {
     throw new DevLauncherError('ERR_HARMONY_INCOMPATIBLE', 'Manifest and bundle must use the same HTTP(S) origin and a .bundle launch asset.');
   }
@@ -152,7 +156,7 @@ export function validateDevelopmentManifest(client: JsonObject, manifest: JsonOb
   };
 
   for (const [name, value] of Object.entries(expected)) {
-    const matches = asset.searchParams.getAll(name);
+    const matches = asset.params.getAll(name);
     if (matches.length !== 1 || matches[0] !== value) throw new DevLauncherError('ERR_HARMONY_INCOMPATIBLE', `Bundle query parameter ${name} must be ${value}.`);
   }
 }

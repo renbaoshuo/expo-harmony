@@ -39,8 +39,10 @@ export struct ExpoDevLauncherView {
   }
 
   private open(url: string): void {
-    this.address = url;
-    this.controller.load(url).catch((): void => {});
+    const value = url.trim();
+    this.address = /^[a-z][a-z\d+.-]*:\/\//i.test(value) ? value : `http://${value}`;
+
+    this.controller.load(this.address).catch((): void => {});
   }
 
   @Builder
@@ -199,7 +201,7 @@ export struct ExpoDevLauncherView {
           ForEach(
             this.state.recent,
             (app: RecentApp): void => {
-              Button(`${app.name}\n${app.url}`, { type: ButtonType.Normal })
+              Button([app.name, app.branchName, app.updateMessage, app.url].filter((line): boolean => !!line).join('\n'), { type: ButtonType.Normal })
                 .width('100%')
                 .enabled(!this.state.loading)
                 .onClick((): void => this.open(app.url));

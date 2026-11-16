@@ -10,6 +10,7 @@ import type { common } from '@kit.AbilityKit';
 import { DevMenuAppInfoProvider, DevMenuAppMetadata, ExpoDevMenuRuntime } from '@expo-harmony/expo-dev-menu';
 import { ExpoModuleError, ReactRuntimeBinding, ReactRuntimeContext } from '@expo-harmony/expo-modules-core';
 import { DevLauncherController } from './DevLauncherController';
+import { DevLauncherHostPriority } from './DevLauncherProtocol';
 
 export class DevLauncherDevMenuDelegate implements DevMenuHostDelegate, DevMenuAppInfoProvider {
   private readonly metadata: DevMenuAppMetadata;
@@ -37,6 +38,7 @@ export class DevLauncherDevMenuDelegate implements DevMenuHostDelegate, DevMenuA
 }
 
 export class ExpoDevLauncherDevMenuBinding implements ReactRuntimeBinding {
+  readonly priority: number = DevLauncherHostPriority;
   constructor(_context: common.Context) {}
 
   bind(context: ReactRuntimeContext): (() => void) | void {
@@ -48,17 +50,11 @@ export class ExpoDevLauncherDevMenuBinding implements ReactRuntimeBinding {
     const id = context.instance.getId();
     const delegate = new DevLauncherDevMenuDelegate(controller, context);
     const release = ExpoDevMenuRuntime.registerHostDelegate(id, delegate);
-    const unbind = controller.registerRuntime(
-      id,
-      (): Promise<void> => context.suspend(),
-      (reason: string): Promise<void> => context.reload(reason),
-    );
     let unregister: () => void;
 
     try {
       unregister = ExpoDevMenuRuntime.registerAppInfoProvider(id, delegate);
     } catch (error) {
-      unbind();
       release();
 
       throw new ExpoModuleError(
@@ -67,6 +63,12 @@ export class ExpoDevLauncherDevMenuBinding implements ReactRuntimeBinding {
         error as Object,
       );
     }
+
+    const unbind = controller.registerRuntime(
+      id,
+      (): Promise<void> => context.suspend(),
+      (reason: string): Promise<void> => context.reload(reason),
+    );
 
     return (): void => {
       unbind();

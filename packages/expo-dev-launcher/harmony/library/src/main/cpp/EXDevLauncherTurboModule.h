@@ -14,6 +14,9 @@ namespace expo::harmony {
 class EXDevLauncherTurboModule final : public rnoh::ArkTSTurboModule {
 public:
   EXDevLauncherTurboModule(const ArkTSTurboModule::Context context, const std::string name);
+
+  facebook::jsi::Value get(facebook::jsi::Runtime &runtime, const facebook::jsi::PropNameID &name) override;
+  std::vector<facebook::jsi::PropNameID> getPropertyNames(facebook::jsi::Runtime &runtime) override;
 };
 
 }  // namespace expo::harmony

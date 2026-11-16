@@ -18,7 +18,7 @@ import {
 import type { common } from '@kit.AbilityKit';
 import { FileJSBundleProvider, JSBundleProvider, MetroJSBundleProvider } from '@rnoh/react-native-openharmony';
 import { getOrCreateInstallationID } from './DevLauncherInstallationID';
-import { bundleURL, DevLauncherError, HARMONY_PLATFORM, MANIFEST_PATH, MAX_MANIFEST_BYTES, NETWORK_TIMEOUT_MS, manifestURL, resolveDevelopmentURL } from './DevLauncherProtocol';
+import { bundleURL, DevLauncherError, HARMONY_PLATFORM, isEASUpdateURL, MANIFEST_PATH, MAX_MANIFEST_BYTES, NETWORK_TIMEOUT_MS, manifestURL, resolveDevelopmentURL } from './DevLauncherProtocol';
 import { readClientRuntime, validateDevelopmentManifest } from './HarmonyRuntimeCompatibility';
 
 type JsonObject = Record<string, ESObject>;
@@ -200,26 +200,18 @@ export class DevLauncherManifestLoader {
     headers['Expo-Updates-Environment'] = 'DEVELOPMENT';
     headers['Expo-Dev-Client-ID'] = await this.clientID;
 
-    const configuration: JsonObject = {};
-    configuration.updateUrl = url;
-    const configuredURL = controller.configuredUpdateUrl === undefined ? controller.updateUrl : controller.configuredUpdateUrl;
-    configuration.scopeKey = this.projectScopeURL(url, configuredURL);
-    configuration.enabled = true;
-    configuration.useEmbeddedUpdate = false;
-    configuration.fallbackToCacheTimeout = NETWORK_TIMEOUT_MS;
-    configuration.checkAutomatically = 'ALWAYS';
-    configuration.runtimeVersion = runtimeVersion;
-    configuration.requestHeaders = headers;
+    const config: JsonObject = {};
+    config.updateUrl = url;
+    const configured = controller.configuredUpdateUrl === undefined ? controller.updateUrl : controller.configuredUpdateUrl;
+    config.scopeKey = (isEASUpdateURL(url) ? configured : null) ?? url;
+    config.enabled = true;
+    config.useEmbeddedUpdate = false;
+    config.fallbackToCacheTimeout = NETWORK_TIMEOUT_MS;
+    config.checkAutomatically = 'ALWAYS';
+    config.runtimeVersion = runtimeVersion;
+    config.requestHeaders = headers;
 
-    return controller.isValidUpdatesConfiguration(configuration) ? configuration : undefined;
-  }
-
-  private projectScopeURL(url: string, configuredURL: string | null): string {
-    try {
-      const host = new uri.URI(url).host.toLowerCase();
-      if ((host === 'u.expo.dev' || host === 'staging-u.expo.dev') && configuredURL !== null) return configuredURL;
-    } catch (_) {}
-    return url;
+    return controller.isValidUpdatesConfiguration(config) ? config : undefined;
   }
 
   private async loadWithUpdates(

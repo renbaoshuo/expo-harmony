@@ -15,6 +15,7 @@ import { FileJSBundleProvider } from '@rnoh/react-native-openharmony';
 import { Manifest } from '@expo-harmony/expo-manifests';
 import { DevMenuAppMetadata, DevMenuPreference, DevMenuPreferences } from '@expo-harmony/expo-dev-menu';
 import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
+import type { ReactRuntimeAppearance } from '@expo-harmony/expo-modules-core';
 import { UpdatesControllerRegistry, UpdatesDevLauncherInterface, UpdatesInterfaceCallbacks } from '@expo-harmony/expo-updates-interface';
 import { DevLauncherManifestLoader, LaunchSelection } from './DevLauncherManifestLoader';
 import {
@@ -102,9 +103,9 @@ export class DevLauncherController {
   private discovery?: DevServerDiscovery;
   private detachDiscovery?: () => void;
   private updatesCallbacks?: UpdatesInterfaceCallbacks;
-  private provider?: JSBundleProvider;
   private selection?: LaunchSelection;
   private selectedRequest?: LaunchRequest;
+  private openedSelection?: LaunchSelection;
   private active = false;
   private foregrounded = false;
   private loadingRequest?: LaunchRequest;
@@ -147,16 +148,26 @@ export class DevLauncherController {
     return this.selectionReady;
   }
   get selectedProvider(): JSBundleProvider | undefined {
-    return this.provider;
+    return this.selection?.provider;
   }
   get useDeveloperSupport(): boolean | undefined {
     return this.active ? (this.selection?.useDeveloperSupport ?? true) : undefined;
   }
-  get manifestString(): string | null {
-    return this.selection?.manifest === undefined ? null : JSON.stringify(this.selection.manifest);
+  getRuntimeSelection(id: number): LaunchSelection | undefined {
+    return this.runtime?.id === id ? this.runtime.selection : undefined;
   }
-  get manifestURL(): string | null {
-    return this.selection?.manifestURL ?? null;
+
+  getRuntimeAppearance(): ReactRuntimeAppearance | undefined {
+    if (!this.active || this.selection?.manifestURL === undefined) return undefined;
+    if (this.selection.manifest === undefined) return {};
+
+    const manifest = Manifest.fromManifestJson(this.selection.manifest);
+    const style = manifest.getUserInterfaceStyle();
+
+    return {
+      userInterfaceStyle: style === 'light' || style === 'dark' || style === 'automatic' ? style : undefined,
+      backgroundColor: manifest.getBackgroundColor() ?? undefined,
+    };
   }
   private get loading(): boolean {
     return this.loadingRequest !== undefined;
@@ -215,9 +226,11 @@ export class DevLauncherController {
   activate(debug: boolean): void {
     this.active = debug;
     if (!debug) {
-      this.discovery?.stop();
+      this.refreshDiscoveryLifecycle();
+
       return;
     }
+
     UpdatesControllerRegistry.requestDevelopmentLauncherInitialization(this.bundleName);
     if (!this.recoveryChecked) {
       this.recoveryChecked = true;
@@ -228,23 +241,28 @@ export class DevLauncherController {
         this.publish();
       }
     }
-    if (this.foregrounded) this.discovery?.start();
+
+    this.refreshDiscoveryLifecycle();
   }
 
   attachAbility(ability: common.UIAbilityContext): void {
     if (this.ability === ability) return;
-    this.detachAbility();
+
+    if (this.ability !== undefined) this.detachAbility();
+
     this.ability = ability;
     this.discovery = new DevServerDiscovery(ability);
     this.detachDiscovery = this.discovery.subscribe((servers: DiscoveredServer[]): void => {
       this.servers = servers;
       this.publish();
     });
-    if (this.active && this.foregrounded) this.discovery.start();
+
+    this.refreshDiscoveryLifecycle();
   }
 
   detachAbility(ability?: common.UIAbilityContext): void {
     if (ability !== undefined && this.ability !== ability) return;
+
     this.pendingRequest ??= this.loadingRequest;
     this.loadSerial += 1;
     this.loadingRequest = undefined;
@@ -252,26 +270,29 @@ export class DevLauncherController {
     this.runtime = undefined;
     this.runtimeOwner = undefined;
     this.pendingReloadReason = undefined;
+
+    this.disconnectUpdates();
     this.foregrounded = false;
-    this.discovery?.stop();
+    this.ability = undefined;
     this.detachDiscovery?.();
     this.detachDiscovery = undefined;
+    this.discovery?.stop();
     this.discovery = undefined;
-    this.ability = undefined;
     this.servers = [];
+
     this.publish();
   }
 
   foreground(ability: common.UIAbilityContext): void {
     if (this.ability !== ability || this.foregrounded) return;
     this.foregrounded = true;
-    if (this.active) this.discovery?.start();
+    this.refreshDiscoveryLifecycle();
   }
 
   background(ability: common.UIAbilityContext): void {
     if (this.ability !== ability || !this.foregrounded) return;
     this.foregrounded = false;
-    this.discovery?.stop();
+    this.refreshDiscoveryLifecycle();
   }
 
   connectUpdates(): void {
@@ -288,6 +309,13 @@ export class DevLauncherController {
         });
       }
       updates.updatesInterfaceCallbacks = this.updatesCallbacks;
+    }
+  }
+
+  private disconnectUpdates(): void {
+    const updates = UpdatesControllerRegistry.controller as UpdatesDevLauncherInterface | undefined;
+    if (this.updatesCallbacks !== undefined && updates !== undefined && updates.updatesInterfaceCallbacks === this.updatesCallbacks) {
+      updates.updatesInterfaceCallbacks = undefined;
     }
   }
 
@@ -351,10 +379,17 @@ export class DevLauncherController {
   subscribe(listener: StateListener): () => void {
     this.listeners.add(listener);
     listener(this.state());
+    this.refreshDiscoveryLifecycle();
 
     return (): void => {
       this.listeners.delete(listener);
+      this.refreshDiscoveryLifecycle();
     };
+  }
+
+  private refreshDiscoveryLifecycle(): void {
+    if (this.active && this.foregrounded && this.listeners.size > 0) this.discovery?.start();
+    else if (this.discovery?.searching) this.discovery.stop();
   }
 
   async showLauncherForRuntime(id: number): Promise<void> {
@@ -389,16 +424,19 @@ export class DevLauncherController {
       if (this.selection !== undefined) {
         await suspend();
         if (serial !== this.loadSerial) return;
+
         // A queued reload may still need the current selection to complete before
         // suspend can run. Install the new gate only after that queue has drained.
         this.selectionReady = new Promise<void>((resolve: () => void): void => {
           this.resolveReady = resolve;
         });
       }
+
       this.selection = undefined;
       this.selectedRequest = undefined;
-      this.provider = undefined;
+      this.openedSelection = undefined;
       if (this.manifestLoad === undefined) this.resetUpdates();
+
       this.publish();
     } catch (error) {
       if (serial !== this.loadSerial) return;
@@ -452,8 +490,10 @@ export class DevLauncherController {
     if (serial !== this.loadSerial) return;
 
     const value = request.url;
+
     try {
       const url = value === undefined ? undefined : resolveDevelopmentURL(value);
+
       this.progress = 0;
       this.error = undefined;
       this.publish();
@@ -465,6 +505,7 @@ export class DevLauncherController {
         await this.manifestLoad.catch((): void => {});
         if (serial !== this.loadSerial) return;
       }
+
       let selection: LaunchSelection;
       if (url === undefined) {
         if (!this.hasEmbeddedBundle() || this.embeddedProvider === undefined) {
@@ -485,6 +526,7 @@ export class DevLauncherController {
           if (serial !== this.loadSerial && this.selection === undefined) this.resetUpdates();
         }
       }
+
       if (serial !== this.loadSerial) return;
 
       const pending = this.takePendingRequest();
@@ -492,30 +534,22 @@ export class DevLauncherController {
         // Let the next load own its error; this load's serial is now obsolete.
         return this.loadRequest(pending);
       }
-      try {
-        if (url !== undefined) {
-          await this.applyMenuURLPreferences(value!, url, request.link);
-          if (serial === this.loadSerial && this.pendingRequest === undefined) {
-            await this.history.remember(url, selection.name);
-            this.recent = this.history.all();
-          }
-        }
-      } catch (error) {
-        console.warn(`Unable to save Expo Dev Launcher history: ${String(error)}`);
-      }
+
+      if (value !== undefined && url !== undefined) await this.applyMenuURLPreferences(value, url, request.link);
       if (serial !== this.loadSerial) return;
 
       const queued = this.takePendingRequest();
       if (queued !== undefined) {
         return this.loadRequest(queued);
       }
+
       if (selection.activateUpdate !== undefined) selection.activateUpdate();
       else if (url === undefined || selection.useDeveloperSupport) this.resetUpdates();
+
       this.selection = selection;
       this.selectedRequest = request;
+      this.openedSelection = undefined;
       this.recoveredFailure = false;
-      this.history.clearFailure();
-      this.provider = selection.provider;
       this.loadingRequest = undefined;
       this.progress = 1;
       this.error = undefined;
@@ -630,14 +664,18 @@ export class DevLauncherController {
 
   async scan(): Promise<void> {
     const ability = this.ability;
+
     try {
-      if (ability === undefined) throw new DevLauncherError('ERR_DEV_LAUNCHER_ABILITY', 'No foreground UIAbility is available for QR scanning.');;
+      if (ability === undefined || !this.foregrounded) {
+        throw new DevLauncherError('ERR_DEV_LAUNCHER_ABILITY', 'No foreground UIAbility is available for QR scanning.');
+      }
       if (!canIUse(SCAN_CAPABILITY))
         throw new DevLauncherError('ERR_DEV_LAUNCHER_SCANNER_UNAVAILABLE', 'QR scanning is not supported on this device.');
 
       const result = await scanBarcode.startScanForResult(ability, { scanTypes: [scanCore.ScanType.QR_CODE] });
       if (this.ability !== ability) return;
-      if (result.originalValue.length === 0) throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_QR', 'The QR code is empty.');
+      if (result.originalValue.trim().length === 0) throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_QR', 'The QR code is empty.');
+
       await this.load(result.originalValue);
     } catch (error) {
       if (this.ability !== ability) return;
@@ -653,15 +691,39 @@ export class DevLauncherController {
   }
 
   async clearHistory(): Promise<void> {
-    await this.history.clear();
-    this.recent = [];
-    this.publish();
+    try {
+      await this.history.clear();
+    } catch (error) {
+      this.error = displayError(error as Object);
+    } finally {
+      this.recent = this.history.all();
+      this.publish();
+    }
+  }
+
+  async reportReactInitialized(id: number): Promise<void> {
+    const selection = this.selection;
+    if (!this.active || this.runtime?.id !== id || this.runtime.selection !== selection || selection === undefined) return;
+
+    this.history.clearFailure();
+    if (this.openedSelection === selection) return;
+
+    this.openedSelection = selection;
+    const request = this.selectedRequest;
+    if (request?.url === undefined) return;
+
+    try {
+      await this.history.remember(resolveDevelopmentURL(request.url), selection.name, selection.manifest, request.link ?? request.url);
+    } finally {
+      this.recent = this.history.all();
+      this.publish();
+    }
   }
 
   reportReactError(id: number, error: Error): void {
     if (!this.active || this.runtime?.id !== id || this.runtime.selection !== this.selection || this.selection === undefined) return;
     this.history.rememberFailure(error);
-    if (this.selection?.useDeveloperSupport && this.provider !== undefined) sendRuntimeError(this.provider.getURL(), error);
+    if (this.selection.useDeveloperSupport) sendRuntimeError(this.selection.provider.getURL(), error);
     if (this.loading) return;
     this.failedRequest = this.selectedRequest;
     this.error = error.message;

@@ -53,7 +53,7 @@ export class DevServerDiscovery {
   private service?: mdns.DiscoveryService;
   private timer?: number;
   private readonly candidates = new Map<string, mdns.LocalServiceInfo>();
-  private readonly pending = new Map<string, mdns.LocalServiceInfo>();
+  private readonly pending = new Set<string>();
   private readonly requests = new Set<http.HttpRequest>();
   private readonly servers = new Map<string, DiscoveredServer>();
   private readonly listeners = new Set<DiscoveryListener>();
@@ -111,6 +111,7 @@ export class DevServerDiscovery {
       this.fail('Server discovery is unavailable on this device. Enter the project URL manually.');
       return;
     }
+
     const generation = ++this.generation;
 
     try {
@@ -193,8 +194,8 @@ export class DevServerDiscovery {
 
   private async check(info: mdns.LocalServiceInfo, generation: number): Promise<void> {
     const name = info.serviceName;
-    if (this.pending.get(name) === info) return;
-    this.pending.set(name, info);
+    if (this.pending.has(name)) return;
+    this.pending.add(name);
     let request: http.HttpRequest | undefined;
     try {
       const resolved = await mdns.resolveLocalService(this.context, info);
@@ -234,7 +235,7 @@ export class DevServerDiscovery {
         this.publish();
       }
     } finally {
-      if (this.generation === generation && this.pending.get(name) === info) this.pending.delete(name);
+      if (this.generation === generation) this.pending.delete(name);
       if (request !== undefined && this.requests.delete(request)) request.destroy();
     }
   }

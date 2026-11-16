@@ -8,9 +8,11 @@
 import type { common } from '@kit.AbilityKit';
 import type { ReactActivityHandler, ReactRootViewBuilder, ReactRootViewContext } from '@expo-harmony/expo-modules-core';
 import { DevLauncherController } from './DevLauncherController';
+import { DevLauncherHostPriority } from './DevLauncherProtocol';
 import { buildExpoDevLauncherRoot } from './ExpoDevLauncherView';
 
 export class ExpoDevLauncherReactActivityHandler implements ReactActivityHandler {
+  readonly priority: number = DevLauncherHostPriority;
   private readonly controller: DevLauncherController;
 
   constructor(context: common.Context) {

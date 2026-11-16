@@ -11,13 +11,13 @@ const { createRunOncePlugin } = require('@expo/config-plugins');
 const {
   HarmonyManifest,
   registerHarmonyConfigPlugin,
+  withHarmonyPermissions,
   withModuleJson,
 } = require('@expo-harmony/config-plugins');
 
 const pkg = require('../package.json');
 
 const INTERNET_PERMISSION = 'ohos.permission.INTERNET';
-const NETWORK_INFO_PERMISSION = 'ohos.permission.GET_NETWORK_INFO';
 const LAUNCH_MODE_METADATA = 'expo.devLauncher.launchMode';
 const BOOLEAN_METADATA = {
   toolsButton: 'EXDevMenuShowFloatingActionButton',
@@ -96,13 +96,6 @@ function updateManifest(mod, options = {}) {
     metadata.push({ name: DEFAULT_URL_METADATA, value: defaultURL });
   }
 
-  const permissions = Array.isArray(module.requestPermissions) ? module.requestPermissions : [];
-  const managedPermissions = new Set([INTERNET_PERMISSION, NETWORK_INFO_PERMISSION]);
-  module.requestPermissions = [
-    ...permissions.filter(permission => !managedPermissions.has(permission?.name)),
-    permissions.find(permission => permission?.name === INTERNET_PERMISSION) ?? { name: INTERNET_PERMISSION },
-    permissions.find(permission => permission?.name === NETWORK_INFO_PERMISSION) ?? { name: NETWORK_INFO_PERMISSION },
-  ];
   const launcherSkill = {
     entities: [BROWSABLE_ENTITY],
     actions: [VIEW_ACTION],
@@ -117,13 +110,15 @@ function withHarmonyDevLauncher(config, options = {}) {
   if (!enabled) return config;
 
   config = registerHarmonyConfigPlugin(config, pkg.name);
+  config = withHarmonyPermissions(config, [{ name: INTERNET_PERMISSION }]);
+
   const selected = {};
   for (const key of ['defaultLaunchURL', ...Object.keys(BOOLEAN_METADATA)]) {
     selected[key] = options.harmony?.[key] ?? options[key] ?? undefined;
   }
-  // Like upstream, a common launchMode takes precedence over deprecated options.
   selected.launchMode = options.harmony?.launchMode ?? options.launchMode
     ?? options.harmony?.launchModeExperimental ?? options.launchModeExperimental;
+
   config = withModuleJson(config, (mod) => {
     updateManifest(mod, selected);
     return mod;

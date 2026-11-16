@@ -7,10 +7,12 @@
 
 import type { common } from '@kit.AbilityKit';
 import type { JSBundleProvider, RNInstance } from '@rnoh/react-native-openharmony';
-import type { ReactNativeHost, ReactNativeHostHandler } from '@expo-harmony/expo-modules-core';
+import type { ReactNativeHost, ReactNativeHostHandler, ReactRuntimeAppearance } from '@expo-harmony/expo-modules-core';
 import { DevLauncherController } from './DevLauncherController';
+import { DevLauncherHostPriority } from './DevLauncherProtocol';
 
 export class ExpoDevLauncherReactNativeHostHandler implements ReactNativeHostHandler {
+  readonly priority: number = DevLauncherHostPriority;
   private readonly controller: DevLauncherController;
 
   constructor(context: common.Context) {
@@ -30,11 +32,23 @@ export class ExpoDevLauncherReactNativeHostHandler implements ReactNativeHostHan
     return this.controller.useDeveloperSupport;
   }
 
-  async getJSBundleProvider(_debug: boolean): Promise<JSBundleProvider | undefined> {
-    if (!this.controller.enabled) return undefined;
+  getRuntimeAppearance(): ReactRuntimeAppearance | undefined {
+    return this.controller.getRuntimeAppearance();
+  }
+
+  async getJSBundleProvider(_debug: boolean, headless: boolean = false): Promise<JSBundleProvider | undefined> {
+    if (headless || !this.controller.enabled) return undefined;
+
     this.controller.connectUpdates();
     await this.controller.ready;
+
     return this.controller.selectedProvider;
+  }
+
+  onDidCreateReactInstance(_debug: boolean, instance: RNInstance): void {
+    this.controller.reportReactInitialized(instance.getId()).catch((error: Error): void => {
+      console.warn(`Unable to save Expo Dev Launcher history: ${error.message}`);
+    });
   }
 
   get onReactInstanceException(): ((_debug: boolean, instance: RNInstance, error: Error) => void) | undefined {
