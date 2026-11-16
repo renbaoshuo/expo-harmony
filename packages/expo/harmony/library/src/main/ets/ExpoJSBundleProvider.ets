@@ -54,13 +54,15 @@ export class ExpoJSBundleProvider extends JSBundleProvider {
   private readonly fallback: JSBundleProvider;
   private readonly delegate: ExpoReactHostDelegate;
   private readonly debug: boolean;
+  private readonly headless: boolean;
 
-  constructor(context: common.Context, fallback: JSBundleProvider, delegate: ExpoReactHostDelegate, debug: boolean) {
+  constructor(context: common.Context, fallback: JSBundleProvider, delegate: ExpoReactHostDelegate, debug: boolean, headless: boolean) {
     super();
     this.context = context;
     this.fallback = fallback;
     this.delegate = delegate;
     this.debug = debug;
+    this.headless = headless;
   }
 
   getURL(): string {
@@ -81,17 +83,19 @@ export class ExpoJSBundleProvider extends JSBundleProvider {
 
   async getBundle(progress?: (value: number) => void, switched?: (provider: JSBundleProvider) => void): Promise<JsBundle> {
     const previous = this.selected ?? this.fallback;
-    this.selected = await this.delegate.getJSBundleProvider(this.debug);
+    this.selected = await this.delegate.getJSBundleProvider(this.debug, this.headless);
+
     if (this.selected === undefined) {
-      const appKeys = this.fallback.getAppKeys();
+      const keys = this.fallback.getAppKeys();
       const path = await this.delegate.getJSBundleFile(this.debug);
+
       if (path !== undefined) {
         this.selected = path.startsWith('assets://')
-          ? new ExpoResourceBundle(this.context, path.slice('assets://'.length), appKeys)
-          : new FileJSBundleProvider(path, appKeys);
+          ? new ExpoResourceBundle(this.context, path.slice('assets://'.length), keys)
+          : new FileJSBundleProvider(path, keys);
       } else {
         const asset = await this.delegate.getBundleAssetName(this.debug);
-        this.selected = asset === undefined ? this.fallback : new ExpoResourceBundle(this.context, asset, appKeys);
+        this.selected = asset === undefined ? this.fallback : new ExpoResourceBundle(this.context, asset, keys);
       }
     }
 

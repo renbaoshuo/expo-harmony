@@ -17,7 +17,6 @@ import {
   ReactRootViewBuilder,
   ReactRootViewContext,
   ReactActivityHandler,
-  ModulePriorities,
 } from '@expo-harmony/expo-modules-core';
 
 interface ExpoUnmanagedRNInstanceConfig {
@@ -141,6 +140,7 @@ export struct ExpoRNApp {
   public replaceRNInstance: ExpoRNInstanceReplacement | undefined = undefined;
   @StorageLink('RNOHCoreContext') private core?: RNOHCoreContext = undefined;
   @State private generation: number = 0;
+  @State private rootPrepared: boolean = false;
   @State private ready: boolean = false;
   private instance: RNInstance | undefined = undefined;
   private runtime: ReactNativeRuntime | undefined = undefined;
@@ -156,43 +156,47 @@ export struct ExpoRNApp {
   }
 
   private async prepareRoot(): Promise<void> {
-    const preparation: number = ++this.preparationSerial;
+    const serial = ++this.preparationSerial;
     if (this.core === undefined) {
       this.reportDelayError(new ExpoModuleError('ERR_REACT_HOST_CONTEXT', 'The RNOH context is not available.') as Object);
       return;
     }
 
     const context: ReactRootViewContext = this.rootContext(false);
+
     try {
       const handlers: ReactActivityHandler[] = this.reactHost.activityHandlers
-        .slice()
-        .sort((left, right) => ModulePriorities.get(right.packageName) - ModulePriorities.get(left.packageName))
-        .map((registration) => registration.create(context.core.uiAbilityContext));
+        .map((registration) => registration.create(context.core.uiAbilityContext))
+        .sort((left, right) => (right.priority ?? 0) - (left.priority ?? 0));
       this.activityHandlers = handlers;
       this.selectedRoot = this.rootViewBuilder ?? ExpoReactRootViewFactory.create(handlers, context);
+      this.rootPrepared = true;
+
       const delay = ExpoReactRootViewFactory.getDelayLoadAppHandler(handlers, context);
       if (delay !== undefined) await delay;
-      if (!this.mounted || preparation !== this.preparationSerial) return;
+      if (!this.mounted || serial !== this.preparationSerial) return;
+
       const runtime = this.reactHost.createRuntime(context.core, this.rnInstanceConfig, this.jsBundleProvider, this.replaceRNInstance);
       this.runtime = runtime;
       const listener: ReactRuntimeListener = {
         prepare: async (instance: RNInstance): Promise<void> => {
-          await this.onSetUp(instance);
+          if (this.mounted && serial === this.preparationSerial) await this.onSetUp(instance);
         },
         changed: (instance: RNInstance | undefined): void => {
-          if (!this.mounted || preparation !== this.preparationSerial) return;
+          if (!this.mounted || serial !== this.preparationSerial) return;
           this.instance = instance;
           this.ready = instance !== undefined;
           this.generation += 1;
         },
         failed: (error: Error): void => {
-          if (this.mounted && preparation === this.preparationSerial) this.reportDelayError(error as Object);
+          if (this.mounted && serial === this.preparationSerial) this.reportDelayError(error as Object);
         },
       };
+
       this.unregister = runtime.subscribe(listener);
       await runtime.start().catch((): void => {});
     } catch (error) {
-      if (this.mounted && preparation === this.preparationSerial) this.reportDelayError(error as Object);
+      if (this.mounted && serial === this.preparationSerial) this.reportDelayError(error as Object);
     }
   }
 
@@ -208,16 +212,20 @@ export struct ExpoRNApp {
         }),
       );
     } else {
-      throw new ExpoModuleError('ERR_REACT_HOST_CONTEXT', 'The RNOH context is not available.', error);
+      console.error(`Unable to prepare the Expo React root: ${String(error)}`);
     }
   }
 
   aboutToDisappear(): void {
     this.mounted = false;
     this.preparationSerial += 1;
+    this.rootPrepared = false;
     this.ready = false;
+
     this.unregister?.();
     this.unregister = undefined;
+    this.runtime = undefined;
+    this.instance = undefined;
   }
 
   private rootContext(ready: boolean): ReactRootViewContext {
@@ -261,22 +269,28 @@ export struct ExpoRNApp {
 
   build(): void {
     Stack() {
-      ForEach(
-        [this.generation],
-        (_generation: number): void => this.renderRoot(),
-        (generation: number): string => `${generation}`,
-      )
+      if (this.rootPrepared && this.core !== undefined) {
+        Stack() {
+          ForEach(
+            [this.generation],
+            (_generation: number): void => this.renderRoot(),
+            (generation: number): string => `${generation}`,
+          )
+        }
+        .width('100%')
+        .height('100%')
+        .gestureModifier(new ExpoRootGestureModifier(this.activityHandlers, this.rootContext(this.ready)))
+        .onKeyEvent((event: KeyEvent): void => {
+          for (const handler of this.activityHandlers) {
+            if (handler.onRootViewKeyEvent?.(this.rootContext(this.ready), event)) {
+              event.stopPropagation();
+              return;
+            }
+          }
+        })
+      }
     }
     .width('100%')
     .height('100%')
-    .gestureModifier(new ExpoRootGestureModifier(this.activityHandlers, this.rootContext(this.ready)))
-    .onKeyEvent((event: KeyEvent): void => {
-      for (const handler of this.activityHandlers) {
-        if (handler.onRootViewKeyEvent?.(this.rootContext(this.ready), event)) {
-          event.stopPropagation();
-          return;
-        }
-      }
-    });
   }
 }

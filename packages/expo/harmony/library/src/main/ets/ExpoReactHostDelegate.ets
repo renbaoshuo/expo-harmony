@@ -12,7 +12,7 @@ import {
   ReactNativeHost,
   ReactNativeHostHandler,
   ReactNativeHostHandlerRegistration,
-  ModulePriorities,
+  ReactRuntimeAppearance,
   ReactRuntimeBinding,
   ReactRuntimeContext,
   ReactRuntimeBindingRegistration,
@@ -34,44 +34,39 @@ export class ExpoReactHostDelegate {
   private initialized: boolean = false;
 
   constructor(registrations: ReactNativeHostHandlerRegistration[], bindings: ReactRuntimeBindingRegistration[]) {
-    const ids = new Set<string>();
+    const handlerIds = new Set<string>();
     for (const registration of registrations) {
-      if (registration.registrationId.length === 0 || ids.has(registration.registrationId)) {
-        throw new ExpoModuleError('ERR_REACT_HOST_HANDLER', `Invalid or duplicate React host handler '${registration.registrationId}'.`);
+      const id = registration.registrationId;
+      if (id.length === 0 || handlerIds.has(id)) {
+        throw new ExpoModuleError('ERR_REACT_HOST_HANDLER', `Invalid or duplicate React host handler '${id}'.`);
       }
-      ids.add(registration.registrationId);
+      handlerIds.add(id);
     }
 
-    const ordered: ReactNativeHostHandlerRegistration[] = [];
-    registrations.forEach((registration: ReactNativeHostHandlerRegistration): void => {
-      const priority = ModulePriorities.get(registration.packageName);
-      let index = ordered.length;
-      while (index > 0 && ModulePriorities.get(ordered[index - 1].packageName) < priority) index -= 1;
-      ordered.splice(index, 0, registration);
-    });
-    this.registrations = ordered;
-    const idsForBindings = new Set<string>();
+    this.registrations = registrations.slice();
+
+    const bindingIds = new Set<string>();
     for (const binding of bindings) {
-      if (binding.registrationId.length === 0 || idsForBindings.has(binding.registrationId)) {
-        throw new ExpoModuleError('ERR_REACT_HOST_BIND', `Invalid or duplicate runtime binding '${binding.registrationId}'.`);
+      const id = binding.registrationId;
+      if (id.length === 0 || bindingIds.has(id)) {
+        throw new ExpoModuleError('ERR_REACT_HOST_BIND', `Invalid or duplicate runtime binding '${id}'.`);
       }
-      idsForBindings.add(binding.registrationId);
+      bindingIds.add(id);
     }
-    this.registrationsForBindings = bindings
-      .slice()
-      .sort((left, right) => ModulePriorities.get(right.packageName) - ModulePriorities.get(left.packageName));
+    this.registrationsForBindings = bindings.slice();
   }
 
   initialize(context: common.Context, host: ReactNativeHost, debug: boolean): void {
     if (this.initialized) return;
 
-    const handlers = this.registrations.map(
-      (registration: ReactNativeHostHandlerRegistration): ReactNativeHostHandler => registration.create(context),
-    );
+    const handlers = this.registrations
+      .map((registration: ReactNativeHostHandlerRegistration): ReactNativeHostHandler => registration.create(context))
+      .sort((left, right) => (right.priority ?? 0) - (left.priority ?? 0));
     for (const handler of handlers) handler.onWillCreateReactInstance?.(debug);
-    this.bindings = this.registrationsForBindings.map(
-      (registration: ReactRuntimeBindingRegistration): ReactRuntimeBinding => registration.create(context),
-    );
+
+    this.bindings = this.registrationsForBindings
+      .map((registration: ReactRuntimeBindingRegistration): ReactRuntimeBinding => registration.create(context))
+      .sort((left, right) => (right.priority ?? 0) - (left.priority ?? 0));
     this.handlers = handlers;
     this.initialized = true;
 
@@ -103,12 +98,13 @@ export class ExpoReactHostDelegate {
     return undefined;
   }
 
-  async getJSBundleProvider(debug: boolean): Promise<JSBundleProvider | undefined> {
+  async getJSBundleProvider(debug: boolean, headless: boolean): Promise<JSBundleProvider | undefined> {
     this.requireInitialized();
     for (const handler of this.handlers) {
-      const provider = await handler.getJSBundleProvider?.(debug);
+      const provider = await handler.getJSBundleProvider?.(debug, headless);
       if (provider !== undefined) return provider;
     }
+
     return undefined;
   }
 
@@ -118,6 +114,16 @@ export class ExpoReactHostDelegate {
       const name = await handler.getBundleAssetName?.(debug);
       if (name !== undefined) return name;
     }
+    return undefined;
+  }
+
+  getRuntimeAppearance(): ReactRuntimeAppearance | undefined {
+    this.requireInitialized();
+    for (const handler of this.handlers) {
+      const appearance = handler.getRuntimeAppearance?.();
+      if (appearance !== undefined) return appearance;
+    }
+
     return undefined;
   }
 

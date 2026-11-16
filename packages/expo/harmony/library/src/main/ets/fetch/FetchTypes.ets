@@ -36,13 +36,11 @@ export class FetchResult {
 export class StreamPacket {
   data: Uint8Array;
   done: boolean;
-  completed: boolean;
   error: ExpoFetchError | null;
 
-  constructor(data: Uint8Array, done: boolean, completed: boolean, error: ExpoFetchError | null = null) {
+  constructor(data: Uint8Array, done: boolean, error: ExpoFetchError | null = null) {
     this.data = data;
     this.done = done;
-    this.completed = completed;
     this.error = error;
   }
 }

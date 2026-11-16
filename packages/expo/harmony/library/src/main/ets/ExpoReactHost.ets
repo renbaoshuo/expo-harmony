@@ -82,7 +82,12 @@ export class ExpoReactHost {
         },
         (context: common.UIAbilityContext): boolean => ExpoReactHost.hasOtherOwner(context),
         (core: RNOHCoreContext, context: common.Context): ReactNativeRuntime =>
-          this.runtime(core, this.createRNInstanceOptions(true), (): JSBundleProvider => this.createJSBundleProvider(context, this.debug), false),
+          this.runtime(
+            core,
+            this.createRNInstanceOptions(true),
+            (): JSBundleProvider => this.createJSBundleProvider(context, this.debug, true),
+            false,
+          ),
         (context: common.UIAbilityContext): void => this.options.provider.hostState.beginAbility(context, {}),
         (context: common.UIAbilityContext): void => this.options.provider.hostState.finishAbility(context),
       ),
@@ -138,12 +143,12 @@ export class ExpoReactHost {
     return withDeveloperSupport(options, this.delegate.useDeveloperSupport(options.enableDebugger ?? this.debug));
   }
 
-  createJSBundleProvider(context: common.Context, debug: boolean = false): JSBundleProvider {
+  createJSBundleProvider(context: common.Context, debug: boolean = false, headless: boolean = false): JSBundleProvider {
     const embedded = this.createEmbeddedJSBundleProvider(context);
     const development = this.delegate.useDeveloperSupport(debug);
     const fallback: JSBundleProvider = development ? new MetroJSBundleProvider() : embedded;
 
-    return new ExpoJSBundleProvider(context, fallback, this.delegate, development);
+    return new ExpoJSBundleProvider(context, fallback, this.delegate, development, headless);
   }
 
   createEmbeddedJSBundleProvider(context: common.Context): JSBundleProvider {
@@ -253,6 +258,7 @@ export class ExpoReactHost {
       family = new Object();
       this.families.set(owner, family);
     }
+
     const record: HostRuntime = { core, family, ready: Promise.resolve(), destroyed: false, released: false, ui };
     const lifetime = RnohContextLifecycle.install(core);
     const runtime = this.owners.get(instance);
@@ -262,9 +268,10 @@ export class ExpoReactHost {
       core,
       owner: family,
       isHeadless: !ui,
+      appearance: ui ? this.delegate.getRuntimeAppearance() : undefined,
       getJSBundleProvider: (): JSBundleProvider | undefined => {
-        const currentOwner = this.owners.get(instance);
-        return !record.destroyed && currentOwner?.instance === instance ? currentOwner.sourceBundle : undefined;
+        const current = this.owners.get(instance);
+        return !record.destroyed && current?.instance === instance ? current.sourceBundle : undefined;
       },
       reload: (reason: string): Promise<void> => {
         if (runtime !== undefined) return runtime.reload(reason);
@@ -278,6 +285,7 @@ export class ExpoReactHost {
         return runtime.suspend();
       },
     };
+
     const destroyed = observeRnohDestroy(instance, (): void => {
       record.destroyed = true;
       this.runtimes.delete(instance);

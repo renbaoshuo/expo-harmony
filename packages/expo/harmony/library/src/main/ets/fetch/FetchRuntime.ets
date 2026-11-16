@@ -208,16 +208,16 @@ export class ExpoFetchRuntime {
         // Waiting for the body here would stall streaming responses.
         await attempt.metadataReady;
         const status = attempt.status;
-
-        if (task.error !== null) throw new ExpoFetchError(task.error.code, task.error.message, task.error.cause);
+        this.assertNotCancelled(task);
 
         if (init.credentials === 'include') {
           await storeResponseCookies(target, attempt.headers);
         }
-        this.assertTaskActive(task);
+        this.assertNotCancelled(task);
 
         const location = headerFromPairs(attempt.headers, 'location');
         const redirect = isRedirectStatus(status) && location !== null;
+
         if (redirect && init.redirect === 'follow' && location.trim().length === 0) {
           attempt.discarded = true;
           const error = new ExpoFetchError('ERR_FETCH_REDIRECT', 'Redirect Location must not be empty');
@@ -233,7 +233,9 @@ export class ExpoFetchRuntime {
           throw new ExpoFetchError(error.code, error.message, error.cause);
         }
         if (redirect && init.redirect === 'follow') {
+          this.assertTaskActive(task);
           redirects += 1;
+
           if (redirects > 20) {
             attempt.discarded = true;
             const error = new ExpoFetchError('ERR_FETCH_TOO_MANY_REDIRECTS', 'The fetch request exceeded 20 redirects');
@@ -312,16 +314,23 @@ export class ExpoFetchRuntime {
       try {
         const data = await this.readLocalFileChunk(task);
         const completed = task.localFileOffset >= task.localFileSize;
+
         if (completed) {
           this.completeTask(task);
           await this.closeLocalFile(task);
           this.tasks.delete(id);
         }
 
-        return new StreamPacket(new Uint8Array(data), completed, completed);
+        return new StreamPacket(new Uint8Array(data), completed);
       } catch (error) {
         return await this.failLocalFile(id, task, error as Object);
       }
+    }
+
+    if (task.error !== null) {
+      this.tasks.delete(id);
+
+      return new StreamPacket(EMPTY_BYTES, true, task.error);
     }
 
     // Do not yield while draining the prefix: incoming chunks must stay behind it.
@@ -331,10 +340,10 @@ export class ExpoFetchRuntime {
     if (task.completed) {
       this.tasks.delete(id);
 
-      return new StreamPacket(new Uint8Array(data), true, true, task.error);
+      return new StreamPacket(new Uint8Array(data), true);
     }
 
-    return new StreamPacket(new Uint8Array(data), false, false);
+    return new StreamPacket(new Uint8Array(data), false);
   }
 
   async readChunk(id: string): Promise<StreamPacket> {
@@ -348,11 +357,11 @@ export class ExpoFetchRuntime {
         await this.closeLocalFile(task);
         this.tasks.delete(id);
 
-        return new StreamPacket(EMPTY_BYTES, true, false, task.error);
+        return new StreamPacket(EMPTY_BYTES, true, task.error);
       }
 
       try {
-        return new StreamPacket(new Uint8Array(await this.readLocalFileChunk(task)), false, false);
+        return new StreamPacket(new Uint8Array(await this.readLocalFileChunk(task)), false);
       } catch (error) {
         return await this.failLocalFile(id, task, error as Object);
       }
@@ -361,12 +370,13 @@ export class ExpoFetchRuntime {
     if (task.queued.length > 0) {
       const data = task.queued.shift() ?? new ArrayBuffer(0);
 
-      return new StreamPacket(new Uint8Array(data), false, false);
+      return new StreamPacket(new Uint8Array(data), false);
     }
+
     if (task.completed) {
       this.tasks.delete(id);
 
-      return new StreamPacket(EMPTY_BYTES, true, false, task.error);
+      return new StreamPacket(EMPTY_BYTES, true, task.error);
     }
 
     return await new Promise<StreamPacket>((resolve: (packet: StreamPacket) => void): void => {
@@ -575,7 +585,7 @@ export class ExpoFetchRuntime {
     if (task.streaming && task.readers.length > 0) {
       const resolve = task.readers.shift();
       if (resolve !== undefined) {
-        resolve(new StreamPacket(new Uint8Array(data), false, false));
+        resolve(new StreamPacket(new Uint8Array(data), false));
 
         return;
       }
@@ -594,6 +604,15 @@ export class ExpoFetchRuntime {
     this.assertActive();
     if (task.error !== null) throw new ExpoFetchError(task.error.code, task.error.message, task.error.cause);
     if (task.completed) throw new ExpoFetchError('ERR_FETCH_REQUEST_CANCELED', 'Fetch request has been canceled');
+  }
+
+  private assertNotCancelled(task: FetchTask): void {
+    // After headers, transfer errors belong to the body.
+    this.assertActive();
+    const error = task.error;
+    if (error?.code === 'ERR_FETCH_REQUEST_CANCELED') {
+      throw new ExpoFetchError(error.code, error.message, error.cause);
+    }
   }
 
   private requireTask(id: string): FetchTask {
@@ -690,7 +709,7 @@ export class ExpoFetchRuntime {
     while (task.readers.length > 0) {
       const resolve = task.readers.shift();
       if (resolve !== undefined) {
-        resolve(new StreamPacket(EMPTY_BYTES, true, false, task.error));
+        resolve(new StreamPacket(EMPTY_BYTES, true, task.error));
       }
     }
 

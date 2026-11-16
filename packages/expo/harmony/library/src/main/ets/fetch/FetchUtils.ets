@@ -12,7 +12,7 @@ import webview from '@ohos.web.webview';
 import uniformTypeDescriptor from '@ohos.data.uniformTypeDescriptor';
 import type { rcp } from '@kit.RemoteCommunicationKit';
 import { ExpoFetchError } from './ExpoFetchError';
-import { FetchInit } from './FetchTypes';
+import { EMPTY_BYTES, FetchInit } from './FetchTypes';
 import { collectRequestHeaders, mergeCookieHeaders } from './FetchHeaderPolicy';
 import { createHeaderRecord } from './FetchHeaderRecord';
 
@@ -173,7 +173,7 @@ export function mimeType(path: string): string {
 }
 
 export function encodeString(value: string): Uint8Array {
-  return new util.TextEncoder('utf-8').encode(value);
+  return value.length === 0 ? EMPTY_BYTES : util.TextEncoder.create().encodeInto(value);
 }
 
 export function copyBytes(bytes: Uint8Array): ArrayBuffer {
@@ -201,7 +201,7 @@ export async function withStoredCookies(headers: rcp.RequestHeaders, target: str
   let stored = '';
 
   try {
-    stored = (await webview.WebCookieManager.fetchCookie(target, false)).replace(/,/g, ';');
+    stored = await webview.WebCookieManager.fetchCookie(target, false);
   } catch (error) {
     throw new ExpoFetchError('ERR_FETCH_COOKIE_READ', `Unable to read cookies for ${target}: ${errorMessage(error as Object)}`, error as Object);
   }

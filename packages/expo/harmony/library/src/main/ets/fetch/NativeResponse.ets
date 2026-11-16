@@ -55,17 +55,18 @@ export class NativeResponse extends ExpoSharedObject {
 
   async startStreaming(): Promise<Uint8Array | null> {
     this.beginBodyUse();
+
     try {
       const packet = await this.runtime.startStreaming(this.requireRequestId());
+
       if (this.streamingCancelled || this.released) {
         this.finalize();
         return null;
       }
       if (packet.error !== null) {
-        this.emitStreamFailure(packet.error);
-        return null;
+        throw new ExpoFetchError(packet.error.code, packet.error.message, packet.error.cause);
       }
-      if (packet.completed) {
+      if (packet.done) {
         this.finalize();
         return packet.data;
       }
@@ -73,6 +74,7 @@ export class NativeResponse extends ExpoSharedObject {
       if (packet.data.byteLength > 0) {
         this.sendEvent('didReceiveResponseData', packet.data);
       }
+
       this.pumpStream().catch((error: Object): void => {
         this.emitStreamFailure(
           new ExpoFetchError(
@@ -85,21 +87,23 @@ export class NativeResponse extends ExpoSharedObject {
 
       return null;
     } catch (error) {
-      this.emitStreamFailure(
-        new ExpoFetchError(
-          error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_UNKNOWN',
-          error instanceof ExpoFetchError ? error.message : errorMessage(error as Object),
-          error instanceof ExpoFetchError ? error.cause : (error as Object),
-        ),
+      this.finalize();
+
+      // Reject the pull itself because the upstream stream may have removed its event listeners.
+      throw new ExpoFetchError(
+        error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_UNKNOWN',
+        error instanceof ExpoFetchError ? error.message : errorMessage(error as Object),
+        error instanceof ExpoFetchError ? error.cause : (error as Object),
       );
-      return null;
     }
   }
 
   cancelStreaming(_reason: string): void {
     if (this.streamingCancelled) return;
 
+    this.used = true;
     this.streamingCancelled = true;
+
     const id = this.requestId;
     if (id !== undefined) this.runtime.cancelStreaming(id);
     this.finalize();

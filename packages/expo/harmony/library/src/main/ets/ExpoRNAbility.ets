@@ -9,7 +9,6 @@ import type { Configuration, Want } from '@kit.AbilityKit';
 import { AbilityConstant } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { RnohAbility } from './adapter/RnohAbility';
-import deviceInfo from '@ohos.deviceInfo';
 import { ExpoReactHost } from './ExpoReactHost';
 import type { ExpoHarmonyHostProvider } from './ExpoModulesPackage';
 import {
@@ -154,11 +153,7 @@ export abstract class ExpoRNAbility extends RnohAbility {
   }
 
   override onContinue(params: Record<string, Object>): AbilityConstant.OnContinueResult | Promise<AbilityConstant.OnContinueResult> {
-    if (deviceInfo.sdkApiVersion >= 18) return this.continueAsync(params);
-
-    const result = this.getExpoHarmonyHostProvider().lifecycle.onContinue(this.context, params);
-
-    return result ?? super.onContinue(params);
+    return this.continueAsync(params);
   }
 
   private async continueAsync(params: Record<string, Object>): Promise<AbilityConstant.OnContinueResult> {
