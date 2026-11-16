@@ -62,11 +62,11 @@ export default {
 
 可在 `dark` 中设置深色模式的背景色和图片。深色背景色未设置时沿用 `backgroundColor`，深色图片未设置时沿用基础图片。`expo.userInterfaceStyle` 设为 `automatic` 时，启动画面会使用对应的深浅色资源；设为 `light` 或 `dark` 时会固定使用相应外观。修改启动画面配置后，需要重新生成原生工程。
 
-冷启动时会先显示系统启动窗口，应用窗口准备好后会显示应用内启动画面，直到它自动隐藏或调用隐藏方法。应用内启动画面覆盖整个窗口，显示期间会拦截触摸事件。不注册插件时只显示系统启动窗口。
+冷启动时先显示 HarmonyOS 系统启动页，图标大小和退出时机由系统管理。应用窗口接管后，`imageWidth` 和 `resizeMode` 作用于应用内启动画面。应用内画面覆盖窗口并拦截触摸，直到自动隐藏或调用隐藏方法。若 UIAbility 已配置增强启动页 `startWindow`，系统优先使用该配置。不注册插件时只显示系统启动页。 [华为启动页配置](https://developer.huawei.com/consumer/cn/doc/HarmonyOS-Guides/launch-page-config/)
 
 ## 使用
 
-启动画面默认会在应用窗口准备好后自动隐藏。若要等字体或接口数据加载完成后再隐藏，可在模块顶层调用 `SplashScreen.preventAutoHideAsync()`，就绪后调用 `SplashScreen.hide()`：
+启动画面默认在 React 根视图完成首次有效布局后自动隐藏。若要等字体或接口数据加载完成后再隐藏，可在模块顶层调用 `SplashScreen.preventAutoHideAsync()`，就绪后调用 `SplashScreen.hide()`。同一 UIAbility 内的 React 重载会沿用已经结束的启动状态。
 
 ```ts
 import * as SplashScreen from 'expo-splash-screen';

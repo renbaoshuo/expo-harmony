@@ -17,15 +17,16 @@ import {
   SplashScreenRuntimeOwner,
 } from './SplashScreenLifecycle';
 
-class SplashScreenOptions {
-  duration: number = DEFAULT_FADE_DURATION_MS;
-  fade: boolean = true;
+interface SplashScreenOptions {
+  readonly duration: number;
+  readonly fade: boolean;
 }
 
+const DEFAULT_OPTIONS: SplashScreenOptions = { duration: DEFAULT_FADE_DURATION_MS, fade: true };
 const SPLASH_SCREEN_OPTIONS_TYPE: ExpoValueType<SplashScreenOptions> = new ExpoValueType<SplashScreenOptions>(
   'splash screen options object',
   (value: ESObject, path: string): SplashScreenOptions => decodeOptions(value, path),
-  (value: SplashScreenOptions): ESObject => encodeOptions(value),
+  (value: SplashScreenOptions): SplashScreenOptions => value,
 );
 
 export class ExpoSplashScreenModule extends ExpoModule {
@@ -42,7 +43,7 @@ export class ExpoSplashScreenModule extends ExpoModule {
         .syncFunction(
           'setOptions',
           ExpoFunction.typed1(SPLASH_SCREEN_OPTIONS_TYPE.nullable().optional(), (options?: SplashScreenOptions | null): void => {
-            const settings: SplashScreenOptions = options ?? new SplashScreenOptions();
+            const settings: SplashScreenOptions = options ?? DEFAULT_OPTIONS;
             this.resolveOwner()?.setOptions(settings.duration, settings.fade);
           }),
         )
@@ -102,28 +103,18 @@ function decodeOptions(value: ESObject, path: string): SplashScreenOptions {
   const duration: ESObject = input['duration'];
   const fade: ESObject = input['fade'];
 
-  if (duration !== undefined && duration !== null) {
-    if (typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0 || duration > MAX_FADE_DURATION_MS) {
-      throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_OPTIONS', `${path}.duration expected a number from 0 to ${MAX_FADE_DURATION_MS}.`);
-    }
+  if (duration !== undefined && duration !== null && (
+    typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0 || duration > MAX_FADE_DURATION_MS
+  )) {
+    throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_OPTIONS', `${path}.duration expected a number from 0 to ${MAX_FADE_DURATION_MS}.`);
   }
-  if (fade !== undefined && fade !== null) {
-    if (typeof fade !== 'boolean') {
-      throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_OPTIONS', `${path}.fade expected a boolean.`);
-    }
+  if (fade !== undefined && fade !== null && typeof fade !== 'boolean') {
+    throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_OPTIONS', `${path}.fade expected a boolean.`);
   }
 
-  const options = new SplashScreenOptions();
-  if (duration !== undefined && duration !== null) options.duration = duration;
-  if (fade !== undefined && fade !== null) options.fade = fade;
-
-  return options;
-}
-
-function encodeOptions(value: SplashScreenOptions): ESObject {
   return {
-    duration: value.duration,
-    fade: value.fade,
+    duration: duration ?? DEFAULT_OPTIONS.duration,
+    fade: fade ?? DEFAULT_OPTIONS.fade,
   };
 }
 

@@ -12,15 +12,6 @@ export class SplashScreenStateMachine {
   private hidden: boolean = false;
   private destroyed: boolean = false;
 
-  prepareForRuntime(visible: boolean): void {
-    if (this.destroyed) return;
-
-    this.visible = visible;
-    this.prevented = false;
-    this.controlled = false;
-    this.hidden = false;
-  }
-
   markNativeVisible(): void {
     if (this.hidden || this.destroyed) return;
     this.visible = true;

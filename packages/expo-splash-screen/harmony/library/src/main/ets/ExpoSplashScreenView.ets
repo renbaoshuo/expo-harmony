@@ -7,7 +7,7 @@
 
 import { common } from '@kit.AbilityKit';
 
-import { attachSplashScreenView, ExpoSplashScreenError, SplashScreenRenderState } from './SplashScreenLifecycle';
+import { attachSplashScreenView, SplashScreenRenderState } from './SplashScreenLifecycle';
 
 const SPLASH_OVERLAY_Z_INDEX: number = 2147483647;
 
@@ -19,10 +19,7 @@ export struct ExpoSplashScreenView {
   aboutToAppear(): void {
     const ui = this.getUIContext();
     const host = ui.getHostContext();
-
-    if (host === undefined) {
-      throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_ABILITY_CONTEXT', 'ExpoSplashScreenView has no UIAbility context.');
-    }
+    if (host === undefined) return;
 
     this.detach = attachSplashScreenView(host as common.UIAbilityContext, ui, (state: SplashScreenRenderState): void => {
       this.state = state;
@@ -31,7 +28,6 @@ export struct ExpoSplashScreenView {
 
   aboutToDisappear(): void {
     const detach = this.detach;
-
     this.detach = undefined;
     if (detach !== undefined) detach();
   }
@@ -44,7 +40,8 @@ export struct ExpoSplashScreenView {
             Image(this.state.image)
               .width('100%')
               .height('100%')
-              .objectFit(ImageFit.Cover);
+              .objectFit(ImageFit.Cover)
+              .expandSafeArea([SafeAreaType.SYSTEM]);
           } else if (this.state.resizeMode === 'native') {
             Image(this.state.image).objectFit(ImageFit.None);
           } else {
@@ -57,6 +54,7 @@ export struct ExpoSplashScreenView {
       .width('100%')
       .height('100%')
       .backgroundColor(this.state.backgroundColor)
+      .expandSafeArea([SafeAreaType.SYSTEM])
       .opacity(this.state.opacity)
       .hitTestBehavior(HitTestMode.Block)
       .zIndex(SPLASH_OVERLAY_Z_INDEX);

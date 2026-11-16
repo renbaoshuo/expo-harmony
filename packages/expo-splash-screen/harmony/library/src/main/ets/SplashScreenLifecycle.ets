@@ -72,28 +72,25 @@ export interface SplashScreenRuntimeOwner {
   contentAppeared(): void;
   internalMaybeHide(): void;
   hide(): void;
-  isDestroyed(): boolean;
 }
 
 class SplashScreenResources {
   readonly backgroundColor: number;
   readonly image: DrawableDescriptor | undefined;
   readonly resizeMode: SplashScreenResizeMode;
-  readonly valid: boolean;
   readonly imageWidth: number;
 
-  constructor(background: number, image: DrawableDescriptor | undefined, resize: SplashScreenResizeMode, width: number, valid: boolean) {
+  constructor(background: number, image: DrawableDescriptor | undefined, resize: SplashScreenResizeMode, width: number) {
     this.backgroundColor = background;
     this.image = image;
     this.resizeMode = resize;
     this.imageWidth = width;
-    this.valid = valid;
   }
 }
 
 class SplashScreenAbilityOwner {
-  readonly ability: common.UIAbilityContext;
-  private resources: SplashScreenResources;
+  private readonly ability: common.UIAbilityContext;
+  private resources: SplashScreenResources | undefined;
   private readonly state: SplashScreenStateMachine = new SplashScreenStateMachine();
   private epoch: string | undefined = undefined;
   private listener: SplashScreenRenderListener | undefined = undefined;
@@ -105,30 +102,22 @@ class SplashScreenAbilityOwner {
   private timer: number | undefined = undefined;
   private backgrounded: boolean = false;
 
-  constructor(ability: common.UIAbilityContext, resources: SplashScreenResources) {
+  constructor(ability: common.UIAbilityContext) {
     this.ability = ability;
-    this.resources = resources;
   }
 
   attachView(ui: UIContext, listener: SplashScreenRenderListener): () => void {
-    if (this.state.isDestroyed()) {
-      throw new ExpoSplashScreenError(
-        'ERR_SPLASH_SCREEN_ABILITY_DESTROYED',
-        'Cannot attach the Expo splash screen after its UIAbility was destroyed.',
-      );
-    }
-
-    if (this.listener !== undefined) {
-      throw new ExpoSplashScreenError(
-        'ERR_SPLASH_SCREEN_DUPLICATE_VIEW',
-        'The UIAbility mounted more than one ExpoSplashScreenView for the same window.',
-      );
+    const previous = this.listener;
+    if (previous !== undefined) {
+      this.detachView();
+      previous(SplashScreenRenderState.hidden());
     }
 
     this.ui = ui;
     this.listener = listener;
+    this.resources = resolveResources(this.ability.resourceManager);
 
-    if (this.resources.valid) this.state.markNativeVisible();
+    if (this.resources !== undefined) this.state.markNativeVisible();
     this.publish();
 
     return (): void => {
@@ -148,30 +137,20 @@ class SplashScreenAbilityOwner {
   }
 
   updateResources(): void {
-    if (!this.resources.valid) return;
+    if (!this.state.isVisible()) return;
 
     const resources = resolveResources(this.ability.resourceManager);
-    if (!resources.valid) return;
+    if (resources === undefined) return;
 
     this.resources = resources;
-    if (this.state.isVisible()) this.publish();
+    this.publish();
   }
 
-  beginRuntime(epoch: string): void {
-    if (this.state.isDestroyed()) {
-      throw new ExpoSplashScreenError('ERR_SPLASH_SCREEN_ABILITY_DESTROYED', 'The Expo splash screen owner no longer has a live UIAbility/window.');
-    }
-
-    if (this.epoch === epoch) return;
+  beginRuntime(epoch: string): boolean {
+    if (this.state.isDestroyed() || this.epoch !== undefined) return false;
 
     this.epoch = epoch;
-    this.generation += 1;
-    this.clearTimer();
-
-    this.opacity = 1;
-    this.state.prepareForRuntime(this.resources.valid && this.listener !== undefined);
-
-    this.publish();
+    return true;
   }
 
   endRuntime(epoch: string): void {
@@ -182,12 +161,8 @@ class SplashScreenAbilityOwner {
     this.finishRemoval(this.generation);
   }
 
-  containsRuntime(epoch: string): boolean {
-    return this.epoch === epoch;
-  }
-
-  isDestroyed(): boolean {
-    return this.state.isDestroyed();
+  get runtimeEpoch(): string | undefined {
+    return this.epoch;
   }
 
   setOptions(duration: number, fade: boolean): void {
@@ -299,13 +274,19 @@ class SplashScreenAbilityOwner {
     const listener = this.listener;
     if (listener === undefined) return;
 
+    const resources = this.resources;
+    if (resources === undefined || !this.state.isVisible() || this.state.isDestroyed()) {
+      listener(SplashScreenRenderState.hidden());
+      return;
+    }
+
     listener(
       new SplashScreenRenderState(
-        this.state.isVisible() && !this.state.isDestroyed(),
-        this.resources.backgroundColor,
-        this.resources.image,
-        this.resources.resizeMode,
-        this.resources.imageWidth,
+        true,
+        resources.backgroundColor,
+        resources.image,
+        resources.resizeMode,
+        resources.imageWidth,
         this.opacity,
       ),
     );
@@ -323,45 +304,28 @@ class SplashScreenCoordinator {
   private static readonly abilities: Map<common.UIAbilityContext, SplashScreenAbilityOwner> = new Map();
   private static readonly runtimes: Map<string, SplashScreenAbilityOwner> = new Map();
 
-  static prepareAbility(ability: common.UIAbilityContext): SplashScreenAbilityOwner {
-    const current = SplashScreenCoordinator.abilities.get(ability);
-    if (current !== undefined && !current.isDestroyed()) return current;
+  static prepareAbility(ability: common.UIAbilityContext): void {
+    if (SplashScreenCoordinator.abilities.has(ability)) return;
 
     const main = ability.currentHapModuleInfo?.mainElementName;
-    const resources = main && ability.abilityInfo.name !== main
-      ? new SplashScreenResources(DEFAULT_BACKGROUND, undefined, 'contain', DEFAULT_IMAGE_WIDTH, false)
-      : resolveResources(ability.resourceManager);
-    const owner = new SplashScreenAbilityOwner(ability, resources);
+    if (main && ability.abilityInfo.name !== main) return;
 
-    SplashScreenCoordinator.abilities.set(ability, owner);
-
-    return owner;
+    SplashScreenCoordinator.abilities.set(ability, new SplashScreenAbilityOwner(ability));
   }
 
-  static attachView(ability: common.UIAbilityContext, ui: UIContext, listener: SplashScreenRenderListener): () => void {
-    return SplashScreenCoordinator.requireAbility(ability).attachView(ui, listener);
+  static attachView(ability: common.UIAbilityContext, ui: UIContext, listener: SplashScreenRenderListener): (() => void) | undefined {
+    return SplashScreenCoordinator.abilities.get(ability)?.attachView(ui, listener);
   }
 
-  static bindRuntimeForAbility(ability: common.UIAbilityContext, epoch: string): SplashScreenAbilityOwner {
-    const owner = SplashScreenCoordinator.requireAbility(ability);
+  static bindRuntimeForAbility(ability: common.UIAbilityContext, epoch: string): void {
+    if (SplashScreenCoordinator.runtimes.has(epoch)) return;
 
-    SplashScreenCoordinator.bindRuntime(owner, epoch);
-
-    return owner;
-  }
-
-  private static requireAbility(ability: common.UIAbilityContext): SplashScreenAbilityOwner {
     const owner = SplashScreenCoordinator.abilities.get(ability);
-    if (owner === undefined || owner.isDestroyed()) {
-      throw new Error('Expo SplashScreen requires its autolinked Ability lifecycle subscriber and an active window.');
-    }
-
-    return owner;
+    if (owner?.beginRuntime(epoch)) SplashScreenCoordinator.runtimes.set(epoch, owner);
   }
 
   static findRuntime(epoch: string): SplashScreenAbilityOwner | undefined {
-    const owner = SplashScreenCoordinator.runtimes.get(epoch);
-    return owner !== undefined && owner.containsRuntime(epoch) ? owner : undefined;
+    return SplashScreenCoordinator.runtimes.get(epoch);
   }
 
   static endRuntime(epoch: string): void {
@@ -374,7 +338,12 @@ class SplashScreenCoordinator {
 
   static destroyAbility(ability: common.UIAbilityContext): void {
     const owner = SplashScreenCoordinator.abilities.get(ability);
-    if (owner !== undefined) SplashScreenCoordinator.removeOwner(owner);
+    if (owner === undefined) return;
+
+    const epoch = owner.runtimeEpoch;
+    SplashScreenCoordinator.abilities.delete(ability);
+    if (epoch !== undefined) SplashScreenCoordinator.runtimes.delete(epoch);
+    owner.destroy();
   }
 
   static foregroundAbility(ability: common.UIAbilityContext): void {
@@ -393,30 +362,8 @@ class SplashScreenCoordinator {
     SplashScreenCoordinator.abilities.get(ability)?.updateResources();
   }
 
-  private static bindRuntime(owner: SplashScreenAbilityOwner, epoch: string): void {
-    const previous = SplashScreenCoordinator.runtimes.get(epoch);
-    if (previous !== undefined && previous !== owner) previous.endRuntime(epoch);
-
-    Array.from(SplashScreenCoordinator.runtimes.entries()).forEach((entry) => {
-      if (entry[1] === owner && entry[0] !== epoch) {
-        SplashScreenCoordinator.runtimes.delete(entry[0]);
-      }
-    });
-
-    owner.beginRuntime(epoch);
-    SplashScreenCoordinator.runtimes.set(epoch, owner);
-  }
-
-  private static removeOwner(owner: SplashScreenAbilityOwner): void {
-    owner.destroy();
-
-    if (SplashScreenCoordinator.abilities.get(owner.ability) === owner) {
-      SplashScreenCoordinator.abilities.delete(owner.ability);
-    }
-
-    Array.from(SplashScreenCoordinator.runtimes.entries()).forEach((entry) => {
-      if (entry[1] === owner) SplashScreenCoordinator.runtimes.delete(entry[0]);
-    });
+  static dismissForNativeRoot(ability: common.UIAbilityContext): void {
+    SplashScreenCoordinator.abilities.get(ability)?.hideForNativeRoot();
   }
 }
 
@@ -458,24 +405,27 @@ export class ExpoSplashScreenLifecycleSubscriber extends ExpoAbilityLifecycleSub
   }
 }
 
-// A native replacement root has no React content-appeared event. A window
-// remount can also start with a not-ready root while a runtime is still live.
 export class ExpoSplashScreenReactActivityHandler implements ReactActivityHandler {
   constructor(_context: common.Context) {}
 
   onRootViewMounted(context: ReactRootViewContext): void {
+    // A native replacement root cannot emit React's content-appeared event.
     if (context.isCustomRoot && !context.ready) {
-      SplashScreenCoordinator.prepareAbility(context.core.uiAbilityContext).hideForNativeRoot();
+      SplashScreenCoordinator.dismissForNativeRoot(context.core.uiAbilityContext);
     }
   }
 }
 
-export function attachSplashScreenView(ability: common.UIAbilityContext, ui: UIContext, listener: SplashScreenRenderListener): () => void {
+export function attachSplashScreenView(
+  ability: common.UIAbilityContext,
+  ui: UIContext,
+  listener: SplashScreenRenderListener,
+): (() => void) | undefined {
   return SplashScreenCoordinator.attachView(ability, ui, listener);
 }
 
-export function bindSplashScreenRuntime(ability: common.UIAbilityContext, epoch: string): SplashScreenRuntimeOwner {
-  return SplashScreenCoordinator.bindRuntimeForAbility(ability, epoch);
+export function bindSplashScreenRuntime(ability: common.UIAbilityContext, epoch: string): void {
+  SplashScreenCoordinator.bindRuntimeForAbility(ability, epoch);
 }
 
 export function findSplashScreenRuntime(epoch: string): SplashScreenRuntimeOwner | undefined {
@@ -486,7 +436,7 @@ export function endSplashScreenRuntime(epoch: string): void {
   SplashScreenCoordinator.endRuntime(epoch);
 }
 
-function resolveResources(manager: resourceManager.ResourceManager): SplashScreenResources {
+function resolveResources(manager: resourceManager.ResourceManager): SplashScreenResources | undefined {
   let background: number = DEFAULT_BACKGROUND;
   let resize: SplashScreenResizeMode = 'contain';
   let width: number = DEFAULT_IMAGE_WIDTH;
@@ -498,12 +448,11 @@ function resolveResources(manager: resourceManager.ResourceManager): SplashScree
     if ((error as BusinessError).code !== RESOURCE_NOT_FOUND) {
       console.warn(`Unable to resolve the Expo splash background resource: ${String(error)}`);
     }
-    return new SplashScreenResources(background, image, resize, width, false);
+    return undefined;
   }
 
   try {
-    const value: string = manager.getStringByNameSync(RESIZE_MODE_RESOURCE);
-
+    const value = manager.getStringByNameSync(RESIZE_MODE_RESOURCE);
     if (value === 'contain' || value === 'cover' || value === 'native') resize = value;
     else console.warn(`Ignoring invalid Expo splash resize mode '${value}'.`);
   } catch (error) {
@@ -524,5 +473,5 @@ function resolveResources(manager: resourceManager.ResourceManager): SplashScree
 
   if (!Number.isFinite(width) || width <= 0) width = DEFAULT_IMAGE_WIDTH;
 
-  return new SplashScreenResources(background, image, resize, width, true);
+  return new SplashScreenResources(background, image, resize, width);
 }
