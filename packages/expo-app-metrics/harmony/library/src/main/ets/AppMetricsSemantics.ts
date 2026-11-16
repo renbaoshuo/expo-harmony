@@ -87,7 +87,7 @@ export function frameIntervalMilliseconds(
     !Number.isFinite(actualMs)
     || !Number.isFinite(expectedMs)
     || !Number.isFinite(previousExpectedMs)
-    || actualMs < 0
+    || actualMs <= 0
     || previousExpectedMs <= 0
     || expectedMs <= 0
   ) {
@@ -95,7 +95,7 @@ export function frameIntervalMilliseconds(
   }
 
   if (
-    Math.abs(previousExpectedMs - expectedMs) <= FRAME_DURATION_TOLERANCE_MS
+    Math.abs(previousExpectedMs - expectedMs) > FRAME_DURATION_TOLERANCE_MS
     && actualMs < expectedMs * 2 + FRAME_DURATION_TOLERANCE_MS
   ) {
     actualMs = expectedMs;

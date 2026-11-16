@@ -8,7 +8,7 @@
 import {
   ExpoFunction, ExpoModuleContext, ExpoSharedObject, ExpoSharedObjectClassDefinition, ExpoValueType, ExpoValueTypes,
 } from '@expo-harmony/expo-modules-core';
-import { LogRecord, Metric, SessionWithMetrics } from './AppMetricsModels';
+import { LogRecord, Metric, Session } from './AppMetricsModels';
 import { AppMetricsStorage } from './AppMetricsStorage';
 import { ExpoAppMetricsError } from './ExpoAppMetricsError';
 
@@ -41,30 +41,54 @@ export class AppMetricsSession extends ExpoSharedObject {
 
   override sharedObjectWillRelease(): void { this.onRelease(this); }
 
-  async entry(): Promise<SessionWithMetrics | undefined> {
-    return await this.storage.getSession(this.id);
+  session(): Promise<Session | undefined> {
+    return this.storage.getSessionRecord(this.id);
   }
 
+  metrics(): Promise<Metric[]> { return this.storage.getMetrics(this.id); }
+  logs(): Promise<LogRecord[]> { return this.storage.getLogs(this.id); }
+
   async addMetric(input: Record<string, ESObject>): Promise<void> {
-    const category: ESObject = input['category'];
-    const name: ESObject = input['name'];
-    const value: ESObject = input['value'];
-    const timestamp: ESObject = input['timestamp'] ?? new Date().toISOString();
-    const routeName: ESObject = input['routeName'];
-    const params: ESObject = input['params'];
+    await this.storage.addMetrics(this.id, [createSessionMetric(this.storage, this.id, input)]);
+  }
+}
 
-    if (typeof category !== 'string' || typeof name !== 'string' || typeof value !== 'number' || !Number.isFinite(value)
-      || typeof timestamp !== 'string' || !Number.isFinite(Date.parse(timestamp))
-      || (routeName !== null && routeName !== undefined && typeof routeName !== 'string')
-      || (params !== null && params !== undefined && (typeof params !== 'object' || Array.isArray(params)))) {
-      throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_METRIC', 'Session.addMetric expected a timestamp, category, name and finite value.');
-    }
+export function createSessionMetric(storage: AppMetricsStorage, sessionId: string, input: Record<string, ESObject>): Metric {
+  const category: ESObject = input['category'];
+  const name: ESObject = input['name'];
+  const value: ESObject = input['value'];
+  const timestamp: ESObject = input['timestamp'] ?? new Date().toISOString();
+  if (typeof category !== 'string' || typeof name !== 'string' || typeof value !== 'number' || !Number.isFinite(value)
+    || typeof timestamp !== 'string' || !Number.isFinite(Date.parse(timestamp))) {
+    throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_METRIC', 'Expected a timestamp, category, name and finite metric value.');
+  }
 
-    await this.storage.addMetrics(this.id, [new Metric(
-      this.storage.createSessionId(), this.id, timestamp, category, name, value,
-      typeof routeName === 'string' ? routeName : undefined,
-      params === null || params === undefined ? undefined : params as Record<string, ESObject>,
-    )]);
+  const route = optionalMetricString(input['routeName'], 'routeName');
+  const params = optionalMetricParams(input['params']);
+  const metric = new Metric(storage.createSessionId(), sessionId, timestamp, category, name, value, route, params);
+  metric.updateId = optionalMetricString(input['updateId'], 'updateId');
+
+  return metric;
+}
+
+export function optionalMetricString(value: ESObject, field: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_ARGUMENT', `Expected '${field}' to be a string when provided.`);
+  }
+  return value;
+}
+
+export function optionalMetricParams(value: ESObject): Record<string, ESObject> | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_ARGUMENT', "Expected 'params' to be an object.");
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(value)) as Record<string, ESObject>;
+  } catch (error) {
+    throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_ARGUMENT', `Expected JSON-serializable metric parameters: ${String(error)}`);
   }
 }
 
@@ -76,9 +100,9 @@ export function appMetricsSessionClass(): ExpoSharedObjectClassDefinition<AppMet
     .property('id', ExpoValueTypes.string(), (session: AppMetricsSession): string => session.id)
     .property('type', ExpoValueTypes.string(), (session: AppMetricsSession): string => session.type)
     .property('startDate', ExpoValueTypes.string(), (session: AppMetricsSession): string => session.startDate)
-    .asyncFunction('isActive', ExpoFunction.ownedTyped0(async (session: AppMetricsSession): Promise<boolean> => (await session.entry())?.session.isActive ?? false))
-    .asyncFunction('getEndDate', ExpoFunction.ownedTyped0(async (session: AppMetricsSession): Promise<string | null> => (await session.entry())?.session.endTimestamp ?? null))
-    .asyncFunction('getMetrics', ExpoFunction.ownedTyped0(async (session: AppMetricsSession): Promise<Metric[]> => (await session.entry())?.metrics ?? []))
-    .asyncFunction('getLogs', ExpoFunction.ownedTyped0(async (session: AppMetricsSession): Promise<LogRecord[]> => (await session.entry())?.logs ?? []))
+    .asyncFunction('isActive', ExpoFunction.ownedTyped0(async (session: AppMetricsSession): Promise<boolean> => (await session.session())?.isActive ?? false))
+    .asyncFunction('getEndDate', ExpoFunction.ownedTyped0(async (session: AppMetricsSession): Promise<string | null> => (await session.session())?.endTimestamp ?? null))
+    .asyncFunction('getMetrics', ExpoFunction.ownedTyped0((session: AppMetricsSession): Promise<Metric[]> => session.metrics()))
+    .asyncFunction('getLogs', ExpoFunction.ownedTyped0((session: AppMetricsSession): Promise<LogRecord[]> => session.logs()))
     .asyncFunction('addMetric', ExpoFunction.ownedTyped1(METRICS_RECORD, (session: AppMetricsSession, input: Record<string, ESObject>): Promise<void> => session.addMetric(input)));
 }

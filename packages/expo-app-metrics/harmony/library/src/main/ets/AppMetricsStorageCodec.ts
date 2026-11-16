@@ -29,112 +29,69 @@ const OPTIONAL_SESSION_FIELDS: string[] = [
   'languageTag',
 ];
 
-export class DecodedEntryResult {
-  entry: SessionWithMetrics;
-  discardedInvalidMetric: boolean;
-
-  constructor(entry: SessionWithMetrics, discardedInvalidMetric: boolean) {
-    this.entry = entry;
-    this.discardedInvalidMetric = discardedInvalidMetric;
-  }
-}
-
-export function decodeEntry(value: ESObject): DecodedEntryResult | undefined {
+export function decodeSession(value: ESObject): Session | undefined {
   const input = asRecord(value);
   if (input === undefined) return undefined;
 
-  const sessionInput = asRecord(input['session']);
-  const metricsInput: ESObject = input['metrics'] as ESObject;
-  if (sessionInput === undefined || !Array.isArray(metricsInput)) return undefined;
-
-  const id = requiredNonEmptyString(sessionInput['id']);
-  const timestamp = requiredNonEmptyString(sessionInput['startTimestamp']);
-  const active: ESObject = sessionInput['isActive'] as ESObject;
+  const id = requiredNonEmptyString(input['id']);
+  const timestamp = requiredNonEmptyString(input['startTimestamp']);
+  const active: ESObject = input['isActive'] as ESObject;
   if (
     id === undefined
     || timestamp === undefined
     || typeof active !== 'boolean'
-    || OPTIONAL_SESSION_FIELDS.some((field: string): boolean => !isOptionalString(sessionInput[field]))
+    || OPTIONAL_SESSION_FIELDS.some((field: string): boolean => !isOptionalString(input[field]))
   ) {
     return undefined;
   }
 
-  const session = new Session(id, timestamp, optionalString(sessionInput['environment']));
+  const session = new Session(id, timestamp, optionalString(input['environment']));
   session.isActive = active;
-  session.type = optionalString(sessionInput['type']) ?? 'unknown';
-  session.endTimestamp = optionalString(sessionInput['endTimestamp']);
-  session.appName = optionalString(sessionInput['appName']);
-  session.appIdentifier = optionalString(sessionInput['appIdentifier']);
-  session.appVersion = optionalString(sessionInput['appVersion']);
-  session.appBuildNumber = optionalString(sessionInput['appBuildNumber']);
-  session.appUpdateId = optionalString(sessionInput['appUpdateId']);
-  session.appUpdateRuntimeVersion = optionalString(sessionInput['appUpdateRuntimeVersion']);
-  session.appUpdateRequestHeaders = decodeRequestHeaders(sessionInput['appUpdateRequestHeaders']);
-  session.appEasBuildId = optionalString(sessionInput['appEasBuildId']);
-  session.deviceOs = optionalString(sessionInput['deviceOs']);
-  session.deviceOsVersion = optionalString(sessionInput['deviceOsVersion']);
-  session.deviceModel = optionalString(sessionInput['deviceModel']);
-  session.deviceName = optionalString(sessionInput['deviceName']);
-  session.expoSdkVersion = optionalString(sessionInput['expoSdkVersion']);
-  session.reactNativeVersion = optionalString(sessionInput['reactNativeVersion']);
-  session.clientVersion = optionalString(sessionInput['clientVersion']);
-  session.languageTag = optionalString(sessionInput['languageTag']);
+  session.type = optionalString(input['type']) ?? 'unknown';
+  session.endTimestamp = optionalString(input['endTimestamp']);
+  session.appName = optionalString(input['appName']);
+  session.appIdentifier = optionalString(input['appIdentifier']);
+  session.appVersion = optionalString(input['appVersion']);
+  session.appBuildNumber = optionalString(input['appBuildNumber']);
+  session.appUpdateId = optionalString(input['appUpdateId']);
+  session.appUpdateRuntimeVersion = optionalString(input['appUpdateRuntimeVersion']);
+  session.appUpdateRequestHeaders = decodeRequestHeaders(input['appUpdateRequestHeaders']);
+  session.appEasBuildId = optionalString(input['appEasBuildId']);
+  session.deviceOs = optionalString(input['deviceOs']);
+  session.deviceOsVersion = optionalString(input['deviceOsVersion']);
+  session.deviceModel = optionalString(input['deviceModel']);
+  session.deviceName = optionalString(input['deviceName']);
+  session.expoSdkVersion = optionalString(input['expoSdkVersion']);
+  session.reactNativeVersion = optionalString(input['reactNativeVersion']);
+  session.clientVersion = optionalString(input['clientVersion']);
+  session.languageTag = optionalString(input['languageTag']);
 
-  const metrics: Metric[] = [];
-  const metricIds = new Set<string>();
-  let discarded = false;
-  (metricsInput as ESObject[]).forEach((value: ESObject): void => {
-    const metric = decodeMetric(value, id);
-    if (metric === undefined || metricIds.has(metric.metricId)) {
-      discarded = true;
-
-      return;
-    }
-
-    metricIds.add(metric.metricId);
-    metrics.push(metric);
-  });
-
-  const entry = new SessionWithMetrics(session, metrics);
-  const logsInput: ESObject = input['logs'] as ESObject;
-  if (Array.isArray(logsInput)) {
-    (logsInput as ESObject[]).forEach((raw: ESObject): void => {
-      const log = decodeLogRecord(raw);
-      if (log !== undefined) entry.logs.push(log);
-      else discarded = true;
-    });
-  }
-
-  return new DecodedEntryResult(entry, discarded);
+  return session;
 }
 
-export function copyEntry(entry: SessionWithMetrics): SessionWithMetrics {
-  const source = entry.session;
-  const session = new Session(source.id, source.startTimestamp, source.environment);
-  session.isActive = source.isActive;
-  session.type = source.type;
-  session.endTimestamp = source.endTimestamp;
-  session.appName = source.appName;
-  session.appIdentifier = source.appIdentifier;
-  session.appVersion = source.appVersion;
-  session.appBuildNumber = source.appBuildNumber;
-  session.appUpdateId = source.appUpdateId;
-  session.appUpdateRuntimeVersion = source.appUpdateRuntimeVersion;
-  session.appUpdateRequestHeaders = decodeRequestHeaders(source.appUpdateRequestHeaders);
-  session.appEasBuildId = source.appEasBuildId;
-  session.deviceOs = source.deviceOs;
-  session.deviceOsVersion = source.deviceOsVersion;
-  session.deviceModel = source.deviceModel;
-  session.deviceName = source.deviceName;
-  session.expoSdkVersion = source.expoSdkVersion;
-  session.reactNativeVersion = source.reactNativeVersion;
-  session.clientVersion = source.clientVersion;
-  session.languageTag = source.languageTag;
+export function decodeEntry(value: ESObject): SessionWithMetrics | undefined {
+  const input = asRecord(value);
+  if (input === undefined) return undefined;
 
-  const copy = new SessionWithMetrics(session, entry.metrics.map(copyMetric));
-  copy.logs = entry.logs.map((log: LogRecord): LogRecord => copyLogRecord(log));
+  const session = decodeSession(input['session']);
+  const metrics: ESObject = input['metrics'];
+  if (session === undefined || !Array.isArray(metrics)) return undefined;
 
-  return copy;
+  const entry = new SessionWithMetrics(session);
+  for (const value of metrics as ESObject[]) {
+    const metric = decodeMetric(value);
+    if (metric?.sessionId === session.id) entry.metrics.push(metric);
+  }
+
+  const logs: ESObject = input['logs'];
+  if (Array.isArray(logs)) {
+    for (const value of logs as ESObject[]) {
+      const log = decodeLogRecord(value);
+      if (log !== undefined) entry.logs.push(log);
+    }
+  }
+
+  return entry;
 }
 
 function decodeRequestHeaders(value: ESObject): Record<string, string> | undefined {
@@ -150,7 +107,7 @@ export function copyMetric(item: Metric): Metric {
   return metric;
 }
 
-function decodeMetric(value: ESObject, sessionId: string): Metric | undefined {
+export function decodeMetric(value: ESObject): Metric | undefined {
   const input = asRecord(value);
   if (input === undefined) return undefined;
 
@@ -158,7 +115,7 @@ function decodeMetric(value: ESObject, sessionId: string): Metric | undefined {
   const timestamp = requiredNonEmptyString(input['timestamp']);
   const category = requiredString(input['category']);
   const name = requiredString(input['name']);
-  const ownerId = requiredNonEmptyString(input['sessionId']);
+  const sessionId = requiredNonEmptyString(input['sessionId']);
   const amount: ESObject = input['value'] as ESObject;
   const params: ESObject = input['params'] as ESObject;
   if (
@@ -166,7 +123,7 @@ function decodeMetric(value: ESObject, sessionId: string): Metric | undefined {
     || timestamp === undefined
     || category === undefined
     || name === undefined
-    || ownerId !== sessionId
+    || sessionId === undefined
     || typeof amount !== 'number'
     || !Number.isFinite(amount)
     || !isOptionalString(input['routeName'])

@@ -24,9 +24,7 @@ export class FrameMetricsBaseline {
     this.lastTargetNs = undefined;
   }
 
-  sample(active: boolean, timestampNs: number, targetTimestampNs: number): FrameSample | undefined {
-    if (!active) return undefined;
-
+  sample(timestampNs: number, targetTimestampNs: number): FrameSample | undefined {
     const previousTimestampNs = this.lastTimestampNs;
     const previousTargetTimestampNs = this.lastTargetNs;
 

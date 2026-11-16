@@ -205,7 +205,3 @@ export function decodeCrashReport(value: ESObject): CrashReport | undefined {
 
   return result;
 }
-
-export function copyCrashReport(report: CrashReport): CrashReport {
-  return decodeCrashReport(JSON.parse(JSON.stringify(report)) as ESObject) as CrashReport;
-}

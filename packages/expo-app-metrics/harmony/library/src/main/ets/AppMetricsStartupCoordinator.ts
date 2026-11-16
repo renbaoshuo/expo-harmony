@@ -34,8 +34,6 @@ export interface StartupMetricsStorage {
 export interface StartupFrameRecorder {
   start(): boolean;
   stop(): FrameMetricsRecord;
-  pause(): FrameMetricsRecord;
-  snapshot(): FrameMetricsRecord;
   isRunning(): boolean;
 }
 
@@ -105,18 +103,13 @@ export class StartupCoordinator {
   private readonly now: () => number | undefined;
   private readonly warn: (message: string) => void;
   private readonly metrics: Metric[] = [];
-  private readonly clients: Set<number> = new Set<number>();
-  private readonly foregroundClients: Set<number> = new Set<number>();
-  private nextClientId: number = 1;
   private launchMs?: number;
   private launchTimestamp?: number;
-  private finalFrames: FrameMetricsRecord = new FrameMetricsRecord();
   private bundleRecorded: boolean = false;
   private renderRecorded: boolean = false;
   private interactiveRecorded: boolean = false;
   private foregroundSeen: boolean = false;
   private interrupted: boolean = false;
-  private shutdown: boolean = false;
   private scheduledCount: number = -1;
   private scheduledClockRevision: number = -1;
 
@@ -136,35 +129,8 @@ export class StartupCoordinator {
     return this.processClock.getTimestamp();
   }
 
-  retain(): number {
-    const id = this.nextClientId;
-
-    this.nextClientId += 1;
-    this.clients.add(id);
-
-    return id;
-  }
-
-  release(id: number): boolean {
-    if (!this.clients.delete(id)) return false;
-
-    this.foregroundClients.delete(id);
-    if (this.clients.size > 0) return false;
-
-    return this.finish();
-  }
-
-  isShutdown(): boolean {
-    return this.shutdown;
-  }
-
-  onForeground(id: number): void {
-    if (this.shutdown || !this.clients.has(id)) return;
-
-    this.foregroundClients.add(id);
-    if (this.foregroundSeen) return;
-
-    this.recordForeground(this.now());
+  onForeground(): void {
+    if (!this.foregroundSeen) this.recordForeground(this.now());
   }
 
   private recordForeground(ageMs: number | undefined): void {
@@ -179,32 +145,12 @@ export class StartupCoordinator {
     if (timestampChanged) this.saveStartupMetricsIfNeeded();
   }
 
-  onBackground(id: number): void {
-    if (this.shutdown || !this.clients.has(id)) return;
-
-    this.foregroundClients.delete(id);
-    if (this.foregroundClients.size > 0) return;
-
+  onBackground(): void {
     this.saveStartupMetricsIfNeeded();
     if (this.interactiveRecorded || this.interrupted) return;
 
     this.interrupted = true;
-    this.finalFrames = this.frameRecorder.stop();
-  }
-
-  onUIContextUnavailable(): void {
-    this.frameRecorder.pause();
-  }
-
-  onUIContextAvailable(): void {
-    if (
-      this.shutdown
-      || !this.foregroundSeen
-      || this.foregroundClients.size === 0
-    ) {
-      return;
-    }
-    this.ensureFrameRecorderStarted();
+    this.frameRecorder.stop();
   }
 
   markFirstRender(): void {
@@ -243,13 +189,11 @@ export class StartupCoordinator {
     const value = elapsedSeconds(launchMs, nowMs);
     if (value === undefined) return;
 
-    const markedAt = Date.now();
+    const end = Date.now();
 
     this.interactiveRecorded = true;
-    this.finalFrames = this.frameRecorder.stop();
-
-    const frames = frameRateMetricParams(this.finalFrames);
-    const system = readSystemParams?.(launchTimestamp, markedAt);
+    const frames = frameRateMetricParams(this.frameRecorder.stop());
+    const system = readSystemParams?.(launchTimestamp, end);
     const params = mergeAttributes(mergeAttributes(attributes.params, system), frames);
 
     this.addStartupMetric(INTERACTIVE_METRIC, value, attributes.routeName, Object.keys(params).length > 0 ? params : undefined);
@@ -265,12 +209,6 @@ export class StartupCoordinator {
     return times;
   }
 
-  currentFrameMetrics(): FrameMetricsRecord {
-    return this.interactiveRecorded || this.interrupted
-      ? this.finalFrames
-      : this.frameRecorder.snapshot();
-  }
-
   recordBundleLoad(duration?: number): void {
     if (!shouldRecordBundleLoad(
       this.interrupted,
@@ -283,20 +221,6 @@ export class StartupCoordinator {
 
     this.bundleRecorded = true;
     this.addStartupMetric(BUNDLE_LOAD_METRIC, duration as number);
-  }
-
-  private finish(): boolean {
-    if (this.shutdown) return false;
-
-    this.shutdown = true;
-    this.foregroundClients.clear();
-    if (!this.interactiveRecorded && !this.interrupted) {
-      this.interrupted = true;
-      this.finalFrames = this.frameRecorder.stop();
-    }
-    this.saveStartupMetricsIfNeeded();
-
-    return true;
   }
 
   private ensureFrameRecorderStarted(): void {

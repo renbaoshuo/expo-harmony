@@ -50,8 +50,7 @@ npm install @expo-harmony/expo-app-metrics expo-app-metrics@~57.0.23
 
 返回已记录的启动时间。HarmonyOS 可记录 `bundleLoadTime`、`timeToFirstRender` 和 `timeToInteractive`。
 
-- 不提供 `coldLaunchTime` 或 `warmLaunchTime`：HarmonyOS 不区分冷启动和暖启动。
-- 不提供 `loadTime`：HarmonyOS 不提供此启动时间读数。
+- HarmonyOS 的启动事件采用从用户操作到动画结束的计时口径。本包省略 Expo 中采用不同计时口径的 `coldLaunchTime`、`warmLaunchTime` 和 `loadTime`。
 
 #### `getFrameRateMetricsAsync()`
 
@@ -59,7 +58,7 @@ npm install @expo-harmony/expo-app-metrics expo-app-metrics@~57.0.23
 
 #### `getMemoryUsageSnapshotAsync()`
 
-读取当前内存快照，包含应用已用物理内存和可用内存，单位为字节。API 13 至 19 也支持读取；如果系统未提供所需内存数据，调用会失败。
+读取当前内存快照，包含应用已用物理内存和可用内存，单位为字节。读取在任务线程执行。如果系统未提供所需内存数据，调用会失败。
 
 #### `takeMemoryUsageSnapshotAsync(sessionId?)`
 
@@ -119,7 +118,7 @@ npm install @expo-harmony/expo-app-metrics expo-app-metrics@~57.0.23
 
 #### `getInactiveSessions()`
 
-获取本地保留的已结束会话，按开始时间从新到旧排列；每条记录包括指标、日志和可用的崩溃报告。会话数据保留七天。此方法适用于检查本地数据。
+获取本地保留的已结束会话，按开始时间从新到旧排列。每条记录包括指标、日志和可用的崩溃报告。会话数据使用 ArkData 关系型数据库保存七天，升级时会迁移旧版 Preferences 中的记录。此方法适用于检查本地数据。
 
 #### `getAllCrashReports()`
 
@@ -158,8 +157,7 @@ npm install @expo-harmony/expo-app-metrics expo-app-metrics@~57.0.23
 
 启动时间字段为可选项。
 
-- HarmonyOS 不填充 `loadTime`：HarmonyOS 不提供此启动时间读数。
-- HarmonyOS 不填充 `coldLaunchTime` 或 `warmLaunchTime`：HarmonyOS 不区分冷启动和暖启动。
+- HarmonyOS 填充 `bundleLoadTime`、`timeToFirstRender` 和 `timeToInteractive`。字段随采集进度可用。
 
 #### `MemoryUsageSnapshot`
 
@@ -323,7 +321,7 @@ Expo App Metrics 模块方法的类型定义。
 
 #### `ERR_APP_METRICS_STORAGE_CAPACITY`
 
-本地存储容量不足。
+单条指标或诊断记录超出数据库支持的大小。
 
 ### Permissions
 

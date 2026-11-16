@@ -17,7 +17,6 @@ import { ExpoAppMetricsError } from './ExpoAppMetricsError';
 // Huawei permits 32-character custom parameter names, merged into the event's params.
 const SESSION_PARAMETER: string = 'expo_app_metrics_session_id';
 // PendingErrorStore's five-record crash-loop policy, applied to Harmony native faults.
-// This disk staging budget is independent of the lower serialized-store safety limit.
 const MAX_PENDING_FAULTS: number = 5;
 const MAX_PENDING_FAULT_BYTES: number = 16 * 1024 * 1024;
 
@@ -45,8 +44,10 @@ export class AppMetricsCrashObserver {
     this.storage = storage;
     this.warn = warn;
     this.pendingDirectory = `${filesDir}/expo-app-metrics-faults`;
-    this.recover();
+
+    this.recover().catch((error: Object): void => warn(`Unable to recover staged HiAppEvent faults: ${String(error)}`));
     if (!canIUse('SystemCapability.HiviewDFX.HiAppEvent')) return;
+
     try {
       const parameters: Record<string, hiAppEvent.ParamType> = {};
       parameters[SESSION_PARAMETER] = sessionId;
@@ -183,7 +184,7 @@ export class AppMetricsCrashObserver {
     });
   }
 
-  private recover(): void {
+  private async recover(): Promise<void> {
     let files: StagedFaultFile[];
     try {
       if (!fs.accessSync(this.pendingDirectory)) return;
@@ -193,10 +194,11 @@ export class AppMetricsCrashObserver {
       this.warn(`Unable to prepare pending HiAppEvent faults for recovery: ${String(error)}`);
       return;
     }
+
     for (const file of files) {
       const path = file.path;
       try {
-        const raw = optionalMap(JSON.parse(fs.readTextSync(path)) as ESObject);
+        const raw = optionalMap(JSON.parse(await fs.readText(path)) as ESObject);
         if (raw === undefined || typeof raw['domain'] !== 'string' || typeof raw['name'] !== 'string'
           || typeof raw['eventType'] !== 'number' || optionalMap(raw['params']) === undefined) {
           throw new Error('Invalid staged HiAppEvent record.');
@@ -228,10 +230,9 @@ export class AppMetricsCrashObserver {
       }
       await this.storage.addCrashReport(report, sessionId);
     } else if (event.name === hiAppEvent.event.APP_FREEZE && sessionId !== undefined) {
-      // A freeze can recover: report it as an error, never fabricate a fatal crash.
       const time: ESObject = params['time'];
       if (typeof time !== 'number' || !Number.isFinite(time) || !Number.isFinite(new Date(time).getTime())) return;
-      if (await this.storage.getSession(sessionId) === undefined) return;
+      if (await this.storage.getSessionRecord(sessionId) === undefined) return;
 
       const exception = optionalMap(params['exception']);
       const log = new LogRecord(

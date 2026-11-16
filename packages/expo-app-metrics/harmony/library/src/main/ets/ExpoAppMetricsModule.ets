@@ -57,15 +57,16 @@ import { appMetricsStorage, AppMetricsStorage } from './AppMetricsStorage';
 import { ExpoAppMetricsError } from './ExpoAppMetricsError';
 import { AppMetricsCrashObserver } from './AppMetricsCrashObserver';
 import { CrashReport } from './AppMetricsCrashReport';
-import { appMetricsSessionClass, AppMetricsSession, METRICS_RECORD } from './AppMetricsSession';
+import {
+  appMetricsSessionClass, AppMetricsSession, createSessionMetric, METRICS_RECORD, optionalMetricParams, optionalMetricString,
+} from './AppMetricsSession';
 import { makeErrorLog, makeLogEvent, optionalMap, sanitizeAttributes, mergeAttributes } from './AppMetricsLogging';
 import { persistFatalError, recoverFatalErrors } from './AppMetricsPendingErrors';
 import { getNetworkRequestMonitor, networkRequestObserverClass } from './NetworkRequestObserver';
 import { readDeviceConditions } from './AppMetricsDeviceConditions';
-import { FrameMetricsRecorder } from './FrameMetricsRecorder';
+import { FrameMetricsMonitor, FrameMetricsRecorder } from './FrameMetricsRecorder';
 
 const HARMONY_OS_NAME: string = 'HarmonyOS';
-const MAX_PARAMS_CODE_UNITS: number = 256_000;
 let scope: StartupScope | undefined = undefined;
 type Warn = (message: string) => void;
 
@@ -74,29 +75,14 @@ class MetricAttributes {
   params?: Record<string, ESObject>;
 }
 
-class CustomMetric {
-  category: string;
-  name: string;
-  value: number;
-  routeName?: string;
-  params?: Record<string, ESObject>;
-  updateId?: string;
-
-  constructor(category: string, name: string, value: number, routeName?: string, params?: Record<string, ESObject>) {
-    this.category = category;
-    this.name = name;
-    this.value = value;
-    this.routeName = routeName;
-    this.params = params;
-  }
-}
-
 class StartupScope {
   readonly coordinator: StartupCoordinator;
-  readonly appClientId: number;
+  readonly filesDir: string;
   private readonly uiContexts: Map<number, UIContext> = new Map<number, UIContext>();
   private readonly foregroundWindows: Set<number> = new Set<number>();
-  private readonly foregroundClients: Set<number> = new Set<number>();
+  private isForeground = false;
+  private nextWindowId = 1;
+  private readonly frameMonitor: FrameMetricsMonitor;
   private readonly mainFrameRecorder: FrameMetricsRecorder;
   private readonly crashObserver: AppMetricsCrashObserver;
   private readonly storage: AppMetricsStorage;
@@ -108,27 +94,28 @@ class StartupScope {
   constructor(storage: AppMetricsStorage, metadata: () => Promise<AppMetadata>, warn: Warn, filesDir: string) {
     this.storage = storage;
     this.metadata = metadata;
+    this.filesDir = filesDir;
+    this.frameMonitor = new FrameMetricsMonitor(warn);
 
     const clock = new ProcessClock((): number => Date.now(), monotonicNowMs(warn));
-    const context = (): UIContext | null => this.getUIContext();
-
     this.coordinator = new StartupCoordinator({
       storage,
-      frameRecorder: new FrameMetricsRecorder(context, warn),
+      frameRecorder: new FrameMetricsRecorder(this.frameMonitor),
       processClock: clock,
       metadata,
       now: (): number | undefined => monotonicNowMs(warn),
       warn,
     });
-    this.mainFrameRecorder = new FrameMetricsRecorder(context, warn);
-    this.appClientId = this.coordinator.retain();
+    this.mainFrameRecorder = new FrameMetricsRecorder(this.frameMonitor);
 
     this.crashObserver = new AppMetricsCrashObserver(storage, this.coordinator.appSessionId, warn, filesDir);
     recoverFatalErrors(filesDir, storage, warn).catch((error: Object): void => warn(`Unable to recover App Metrics fatal errors: ${String(error)}`));
   }
 
-  retain(): number {
-    return this.coordinator.retain();
+  allocateWindowId(): number {
+    const id = this.nextWindowId;
+    this.nextWindowId += 1;
+    return id;
   }
 
   async recordUpdateDownload(updateId: string, start: number, finish: number): Promise<void> {
@@ -136,16 +123,17 @@ class StartupScope {
     if (this.lastUpdateDownload === key) return;
 
     this.lastUpdateDownload = key;
-    const sessionId = this.coordinator.appSessionId;
-    const metric = new Metric(this.storage.createSessionId(), sessionId, new Date().toISOString(),
+    const id = this.coordinator.appSessionId;
+    const metric = new Metric(this.storage.createSessionId(), id, new Date().toISOString(),
       UPDATES_CATEGORY, 'updateDownloadTime', (finish - start) / 1000);
     metric.updateId = updateId;
 
+    let saved = false;
     try {
-      await this.storage.addMetrics(sessionId, [metric]);
-    } catch (error) {
-      if (this.lastUpdateDownload === key) this.lastUpdateDownload = undefined;
-      throw error as Error;
+      await this.storage.addMetrics(id, [metric]);
+      saved = true;
+    } finally {
+      if (!saved && this.lastUpdateDownload === key) this.lastUpdateDownload = undefined;
     }
   }
 
@@ -160,26 +148,28 @@ class StartupScope {
     this.refreshUIContext();
   }
 
-  onForeground(id: number): void {
-    if (this.foregroundClients.size === 0) {
-      this.foregroundSessionId = this.storage.createSessionId();
-      this.foregroundStartDate = new Date().toISOString();
-      this.storage.scheduleStartSession(this.foregroundSessionId, this.foregroundStartDate, this.metadata(), 'foreground');
-    }
-    this.foregroundClients.add(id);
-    this.coordinator.onForeground(id);
-    if (this.getUIContext() !== null) this.mainFrameRecorder.start();
+  onForeground(): void {
+    if (this.isForeground) return;
+
+    this.isForeground = true;
+    this.foregroundSessionId = this.storage.createSessionId();
+    this.foregroundStartDate = new Date().toISOString();
+
+    this.storage.scheduleStartSession(this.foregroundSessionId, this.foregroundStartDate, this.metadata(), 'foreground');
+    this.coordinator.onForeground();
+    this.mainFrameRecorder.start();
   }
 
-  onBackground(id: number): void {
-    this.foregroundClients.delete(id);
-    this.coordinator.onBackground(id);
-    if (this.foregroundClients.size === 0) {
-      this.mainFrameRecorder.pause();
-      if (this.foregroundSessionId !== undefined) this.storage.scheduleStopSession(this.foregroundSessionId);
-      this.foregroundSessionId = undefined;
-      this.foregroundStartDate = undefined;
-    }
+  onBackground(): void {
+    if (!this.isForeground) return;
+
+    this.isForeground = false;
+    this.coordinator.onBackground();
+    this.mainFrameRecorder.pause();
+
+    if (this.foregroundSessionId !== undefined) this.storage.scheduleStopSession(this.foregroundSessionId);
+    this.foregroundSessionId = undefined;
+    this.foregroundStartDate = undefined;
   }
 
   currentFrameMetrics(): FrameRateMetrics {
@@ -199,21 +189,12 @@ class StartupScope {
   }
 
   private refreshUIContext(): void {
-    this.coordinator.onUIContextUnavailable();
-    this.mainFrameRecorder.pause();
-    if (this.getUIContext() !== null) {
-      this.coordinator.onUIContextAvailable();
-      if (this.foregroundClients.size > 0) this.mainFrameRecorder.start();
-    }
+    this.frameMonitor.setUIContext(this.getUIContext());
   }
 
-  release(id: number): boolean {
+  releaseWindow(id: number): void {
     this.foregroundWindows.delete(id);
     this.clearUIContext(id);
-    this.foregroundClients.delete(id);
-    if (this.foregroundClients.size === 0) this.mainFrameRecorder.pause();
-
-    return this.coordinator.release(id);
   }
 
   private getUIContext(): UIContext | null {
@@ -232,59 +213,73 @@ function requireStartupScope(): StartupScope {
   if (scope === undefined) {
     throw new ExpoAppMetricsError('ERR_APP_METRICS_NOT_INITIALIZED', 'Expo App Metrics requires its autolinked application lifecycle subscriber.');
   }
+
   return scope;
 }
 
 export class ExpoAppMetricsAppLifecycleSubscriber extends ExpoAppLifecycleSubscriber {
   override onCreate(): void {
     const warn: Warn = (message: string): void => console.warn(message);
-    scope = new StartupScope(appMetricsStorage(this.context), (): Promise<AppMetadata> => readAppMetadata(this.context, warn), warn, this.context.filesDir);
+    scope ??= new StartupScope(appMetricsStorage(this.context), (): Promise<AppMetadata> => readAppMetadata(this.context, warn), warn, this.context.filesDir);
   }
 
   override onForeground(): void {
-    const scope = requireStartupScope();
-    scope.onForeground(scope.appClientId);
+    requireStartupScope().onForeground();
   }
 
   override onBackground(): void {
-    const scope = requireStartupScope();
-    scope.onBackground(scope.appClientId);
+    requireStartupScope().onBackground();
   }
 }
 
 export class ExpoAppMetricsAbilityLifecycleSubscriber extends ExpoAbilityLifecycleSubscriber {
   private readonly scope: StartupScope = requireStartupScope();
-  private readonly id: number = this.scope.retain();
+  private readonly id: number = this.scope.allocateWindowId();
   private stage?: window.WindowStage;
   private destroyed: boolean = false;
 
   override onForeground(): void {
     this.scope.setUIForeground(this.id, true);
   }
+
   override onBackground(): void {
     this.scope.setUIForeground(this.id, false);
   }
+
   override onWindowStageCreate(stage: window.WindowStage): void {
+    this.scope.clearUIContext(this.id);
     this.stage = stage;
   }
+
   override onWindowStageRestore(stage: window.WindowStage): void {
-    this.stage = stage;
+    this.onWindowStageCreate(stage);
   }
+
+  override onWindowSetup(target: window.Window): void {
+    // Some window stages create their UI context only when a page appears.
+    try { this.scope.setUIContext(this.id, target.getUIContext()); } catch (_) {}
+  }
+
   override async onWindowStageReady(stage: window.WindowStage): Promise<void> {
     const target = await stage.getMainWindow();
     if (!this.destroyed && this.stage === stage) this.scope.setUIContext(this.id, target.getUIContext());
   }
-  override onWindowStageWillDestroy(): void {
+
+  override onWindowStageWillDestroy(stage?: window.WindowStage): void {
+    if (stage !== undefined && this.stage !== stage) return;
+
     this.stage = undefined;
     this.scope.clearUIContext(this.id);
   }
+
   override onWindowStageDestroy(): void {
     this.onWindowStageWillDestroy();
   }
+
   override onDestroy(): void {
     this.destroyed = true;
     this.stage = undefined;
-    this.scope.release(this.id);
+    this.scope.releaseWindow(this.id);
   }
 }
 
@@ -319,14 +314,13 @@ export class ExpoAppMetricsModule extends ExpoModule implements UpdatesStateChan
       .asyncFunction('getForegroundSession', ExpoFunction.typed0(async (): Promise<AppMetricsSession | null> => {
         const scope = this.requireScope();
         if (scope.foregroundSessionId === undefined || scope.foregroundStartDate === undefined) return null;
+
         return this.sessionObject(scope.foregroundSessionId, 'foreground', scope.foregroundStartDate);
       }).returns(this.sessionClass.valueType().nullable()))
       .asyncFunction('getAllCrashReports', async (): Promise<CrashReport[]> => this.requireStorage().getAllCrashReports())
       .asyncFunction('getInactiveSessions', async (): Promise<DebugSession[]> => {
-        const entries = await this.requireStorage().getAllSessions();
-        return entries.filter((entry: SessionWithMetrics): boolean => !entry.session.isActive)
-          .sort((left: SessionWithMetrics, right: SessionWithMetrics): number => Date.parse(right.session.startTimestamp) - Date.parse(left.session.startTimestamp))
-          .map((entry: SessionWithMetrics): DebugSession => new DebugSession(entry));
+        const entries = await this.requireStorage().getInactiveSessions();
+        return entries.map((entry: SessionWithMetrics): DebugSession => new DebugSession(entry));
       })
       .syncFunction('logEvent', ExpoFunction.typed2(
         ExpoValueTypes.string(), METRICS_RECORD.nullable().optional(),
@@ -345,6 +339,7 @@ export class ExpoAppMetricsModule extends ExpoModule implements UpdatesStateChan
       .syncFunction('reportError', ExpoFunction.typed1(METRICS_RECORD, (report: Record<string, ESObject>): void => {
         this.assertActive();
         validateErrorReport(report);
+
         const log = makeErrorLog(report);
         if (report['isFatal'] === true) {
           try {
@@ -352,33 +347,23 @@ export class ExpoAppMetricsModule extends ExpoModule implements UpdatesStateChan
           } catch (_) {
             // Preserve the fatal report even if a user-supplied global attribute cannot be encoded.
           }
-          persistFatalError(this.context.uiAbilityContext.filesDir, this.requireStartup().appSessionId, log, this.warn);
+          persistFatalError(this.requireScope().filesDir, this.requireStartup().appSessionId, log, this.warn);
         } else this.saveLog(log);
       }))
       .syncFunction('markFirstRender', (): void => {
-        this.requireStartup().markFirstRender();
+        if (!this.context.isHeadless) this.requireStartup().markFirstRender();
       })
       .syncFunction(
         'markInteractive',
         ExpoFunction.typed1(METRIC_ATTRIBUTES_TYPE.nullable().optional(), (attributes?: MetricAttributes | null): void => {
+          if (this.context.isHeadless) return;
           this.requireStartup().markInteractive(attributes ?? new MetricAttributes(), (start: number, end: number): Record<string, ESObject> => {
             const requests = getNetworkRequestMonitor(this.context.runtimeId)?.summarize(start, end);
             return mergeAttributes(readDeviceConditions(this.warn), requests);
           });
         }),
       )
-      .asyncFunction('getStoredEntries', async (): Promise<Metric[]> => {
-        this.assertActive();
-
-        const sessions = await this.requireStorage().getAllSessions();
-        const metrics: Metric[] = [];
-
-        sessions.forEach((entry: SessionWithMetrics): void => {
-          metrics.push(...entry.metrics);
-        });
-
-        return metrics;
-      })
+      .asyncFunction('getStoredEntries', (): Promise<Metric[]> => this.requireStorage().getMetrics())
       .asyncFunction('clearStoredEntries', async (): Promise<void> => {
         this.assertActive();
         await this.requireStorage().clear();
@@ -389,15 +374,14 @@ export class ExpoAppMetricsModule extends ExpoModule implements UpdatesStateChan
         ExpoFunction.typed1(ExpoValueTypes.string(), (sessionId: string): void => this.scheduleStopSession(sessionId)),
       )
       .asyncFunction('addCustomMetricToSession', ExpoFunction.typed1(METRICS_RECORD, async (metric: Record<string, ESObject>): Promise<void> => {
-        const id = requireSessionId(requireString(metric['sessionId'], 'metric.sessionId', 'sessionId'));
-        const input = parseCustomMetric(metric, 'metric');
-        const timestamp = optionalString(metric['timestamp'], 'metric.timestamp', 'timestamp') ?? new Date().toISOString();
-        if (!Number.isFinite(Date.parse(timestamp))) throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_METRIC', 'Metric timestamp must be an ISO date.');
+        const sessionId: ESObject = metric['sessionId'];
+        if (typeof sessionId !== 'string') {
+          throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_SESSION', 'Expected a metrics session ID.');
+        }
 
+        const id = requireSessionId(sessionId);
         const storage = this.requireStorage();
-        const record = createCustomMetric(storage, id, input);
-        record.timestamp = timestamp;
-        await storage.addMetrics(id, [record]);
+        await storage.addMetrics(id, [createSessionMetric(storage, id, metric)]);
       }))
       .asyncFunction(
         'takeMemoryUsageSnapshotAsync',
@@ -519,7 +503,7 @@ export class ExpoAppMetricsModule extends ExpoModule implements UpdatesStateChan
 
     const startup = this.requireStartup();
 
-    startup.recordBundleLoad(durationSeconds);
+    if (!this.context.isHeadless) startup.recordBundleLoad(durationSeconds);
     this.observeUpdates();
   }
 
@@ -601,9 +585,13 @@ export class ExpoAppMetricsModule extends ExpoModule implements UpdatesStateChan
 
   private async takeMemorySnapshot(sessionId?: string, storage?: AppMetricsStorage): Promise<MemoryUsageSnapshot> {
     try {
-      const resident = await readResidentMemory();
+      const memory = await readMemory();
+
+      const resident = BigInt(memory[0]);
+      const remaining = remainingKilobytes(resident, BigInt(memory[1]));
+      const system = BigInt(memory[2]);
       const physical = kilobytesToBytes(resident);
-      const available = availableMemoryBytes(resident);
+      const available = kilobytesToBytes(remaining < system ? remaining : system);
       const snapshot = new MemoryUsageSnapshot(physical, available);
 
       if (sessionId !== undefined && storage !== undefined) {
@@ -690,102 +678,16 @@ function optionalSessionId(value: string | null | undefined): string | undefined
 }
 
 function parseMetricAttributes(value: ESObject, path: string): MetricAttributes {
-  const input = requireRecord(value, path, 'metric attributes');
-  const result = new MetricAttributes();
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_ARGUMENT', `${path} expected metric attributes to be an object.`);
+  }
 
-  result.routeName = optionalString(input['routeName'], `${path}.routeName`, 'routeName');
-  result.params = optionalParams(input['params'], `${path}.params`);
+  const input = value as Record<string, ESObject>;
+  const result = new MetricAttributes();
+  result.routeName = optionalMetricString(input['routeName'], 'routeName');
+  result.params = optionalMetricParams(input['params']);
 
   return result;
-}
-
-function parseCustomMetric(value: ESObject, path: string): CustomMetric {
-  const input = requireRecord(value, path, 'custom metric');
-  const category = requireString(input['category'], `${path}.category`, 'category');
-  const name = requireString(input['name'], `${path}.name`, 'name');
-  const amount: ESObject = input['value'] as ESObject;
-  if (typeof amount !== 'number' || !Number.isFinite(amount)) {
-    throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_METRIC', `${path}.value expected a finite number.`);
-  }
-
-  const metric = new CustomMetric(
-    category,
-    name,
-    amount,
-    optionalString(input['routeName'], `${path}.routeName`, 'routeName'),
-    optionalParams(input['params'], `${path}.params`),
-  );
-  metric.updateId = optionalString(input['updateId'], `${path}.updateId`, 'updateId');
-
-  return metric;
-}
-
-function createCustomMetric(storage: AppMetricsStorage, sessionId: string, input: CustomMetric): Metric {
-  const metric = new Metric(
-    storage.createSessionId(),
-    sessionId,
-    new Date().toISOString(),
-    input.category,
-    input.name,
-    input.value,
-    input.routeName,
-    input.params,
-  );
-  metric.updateId = input.updateId;
-
-  return metric;
-}
-
-function requireRecord(value: ESObject, path: string, label: string): Record<string, ESObject> {
-  if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
-    throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_ARGUMENT', `${path} expected ${label} to be an object.`);
-  }
-
-  return value as Record<string, ESObject>;
-}
-
-function requireString(value: ESObject, path: string, field: string): string {
-  if (typeof value !== 'string') {
-    throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_METRIC', `${path} expected custom metric '${field}' to be a string.`);
-  }
-
-  return value;
-}
-
-function optionalString(value: ESObject, path: string, field: string): string | undefined {
-  if (value === undefined || value === null) return undefined;
-
-  if (typeof value !== 'string') {
-    throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_ARGUMENT', `${path} expected '${field}' to be a string when provided.`);
-  }
-
-  return value;
-}
-
-function optionalParams(value: ESObject, path: string): Record<string, ESObject> | undefined {
-  if (value === undefined || value === null) return undefined;
-
-  const params = requireRecord(value, path, "'params'");
-
-  try {
-    const json = JSON.stringify(params);
-    if (json.length > MAX_PARAMS_CODE_UNITS) {
-      throw new ExpoAppMetricsError('ERR_APP_METRICS_INVALID_ARGUMENT', `${path} exceeds the safe Expo App Metrics parameter size.`);
-    }
-
-    const result: ESObject = JSON.parse(json);
-
-    return result as Record<string, ESObject>;
-  } catch (error) {
-    if (error instanceof ExpoAppMetricsError) {
-      throw new ExpoAppMetricsError(error.code, error.message, error);
-    }
-
-    throw new ExpoAppMetricsError(
-      'ERR_APP_METRICS_INVALID_ARGUMENT',
-      `${path} expected 'params' to contain JSON-serializable values: ${String(error)}`,
-    );
-  }
 }
 
 function encodeMetricAttributes(value: MetricAttributes): ESObject {
@@ -802,36 +704,21 @@ const METRIC_ATTRIBUTES_TYPE: ExpoValueType<MetricAttributes> = new ExpoValueTyp
   (value: MetricAttributes, _path: string): ESObject => encodeMetricAttributes(value),
 );
 
-function availableMemoryBytes(resident: bigint): number {
-  if (typeof hidebug.getAppMemoryLimit !== 'function' || typeof hidebug.getSystemMemInfo !== 'function') {
-    throw new ExpoAppMetricsError(
-      'ERR_APP_METRICS_MEMORY_API',
-      'HarmonyOS HiDebug does not expose the application and system memory information required by Expo App Metrics.',
-    );
-  }
-
+async function readMemory(): Promise<string[]> {
   try {
-    const limit = hidebug.getAppMemoryLimit();
-    const system = hidebug.getSystemMemInfo();
-    const remaining = remainingKilobytes(resident, limit.rssLimit);
-
-    // An unlimited RSS limit exceeds JS integer precision; available RAM still bounds allocations.
-    return kilobytesToBytes(remaining < system.availableMem ? remaining : system.availableMem);
+    return await taskpool.execute(readMemoryInTask) as string[];
   } catch (error) {
-    throw new ExpoAppMetricsError('ERR_APP_METRICS_MEMORY_API', `Unable to read available HarmonyOS application memory: ${String(error)}`);
+    throw new ExpoAppMetricsError('ERR_APP_METRICS_MEMORY_API', `Unable to read HarmonyOS app and system memory: ${String(error)}`);
   }
-}
-
-async function readResidentMemory(): Promise<bigint> {
-  if (deviceInfo.sdkApiVersion >= 20 && typeof hidebug.getAppNativeMemInfoAsync === 'function') {
-    return (await hidebug.getAppNativeMemInfoAsync()).rss;
-  }
-  return BigInt(await taskpool.execute(readResidentMemoryInTask) as string);
 }
 
 @Concurrent
-function readResidentMemoryInTask(): string {
-  return hidebug.getAppNativeMemInfo().rss.toString();
+function readMemoryInTask(): string[] {
+  return [
+    hidebug.getAppNativeMemInfo().rss.toString(),
+    hidebug.getAppMemoryLimit().rssLimit.toString(),
+    hidebug.getSystemMemInfo().availableMem.toString(),
+  ];
 }
 
 async function readAppMetadata(context: common.Context, warn: Warn): Promise<AppMetadata> {

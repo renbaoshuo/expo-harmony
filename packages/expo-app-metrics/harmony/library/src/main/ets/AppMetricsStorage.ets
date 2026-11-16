@@ -7,201 +7,198 @@
 
 import type common from '@ohos.app.ability.common';
 import util from '@ohos.util';
-import { preferences } from '@kit.ArkData';
-import { CrashReport, copyCrashReport, nativeCrashLog } from './AppMetricsCrashReport';
+import { preferences, relationalStore } from '@kit.ArkData';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { CrashReport, decodeCrashReport, nativeCrashLog } from './AppMetricsCrashReport';
 import { AppMetadata, LogRecord, Metric, Session, SessionWithMetrics } from './AppMetricsModels';
 import { ExpoAppMetricsError } from './ExpoAppMetricsError';
 import { retentionCutoffTimestamp } from './AppMetricsSemantics';
 import { mergeAttributes } from './AppMetricsLogging';
-import { copyEntry, copyLogRecord, copyMetric, decodeEntry, decodeStoredMetricsPayload, MetricsStoragePayload } from './AppMetricsStorageCodec';
+import { copyLogRecord, copyMetric, decodeEntry, decodeLogRecord, decodeMetric, decodeSession,
+  decodeStoredMetricsPayload, MetricsStoragePayload } from './AppMetricsStorageCodec';
 
-const PREFERENCES_NAME: string = 'dev.expo.app-metrics';
-const SESSIONS_KEY: string = 'sessions';
-const PENDING_SESSIONS_KEY: string = 'sessions.pending';
-const DEFAULT_DEBUG_ENVIRONMENT: string = 'development';
-// Bound UTF-16 code units so encoded JSON stays below the Preferences 16 MiB limit.
-const MAX_PREFERENCES_PAYLOAD_CODE_UNITS: number = 3_500_000;
+const LEGACY_PREFERENCES = 'dev.expo.app-metrics';
+const LEGACY_SESSIONS = 'sessions';
+const LEGACY_PENDING_SESSIONS = 'sessions.pending';
+// API 13 ResultSet limits each row to 2 MiB, but legacy payloads can be larger.
+const PAYLOAD_CHUNK_SIZE = 1024 * 1024;
 
-let processStorage: AppMetricsStorage | undefined = undefined;
+type MetricsTable = 'sessions' | 'metrics' | 'logs' | 'crash_reports';
+
+const SCHEMA: string[] = [
+  'CREATE TABLE IF NOT EXISTS metrics_state (key TEXT PRIMARY KEY)',
+  'CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, started INTEGER NOT NULL, active INTEGER NOT NULL, payload BLOB NOT NULL)',
+  'CREATE INDEX IF NOT EXISTS sessions_retention ON sessions(active, started)',
+  'CREATE TABLE IF NOT EXISTS metrics (id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL, payload BLOB NOT NULL)',
+  'CREATE INDEX IF NOT EXISTS metrics_session ON metrics(session_id)',
+  'CREATE TABLE IF NOT EXISTS logs (id TEXT NOT NULL, session_id TEXT NOT NULL, time INTEGER NOT NULL, payload BLOB NOT NULL, UNIQUE(session_id, id))',
+  'CREATE INDEX IF NOT EXISTS logs_retention ON logs(time)',
+  'CREATE TABLE IF NOT EXISTS crash_reports (id TEXT PRIMARY KEY, session_id TEXT UNIQUE, ingested INTEGER NOT NULL, payload BLOB NOT NULL)',
+  'CREATE INDEX IF NOT EXISTS crashes_retention ON crash_reports(session_id, ingested)',
+];
+
+let processStorage: AppMetricsStorage | undefined;
 
 export function appMetricsStorage(context: common.Context): AppMetricsStorage {
-  if (processStorage === undefined) {
-    processStorage = new AppMetricsStorage(context, context.applicationInfo.debug);
-  }
-
+  if (processStorage === undefined) processStorage = new AppMetricsStorage(context);
   return processStorage;
 }
 
 export class AppMetricsStorage {
-  private readonly store: Promise<preferences.Preferences | null>;
-  private readonly ready: Promise<void>;
-  private sessions: SessionWithMetrics[] = [];
-  private crashReports: CrashReport[] = [];
+  private readonly store: Promise<relationalStore.RdbStore | undefined>;
   private readonly clearedSessions: Set<string> = new Set<string>();
-  private environment?: string;
+  private readonly environment?: string;
   private failure?: ExpoAppMetricsError;
   private queue: Promise<void> = Promise.resolve();
   private globalAttributes?: Record<string, ESObject>;
 
-  constructor(context: common.Context, debug: boolean) {
-    this.environment = debug ? DEFAULT_DEBUG_ENVIRONMENT : undefined;
+  constructor(context: common.Context) {
+    this.environment = context.applicationInfo.debug ? 'development' : undefined;
 
-    let store: Promise<preferences.Preferences | null>;
-
-    try {
-      store = preferences.getPreferences(context, { name: PREFERENCES_NAME });
-    } catch (error) {
-      this.failure = new ExpoAppMetricsError('ERR_APP_METRICS_STORAGE', `Unable to open Expo App Metrics preferences: ${String(error)}`);
+    this.store = this.open(context).catch((error: Object): undefined => {
+      this.failure = new ExpoAppMetricsStorageError(error);
       console.warn(this.failure.message);
-      store = Promise.resolve(null);
-    }
-
-    this.store = store.catch((error: Object): preferences.Preferences | null => {
-      this.failure = new ExpoAppMetricsError('ERR_APP_METRICS_STORAGE', `Unable to open Expo App Metrics preferences: ${String(error)}`);
-      console.warn(this.failure.message);
-
-      return null;
+      return undefined;
     });
-
-    this.ready = this.load();
   }
 
   createSessionId(): string {
     return util.generateRandomUUID(true);
   }
 
-  scheduleStartSession(sessionId: string, timestamp: string, metadata: Promise<AppMetadata>, type: string = 'custom'): void {
-    this.schedule(async (): Promise<void> => {
-      if (this.findSession(sessionId) !== undefined) return;
-
-      const info = await metadata;
-      const session = new Session(sessionId, timestamp, this.environment, info);
+  scheduleStartSession(id: string, timestamp: string, metadata: Promise<AppMetadata>, type: string = 'custom'): void {
+    this.schedule(this.run(async (store: relationalStore.RdbStore): Promise<void> => {
+      const session = new Session(id, timestamp, this.environment, await metadata);
       session.type = type;
 
-      this.sessions.push(new SessionWithMetrics(session));
+      await store.executeSql(
+        'INSERT OR IGNORE INTO sessions (id, started, active, payload) VALUES (?, ?, 1, ?)',
+        [id, Date.parse(timestamp), encodePayload(session)],
+      );
+    }));
+  }
 
-      await this.persist();
+  scheduleStopSession(id: string): void {
+    this.schedule(this.stopSession(id));
+  }
+
+  stopSession(id: string): Promise<void> {
+    return this.run(async (store: relationalStore.RdbStore): Promise<void> => {
+      const session = await readSession(store, id);
+      if (session === undefined || !session.isActive) return;
+
+      session.isActive = false;
+      session.endTimestamp = new Date().toISOString();
+
+      await this.transaction(store, async (): Promise<void> => {
+        await putSession(store, session);
+        await prune(store);
+      });
     });
   }
 
-  scheduleStopSession(sessionId: string): void {
-    this.stopSession(sessionId).catch((error: Object): void => {
-      console.warn(`Unable to update Expo App Metrics storage: ${String(error)}`);
-    });
-  }
+  scheduleStartupSession(id: string, timestamp: string, metrics: Metric[], metadata: Promise<AppMetadata>): Promise<void> {
+    const entries = metrics.map((metric: Metric): Metric => this.metricWithGlobals(metric));
 
-  async stopSession(sessionId: string): Promise<void> {
-    await this.runMutation(async (): Promise<void> => {
-      const entry = this.findSession(sessionId);
-      if (entry === undefined || !entry.session.isActive) return;
-
-      entry.session.isActive = false;
-      entry.session.endTimestamp = new Date().toISOString();
-
-      await this.persist();
-    });
-  }
-
-  scheduleStartupSession(sessionId: string, timestamp: string, metrics: Metric[], metadata: Promise<AppMetadata>): Promise<void> {
-    return this.runMutation(async (): Promise<void> => {
-      if (this.clearedSessions.has(sessionId)) throw new ExpoAppMetricsError('ERR_APP_METRICS_SESSION_NOT_FOUND', 'This session was cleared.');
-
-      let entry = this.findSession(sessionId);
-      if (entry === undefined) {
-        const info = await metadata;
-        const session = new Session(sessionId, timestamp, this.environment, info);
-
-        session.type = 'main';
-        entry = new SessionWithMetrics(session);
-
-        this.sessions.push(entry);
+    return this.run(async (store: relationalStore.RdbStore): Promise<void> => {
+      if (this.clearedSessions.has(id)) {
+        throw new ExpoAppMetricsError('ERR_APP_METRICS_SESSION_NOT_FOUND', `No app metrics session exists for '${id}'.`);
       }
 
-      const target: SessionWithMetrics = entry;
+      const saved = await readSession(store, id);
+      const session = saved ?? new Session(id, timestamp, this.environment, await metadata);
+      session.type = 'main';
+      session.startTimestamp = timestamp;
 
-      target.session.startTimestamp = timestamp;
+      await this.transaction(store, async (): Promise<void> => {
+        await putSession(store, session);
+        for (const metric of entries) await putMetric(store, metric);
+      });
+    });
+  }
 
-      const ids = new Set<string>(target.metrics.map((metric: Metric): string => metric.metricId));
+  addMetrics(id: string, metrics: Metric[]): Promise<void> {
+    const entries = metrics.map((metric: Metric): Metric => this.metricWithGlobals(metric));
 
-      metrics.forEach((metric: Metric): void => {
-        if (ids.has(metric.metricId)) return;
+    return this.run(async (store: relationalStore.RdbStore): Promise<void> => {
+      await requireSession(store, id);
 
-        const copy = copyMetric(metric);
-        copy.params = this.mergeGlobals(copy.params);
-        target.metrics.push(copy);
-        ids.add(metric.metricId);
+      await this.transaction(store, async (): Promise<void> => {
+        for (const metric of entries) await putMetric(store, metric);
+      });
+    });
+  }
+
+  getSessionRecord(id: string): Promise<Session | undefined> {
+    return this.run((store: relationalStore.RdbStore): Promise<Session | undefined> => readSession(store, id));
+  }
+
+  getMetrics(id?: string): Promise<Metric[]> {
+    return this.run((store: relationalStore.RdbStore): Promise<Metric[]> => readMetrics(store, id));
+  }
+
+  getLogs(id: string): Promise<LogRecord[]> {
+    return this.run(async (store: relationalStore.RdbStore): Promise<LogRecord[]> => {
+      return query(store, 'logs', 'WHERE session_id = ? ORDER BY rowid', [id], decodeLogRecord);
+    });
+  }
+
+  getInactiveSessions(): Promise<SessionWithMetrics[]> {
+    return this.run(async (store: relationalStore.RdbStore): Promise<SessionWithMetrics[]> => {
+      const sessions = await query(store, 'sessions', 'WHERE active = 0 ORDER BY started DESC', [], decodeSession);
+      const entries = new Map<string, SessionWithMetrics>();
+      sessions.forEach((session: Session): void => { entries.set(session.id, new SessionWithMetrics(session)); });
+      if (entries.size === 0) return [];
+
+      const inactive = 'SELECT id FROM sessions WHERE active = 0';
+      const metrics = await query(store, 'metrics', `WHERE session_id IN (${inactive}) ORDER BY rowid`, [], decodeMetric);
+      metrics.forEach((metric: Metric): void => { entries.get(metric.sessionId)?.metrics.push(metric); });
+      await query(store, 'logs', `WHERE session_id IN (${inactive}) ORDER BY rowid`, [], (value: ESObject, owner?: string): undefined => {
+        const log = decodeLogRecord(value);
+        if (log !== undefined && owner !== undefined) entries.get(owner)?.logs.push(log);
+        return undefined;
+      });
+      const reports = await query(store, 'crash_reports', `WHERE session_id IN (${inactive})`, [], decodeCrashReport);
+      reports.forEach((report: CrashReport): void => {
+        if (report.sessionId === null) return;
+        const entry = entries.get(report.sessionId);
+        if (entry !== undefined) entry.crashReport = report;
       });
 
-      await this.persist();
+      return Array.from(entries.values());
     });
   }
 
-  async addMetrics(sessionId: string, metrics: Metric[]): Promise<void> {
-    await this.runMutation(async (): Promise<void> => {
-      const entry = this.findSession(sessionId);
-      if (entry === undefined) {
-        throw new ExpoAppMetricsError('ERR_APP_METRICS_SESSION_NOT_FOUND', `No app metrics session exists for '${sessionId}'.`);
-      }
+  patchUpdatesMetadata(metadata: AppMetadata): Promise<void> {
+    return this.run(async (store: relationalStore.RdbStore): Promise<void> => {
+      const sessions = await query(store, 'sessions', 'WHERE active = 1', [], decodeSession);
 
-      metrics.forEach((metric: Metric): void => {
-        const copy = copyMetric(metric);
-        copy.params = this.mergeGlobals(copy.params);
-        entry.metrics.push(copy);
+      await this.transaction(store, async (): Promise<void> => {
+        for (const session of sessions) {
+          if (session.appUpdateId !== undefined
+            || (metadata.appUpdateId === undefined && session.appUpdateRuntimeVersion === metadata.appUpdateRuntimeVersion)) continue;
+          session.appUpdateId = metadata.appUpdateId;
+          session.appUpdateRuntimeVersion = metadata.appUpdateRuntimeVersion;
+          session.appUpdateRequestHeaders = metadata.appUpdateRequestHeaders;
+          await putSession(store, session);
+        }
+      });
+    });
+  }
+
+  clear(): Promise<void> {
+    return this.run(async (store: relationalStore.RdbStore): Promise<void> => {
+      const sessions = await query(store, 'sessions', 'WHERE active = 1', [], decodeSession);
+
+      await this.transaction(store, async (): Promise<void> => {
+        await store.executeSql('DELETE FROM crash_reports');
+        await store.executeSql('DELETE FROM logs');
+        await store.executeSql('DELETE FROM metrics');
+        await store.executeSql('DELETE FROM sessions');
       });
 
-      await this.persist();
+      sessions.forEach((session: Session): void => { this.clearedSessions.add(session.id); });
     });
-  }
-
-  async getAllSessions(): Promise<SessionWithMetrics[]> {
-    await this.ready;
-    await this.queue;
-
-    this.assertStorageAvailable();
-
-    return this.sessions.map((entry: SessionWithMetrics): SessionWithMetrics => {
-      const copy = copyEntry(entry);
-      const report = this.crashReports.find((report: CrashReport): boolean => report.sessionId === entry.session.id);
-      if (report !== undefined) copy.crashReport = copyCrashReport(report);
-      return copy;
-    });
-  }
-
-  async getSession(id: string): Promise<SessionWithMetrics | undefined> {
-    await this.ready;
-    await this.queue;
-    this.assertStorageAvailable();
-
-    const entry = this.findSession(id);
-
-    return entry === undefined ? undefined : copyEntry(entry);
-  }
-
-  async patchUpdatesMetadata(metadata: AppMetadata): Promise<void> {
-    await this.runMutation(async (): Promise<void> => {
-      let changed = false;
-      this.sessions.forEach((entry: SessionWithMetrics): void => {
-        const session = entry.session;
-        if (!session.isActive || session.appUpdateId !== undefined
-          || (metadata.appUpdateId === undefined && session.appUpdateRuntimeVersion === metadata.appUpdateRuntimeVersion)) return;
-        session.appUpdateId = metadata.appUpdateId;
-        session.appUpdateRuntimeVersion = metadata.appUpdateRuntimeVersion;
-        session.appUpdateRequestHeaders = metadata.appUpdateRequestHeaders;
-        changed = true;
-      });
-      if (changed) await this.persist();
-    });
-  }
-
-  async clear(): Promise<void> {
-    await this.runMutation(async (): Promise<void> => {
-      const ids = this.sessions.map((entry: SessionWithMetrics): string => entry.session.id);
-      this.crashReports = [];
-      await this.persistEntries([]);
-      ids.forEach((id: string): void => { this.clearedSessions.add(id); });
-      this.sessions = [];
-      this.failure = undefined;
-    }, true);
   }
 
   setGlobalAttributes(attributes?: Record<string, ESObject>): void {
@@ -210,310 +207,312 @@ export class AppMetricsStorage {
 
   mergeGlobals(attributes?: Record<string, ESObject>): Record<string, ESObject> | undefined {
     if (this.globalAttributes === undefined && attributes === undefined) return undefined;
-    return JSON.parse(JSON.stringify(mergeAttributes(this.globalAttributes, attributes))) as Record<string, ESObject>;
+    return mergeAttributes(this.globalAttributes, attributes);
   }
 
-  async addLogs(sessionId: string, logs: LogRecord[], mergeGlobalAttributes: boolean = true): Promise<void> {
-    await this.runMutation(async (): Promise<void> => {
-      const entry = this.findSession(sessionId);
-      if (entry === undefined) throw new ExpoAppMetricsError('ERR_APP_METRICS_SESSION_NOT_FOUND', 'The owning metrics session no longer exists.');
+  addLogs(id: string, logs: LogRecord[], mergeGlobals: boolean = true): Promise<void> {
+    const entries = logs.map((log: LogRecord): LogRecord => {
+      const entry = copyLogRecord(log);
+      if (mergeGlobals) entry.attributes = this.mergeGlobals(entry.attributes);
+      return entry;
+    });
 
-      logs.forEach((log: LogRecord): void => {
-        if (log.recordId !== undefined && entry.logs.some((stored: LogRecord): boolean => stored.recordId === log.recordId)) return;
-        const copy = copyLogRecord(log);
-        if (mergeGlobalAttributes) copy.attributes = this.mergeGlobals(copy.attributes);
-        entry.logs.push(copy);
+    return this.run(async (store: relationalStore.RdbStore): Promise<void> => {
+      await requireSession(store, id);
+
+      await this.transaction(store, async (): Promise<void> => {
+        for (const entry of entries) await putLog(store, id, entry, this.createSessionId());
+        await store.executeSql('DELETE FROM logs WHERE time < ?', [retentionCutoffTimestamp(Date.now())]);
       });
-
-      await this.persist();
     });
   }
 
-  async getAllCrashReports(): Promise<CrashReport[]> {
-    await this.ready;
-    await this.queue;
-    this.assertStorageAvailable();
-
-    return this.crashReports.slice().sort((a: CrashReport, b: CrashReport): number => Date.parse(b.ingestedAt) - Date.parse(a.ingestedAt))
-      .map((report: CrashReport): CrashReport => copyCrashReport(report));
+  getAllCrashReports(): Promise<CrashReport[]> {
+    return this.run((store: relationalStore.RdbStore): Promise<CrashReport[]> =>
+      query(store, 'crash_reports', 'ORDER BY ingested DESC', [], decodeCrashReport));
   }
 
-  async addCrashReport(report: CrashReport, requestedSessionId?: string): Promise<void> {
-    await this.runMutation(async (): Promise<void> => {
-      if (this.crashReports.some((stored: CrashReport): boolean => stored.eventId === report.eventId)) return;
+  addCrashReport(report: CrashReport, requestedSessionId?: string): Promise<void> {
+    return this.run(async (store: relationalStore.RdbStore): Promise<void> => {
+      const duplicate = await query(store, 'crash_reports', 'WHERE id = ? OR session_id = ?',
+        [report.eventId, requestedSessionId ?? null], decodeCrashReport);
+      if (duplicate.some((existing: CrashReport): boolean => existing.eventId === report.eventId)) return;
 
-      const attributed = requestedSessionId !== undefined
-        && this.crashReports.some((stored: CrashReport): boolean => stored.sessionId === requestedSessionId);
-      const entry = requestedSessionId === undefined || attributed ? undefined : this.findSession(requestedSessionId);
-      // Only a system-stamped session ID is trusted; timestamps are not enough to guess attribution.
-      report.sessionId = entry?.session.id ?? null;
-      if (entry !== undefined) {
-        entry.session.isActive = false;
-        entry.session.endTimestamp = report.timestampBegin;
-        const log = nativeCrashLog(report);
-        log.attributes = this.mergeGlobals(log.attributes);
-        entry.logs.push(log);
-      }
-      this.crashReports.push(copyCrashReport(report));
+      // A timestamp cannot establish which session owned the fault.
+      const session = requestedSessionId === undefined || duplicate.length > 0 ? undefined : await readSession(store, requestedSessionId);
+      report.sessionId = session?.id ?? null;
 
-      await this.persist();
+      await this.transaction(store, async (): Promise<void> => {
+        if (session !== undefined) {
+          session.isActive = false;
+          session.endTimestamp = report.timestampBegin;
+          await putSession(store, session);
+          const log = nativeCrashLog(report);
+          log.attributes = this.mergeGlobals(log.attributes);
+          await putLog(store, session.id, log, this.createSessionId());
+        }
+        await putCrashReport(store, report);
+        await prune(store);
+      });
     });
   }
 
-  private schedule(task: () => Promise<void>): void {
-    this.runMutation(task).catch((error: Object): void => {
-      console.warn(`Unable to update Expo App Metrics storage: ${String(error)}`);
-    });
+  private metricWithGlobals(metric: Metric): Metric {
+    const entry = copyMetric(metric);
+    entry.params = this.mergeGlobals(entry.params);
+    return entry;
   }
 
-  private runMutation(task: () => Promise<void>, recover: boolean = false): Promise<void> {
-    const next = this.queue
-      .catch((): void => {})
-      .then(async (): Promise<void> => {
-        await this.ready;
-        if (!recover) this.assertStorageAvailable();
-
-        const crashSnapshot = this.crashReports.map((report: CrashReport): CrashReport => copyCrashReport(report));
-        const snapshot = this.sessions.map((entry: SessionWithMetrics): SessionWithMetrics => copyEntry(entry));
-
-        try {
-          await task();
-        } catch (error) {
-          this.sessions = snapshot;
-          this.crashReports = crashSnapshot;
-
-          if (error instanceof ExpoAppMetricsError) {
-            throw new ExpoAppMetricsError(error.code, error.message);
-          }
-
-          const message = `Unable to update Expo App Metrics preferences: ${String(error)}`;
-
-          throw new ExpoAppMetricsError('ERR_APP_METRICS_STORAGE', message);
-        }
-      });
-
-    this.queue = next.catch((): void => {});
-
-    return next;
+  private schedule(work: Promise<void>): void {
+    work.catch((error: Object): void => console.warn(`Unable to update Expo App Metrics storage: ${String(error)}`));
   }
 
-  private findSession(sessionId: string): SessionWithMetrics | undefined {
-    return this.sessions.find((entry: SessionWithMetrics): boolean => entry.session.id === sessionId);
-  }
+  private run<T>(work: (store: relationalStore.RdbStore) => Promise<T>): Promise<T> {
+    const result = this.queue.then(async (): Promise<T> => {
+      const store = await this.store;
+      if (store === undefined) throw new ExpoAppMetricsStorageError(this.failure);
 
-  private assertStorageAvailable(): void {
-    if (this.failure !== undefined) {
-      throw new ExpoAppMetricsError(this.failure.code, this.failure.message);
-    }
-  }
-
-  private async load(): Promise<void> {
-    const store = await this.store;
-    if (store === null) return;
-
-    try {
-      const primary = await store.get(SESSIONS_KEY, '');
-      const pending = await store.get(PENDING_SESSIONS_KEY, '');
-      if (typeof primary !== 'string' || typeof pending !== 'string') {
-        this.failure = new ExpoAppMetricsError(
-          'ERR_APP_METRICS_STORAGE',
-          'Unable to decode Expo App Metrics preferences: Stored sessions are not a JSON string.',
-        );
-        console.warn(this.failure.message);
-
-        return;
-      }
-
-      let recovering = pending.length > 0;
-      const raw = recovering ? pending : primary;
-      if (raw.length === 0) return;
-
-      let decoded: MetricsStoragePayload | undefined;
-      try { decoded = decodeStoredMetricsPayload(JSON.parse(raw) as ESObject); } catch (_) {}
-      if (decoded === undefined && recovering && primary.length > 0) {
-        console.warn('Ignoring an invalid Expo App Metrics recovery record.');
-        recovering = false;
-        decoded = decodeStoredMetricsPayload(JSON.parse(primary) as ESObject);
-        try {
-          await store.delete(PENDING_SESSIONS_KEY);
-          await store.flush();
-        } catch (error) {
-          console.warn(`Unable to remove an invalid Expo App Metrics recovery record: ${String(error)}`);
-        }
-      }
-      if (decoded === undefined) throw new Error('Stored metrics are not a valid sessions payload.');
-      this.crashReports = decoded.crashReports;
-
-      const sessions: SessionWithMetrics[] = [];
-      const sessionIds = new Set<string>();
-      const metricIds = new Set<string>();
-      let changed = recovering;
-
-      decoded.sessions.forEach((value: ESObject): void => {
-        const result = decodeEntry(value);
-        if (result === undefined) {
-          changed = true;
-
-          return;
-        }
-
-        const entry = result.entry;
-        if (result.discardedInvalidMetric) changed = true;
-        if (sessionIds.has(entry.session.id)) {
-          changed = true;
-
-          return;
-        }
-
-        const started = Date.parse(entry.session.startTimestamp);
-        if (!Number.isFinite(started)) {
-          changed = true;
-
-          return;
-        }
-
-        sessionIds.add(entry.session.id);
-
-        const metrics = entry.metrics.filter((metric: Metric): boolean => {
-          const timestamp = Date.parse(metric.timestamp);
-          if (!Number.isFinite(timestamp)) {
-            changed = true;
-
-            return false;
-          }
-          if (metricIds.has(metric.metricId)) {
-            changed = true;
-
-            return false;
-          }
-
-          metricIds.add(metric.metricId);
-
-          return true;
-        });
-        if (metrics.length !== entry.metrics.length) {
-          entry.metrics = metrics;
-          changed = true;
-        }
-
-        if (entry.session.isActive) {
-          entry.session.isActive = false;
-          // The process died without a final callback; do not invent its end time.
-          changed = true;
-        }
-        sessions.push(entry);
-      });
-
-      this.sessions = sessions;
-
-      if (changed) await this.persist();
-    } catch (error) {
-      this.failure =
-        error instanceof ExpoAppMetricsError
-          ? new ExpoAppMetricsError(error.code, error.message)
-          : new ExpoAppMetricsError('ERR_APP_METRICS_STORAGE', `Unable to read Expo App Metrics preferences: ${String(error)}`);
-      console.warn(this.failure.message);
-    }
-  }
-
-  private async persist(): Promise<void> {
-    const cutoff = retentionCutoffTimestamp(Date.now());
-    const sessions = this.sessions
-      .map((entry: SessionWithMetrics): SessionWithMetrics => {
-        const copy = copyEntry(entry);
-
-        copy.logs = copy.logs.filter((log: LogRecord): boolean => Date.parse(log.timestamp) >= cutoff);
-
-        return copy;
-      })
-      .filter((entry: SessionWithMetrics): boolean => entry.session.isActive || Date.parse(entry.session.startTimestamp) >= cutoff);
-
-    const ids = new Set<string>(sessions.map((entry: SessionWithMetrics): string => entry.session.id));
-    // Match SDK 57's crash-report FK lifecycle: an attributed report lives exactly
-    // as long as its owning session; an orphan is retained from ingestion, not crash time.
-    this.crashReports = this.crashReports.filter((report: CrashReport): boolean => report.sessionId === null
-      ? Date.parse(report.ingestedAt) >= cutoff : ids.has(report.sessionId));
-
-    let payload = this.encodePayload(sessions);
-
-    while (payload.length > MAX_PREFERENCES_PAYLOAD_CODE_UNITS) {
-      let removable = -1;
-      sessions.forEach((entry: SessionWithMetrics, index: number): void => {
-        if (!entry.session.isActive && (removable < 0
-          || Date.parse(entry.session.startTimestamp) < Date.parse(sessions[removable].session.startTimestamp))) removable = index;
-      });
-      if (removable < 0) {
-        // Associated reports are never evicted independently of their sessions.
-        // Once only active sessions remain, reclaim the oldest ingested orphan.
-        let orphanIndex = -1;
-        this.crashReports.forEach((report: CrashReport, index: number): void => {
-          if (report.sessionId === null && (orphanIndex < 0
-            || Date.parse(report.ingestedAt) < Date.parse(this.crashReports[orphanIndex].ingestedAt))) orphanIndex = index;
-        });
-        if (orphanIndex < 0) {
-          throw new ExpoAppMetricsError(
-            'ERR_APP_METRICS_STORAGE_CAPACITY',
-            'Active Expo App Metrics sessions exceed the safe Harmony Preferences capacity.',
-          );
-        }
-        this.crashReports.splice(orphanIndex, 1);
-        payload = this.encodePayload(sessions);
-        continue;
-      }
-
-      const removed = sessions.splice(removable, 1)[0];
-      this.crashReports = this.crashReports.filter((report: CrashReport): boolean => report.sessionId !== removed.session.id);
-      payload = this.encodePayload(sessions);
-    }
-
-    await this.persistEntries(sessions, payload);
-    this.sessions = sessions;
-  }
-
-  private encodePayload(sessions: SessionWithMetrics[]): string {
-    return JSON.stringify({ sessions, crashReports: this.crashReports });
-  }
-
-  private async persistEntries(sessions: SessionWithMetrics[], encoded?: string): Promise<void> {
-    const store = await this.store;
-    if (store === null) {
-      throw new ExpoAppMetricsError(
-        this.failure?.code ?? 'ERR_APP_METRICS_STORAGE',
-        this.failure?.message ?? 'Unable to open Expo App Metrics preferences: Preferences are unavailable.',
-      );
-    }
-
-    const payload = encoded ?? this.encodePayload(sessions);
-    const previous = await store.get(PENDING_SESSIONS_KEY, '');
-    try {
-      await store.put(PENDING_SESSIONS_KEY, payload);
-      await store.flush();
-    } catch (error) {
       try {
-        if (previous === '') await store.delete(PENDING_SESSIONS_KEY);
-        else await store.put(PENDING_SESSIONS_KEY, previous);
-        await store.flush();
-      } catch (rollbackError) {
-        console.warn(`Unable to restore the Expo App Metrics recovery record: ${String(rollbackError)}`);
+        return await work(store);
+      } catch (error) {
+        throw new ExpoAppMetricsStorageError(error);
       }
-      throw new ExpoAppMetricsError('ERR_APP_METRICS_STORAGE', `Unable to persist Expo App Metrics sessions: ${String(error)}`);
-    }
+    });
 
-    // Recovery treats the flushed pending record as authoritative. A later
-    // promotion failure cannot turn a durable write into a rejected mutation.
-    try {
-      await store.put(SESSIONS_KEY, payload);
-      await store.flush();
-    } catch (error) {
-      console.warn(`Unable to promote the committed Expo App Metrics recovery record: ${String(error)}`);
-      return;
-    }
+    this.queue = result.then((): void => {}, (): void => {});
+    return result;
+  }
+
+  private async transaction(store: relationalStore.RdbStore, work: () => Promise<void>): Promise<void> {
+    let committed = false;
+    store.beginTransaction();
 
     try {
-      await store.delete(PENDING_SESSIONS_KEY);
-      await store.flush();
-    } catch (error) {
-      console.warn(`Unable to remove the committed Expo App Metrics recovery record: ${String(error)}`);
+      await work();
+      store.commit();
+      committed = true;
+    } finally {
+      if (!committed) {
+        try {
+          store.rollBack();
+        } catch (error) {
+          console.warn(`Unable to roll back Expo App Metrics transaction: ${String(error)}`);
+        }
+      }
     }
   }
+
+  private async open(context: common.Context): Promise<relationalStore.RdbStore> {
+    const store = await relationalStore.getRdbStore(context, {
+      name: 'expo-app-metrics.db',
+      securityLevel: relationalStore.SecurityLevel.S1,
+    });
+    for (const statement of SCHEMA) await store.executeSql(statement);
+
+    await this.migratePreferences(store, context);
+    await this.transaction(store, async (): Promise<void> => {
+      const sessions = await query(store, 'sessions', 'WHERE active = 1', [], decodeSession);
+      for (const session of sessions) {
+        // No shutdown callback ran in the previous process, so its end time is unknown.
+        session.isActive = false;
+        await putSession(store, session);
+      }
+      await prune(store);
+    });
+
+    return store;
+  }
+
+  private async migratePreferences(store: relationalStore.RdbStore, context: common.Context): Promise<void> {
+    const marker = await store.querySql("SELECT 1 FROM metrics_state WHERE key = 'preferences_migrated'");
+    const migrated = marker.goToFirstRow();
+    marker.close();
+    if (migrated) return;
+
+    const legacy = await preferences.getPreferences(context, { name: LEGACY_PREFERENCES });
+    const pending = await legacy.get(LEGACY_PENDING_SESSIONS, '');
+    const primary = await legacy.get(LEGACY_SESSIONS, '');
+    const payload = legacyPayload(pending) ?? legacyPayload(primary);
+
+    await this.transaction(store, async (): Promise<void> => {
+      const ids = new Set<string>();
+      const sessions: ESObject[] = payload?.sessions ?? [];
+      for (let index = 0; index < sessions.length; index += 1) {
+        const entry = decodeEntry(sessions[index]);
+        if (entry === undefined || !Number.isFinite(Date.parse(entry.session.startTimestamp)) || ids.has(entry.session.id)) continue;
+        ids.add(entry.session.id);
+        await putSession(store, entry.session);
+        for (const metric of entry.metrics) {
+          if (Number.isFinite(Date.parse(metric.timestamp))) await putMetric(store, metric);
+        }
+        for (const log of entry.logs) await putLog(store, entry.session.id, log, this.createSessionId());
+      }
+
+      for (const report of payload?.crashReports ?? []) {
+        if (report.sessionId !== null && !ids.has(report.sessionId)) report.sessionId = null;
+        await putCrashReport(store, report);
+      }
+      await store.executeSql("INSERT INTO metrics_state (key) VALUES ('preferences_migrated')");
+    });
+
+    try {
+      await legacy.delete(LEGACY_SESSIONS);
+      await legacy.delete(LEGACY_PENDING_SESSIONS);
+      await legacy.flush();
+    } catch (error) {
+      console.warn(`Unable to delete migrated Expo App Metrics preferences: ${String(error)}`);
+    }
+  }
+}
+
+function legacyPayload(input: preferences.ValueType): MetricsStoragePayload | undefined {
+  if (typeof input !== 'string' || input.length === 0) return undefined;
+  try {
+    const payload = decodeStoredMetricsPayload(JSON.parse(input) as ESObject);
+    if (payload !== undefined) return payload;
+  } catch (_) {}
+  console.warn('Ignoring an invalid legacy Expo App Metrics record.');
+  return undefined;
+}
+
+class ExpoAppMetricsStorageError extends ExpoAppMetricsError {
+  constructor(error: Object | undefined) {
+    let code: string;
+    let message: string;
+    if (error instanceof ExpoAppMetricsError) {
+      code = error.code;
+      message = error.message;
+    } else if ((error as BusinessError | undefined)?.code === 14800031) {
+      code = 'ERR_APP_METRICS_STORAGE_CAPACITY';
+      message = 'An Expo App Metrics record exceeds the database value size limit.';
+    } else {
+      code = 'ERR_APP_METRICS_STORAGE';
+      message = `Unable to access the Expo App Metrics database: ${String(error)}`;
+    }
+
+    super(code, message);
+  }
+}
+
+class StoredPayload {
+  readonly rowId: number;
+  readonly size: number;
+  readonly firstChunk: Uint8Array;
+  readonly owner?: string;
+
+  constructor(rowId: number, size: number, firstChunk: Uint8Array, owner?: string) {
+    this.rowId = rowId;
+    this.size = size;
+    this.firstChunk = firstChunk;
+    this.owner = owner;
+  }
+}
+
+function encodePayload(value: Object): Uint8Array {
+  return new util.TextEncoder().encodeInto(JSON.stringify(value));
+}
+
+async function query<T>(
+  store: relationalStore.RdbStore,
+  table: MetricsTable,
+  clauses: string,
+  args: relationalStore.ValueType[],
+  decode: (input: ESObject, owner?: string) => T | undefined,
+): Promise<T[]> {
+  const owner = table === 'logs' ? ', session_id' : '';
+  const rows = await store.querySql(
+    `SELECT rowid, length(payload), substr(payload, 1, ?)${owner} FROM ${table} ${clauses}`,
+    [PAYLOAD_CHUNK_SIZE, ...args],
+  );
+  const payloads: StoredPayload[] = [];
+  try {
+    while (rows.goToNextRow()) {
+      payloads.push(new StoredPayload(rows.getLong(0), rows.getLong(1), rows.getBlob(2),
+        table === 'logs' ? rows.getString(3) : undefined));
+    }
+  } finally {
+    rows.close();
+  }
+
+  const decoder = new util.TextDecoder('utf-8', { fatal: true });
+  const result: T[] = [];
+  for (const payload of payloads) {
+    let bytes = payload.firstChunk;
+    if (payload.size > bytes.byteLength) {
+      bytes = await readLargePayload(store, table, payload);
+    }
+
+    const value = decode(JSON.parse(decoder.decodeToString(bytes)) as ESObject, payload.owner);
+    if (value !== undefined) result.push(value);
+  }
+
+  return result;
+}
+
+async function readLargePayload(store: relationalStore.RdbStore, table: MetricsTable, payload: StoredPayload): Promise<Uint8Array> {
+  const bytes = new Uint8Array(payload.size);
+  bytes.set(payload.firstChunk);
+
+  for (let offset = payload.firstChunk.byteLength; offset < bytes.byteLength;) {
+    const rows = await store.querySql(`SELECT substr(payload, ?, ?) FROM ${table} WHERE rowid = ?`,
+      [offset + 1, PAYLOAD_CHUNK_SIZE, payload.rowId]);
+    try {
+      if (!rows.goToNextRow()) throw new Error('An Expo App Metrics record disappeared during a read.');
+
+      const chunk = rows.getBlob(0);
+      if (chunk.byteLength === 0) throw new Error('An Expo App Metrics record ended before its declared length.');
+
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    } finally {
+      rows.close();
+    }
+  }
+
+  return bytes;
+}
+
+async function readSession(store: relationalStore.RdbStore, id: string): Promise<Session | undefined> {
+  return (await query(store, 'sessions', 'WHERE id = ?', [id], decodeSession))[0];
+}
+
+async function requireSession(store: relationalStore.RdbStore, id: string): Promise<void> {
+  if (await readSession(store, id) === undefined) {
+    throw new ExpoAppMetricsError('ERR_APP_METRICS_SESSION_NOT_FOUND', `No app metrics session exists for '${id}'.`);
+  }
+}
+
+function readMetrics(store: relationalStore.RdbStore, id?: string): Promise<Metric[]> {
+  if (id === undefined) return query(store, 'metrics', 'ORDER BY rowid', [], decodeMetric);
+  return query(store, 'metrics', 'WHERE session_id = ? ORDER BY rowid', [id], decodeMetric);
+}
+
+function putSession(store: relationalStore.RdbStore, session: Session): Promise<void> {
+  return store.executeSql('INSERT OR REPLACE INTO sessions (id, started, active, payload) VALUES (?, ?, ?, ?)',
+    [session.id, Date.parse(session.startTimestamp), session.isActive ? 1 : 0, encodePayload(session)]);
+}
+
+function putMetric(store: relationalStore.RdbStore, metric: Metric): Promise<void> {
+  return store.executeSql('INSERT OR IGNORE INTO metrics (id, session_id, payload) VALUES (?, ?, ?)',
+    [metric.metricId, metric.sessionId, encodePayload(metric)]);
+}
+
+function putLog(store: relationalStore.RdbStore, sessionId: string, log: LogRecord, fallbackId: string): Promise<void> {
+  return store.executeSql('INSERT OR IGNORE INTO logs (id, session_id, time, payload) VALUES (?, ?, ?, ?)',
+    [log.recordId ?? fallbackId, sessionId, Date.parse(log.timestamp), encodePayload(log)]);
+}
+
+function putCrashReport(store: relationalStore.RdbStore, report: CrashReport): Promise<void> {
+  return store.executeSql('INSERT OR IGNORE INTO crash_reports (id, session_id, ingested, payload) VALUES (?, ?, ?, ?)',
+    [report.eventId, report.sessionId, Date.parse(report.ingestedAt), encodePayload(report)]);
+}
+
+async function prune(store: relationalStore.RdbStore): Promise<void> {
+  const cutoff = retentionCutoffTimestamp(Date.now());
+  const expired = 'SELECT id FROM sessions WHERE active = 0 AND started < ?';
+
+  await store.executeSql(`DELETE FROM logs WHERE time < ? OR session_id IN (${expired})`, [cutoff, cutoff]);
+  await store.executeSql(`DELETE FROM crash_reports WHERE (session_id IS NULL AND ingested < ?) OR session_id IN (${expired})`, [cutoff, cutoff]);
+  await store.executeSql(`DELETE FROM metrics WHERE session_id IN (${expired})`, [cutoff]);
+  await store.executeSql('DELETE FROM sessions WHERE active = 0 AND started < ?', [cutoff]);
 }

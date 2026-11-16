@@ -64,8 +64,8 @@ export async function recoverFatalErrors(filesDir: string, storage: AppMetricsSt
   const directory = `${filesDir}/${PENDING_DIRECTORY}`;
   let names: string[];
   try {
-    if (!fs.accessSync(directory)) return;
-    names = fs.listFileSync(directory).filter((name: string): boolean => !name.includes('/'));
+    if (!await fs.access(directory)) return;
+    names = (await fs.listFile(directory)).filter((name: string): boolean => !name.includes('/'));
   } catch (error) {
     warnSafely(warn, `Unable to list pending Expo App Metrics errors: ${String(error)}`);
     return;
@@ -84,12 +84,13 @@ export async function recoverFatalErrors(filesDir: string, storage: AppMetricsSt
     let sessionId: string;
     let log: LogRecord;
     try {
-      const pending = optionalMap(JSON.parse(fs.readTextSync(path)) as ESObject);
+      const pending = optionalMap(JSON.parse(await fs.readText(path)) as ESObject);
       const id: ESObject = pending?.['sessionId'];
       const decoded = decodeLogRecord(pending?.['log']);
       if (typeof id !== 'string' || id.length === 0 || decoded === undefined || decoded.name !== 'js.exception' || decoded.severity !== 'fatal') {
         throw new Error('Invalid pending fatal-error record.');
       }
+
       sessionId = id;
       log = decoded;
     } catch (error) {
