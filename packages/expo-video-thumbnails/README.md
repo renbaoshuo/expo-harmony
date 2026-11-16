@@ -20,7 +20,7 @@ npm install @expo-harmony/expo-video-thumbnails expo-video-thumbnails@~57.0.2
 
 #### `VideoThumbnails.getThumbnailAsync(sourceFilename, options?)`
 
-从视频中提取一帧并保存为 JPEG，返回 `Promise<VideoThumbnailsResult>`。`sourceFilename` 接受 HTTP(S) 地址、`file://` URI 或应用可读取的绝对路径。
+从视频中提取一帧并保存为 JPEG，返回 `Promise<VideoThumbnailsResult>`。`sourceFilename` 接受 HTTP(S) 地址、`file://` URI、应用可读取的绝对路径，以及 `resource://RAWFILE/`、`asset://` 或 `rawfile:` 打包资源 URI。
 
 | 参数 | 类型 | 默认值 | HarmonyOS 行为 |
 | --- | --- | --- | --- |
@@ -28,13 +28,13 @@ npm install @expo-harmony/expo-video-thumbnails expo-video-thumbnails@~57.0.2
 | `options.quality` | `number` | `1` | JPEG 质量，范围为 `0` 到 `1`，值越大质量越高；超出范围或不是有限数值时拒绝调用。 |
 | `options.headers` | `Record<string, string>` | `{}` | HTTP(S) 视频请求头，本地视频不使用此参数。 |
 
-相邻时间可能得到同一张缩略图。HarmonyOS 支持的本地视频格式、编码和分辨率取决于设备媒体解码器。
+相邻时间可能得到同一张缩略图。HarmonyOS 支持的本地视频格式、编码和分辨率取决于设备媒体解码器。远程视频支持 Media Kit 可读取的 MP4、MPEG-TS 和 MKV 点播资源。
 
 每次调用会生成一个 JPEG 文件，保存在应用缓存目录中。返回值的 `uri` 是 `file://` URI，可用作图片资源地址；`width` 和 `height` 是提取帧的宽高。系统可能清理缓存中的文件。
 
 未实现项：
 
-- `content://`、`asset://`、`rawfile://` 和 data URI 不受支持；HarmonyOS 实现只接受 HTTP(S)、`file://` URI 或绝对路径。
+- Android `content://`、data URI、HLS、DASH 和直播取帧不受支持。
 
 ### Types
 
@@ -58,11 +58,11 @@ npm install @expo-harmony/expo-video-thumbnails expo-video-thumbnails@~57.0.2
 
 #### `ERR_INVALID_SOURCE_FILENAME`
 
-`sourceFilename` 不是 HTTP(S) 地址、`file://` URI 或绝对路径时，Promise 以此错误拒绝。
+`sourceFilename` 不是 HTTP(S) 地址、`file://` URI、绝对路径或有效的打包资源 URI 时，Promise 以此错误拒绝。
 
 #### `ERR_THUMBNAIL_FILE`
 
-本地视频源不是常规文件或为空时，Promise 以此错误拒绝。
+本地视频源不是常规文件，或本地文件、打包视频为空时，Promise 以此错误拒绝。
 
 #### `E_VIDEO_THUMBNAILS`
 
