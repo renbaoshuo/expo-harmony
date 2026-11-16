@@ -17,126 +17,50 @@ import {
 import type { ExpoViewContentContext } from '@expo-harmony/expo-modules-core';
 
 const DEFAULT_INTENSITY: number = 50;
+const DEFAULT_TINT: string = 'default';
 
-enum ExpoBlurTint {
-  DEFAULT = 'default',
-  EXTRA_LIGHT = 'extraLight',
-  LIGHT = 'light',
-  DARK = 'dark',
-  REGULAR = 'regular',
-  PROMINENT = 'prominent',
-  SYSTEM_ULTRA_THIN_MATERIAL = 'systemUltraThinMaterial',
-  SYSTEM_THIN_MATERIAL = 'systemThinMaterial',
-  SYSTEM_MATERIAL = 'systemMaterial',
-  SYSTEM_THICK_MATERIAL = 'systemThickMaterial',
-  SYSTEM_CHROME_MATERIAL = 'systemChromeMaterial',
-  SYSTEM_ULTRA_THIN_MATERIAL_LIGHT = 'systemUltraThinMaterialLight',
-  SYSTEM_THIN_MATERIAL_LIGHT = 'systemThinMaterialLight',
-  SYSTEM_MATERIAL_LIGHT = 'systemMaterialLight',
-  SYSTEM_THICK_MATERIAL_LIGHT = 'systemThickMaterialLight',
-  SYSTEM_CHROME_MATERIAL_LIGHT = 'systemChromeMaterialLight',
-  SYSTEM_ULTRA_THIN_MATERIAL_DARK = 'systemUltraThinMaterialDark',
-  SYSTEM_THIN_MATERIAL_DARK = 'systemThinMaterialDark',
-  SYSTEM_MATERIAL_DARK = 'systemMaterialDark',
-  SYSTEM_THICK_MATERIAL_DARK = 'systemThickMaterialDark',
-  SYSTEM_CHROME_MATERIAL_DARK = 'systemChromeMaterialDark',
+interface BlurMaterial {
+  readonly style: BlurStyle;
+  readonly colorMode?: ThemeColorMode;
 }
 
-const BLUR_TINT_VALUES: Record<string, ExpoBlurTint> = {
-  'default': ExpoBlurTint.DEFAULT,
-  'extraLight': ExpoBlurTint.EXTRA_LIGHT,
-  'light': ExpoBlurTint.LIGHT,
-  'dark': ExpoBlurTint.DARK,
-  'regular': ExpoBlurTint.REGULAR,
-  'prominent': ExpoBlurTint.PROMINENT,
-  'systemUltraThinMaterial': ExpoBlurTint.SYSTEM_ULTRA_THIN_MATERIAL,
-  'systemThinMaterial': ExpoBlurTint.SYSTEM_THIN_MATERIAL,
-  'systemMaterial': ExpoBlurTint.SYSTEM_MATERIAL,
-  'systemThickMaterial': ExpoBlurTint.SYSTEM_THICK_MATERIAL,
-  'systemChromeMaterial': ExpoBlurTint.SYSTEM_CHROME_MATERIAL,
-  'systemUltraThinMaterialLight': ExpoBlurTint.SYSTEM_ULTRA_THIN_MATERIAL_LIGHT,
-  'systemThinMaterialLight': ExpoBlurTint.SYSTEM_THIN_MATERIAL_LIGHT,
-  'systemMaterialLight': ExpoBlurTint.SYSTEM_MATERIAL_LIGHT,
-  'systemThickMaterialLight': ExpoBlurTint.SYSTEM_THICK_MATERIAL_LIGHT,
-  'systemChromeMaterialLight': ExpoBlurTint.SYSTEM_CHROME_MATERIAL_LIGHT,
-  'systemUltraThinMaterialDark': ExpoBlurTint.SYSTEM_ULTRA_THIN_MATERIAL_DARK,
-  'systemThinMaterialDark': ExpoBlurTint.SYSTEM_THIN_MATERIAL_DARK,
-  'systemMaterialDark': ExpoBlurTint.SYSTEM_MATERIAL_DARK,
-  'systemThickMaterialDark': ExpoBlurTint.SYSTEM_THICK_MATERIAL_DARK,
-  'systemChromeMaterialDark': ExpoBlurTint.SYSTEM_CHROME_MATERIAL_DARK,
+const BLUR_MATERIALS: Record<string, BlurMaterial> = {
+  'default': { style: BlurStyle.COMPONENT_REGULAR },
+  'extraLight': { style: BlurStyle.COMPONENT_ULTRA_THIN, colorMode: ThemeColorMode.LIGHT },
+  'light': { style: BlurStyle.COMPONENT_THIN, colorMode: ThemeColorMode.LIGHT },
+  'dark': { style: BlurStyle.COMPONENT_REGULAR, colorMode: ThemeColorMode.DARK },
+  'regular': { style: BlurStyle.COMPONENT_REGULAR },
+  'prominent': { style: BlurStyle.COMPONENT_ULTRA_THICK },
+  'systemUltraThinMaterial': { style: BlurStyle.COMPONENT_ULTRA_THIN },
+  'systemThinMaterial': { style: BlurStyle.COMPONENT_THIN },
+  'systemMaterial': { style: BlurStyle.COMPONENT_REGULAR },
+  'systemThickMaterial': { style: BlurStyle.COMPONENT_THICK },
+  'systemChromeMaterial': { style: BlurStyle.COMPONENT_ULTRA_THICK },
+  'systemUltraThinMaterialLight': { style: BlurStyle.COMPONENT_ULTRA_THIN, colorMode: ThemeColorMode.LIGHT },
+  'systemThinMaterialLight': { style: BlurStyle.COMPONENT_THIN, colorMode: ThemeColorMode.LIGHT },
+  'systemMaterialLight': { style: BlurStyle.COMPONENT_REGULAR, colorMode: ThemeColorMode.LIGHT },
+  'systemThickMaterialLight': { style: BlurStyle.COMPONENT_THICK, colorMode: ThemeColorMode.LIGHT },
+  'systemChromeMaterialLight': { style: BlurStyle.COMPONENT_ULTRA_THICK, colorMode: ThemeColorMode.LIGHT },
+  'systemUltraThinMaterialDark': { style: BlurStyle.COMPONENT_ULTRA_THIN, colorMode: ThemeColorMode.DARK },
+  'systemThinMaterialDark': { style: BlurStyle.COMPONENT_THIN, colorMode: ThemeColorMode.DARK },
+  'systemMaterialDark': { style: BlurStyle.COMPONENT_REGULAR, colorMode: ThemeColorMode.DARK },
+  'systemThickMaterialDark': { style: BlurStyle.COMPONENT_THICK, colorMode: ThemeColorMode.DARK },
+  'systemChromeMaterialDark': { style: BlurStyle.COMPONENT_ULTRA_THICK, colorMode: ThemeColorMode.DARK },
 };
-const BLUR_TINT_TYPE = ExpoValueTypes.enumerable<ExpoBlurTint>('BlurTint', BLUR_TINT_VALUES);
+const BLUR_TINT_VALUES: Record<string, string> = {};
+Object.keys(BLUR_MATERIALS).forEach((tint: string): void => {
+  BLUR_TINT_VALUES[tint] = tint;
+});
+
+const BLUR_TINT_TYPE = ExpoValueTypes.enumerable<string>('BlurTint', BLUR_TINT_VALUES);
 
 @Observed
 class ExpoBlurView extends ExpoView {
   intensity: number = DEFAULT_INTENSITY;
-  tint: ExpoBlurTint = ExpoBlurTint.DEFAULT;
+  material: BlurMaterial = BLUR_MATERIALS[DEFAULT_TINT];
 
   constructor(context: ExpoViewContext) {
     super(context);
-  }
-}
-
-function blurStyleForTint(tint: ExpoBlurTint): BlurStyle {
-  switch (tint) {
-    case ExpoBlurTint.SYSTEM_ULTRA_THIN_MATERIAL:
-    case ExpoBlurTint.SYSTEM_ULTRA_THIN_MATERIAL_LIGHT:
-    case ExpoBlurTint.SYSTEM_ULTRA_THIN_MATERIAL_DARK:
-    case ExpoBlurTint.EXTRA_LIGHT:
-      return BlurStyle.COMPONENT_ULTRA_THIN;
-
-    case ExpoBlurTint.LIGHT:
-    case ExpoBlurTint.SYSTEM_THIN_MATERIAL:
-    case ExpoBlurTint.SYSTEM_THIN_MATERIAL_LIGHT:
-    case ExpoBlurTint.SYSTEM_THIN_MATERIAL_DARK:
-      return BlurStyle.COMPONENT_THIN;
-
-    case ExpoBlurTint.SYSTEM_THICK_MATERIAL:
-    case ExpoBlurTint.SYSTEM_THICK_MATERIAL_LIGHT:
-    case ExpoBlurTint.SYSTEM_THICK_MATERIAL_DARK:
-      return BlurStyle.COMPONENT_THICK;
-
-    case ExpoBlurTint.PROMINENT:
-    case ExpoBlurTint.SYSTEM_CHROME_MATERIAL:
-    case ExpoBlurTint.SYSTEM_CHROME_MATERIAL_LIGHT:
-    case ExpoBlurTint.SYSTEM_CHROME_MATERIAL_DARK:
-      return BlurStyle.COMPONENT_ULTRA_THICK;
-
-    case ExpoBlurTint.DEFAULT:
-    case ExpoBlurTint.REGULAR:
-    case ExpoBlurTint.DARK:
-    case ExpoBlurTint.SYSTEM_MATERIAL:
-    case ExpoBlurTint.SYSTEM_MATERIAL_LIGHT:
-    case ExpoBlurTint.SYSTEM_MATERIAL_DARK:
-      return BlurStyle.COMPONENT_REGULAR;
-  }
-}
-
-function resolveBlurStyle(tint: ExpoBlurTint, intensity: number): BlurStyle {
-  return intensity <= 0 ? BlurStyle.NONE : blurStyleForTint(tint);
-}
-
-function resolveColorMode(tint: ExpoBlurTint): ThemeColorMode {
-  switch (tint) {
-    case ExpoBlurTint.LIGHT:
-    case ExpoBlurTint.EXTRA_LIGHT:
-    case ExpoBlurTint.SYSTEM_ULTRA_THIN_MATERIAL_LIGHT:
-    case ExpoBlurTint.SYSTEM_THIN_MATERIAL_LIGHT:
-    case ExpoBlurTint.SYSTEM_MATERIAL_LIGHT:
-    case ExpoBlurTint.SYSTEM_THICK_MATERIAL_LIGHT:
-    case ExpoBlurTint.SYSTEM_CHROME_MATERIAL_LIGHT:
-      return ThemeColorMode.LIGHT;
-
-    case ExpoBlurTint.DARK:
-    case ExpoBlurTint.SYSTEM_ULTRA_THIN_MATERIAL_DARK:
-    case ExpoBlurTint.SYSTEM_THIN_MATERIAL_DARK:
-    case ExpoBlurTint.SYSTEM_MATERIAL_DARK:
-    case ExpoBlurTint.SYSTEM_THICK_MATERIAL_DARK:
-    case ExpoBlurTint.SYSTEM_CHROME_MATERIAL_DARK:
-      return ThemeColorMode.DARK;
-
-    default:
-      return ThemeColorMode.SYSTEM;
   }
 }
 
@@ -148,9 +72,8 @@ struct ExpoBlurViewContent {
     Stack()
       .width('100%')
       .height('100%')
-      .backgroundBlurStyle(resolveBlurStyle(this.view.tint, this.view.intensity), {
-        colorMode: resolveColorMode(this.view.tint),
-        adaptiveColor: AdaptiveColor.DEFAULT,
+      .backgroundBlurStyle(this.view.intensity === 0 ? BlurStyle.NONE : this.view.material.style, {
+        colorMode: this.view.material.colorMode,
         scale: this.view.intensity / 100,
       })
       .hitTestBehavior(HitTestMode.None);
@@ -189,10 +112,10 @@ export class ExpoBlurModule extends ExpoModule {
       .prop(
         'tint',
         BLUR_TINT_TYPE,
-        (view: ExpoBlurView, tint: ExpoBlurTint): void => {
-          view.tint = tint;
+        (view: ExpoBlurView, tint: string): void => {
+          view.material = BLUR_MATERIALS[tint];
         },
-        ExpoBlurTint.DEFAULT,
+        DEFAULT_TINT,
       );
 
     return new ExpoModuleDefinition().name('ExpoBlur').view(view);

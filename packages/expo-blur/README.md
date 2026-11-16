@@ -20,7 +20,7 @@ npm install @expo-harmony/expo-blur expo-blur@~57.0.3
 
 #### `BlurView`
 
-在视图区域显示系统材质模糊层，子内容绘制在模糊层上方。模糊层不拦截触摸事件。
+在视图区域显示 ArkUI 系统材质模糊层，子内容绘制在模糊层上方。`pointerEvents` 由外层容器处理，内部模糊层始终跳过触摸检测。
 
 ##### `tint`
 

@@ -42,5 +42,17 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "harmony": {
+    "metro": {
+      "redirects": [
+        {
+          "upstream": "expo-blur",
+          "origin": "build/BlurView.js",
+          "request": "./NativeBlurModule",
+          "target": "src/NativeBlurModule.harmony.tsx"
+        }
+      ]
+    }
   }
 }
