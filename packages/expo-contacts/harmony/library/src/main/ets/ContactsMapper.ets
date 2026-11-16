@@ -498,9 +498,13 @@ export function hasGroup(entry: contact.Contact, id: string): boolean {
 export function sortNativeContacts(values: contact.Contact[], sort?: string): void {
   if (sort !== 'firstName' && sort !== 'lastName') return;
 
+  const given = sort === 'firstName';
+
   values.sort((left: contact.Contact, right: contact.Contact): number => {
-    if (sort === 'firstName') return (left.name?.givenName ?? '').localeCompare(right.name?.givenName ?? '');
-    return (left.name?.familyName ?? '').localeCompare(right.name?.familyName ?? '');
+    const leftName = nonEmpty(given ? left.name?.givenName : left.name?.familyName) ?? nativeDisplayName(left);
+    const rightName = nonEmpty(given ? right.name?.givenName : right.name?.familyName) ?? nativeDisplayName(right);
+
+    return leftName.toLocaleLowerCase().localeCompare(rightName.toLocaleLowerCase());
   });
 }
 

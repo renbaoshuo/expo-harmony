@@ -54,9 +54,9 @@ npm install @expo-harmony/expo-contacts expo-contacts@~57.0.8
 
 #### `Contacts.addContactAsync(contact, containerId?)`
 
-返回 `Promise<string>`，成功时返回新联系人的 ID。需要读写权限。`containerId` 不受支持，传入后抛出 `ERR_CONTACTS_UNSUPPORTED`。`contactType` 只支持 `person`；公司名称请写入 `company`。HarmonyOS SDK API 22 起支持头像，头像只接受 `image.uri`。
+返回 `Promise<string>`，成功时返回新联系人的 ID。需要通讯录写权限。`containerId` 不受支持，传入后抛出 `ERR_CONTACTS_UNSUPPORTED`。`contactType` 只支持 `person`；公司名称请写入 `company`。HarmonyOS SDK API 22 起支持头像，头像只接受 `image.uri`。
 
-写入 `department`、`nonGregorianBirthday`、`socialProfiles`、`isFavorite`、`rawImage` 或 `extraNames` 会抛出 `ERR_CONTACTS_UNSUPPORTED`。
+写入 `department`、`maidenName`、`nonGregorianBirthday`、`socialProfiles`、`isFavorite`、`rawImage` 或 `extraNames` 会抛出 `ERR_CONTACTS_UNSUPPORTED`。
 
 #### `Contacts.updateContactAsync(contact)`
 
@@ -68,7 +68,7 @@ npm install @expo-harmony/expo-contacts expo-contacts@~57.0.8
 
 #### `Contacts.writeContactToFileAsync(contactQuery?)`
 
-返回 `Promise<string | undefined>`，将符合条件的联系人导出为 vCard 3.0 文件 URI；没有匹配项时返回 `undefined`。文件保存在应用缓存目录，需要读权限。导出包含姓名、昵称、电话、邮箱、地址、公司、职位、备注、生日、网址和可读取的头像；不包含群组、即时通讯地址、关系、其他日期和自定义标签扩展。
+返回 `Promise<string | undefined>`，将符合条件的联系人导出为 vCard 3.0 文件 URI；没有匹配项时返回 `undefined`。文件保存在应用缓存目录，需要读权限。通过 [`@ohos/vcard`](https://ohpm.openharmony.cn/#/cn/detail/@ohos%2Fvcard) 导出姓名、昵称、电话、邮箱、地址、公司、职位、备注、日期、网址、可读取的头像，以及库支持的即时通讯和关系字段。
 
 #### `Contacts.shareContactAsync(contactId, message, shareOptions?)`
 
@@ -132,7 +132,7 @@ npm install @expo-harmony/expo-contacts expo-contacts@~57.0.8
 
 #### `Contact.create(contact)`
 
-返回 `Promise<Contact>`，创建联系人并返回对象。需要读写权限；不支持指定容器。字段限制与 `Contacts.addContactAsync()` 相同。
+返回 `Promise<Contact>`，创建联系人并返回对象。需要通讯录写权限；不支持指定容器。字段限制与 `Contacts.addContactAsync()` 相同。
 
 #### `Contact.getCount()` 和 `Contact.hasAny()`
 
@@ -156,7 +156,7 @@ npm install @expo-harmony/expo-contacts expo-contacts@~57.0.8
 
 #### `Contact.patch(contact)`
 
-返回 `Promise<void>`，只修改传入字段；未传入字段不变。传入列表字段时，该列表整体替换。`image` 需要 HarmonyOS SDK API 22 或更高版本；不支持清除已有头像。
+返回 `Promise<void>`，只修改传入字段；未传入字段不变。传入的列表整体替换对应字段。修改日期列表时会保留独立生日，除非同时清除生日、替换生日条目或传入新的生日条目。`image` 需要 HarmonyOS SDK API 22 或更高版本；不支持清除已有头像。
 
 #### `Contact.update(contact)`
 
@@ -185,7 +185,7 @@ npm install @expo-harmony/expo-contacts expo-contacts@~57.0.8
 
 字符串 getter 返回 `Promise<string | null>`，setter 返回 `Promise<boolean>`。公司名称存入联系人公司字段。
 
-`getImage()`、`getThumbnail()` 返回 `Promise<string | null>`，值为图片 URI；`setImage(uri)` 返回 `Promise<boolean>`。图片读写需要 HarmonyOS SDK API 22 或更高版本，不能清除已有头像；`thumbnail` 只能读取。
+`getImage()`、`getThumbnail()` 返回 `Promise<string | null>`，值为图片 URI；`setImage(uri)` 返回 `Promise<boolean>`。写入图片需要 HarmonyOS SDK API 22 或更高版本，不能清除已有头像；`thumbnail` 只能读取。
 
 #### `Contact.getBirthday()` / `Contact.setBirthday(value)`
 
@@ -241,7 +241,7 @@ npm install @expo-harmony/expo-contacts expo-contacts@~57.0.8
 
 联系人查询结果始终包含 `id`、`contactType` 和 `name`。`contactType` 始终为 `person`；姓名优先使用系统完整姓名，其次由姓名分量组成，再退回公司名。姓名分量、昵称、拼音姓名、公司、职位和 `imageAvailable` 始终可读；`note`、`emails`、`phoneNumbers`、`addresses`、`instantMessageAddresses`、`urlAddresses`、`relationships`、`birthday`、`dates` 和 `image` 按请求字段返回。
 
-`birthday` 与 `dates` 表示同一组联系人日期。legacy `Date.month` 从 `0` 开始，`Date.format` 为 `gregorian`；设置生日或日期只支持 Gregorian 格式。头像使用 `Image.uri`，读写需要 HarmonyOS SDK API 22 或更高版本；图片内容不以内嵌 Base64 返回。
+`birthday` 与 `dates` 表示同一组联系人日期。legacy `Date.month` 从 `0` 开始，`Date.format` 为 `gregorian`；设置生日或日期只支持 Gregorian 格式。头像使用 `Image.uri`。`image` 返回最长边不超过 256 像素的缩略图，`rawImage` 返回完整尺寸的 JPEG。写入 `image` 需要 HarmonyOS SDK API 22 或更高版本。
 
 #### `ContactQuery` 和 `ContactResponse`
 
@@ -292,9 +292,9 @@ HarmonyOS 不支持自定义系统联系人表单；传入非空选项对象时�
 
 #### `Fields`
 
-可读取和写入的字段值：`id`、`contactType`、`name`、`firstName`、`middleName`、`lastName`、`namePrefix`、`nameSuffix`、`nickname`、`phoneticFirstName`、`phoneticMiddleName`、`phoneticLastName`、`birthday`、`dates`、`emails`、`phoneNumbers`、`addresses`、`instantMessageAddresses`、`urlAddresses`、`company`、`jobTitle`、`imageAvailable`、`image`、`note`、`relationships`。
+可读取和写入的字段值：`id`、`contactType`、`name`、`firstName`、`middleName`、`lastName`、`namePrefix`、`nameSuffix`、`nickname`、`phoneticFirstName`、`phoneticMiddleName`、`phoneticLastName`、`birthday`、`dates`、`emails`、`phoneNumbers`、`addresses`、`instantMessageAddresses`、`urlAddresses`、`company`、`jobTitle`、`imageAvailable`、`image`、`rawImage`、`note`、`relationships`。
 
-- HarmonyOS 联系人服务不提供 `MaidenName`、`NonGregorianBirthday`、`SocialProfiles`、`Department`、`RawImage`、`ExtraNames` 和 `IsFavorite` 字段；读取时省略，写入时抛出 `ERR_CONTACTS_UNSUPPORTED`。
+- HarmonyOS 联系人服务不提供 `MaidenName`、`NonGregorianBirthday`、`SocialProfiles`、`Department`、`ExtraNames` 和 `IsFavorite` 字段；读取时省略，写入时抛出 `ERR_CONTACTS_UNSUPPORTED`。`RawImage` 仅支持读取。
 
 #### `ContactField`
 
@@ -330,7 +330,7 @@ HarmonyOS 只支持 `Gregorian: 'gregorian'`；写入其他格式会抛出 `ERR_
 | `ERR_CONTACTS_INVALID_ARGUMENT` | 参数类型、值或字段名无效。 |
 | `ERR_CONTACTS_INVALID_DATE` | 日期值无效。 |
 | `ERR_CONTACTS_MISSING_PERMISSION` | 操作所需的通讯录权限未获授权。 |
-| `ERR_CONTACTS_PERMISSION_REQUEST` | 未声明读权限，或系统无法申请声明的权限。 |
+| `ERR_CONTACTS_PERMISSION_REQUEST` | 应用未声明通讯录权限，或系统无法申请声明的权限。 |
 | `ERR_CONTACTS_NOT_FOUND` | 联系人不存在或已删除。 |
 | `ERR_CONTACTS_GROUP_NOT_FOUND` | 群组不存在。 |
 | `ERR_CONTACTS_GROUP_CONTAINER_MISMATCH` | 联系人与群组不属于同一账户。 |
@@ -348,13 +348,15 @@ HarmonyOS 只支持 `Gregorian: 'gregorian'`；写入其他格式会抛出 `ERR_
 
 #### `Contacts.getPermissionsAsync()` / `Contacts.requestPermissionsAsync()`
 
-均返回 `Promise<ContactsPermissionResponse>`。需要声明 `ohos.permission.READ_CONTACTS`；调用申请权限时，如应用也声明 `ohos.permission.WRITE_CONTACTS`，会同时申请读写权限。未声明读权限时，`requestPermissionsAsync()` 抛出 `ERR_CONTACTS_PERMISSION_REQUEST`。
+均返回 `Promise<ContactsPermissionResponse>`。`requestPermissionsAsync()` 请求应用已声明的通讯录读写权限。两项权限均未声明时，该方法抛出 `ERR_CONTACTS_PERMISSION_REQUEST`。
 
 `status` 为 `granted`、`denied` 或 `undetermined`。`granted` 仅在所需权限均获准时为 `true`；读权限获准时 `accessPrivileges` 为 `all`，否则为 `none`。HarmonyOS 不提供 `limited` 状态，`expires` 始终为 `never`。HarmonyOS SDK API 20 起可查询系统记录的拒绝状态；更低版本可能无法准确区分 `denied` 和 `undetermined`。
 
 #### 权限要求
 
-联系人查询、联系人数量、群组和容器查询需要读权限；创建、更新、删除联系人及群组成员变更需要读写权限。系统联系人选择器返回的所选联系人可直接读取，不要求通讯录读权限；系统联系人选择器和新建表单不要求通讯录访问权限。
+系统联系人选择器和新建表单可以在没有通讯录权限时使用。联系人查询、导出、分享、联系人数量、群组和容器查询需要 `ohos.permission.READ_CONTACTS`。直接创建联系人需要 `ohos.permission.WRITE_CONTACTS`；更新、删除联系人及群组成员变更需要读写权限。
+
+通讯录读写权限属于受限权限。应用需要根据实际用途提交 AppGallery Connect 审批，使用获批权限签发的应用签名，并在应用自己的 `module.json5` 中声明用到的权限。本包的配置插件仅生成权限理由字符串，可在清单中分别引用 `$string:expo_contacts_read_permission_reason` 和 `$string:expo_contacts_write_permission_reason`。详情见[华为受限权限说明](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/restricted-permissions)。
 
 ## Author
 

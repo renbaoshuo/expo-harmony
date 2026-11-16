@@ -8,11 +8,12 @@
 import { ExpoModuleContext } from '@expo-harmony/expo-modules-core';
 import { contact } from '@kit.ContactsKit';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
+import { image } from '@kit.ImageKit';
 import { util } from '@kit.ArkTS';
 import { ContactsPermissions } from './ContactsPermissions';
 import { ExpoContactsError } from './ContactsError';
-import { cachePortrait, readBase64, writeCacheFile } from './ContactsFiles';
-import { serializeVCard } from './ContactsVCard';
+import { cachePortrait, CONTACT_THUMBNAIL_MAX_DIMENSION, encodePortraitBase64, withContactImage, writeCacheFile } from './ContactsFiles';
+import { serializeContactVCard } from './ContactsVCard';
 import { ContactQuery, ContactResponse, ExpoContactRecord, ExpoContainerRecord, ExpoGroupRecord, RequestedFields } from './ContactsRecords';
 import {
   contactIdentifier,
@@ -27,9 +28,9 @@ import {
   sortNativeContacts,
 } from './ContactsMapper';
 import { optionalInputString, optionalStringOrStringList, requireString } from './ContactsValidation';
+import type { ExpoContactsService } from './ExpoContactsService';
 
-export const CONTACT_PORTRAIT_API: number = 22;
-export const CONTACTS_DATA_CAPABILITY: string = 'SystemCapability.Applications.ContactsData';
+const CONTACT_PORTRAIT_WRITE_API: number = 22;
 const CONTACT_COUNT_API: number = 22;
 const CONTACT_QUERY_PARAMETER_ERROR: number = 401;
 
@@ -41,17 +42,18 @@ export function pageNextContacts(values: contact.Contact[], query: ContactQuery)
 export class ContactsRepository {
   private readonly context: ExpoModuleContext;
   private readonly permissions: ContactsPermissions;
-  private writes: Promise<void> = Promise.resolve();
+  private readonly service: ExpoContactsService;
 
-  constructor(context: ExpoModuleContext, permissions: ContactsPermissions) {
+  constructor(context: ExpoModuleContext, permissions: ContactsPermissions, service: ExpoContactsService) {
     this.context = context;
     this.permissions = permissions;
+    this.service = service;
   }
 
   async mutate<Result>(operation: () => Promise<Result>): Promise<Result> {
     this.context.assertActive();
 
-    const result = this.writes.then(async (): Promise<Result> => {
+    return await this.service.runWrite(async (): Promise<Result> => {
       this.context.assertActive();
       this.permissions.ensureWrite();
 
@@ -59,12 +61,6 @@ export class ContactsRepository {
       this.context.assertActive();
       return value;
     });
-    this.writes = result.then(
-      (): void => {},
-      (): void => {},
-    );
-
-    return await result;
   }
 
   async hasContacts(): Promise<boolean> {
@@ -74,6 +70,10 @@ export class ContactsRepository {
   ensureReadable(): void {
     this.context.assertActive();
     this.permissions.ensureRead();
+  }
+
+  canRead(): boolean {
+    return this.permissions.canRead();
   }
 
   async count(): Promise<number> {
@@ -111,8 +111,8 @@ export class ContactsRepository {
     this.ensureReadable();
 
     if (query.ids !== undefined) {
-      const ids = query.ids;
-      values = values.filter((entry: contact.Contact): boolean => ids.includes(contactIdentifier(entry)));
+      const ids = new Set<string>(query.ids);
+      values = values.filter((entry: contact.Contact): boolean => ids.has(contactIdentifier(entry)));
     } else if (query.name !== undefined && !query.matchPhoneticName) {
       const needle = query.name.toLocaleLowerCase();
       values = values.filter((entry: contact.Contact): boolean => nativeDisplayName(entry).toLocaleLowerCase().includes(needle));
@@ -132,6 +132,7 @@ export class ContactsRepository {
     }
 
     sortNativeContacts(values, query.sort);
+
     return values;
   }
 
@@ -144,8 +145,10 @@ export class ContactsRepository {
     const data: ExpoContactRecord[] = [];
     this.ensureReadable();
 
+    const fields = new RequestedFields(query.fields);
+
     for (const entry of page) {
-      data.push(await this.serialize(entry, new RequestedFields(query.fields)));
+      data.push(await this.serialize(entry, fields));
       this.ensureReadable();
     }
 
@@ -154,8 +157,11 @@ export class ContactsRepository {
 
   async serialize(entry: contact.Contact, fields: RequestedFields): Promise<ExpoContactRecord> {
     const result = mapContact(entry, fields);
-    if (fields.has('image') && entry.portrait?.uri && deviceInfo.sdkApiVersion >= CONTACT_PORTRAIT_API) {
-      result.image = await cachePortrait(this.context, entry.portrait.uri);
+    const uri = entry.portrait?.uri;
+
+    if (uri) {
+      if (fields.has('image')) result.image = await cachePortrait(this.context, uri, CONTACT_THUMBNAIL_MAX_DIMENSION);
+      if (fields.has('rawImage')) result.rawImage = await cachePortrait(this.context, uri);
     }
 
     return result;
@@ -208,9 +214,10 @@ export class ContactsRepository {
 
     return await this.mutate(async (): Promise<string> => {
       const entry = nativeContactFromExpo(record);
-      if (entry.portrait?.uri) this.context.fileSourceForRead(entry.portrait.uri);
 
-      const id = await contact.addContact(this.context.uiAbilityContext, entry);
+      const id = await this.writeEntry(entry, true, async (value: contact.Contact): Promise<number> =>
+        await contact.addContact(this.context.uiAbilityContext, value));
+
       if (!Number.isSafeInteger(id) || id < 0) throw new ExpoContactsError('ERR_CONTACTS_ADD', 'HarmonyOS did not return a valid contact ID.');
 
       return String(id);
@@ -241,18 +248,35 @@ export class ContactsRepository {
 
     this.permissions.ensureWrite();
 
-    if (attributes.attributes.includes(contact.Attribute.ATTR_PORTRAIT) && entry.portrait?.uri) {
-      this.context.fileSourceForRead(entry.portrait.uri);
-    }
-
-    if (attributes.attributes.includes(contact.Attribute.ATTR_CONTACT_EVENT)) {
-      // ContactsData drops ATTR_CONTACT_EVENT (0); keep the rest of the native
-      // record intact when the full contact has to be written.
-      await contact.updateContact(this.context.uiAbilityContext, entry);
-    } else {
-      await contact.updateContact(this.context.uiAbilityContext, entry, attributes);
-    }
+    await this.writeEntry(entry, attributes.attributes.includes(contact.Attribute.ATTR_PORTRAIT), async (value: contact.Contact): Promise<void> => {
+      if (attributes.attributes.includes(contact.Attribute.ATTR_CONTACT_EVENT)) {
+        // ContactsData drops ATTR_CONTACT_EVENT (0) in the attributes array.
+        await contact.updateContact(this.context.uiAbilityContext, value);
+      } else {
+        await contact.updateContact(this.context.uiAbilityContext, value, attributes);
+      }
+    });
     this.context.assertActive();
+  }
+
+  private async writeEntry<Result>(
+    entry: contact.Contact,
+    writePortrait: boolean,
+    operation: (entry: contact.Contact) => Promise<Result>,
+  ): Promise<Result> {
+    const portrait = entry.portrait;
+    if (!writePortrait || !portrait?.uri) return await operation(entry);
+
+    return await withContactImage(this.context, portrait.uri, async (pixels: image.PixelMap): Promise<Result> => {
+      this.permissions.ensureWrite();
+      entry.portrait = { uri: '', photo: pixels };
+
+      try {
+        return await operation(entry);
+      } finally {
+        entry.portrait = portrait;
+      }
+    });
   }
 
   async remove(id: string): Promise<void> {
@@ -274,16 +298,15 @@ export class ContactsRepository {
     const page = values.slice(query.pageOffset, end);
     if (page.length === 0) return undefined;
 
-    const records: ExpoContactRecord[] = [];
-    const photos: string[] = [];
+    const cards: string[] = [];
+
     for (const entry of page) {
-      const record = await this.serialize(entry, new RequestedFields());
-      records.push(record);
-      photos.push(record.image?.uri ? await readBase64(this.context, record.image.uri) : '');
+      const photo = entry.portrait?.uri ? await encodePortraitBase64(this.context, entry.portrait.uri) : '';
       this.ensureReadable();
+      cards.push(serializeContactVCard(entry, photo));
     }
 
-    const bytes = new util.TextEncoder().encodeInto(serializeVCard(records, photos));
+    const bytes = new util.TextEncoder().encodeInto(cards.join(''));
 
     return await writeCacheFile(this.context, 'vcf', bytes.buffer as ArrayBuffer, (): void => this.ensureReadable());
   }
@@ -383,7 +406,7 @@ export class ContactsRepository {
 }
 
 export function validateWritableContact(record: Record<string, ESObject>): void {
-  const unsupported = ['department', 'nonGregorianBirthday', 'socialProfiles', 'isFavorite', 'rawImage', 'extraNames'];
+  const unsupported = ['department', 'maidenName', 'nonGregorianBirthday', 'socialProfiles', 'isFavorite', 'rawImage', 'extraNames'];
   for (const field of unsupported) {
     if (hasConcreteField(record, field)) throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', `HarmonyOS cannot write contact.${field}.`);
   }
@@ -395,7 +418,7 @@ export function validateWritableContact(record: Record<string, ESObject>): void 
     );
   }
 
-  if (hasConcreteField(record, 'image') && deviceInfo.sdkApiVersion < CONTACT_PORTRAIT_API) {
+  if (hasConcreteField(record, 'image') && deviceInfo.sdkApiVersion < CONTACT_PORTRAIT_WRITE_API) {
     throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', 'Writing contact images requires HarmonyOS API 22 or later.');
   }
 }

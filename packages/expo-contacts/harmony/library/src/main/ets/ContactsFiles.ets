@@ -14,7 +14,20 @@ import { ExpoModuleContext, ExpoModuleError, fileUriFromPath } from '@expo-harmo
 import { ExpoContactsError } from './ContactsError';
 
 const CACHE_DIRECTORY: string = 'expo-contacts';
+export const CONTACT_THUMBNAIL_MAX_DIMENSION: number = 256;
 const FILE_EXISTS: number = 13900015;
+const FILE_MISSING: number = 13900002;
+const IMAGE_DATA_ABNORMAL: number = 62980101;
+const IMAGE_DATA_UNSUPPORTED: number = 62980103;
+const IMAGE_FORMAT_UNKNOWN: number = 62980113;
+const IMAGE_DECODE_FAILED: number = 62980116;
+const IMAGE_HEADER_DECODE_FAILED: number = 62980122;
+
+interface EncodedPortrait {
+  bytes: ArrayBuffer;
+  width: number;
+  height: number;
+}
 
 async function withCleanup<Result>(operation: () => Promise<Result>, releases: (() => Promise<void>)[]): Promise<Result> {
   let failed = false;
@@ -84,9 +97,7 @@ export async function writeCacheFile(context: ExpoModuleContext, extension: stri
       console.warn('[expo-contacts] Unable to remove an incomplete cache file.', failure);
     }
 
-    if (error instanceof ExpoContactsError && error.code === 'ERR_CONTACTS_MISSING_PERMISSION') {
-      throw new ExpoContactsError(error.code, error.message, error);
-    }
+    if (error instanceof ExpoModuleError) throw error;
 
     throw new ExpoContactsError('ERR_CONTACTS_FILE_WRITE', 'Unable to write the contacts cache file.', error as Object);
   }
@@ -94,39 +105,50 @@ export async function writeCacheFile(context: ExpoModuleContext, extension: stri
   return fileUriFromPath(path);
 }
 
-export async function cachePortrait(context: ExpoModuleContext, uri: string, maxDimension?: number): Promise<ExpoImageRecord> {
+async function encodePortrait(context: ExpoModuleContext, uri: string, maxDimension?: number): Promise<EncodedPortrait | undefined> {
   context.assertActive();
 
   // Contacts Kit supplies this authorized URI; it is not a JS-provided file path.
-  const file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
+  let file: fileIo.File;
+
+  try {
+    file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
+  } catch (error) {
+    if ((error as BusinessError).code === FILE_MISSING) return undefined;
+
+    throw new ExpoContactsError('ERR_CONTACTS_FILE_READ', 'Unable to open the contact portrait.', error as Object);
+  }
 
   let source: image.ImageSource | undefined;
   let packer: image.ImagePacker | undefined;
   let pixels: image.PixelMap | undefined;
 
-  return await withCleanup(async (): Promise<ExpoImageRecord> => {
-    source = image.createImageSource(file.fd);
-    const info = await source.getImageInfo();
+  return await withCleanup(async (): Promise<EncodedPortrait | undefined> => {
+    try {
+      source = image.createImageSource(file.fd);
+      const size = (await source.getImageInfo()).size;
 
-    packer = image.createImagePacker();
-    const ratio = maxDimension === undefined ? 1 : Math.min(1, maxDimension / Math.max(info.size.width, info.size.height));
-    const width = Math.max(1, Math.round(info.size.width * ratio));
-    const height = Math.max(1, Math.round(info.size.height * ratio));
-    let bytes: ArrayBuffer;
-    if (maxDimension === undefined) bytes = await packer.packToData(source, { format: 'image/jpeg', quality: 100 });
-    else {
+      const ratio = maxDimension === undefined ? 1 : Math.min(1, maxDimension / Math.max(size.width, size.height));
+      const width = Math.max(1, Math.round(size.width * ratio));
+      const height = Math.max(1, Math.round(size.height * ratio));
+
+      const options: image.PackingOption = { format: 'image/jpeg', quality: 100 };
+      packer = image.createImagePacker();
+
+      if (maxDimension === undefined || ratio === 1) return { bytes: await packer.packToData(source, options), width, height };
+
       pixels = await source.createPixelMap({ desiredSize: { width, height } });
-      bytes = await packer.packToData(pixels, { format: 'image/jpeg', quality: 100 });
+
+      return { bytes: await packer.packToData(pixels, options), width, height };
+    } catch (error) {
+      const code = (error as BusinessError).code;
+
+      if ([IMAGE_DATA_ABNORMAL, IMAGE_DATA_UNSUPPORTED, IMAGE_FORMAT_UNKNOWN, IMAGE_DECODE_FAILED, IMAGE_HEADER_DECODE_FAILED].includes(code)) {
+        return undefined;
+      }
+
+      throw error as Error;
     }
-
-    const output = await writeCacheFile(context, 'jpg', bytes);
-
-    const result = new ExpoImageRecord();
-    result.uri = output;
-    result.width = width;
-    result.height = height;
-
-    return result;
   }, [
     async (): Promise<void> => {
       await packer?.release();
@@ -143,32 +165,51 @@ export async function cachePortrait(context: ExpoModuleContext, uri: string, max
   ]);
 }
 
-export async function readBase64(context: ExpoModuleContext, uri: string): Promise<string> {
-  const source = context.fileSourceForRead(uri);
-  const file = await fileIo.open(source, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
+export async function cachePortrait(context: ExpoModuleContext, uri: string, maxDimension?: number): Promise<ExpoImageRecord | undefined> {
+  const portrait = await encodePortrait(context, uri, maxDimension);
+  context.assertActive();
+  if (portrait === undefined) return undefined;
 
-  return await withCleanup(async (): Promise<string> => {
-    if (source.startsWith('/') && file.path !== source) context.assertFileAccess(file.path);
-    const stat = await fileIo.stat(file.fd);
-    if (!stat.isFile()) throw new ExpoContactsError('ERR_CONTACTS_FILE_READ', 'The contact image must be a regular file.');
+  const result = new ExpoImageRecord();
+  result.uri = await writeCacheFile(context, 'jpg', portrait.bytes, (): void => context.assertActive());
+  result.width = portrait.width;
+  result.height = portrait.height;
 
-    const size = stat.size;
-    const bytes = new Uint8Array(size);
-    let offset = 0;
+  return result;
+}
 
-    while (offset < size) {
-      const chunk = new ArrayBuffer(size - offset);
-      const count = await fileIo.read(file.fd, chunk);
-      if (count <= 0) throw new ExpoContactsError('ERR_CONTACTS_FILE_READ', 'Unable to read the complete contact image.');
+export async function encodePortraitBase64(context: ExpoModuleContext, uri: string): Promise<string> {
+  const portrait = await encodePortrait(context, uri);
+  context.assertActive();
 
-      bytes.set(new Uint8Array(chunk, 0, count), offset);
-      offset += count;
+  return portrait === undefined ? '' : new util.Base64Helper().encodeToStringSync(new Uint8Array(portrait.bytes));
+}
+
+export async function withContactImage<Result>(
+  context: ExpoModuleContext,
+  uri: string,
+  operation: (pixels: image.PixelMap) => Promise<Result>,
+): Promise<Result> {
+  const path = context.fileSourceForRead(uri);
+  const file = await fileIo.open(path, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
+
+  let source: image.ImageSource | undefined;
+  let pixels: image.PixelMap | undefined;
+
+  return await withCleanup(async (): Promise<Result> => {
+    context.readPathForDescriptor(path, file);
+    if (!(await fileIo.stat(file.fd)).isFile()) {
+      throw new ExpoContactsError('ERR_CONTACTS_FILE_READ', 'The contact image must be a regular file.');
     }
 
-    return new util.Base64Helper().encodeToStringSync(bytes);
+    source = image.createImageSource(file.fd);
+    pixels = await source.createPixelMap();
+
+    context.assertActive();
+    return await operation(pixels);
   }, [
-    async (): Promise<void> => {
-      await fileIo.close(file);
-    },
+    async (): Promise<void> => { await pixels?.release(); },
+    async (): Promise<void> => { await source?.release(); },
+    async (): Promise<void> => { await fileIo.close(file); },
   ]);
 }

@@ -10,7 +10,9 @@ import { bundleManager, Permissions } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { ExpoContactsError } from './ContactsError';
+import type { ExpoContactsService } from './ExpoContactsService';
 
+export const CONTACTS_DATA_CAPABILITY: string = 'SystemCapability.Applications.ContactsData';
 const READ_CONTACTS: Permissions = 'ohos.permission.READ_CONTACTS';
 const WRITE_CONTACTS: Permissions = 'ohos.permission.WRITE_CONTACTS';
 const SELF_PERMISSION_STATUS_API: number = 20;
@@ -24,6 +26,7 @@ enum RequestReason {
   ConditionsNotMet = 3,
   CannotRequest = 5,
   ManualSettings = 6,
+  ServiceAbnormal = 12,
 }
 
 export class ContactsPermissionResponse {
@@ -43,11 +46,14 @@ export class ContactsPermissionResponse {
 
 export class ContactsPermissions {
   private readonly context: ExpoModuleContext;
+  private readonly service: ExpoContactsService;
   private pending?: Promise<ContactsPermissionResponse>;
-  private readonly denials: Map<Permissions, boolean> = new Map<Permissions, boolean>();
+  private readonly denials: Map<Permissions, boolean>;
 
-  constructor(context: ExpoModuleContext) {
+  constructor(context: ExpoModuleContext, service: ExpoContactsService, denials: Map<Permissions, boolean>) {
     this.context = context;
+    this.service = service;
+    this.denials = denials;
   }
 
   ensureRead(): void {
@@ -55,11 +61,20 @@ export class ContactsPermissions {
   }
 
   ensureWrite(): void {
-    this.ensureRead();
     this.ensure(WRITE_CONTACTS);
   }
 
+  canRead(): boolean {
+    this.context.assertActive();
+
+    return canIUse(CONTACTS_DATA_CAPABILITY) && this.context.permissionStatus(READ_CONTACTS) === ExpoPermissionStatus.GRANTED;
+  }
+
   private ensure(permission: Permissions): void {
+    this.context.assertActive();
+    if (!canIUse(CONTACTS_DATA_CAPABILITY)) {
+      throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', 'Contacts data access is unavailable on this device.');
+    }
     if (this.context.permissionStatus(permission) !== ExpoPermissionStatus.GRANTED) {
       throw new ExpoContactsError('ERR_CONTACTS_MISSING_PERMISSION', `Missing ${permission} permission.`);
     }
@@ -67,14 +82,12 @@ export class ContactsPermissions {
 
   private declaredPermissions(): Permissions[] {
     this.context.assertActive();
+    if (!canIUse(CONTACTS_DATA_CAPABILITY)) return [];
 
     const flags = bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_REQUESTED_PERMISSION;
-    const details = bundleManager.getBundleInfoForSelfSync(flags).reqPermissionDetails;
-    if (!details?.some((permission: bundleManager.ReqPermissionDetail): boolean => permission.name === READ_CONTACTS)) return [];
-
-    return details.some((permission: bundleManager.ReqPermissionDetail): boolean => permission.name === WRITE_CONTACTS)
-      ? [READ_CONTACTS, WRITE_CONTACTS]
-      : [READ_CONTACTS];
+    const details = bundleManager.getBundleInfoForSelfSync(flags).reqPermissionDetails ?? [];
+    return [READ_CONTACTS, WRITE_CONTACTS].filter((name: Permissions): boolean =>
+      details.some((permission: bundleManager.ReqPermissionDetail): boolean => permission.name === name));
   }
 
   async get(): Promise<ContactsPermissionResponse> {
@@ -96,13 +109,14 @@ export class ContactsPermissions {
       denied = denied || status !== ExpoPermissionStatus.NOT_DETERMINED;
     }
 
-    return new ContactsPermissionResponse(granted, denied, this.context.permissionStatus(READ_CONTACTS) === ExpoPermissionStatus.GRANTED);
+    this.context.assertActive();
+    return new ContactsPermissionResponse(granted, denied, permissions.includes(READ_CONTACTS) && this.canRead());
   }
 
   async request(): Promise<ContactsPermissionResponse> {
     if (this.pending !== undefined) return await this.pending;
 
-    const pending = this.requestOnce();
+    const pending = this.service.runPermissionRequest(async (): Promise<ContactsPermissionResponse> => await this.requestOnce());
     this.pending = pending;
 
     try {
@@ -113,16 +127,31 @@ export class ContactsPermissions {
   }
 
   private async requestOnce(): Promise<ContactsPermissionResponse> {
+    this.context.assertActive();
+    if (!canIUse(CONTACTS_DATA_CAPABILITY)) {
+      throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', 'Contacts data access is unavailable on this device.');
+    }
+
     const permissions = this.declaredPermissions();
-    if (permissions.length === 0) throw new ExpoContactsError('ERR_CONTACTS_PERMISSION_REQUEST', `Check the module.json5 declaration for ${READ_CONTACTS}.`);
+    if (permissions.length === 0) {
+      throw new ExpoContactsError('ERR_CONTACTS_PERMISSION_REQUEST', 'Declare the approved contacts permissions required by the application in module.json5.');
+    }
+
+    const current = await this.get();
+    if (current.granted) return current;
 
     const request = await this.context.requestPermissions(permissions);
 
     let restricted = false;
+
     for (const result of request.systemResults) {
       for (const permission of permissions) {
         const index = result.permissions.indexOf(permission);
         const reason = deviceInfo.sdkApiVersion >= REQUEST_ERROR_REASONS_API ? result.errorReasons?.[index] : undefined;
+
+        if (reason === RequestReason.ServiceAbnormal) {
+          throw new ExpoContactsError('ERR_CONTACTS_PERMISSION_REQUEST', 'The HarmonyOS permissions service could not complete the contacts permission request.');
+        }
 
         if (
           index < 0 ||

@@ -1,14 +1,14 @@
-import { ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoPermissionStatus, ExpoSharedObject, ExpoSharedObjectClassDefinition, ExpoValueType, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
+import { ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoSharedObject, ExpoSharedObjectClassDefinition, ExpoValueType, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
 import { contact } from '@kit.ContactsKit';
-import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { ContactsPermissions, ContactsPermissionResponse } from './ContactsPermissions';
-import { ContactsRepository, CONTACTS_DATA_CAPABILITY, CONTACT_PORTRAIT_API, pageNextContacts, updateAttributes, validateWritableContact } from './ContactsRepository';
+import { ContactsRepository, pageNextContacts, updateAttributes, validateWritableContact } from './ContactsRepository';
 import { RequestedFields } from './ContactsRecords';
 import { contactIdentifier, isBirthdayEvent, mapContact, mergeExpoContact } from './ContactsMapper';
 import { ExpoContactsError } from './ContactsError';
-import { ExpoContactsModule } from './ExpoContactsModule';
+import { ContactsPresentation } from './ContactsPresentation';
 import { ExpoContactsService } from './ExpoContactsService';
-import { cachePortrait } from './ContactsFiles';
+import { cachePortrait, CONTACT_THUMBNAIL_MAX_DIMENSION } from './ContactsFiles';
 import { nextQuery, requireRecord, requireString } from './ContactsValidation';
 import { addedNextRowId, assignNativeNextRows, legacyNextInput, legacyNextScalars, locateNextRow, nativeNextRows, newNativeNextRow, nextDate, NEXT_LISTS, NEXT_STRINGS, NextListField, nextRows, patchNativeNextRow, UNSUPPORTED_NEXT } from './ContactsNextMapper';
 import { NextGroupClasses } from './ContactsNextGroups';
@@ -21,7 +21,7 @@ const NEXT_RECORD = ExpoValueTypes.custom<Record<string, ESObject>>(
 const NEXT_OPTIONS = NEXT_RECORD.nullable().optional();
 const NEXT_VALUE: ExpoValueType<ESObject> = ExpoValueTypes.custom<ESObject>('contact value', (value: ESObject): ESObject => value, (value: ESObject): ESObject => value);
 const NEXT_FIELDS = ExpoValueTypes.array(ExpoValueTypes.string()).nullable().optional();
-const THUMBNAIL_MAX_DIMENSION: number = 256;
+const PERMISSION_DENIED: number = 201;
 const NEXT_READ_ONLY: string[] = ['id', 'fullName', 'thumbnail'];
 const DEFAULT_DETAIL_FIELDS: string[] = Object.keys(NEXT_STRINGS)
   .concat(NEXT_LISTS.map((field: NextListField): string => field.field), ['fullName', 'image', 'thumbnail', 'birthday']);
@@ -48,20 +48,23 @@ async function readDetails(context: ExpoModuleContext, entry: contact.Contact, f
   const legacy = mapContact(entry, new RequestedFields(legacyFields));
   const scalars = legacy as ESObject as Record<string, ESObject>;
   const result: Record<string, ESObject> = { 'id': legacy.id };
+
   for (const key of fields) {
     if (Object.keys(NEXT_STRINGS).includes(key)) result[key] = scalars[NEXT_STRINGS[key]] ?? null;
     else if (key === 'fullName') result[key] = legacy.name;
     else if (key === 'birthday') result[key] = legacy.birthday === undefined ? null : nextDate(legacy.birthday);
     else if (key === 'image' || key === 'thumbnail') {
-      result[key] = entry.portrait?.uri && deviceInfo.sdkApiVersion >= CONTACT_PORTRAIT_API
-        ? (await cachePortrait(context, entry.portrait.uri, key === 'thumbnail' ? THUMBNAIL_MAX_DIMENSION : undefined)).uri ?? null
+      result[key] = entry.portrait?.uri
+        ? (await cachePortrait(context, entry.portrait.uri, key === 'thumbnail' ? CONTACT_THUMBNAIL_MAX_DIMENSION : undefined))?.uri ?? null
         : null;
     } else {
       const field = NEXT_LISTS.find((item: NextListField): boolean => item.field === key);
       if (field !== undefined) result[key] = await nextRows(entry, field);
     }
   }
+
   context.assertActive();
+
   return result;
 }
 
@@ -84,13 +87,13 @@ export class NextContactObject extends ExpoSharedObject {
 
     const snapshot = this.pickerEntry;
     if (snapshot === undefined) return await this.repository.requireContact(this.id);
-    if (!canIUse(CONTACTS_DATA_CAPABILITY) || this.context.permissionStatus('ohos.permission.READ_CONTACTS') !== ExpoPermissionStatus.GRANTED) return snapshot;
+    if (!this.repository.canRead()) return snapshot;
 
     try {
-      return await this.repository.findContact(this.id) ?? snapshot;
+      return await this.repository.requireContact(this.id);
     } catch (error) {
       if (error instanceof ExpoContactsError && error.code === 'ERR_CONTACTS_MISSING_PERMISSION') return snapshot;
-      if ((error as BusinessError).code === 201) return snapshot;
+      if ((error as BusinessError).code === PERMISSION_DENIED) return snapshot;
       throw error as Error;
     }
   }
@@ -120,13 +123,16 @@ export class NextContactObject extends ExpoSharedObject {
 
     await this.repository.mutate(async (): Promise<void> => {
       const entry = await this.repository.requireContact(this.id);
+
       const legacy = legacyNextScalars(input, replace);
       validateWritableContact(legacy);
+
       if ((input['image'] === null || (replace && input['image'] === undefined)) && entry.portrait?.uri) {
         throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', 'HarmonyOS Contacts Kit does not expose removing contact images.');
       }
 
       const attributes = updateAttributes(legacy);
+
       for (const field of NEXT_LISTS) {
         const values: ESObject = input[field.field];
         if (values === undefined && !replace) continue;
@@ -135,6 +141,10 @@ export class NextContactObject extends ExpoSharedObject {
         const records: ESObject[] = (values ?? []) as ESObject[];
         const existing = !replace && records.length > 0 ? await nextRows(entry, field) : [];
         const before: ESObject[] = nativeNextRows(entry, field);
+        const birthdayIndex = field.field === 'dates' && !replace && input['birthday'] === undefined
+          ? before.findIndex((event: ESObject): boolean => isBirthdayEvent(event as contact.Event))
+          : -1;
+        let updatesBirthday = false;
         const rows: ESObject[] = [];
         const ids = new Set<string>();
 
@@ -144,17 +154,24 @@ export class NextContactObject extends ExpoSharedObject {
             rows.push(newNativeNextRow(field, record));
             continue;
           }
-          const identifier = requireString(record['id'], 'field.id');
-          const offset = existing.findIndex((item: Record<string, ESObject>): boolean => item['id'] === identifier);
+
+          const id = requireString(record['id'], 'field.id');
+          const offset = existing.findIndex((item: Record<string, ESObject>): boolean => item['id'] === id);
           const previous = existing[offset];
           if (previous === undefined) throw new ExpoContactsError('ERR_CONTACTS_STALE_FIELD', 'The field identifier is stale or belongs to another contact. Read the list again before modifying it.');
-          if (ids.has(identifier)) throw new ExpoContactsError('ERR_CONTACTS_INVALID_ARGUMENT', 'A contact list cannot contain the same existing field identifier more than once.');
+          if (ids.has(id)) throw new ExpoContactsError('ERR_CONTACTS_INVALID_ARGUMENT', 'A contact list cannot contain the same existing field identifier more than once.');
 
-          ids.add(identifier);
+          ids.add(id);
+          if (offset === birthdayIndex) updatesBirthday = true;
+
           const row: Record<string, ESObject> = {};
           for (const key of Object.keys(previous)) row[key] = previous[key];
           for (const key of Object.keys(record)) if (record[key] !== undefined) row[key] = record[key];
           rows.push(patchNativeNextRow(field, before[offset], row, record));
+        }
+
+        if (birthdayIndex >= 0 && !updatesBirthday && !rows.some((row: ESObject): boolean => isBirthdayEvent(row as contact.Event))) {
+          rows.unshift(before[birthdayIndex]);
         }
 
         assignNativeNextRows(entry, field, rows);
@@ -165,9 +182,11 @@ export class NextContactObject extends ExpoSharedObject {
         entry.events = (entry.events ?? []).filter((event: contact.Event): boolean => !isBirthdayEvent(event));
         if (!attributes.attributes.includes(contact.Attribute.ATTR_CONTACT_EVENT)) attributes.attributes.push(contact.Attribute.ATTR_CONTACT_EVENT);
       }
+
       mergeExpoContact(entry, legacy);
 
       await this.repository.save(entry, attributes);
+
       this.pickerEntry = undefined;
     });
   }
@@ -213,14 +232,15 @@ export class NextContactObject extends ExpoSharedObject {
 export class ExpoContactsNextModule extends ExpoModule {
   private readonly repository: ContactsRepository;
   private readonly permissions: ContactsPermissions;
-  private readonly ui: ExpoContactsModule;
+  private readonly ui: ContactsPresentation;
 
   constructor(context: ExpoModuleContext) {
     super(context);
+
     const service = context.services.require(ExpoContactsService.key);
-    this.repository = service.getRepository(context);
-    this.permissions = service.getPermissions(context);
-    this.ui = new ExpoContactsModule(context);
+    this.permissions = service.createPermissions(context);
+    this.repository = service.createRepository(context, this.permissions);
+    this.ui = new ContactsPresentation(context, this.repository, service);
   }
 
   definition(): ExpoModuleDefinition {
@@ -321,7 +341,6 @@ export class ExpoContactsNextModule extends ExpoModule {
       .sharedObjectClass(groups.groups)
       .sharedObjectClass(groups.containers)
       .events(['contactsDidChange'])
-      .onDestroy((): void => this.ui.releaseUi())
       .onStartObserving('contactsDidChange', (): void => {
         throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', 'HarmonyOS Contacts Kit does not expose contact-store change notifications.');
       })

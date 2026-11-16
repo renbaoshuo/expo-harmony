@@ -5,148 +5,78 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { util } from '@kit.ArkTS';
-import { ExpoContactRecord, ExpoDateRecord, ExpoEmailRecord, ExpoPhoneRecord, ExpoAddressRecord, ExpoUrlRecord } from './ContactsRecords';
-import { padDatePart, padDateYear } from './ContactsMapper';
+import { contact } from '@kit.ContactsKit';
+import { contact as vCardContact, VCardBuilder, VCardConfig } from '@ohos/vcard';
+import { isBirthdayEvent, nativeDisplayName, parseContactDate } from './ContactsMapper';
 
-const VCARD_LINE_BREAK: string = '\r\n';
-const VCARD_MAX_LINE_OCTETS: number = 75;
+export function serializeContactVCard(entry: contact.Contact, photo: string): string {
+  const card = new vCardContact.Contact();
 
-export function serializeVCard(contacts: ExpoContactRecord[], photos: string[]): string {
-  const cards = contacts.map((entry: ExpoContactRecord, index: number): string => serializeContactVCard(entry, photos[index]));
-  return `${cards.join(VCARD_LINE_BREAK)}${VCARD_LINE_BREAK}`;
-}
+  const name = new vCardContact.Name();
+  name.fullName = nativeDisplayName(entry);
+  name.givenName = entry.name?.givenName ?? null;
+  name.middleName = entry.name?.middleName ?? null;
+  name.familyName = entry.name?.familyName ?? null;
+  name.namePrefix = entry.name?.namePrefix ?? null;
+  name.nameSuffix = entry.name?.nameSuffix ?? null;
+  name.givenNamePhonetic = entry.name?.givenNamePhonetic ?? null;
+  name.middleNamePhonetic = entry.name?.middleNamePhonetic ?? null;
+  name.familyNamePhonetic = entry.name?.familyNamePhonetic ?? null;
+  card.name = name;
 
-function serializeContactVCard(entry: ExpoContactRecord, photo?: string): string {
-  const lines: string[] = ['BEGIN:VCARD', 'VERSION:3.0'];
-  lines.push(`FN:${escapeVCard(entry.name)}`);
-  lines.push(
-    `N:${escapeVCard(entry.lastName ?? '')};${escapeVCard(entry.firstName ?? '')};${escapeVCard(entry.middleName ?? '')};${escapeVCard(entry.namePrefix ?? '')};${escapeVCard(entry.nameSuffix ?? '')}`,
-  );
-  if (entry.nickname !== undefined) lines.push(`NICKNAME:${escapeVCard(entry.nickname)}`);
+  // These Contacts Kit records share their data fields with the builder, which
+  // reads them as values. Event and relation records use class checks below.
+  card.nickName = (entry.nickName ?? null) as ESObject as vCardContact.NickName | null;
+  card.emails = (entry.emails ?? null) as ESObject as vCardContact.Email[] | null;
+  card.imAddresses = (entry.imAddresses ?? null) as ESObject as vCardContact.ImAddress[] | null;
+  card.websites = (entry.websites ?? null) as ESObject as vCardContact.Website[] | null;
+  card.organization = (entry.organization ?? null) as ESObject as vCardContact.Organization | null;
+  card.note = (entry.note ?? null) as ESObject as vCardContact.Note | null;
 
-  const phonetic = [entry.phoneticLastName, entry.phoneticFirstName, entry.phoneticMiddleName]
-    .filter((part: string | undefined): boolean => part !== undefined && part.length > 0)
-    .join(' ');
-  if (phonetic.length > 0) lines.push(`SORT-STRING:${escapeVCard(phonetic)}`);
+  card.postalAddresses = (entry.postalAddresses ?? []).map((address: contact.PostalAddress): vCardContact.PostalAddress => {
+    const postal = new vCardContact.PostalAddress();
+    postal.street = address.street || address.postalAddress;
+    postal.city = address.city ?? null;
+    postal.country = address.country ?? null;
+    postal.region = address.region ?? null;
+    postal.neighborhood = address.neighborhood ?? null;
+    postal.postcode = address.postcode ?? null;
+    postal.pobox = address.pobox ?? null;
+    postal.labelId = address.labelId ?? null;
+    postal.labelName = address.labelName ?? null;
 
-  entry.phoneNumbers?.forEach((phone: ExpoPhoneRecord): void => {
-    if (phone.number !== undefined) lines.push(`TEL;TYPE=${phoneVCardType(phone.label)}:${escapeVCard(phone.number)}`);
+    return postal;
   });
 
-  entry.emails?.forEach((email: ExpoEmailRecord): void => {
-    if (email.email !== undefined) lines.push(`EMAIL;TYPE=${emailVCardType(email.label)}:${escapeVCard(email.email)}`);
+  card.events = (entry.events ?? []).filter((event: contact.Event): boolean => parseContactDate(event.eventDate) !== undefined)
+    .map((event: contact.Event): vCardContact.Event => {
+      const row = new vCardContact.Event();
+      row.eventDate = event.eventDate;
+      row.labelId = isBirthdayEvent(event) ? vCardContact.Event.EVENT_BIRTHDAY : event.labelId ?? null;
+
+      return row;
+    });
+
+  card.relations = (entry.relations ?? []).map((relation: contact.Relation): vCardContact.Relation => {
+    const row = new vCardContact.Relation();
+    row.relationName = relation.relationName;
+    row.labelId = relation.labelId ?? null;
+
+    return row;
   });
 
-  entry.addresses?.forEach((address: ExpoAddressRecord): void => {
-    lines.push(
-      `ADR;TYPE=${addressVCardType(address.label)}:${escapeVCard(address.poBox ?? '')};;${escapeVCard(address.street ?? '')};${escapeVCard(address.city ?? '')};${escapeVCard(address.region ?? '')};${escapeVCard(address.postalCode ?? '')};${escapeVCard(address.country ?? '')}`,
-    );
-  });
+  const builder = new VCardBuilder(VCardConfig.VCARD_TYPE_V30_GENERIC, 'UTF-8');
+  builder.appendNameProperties(card).appendNickNames(card);
 
-  if (entry.company !== undefined) lines.push(`ORG:${escapeVCard(entry.company)}`);
-  if (entry.jobTitle !== undefined) lines.push(`TITLE:${escapeVCard(entry.jobTitle)}`);
-  if (entry.note !== undefined) lines.push(`NOTE:${escapeVCard(entry.note)}`);
-  if (entry.birthday !== undefined) lines.push(`BDAY:${vCardDate(entry.birthday)}`);
-
-  entry.urlAddresses?.forEach((address: ExpoUrlRecord): void => {
-    const uri = safeVCardUri(address.url);
-    if (uri !== undefined) lines.push(`URL:${uri}`);
-  });
-
-  if (photo) lines.push(`PHOTO;ENCODING=b;TYPE=JPEG:${photo}`);
-  lines.push('END:VCARD');
-
-  return lines.map((line: string): string => foldVCardLine(line)).join(VCARD_LINE_BREAK);
-}
-
-function escapeVCard(value: string): string {
-  return value
-    .replace(/\\/g, '\\\\')
-    .replace(/\r\n|\r|\n/g, '\\n')
-    .replace(/;/g, '\\;')
-    .replace(/,/g, '\\,');
-}
-
-function phoneVCardType(value: string): string {
-  const label = value.toLowerCase();
-  if (label === 'home') return 'HOME';
-  if (label === 'work') return 'WORK';
-  if (label === 'mobile' || label === 'cell') return 'CELL';
-  if (label === 'workmobile') return 'WORK,CELL';
-  if (label === 'faxwork') return 'WORK,FAX';
-  if (label === 'faxhome') return 'HOME,FAX';
-  if (label === 'fax' || label === 'otherfax') return 'FAX';
-  if (label === 'pager') return 'PAGER';
-  if (label === 'workpager') return 'WORK,PAGER';
-  if (label === 'video') return 'VIDEO';
-  if (label === 'car') return 'CAR';
-  if (label === 'isdn') return 'ISDN';
-  if (label === 'main') return 'VOICE';
-  if (label === 'companymain') return 'WORK,VOICE';
-  if (label === 'callback' || label === 'radio' || label === 'assistant') return 'VOICE';
-  if (label === 'telex' || label === 'ttytdd') return 'MSG';
-  if (label === 'mms') return 'CELL';
-  return 'X-OTHER';
-}
-
-function emailVCardType(value: string): string {
-  const label = value.toLowerCase();
-  if (label === 'home') return 'INTERNET,HOME';
-  if (label === 'work') return 'INTERNET,WORK';
-  return 'INTERNET';
-}
-
-function addressVCardType(value: string): string {
-  const label = value.toLowerCase();
-  if (label === 'home') return 'HOME';
-  if (label === 'work') return 'WORK';
-  return 'INTL,POSTAL';
-}
-
-function safeVCardUri(value?: string): string | undefined {
-  return value !== undefined && !/[\r\n]/.test(value) ? value : undefined;
-}
-
-function foldVCardLine(value: string): string {
-  const encoder = new util.TextEncoder('utf-8');
-  const parts: string[] = [];
-  let line: string = '';
-  let size: number = 0;
-  let offset: number = 0;
-
-  while (offset < value.length) {
-    let length = 1;
-    const first = value.charCodeAt(offset);
-
-    if (first >= 0xd800 && first <= 0xdbff && offset + 1 < value.length) {
-      const second = value.charCodeAt(offset + 1);
-      if (second >= 0xdc00 && second <= 0xdfff) length = 2;
-    }
-
-    const char = value.slice(offset, offset + length);
-    const octets = encoder.encodeInto(char).byteLength;
-    const capacity = parts.length === 0 ? VCARD_MAX_LINE_OCTETS : VCARD_MAX_LINE_OCTETS - 1;
-
-    if (size > 0 && size + octets > capacity) {
-      parts.push(line);
-      line = '';
-      size = 0;
-    }
-
-    line += char;
-    size += octets;
-    offset += length;
+  for (const phone of entry.phoneNumbers ?? []) {
+    // The builder does not escape newlines in phone numbers.
+    const number = phone.phoneNumber.replace(/[\r\n]+/g, ' ').trim();
+    if (number.length > 0) builder.appendTelLine(phone.labelId ?? null, phone.labelName ?? '', number, false);
   }
 
-  parts.push(line);
+  builder.appendEmails(card).appendPostals(card).appendOrganizations(card).appendWebsites(card)
+    .appendNotes(card).appendEvents(card).appendRelation(card).appendIms(card);
+  if (photo.length > 0) builder.appendPhotoLine(photo, 'JPEG');
 
-  return parts.join(`${VCARD_LINE_BREAK} `);
-}
-
-function vCardDate(value: ExpoDateRecord): string {
-  const month = padDatePart(value.month + 1);
-  const day = padDatePart(value.day);
-
-  return value.year === undefined ? `--${month}${day}` : `${padDateYear(value.year)}${month}${day}`;
+  return builder.toString();
 }
