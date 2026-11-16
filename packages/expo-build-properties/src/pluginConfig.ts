@@ -20,14 +20,22 @@ export interface NativeLibFilter {
   pickFirsts?: string[];
   pickLasts?: string[];
   enableOverride?: boolean;
-  [key: string]: unknown;
+  select?: NativeLibSelection[];
+}
+
+export interface NativeLibSelection {
+  package: string;
+  version?: string;
+  include?: string[];
+  exclude?: string[];
+  includePattern?: string[];
+  excludePattern?: string[];
 }
 
 export interface DebugSymbol {
   strip?: boolean;
   /** Hvigor semantics: exceptions to strip=true, or the only stripped libraries when strip=false. */
   exclude?: string[];
-  [key: string]: unknown;
 }
 
 export interface HarmonyBuildProperties {
@@ -68,8 +76,12 @@ function boolean(value: unknown, field: string): boolean {
   return value;
 }
 
-function definedFields(value: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined));
+function string(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim() || /[\r\n\0]/.test(value)) {
+    throw new ExpoBuildPropertiesError(`${field} must be a non-empty string.`);
+  }
+
+  return value;
 }
 
 function strings(value: unknown, field: string): string[] {
@@ -87,6 +99,42 @@ function strings(value: unknown, field: string): string[] {
   return [...items];
 }
 
+export function validateAbiFilters(values: string[], field: string): string[] {
+  if (!values.length || values.some(value => value !== 'arm64-v8a' && value !== 'x86_64')) {
+    throw new ExpoBuildPropertiesError(`${field} must select at least one of arm64-v8a and x86_64.`);
+  }
+
+  return values;
+}
+
+function selections(value: unknown): NativeLibSelection[] {
+  const field = 'nativeLib.filter.select';
+  if (!Array.isArray(value)) throw new ExpoBuildPropertiesError(`${field} must be an array.`);
+
+  return Array.from(value, (item, index) => {
+    const name = `${field}[${index}]`;
+    const rule = object(item, name, ['package', 'version', 'include', 'exclude', 'includePattern', 'excludePattern']);
+
+    const result: NativeLibSelection = { package: string(rule.package, `${name}.package`) };
+    if (rule.version !== undefined) result.version = string(rule.version, `${name}.version`);
+
+    for (const key of ['include', 'exclude', 'includePattern', 'excludePattern'] as const) {
+      if (rule[key] !== undefined) result[key] = strings(rule[key], `${name}.${key}`);
+    }
+
+    if (result.include === undefined && result.exclude === undefined
+      && result.includePattern === undefined && result.excludePattern === undefined) {
+      throw new ExpoBuildPropertiesError(`${name} must specify an include or exclude field.`);
+    }
+    if ((result.include !== undefined || result.exclude !== undefined)
+      && (result.includePattern !== undefined || result.excludePattern !== undefined)) {
+      throw new ExpoBuildPropertiesError(`${name} cannot mix exact filenames and glob patterns.`);
+    }
+
+    return result;
+  });
+}
+
 function validateBuildProperties(value: unknown): HarmonyBuildProperties {
   const props = object(value, 'build-properties.harmony', [
     'compatibleSdkVersion', 'targetSdkVersion', 'abiFilters', 'nativeCompiler',
@@ -100,12 +148,12 @@ function validateBuildProperties(value: unknown): HarmonyBuildProperties {
   }
 
   if (props.abiFilters !== undefined) {
-    result.abiFilters = strings(props.abiFilters, 'abiFilters');
+    result.abiFilters = validateAbiFilters(strings(props.abiFilters, 'abiFilters'), 'abiFilters');
   }
 
   if (props.nativeCompiler !== undefined) {
-    if (typeof props.nativeCompiler !== 'string' || !props.nativeCompiler.trim()) {
-      throw new ExpoBuildPropertiesError('nativeCompiler must be a non-empty string.');
+    if (props.nativeCompiler !== 'Original' && props.nativeCompiler !== 'BiSheng') {
+      throw new ExpoBuildPropertiesError('nativeCompiler must be Original or BiSheng.');
     }
 
     result.nativeCompiler = props.nativeCompiler;
@@ -120,13 +168,14 @@ function validateBuildProperties(value: unknown): HarmonyBuildProperties {
     result.nativeLib = {};
 
     if (native.filter !== undefined) {
-      const filter = object(native.filter, 'nativeLib.filter');
-      const output: NativeLibFilter = definedFields(filter);
+      const filter = object(native.filter, 'nativeLib.filter', ['excludes', 'pickFirsts', 'pickLasts', 'enableOverride', 'select']);
+      const output: NativeLibFilter = {};
 
       for (const key of ['excludes', 'pickFirsts', 'pickLasts'] as const) {
         if (filter[key] !== undefined) output[key] = strings(filter[key], `nativeLib.filter.${key}`);
       }
       if (filter.enableOverride !== undefined) output.enableOverride = boolean(filter.enableOverride, 'nativeLib.filter.enableOverride');
+      if (filter.select !== undefined) output.select = selections(filter.select);
 
       result.nativeLib.filter = output;
     }
@@ -137,10 +186,9 @@ function validateBuildProperties(value: unknown): HarmonyBuildProperties {
     result.release = {};
 
     if (release.debugSymbol !== undefined) {
-      const symbol = object(release.debugSymbol, 'release.debugSymbol');
+      const symbol = object(release.debugSymbol, 'release.debugSymbol', ['strip', 'exclude']);
 
       result.release.debugSymbol = {
-        ...definedFields(symbol),
         ...(symbol.strip === undefined ? {} : { strip: boolean(symbol.strip, 'release.debugSymbol.strip') }),
         ...(symbol.exclude === undefined ? {} : { exclude: strings(symbol.exclude, 'release.debugSymbol.exclude') }),
       };
@@ -149,6 +197,7 @@ function validateBuildProperties(value: unknown): HarmonyBuildProperties {
     if (release.obfuscation !== undefined) {
       const rules = object(release.obfuscation, 'release.obfuscation', ['enable', 'files']);
       const enable = boolean(rules.enable, 'release.obfuscation.enable');
+
       result.release.obfuscation = { enable };
       if (rules.files !== undefined) {
         const files = strings(rules.files, 'release.obfuscation.files');

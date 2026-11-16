@@ -19,9 +19,10 @@ interface Change {
 
 type ManagedBuildProperties = Partial<Record<BuildPropertiesScope, Change>>;
 
-type ReconcileBuildProperties = (
-  scope: BuildPropertiesScope, current: Json | undefined, desired: Json
-) => Json | undefined;
+interface ReconcileBuildProperties {
+  (scope: BuildPropertiesScope, current: Json | undefined, desired: Json): Json | undefined;
+  restorePrevious(scope: BuildPropertiesScope, current: Json | undefined): Json | undefined;
+}
 
 function isRecord(value: unknown): value is Json {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -88,14 +89,25 @@ function apply(current: Json | undefined, desired: Json): { value: Json | undefi
 function createBuildPropertiesReconciler(
   previous: ManagedBuildProperties | undefined, managed: ManagedBuildProperties
 ): ReconcileBuildProperties {
-  return (scope, current, desired) => {
-    const ownership = previous?.[scope];
-    const authored = ownership ? restore(current, ownership) : current;
-    const { value, change } = apply(authored, desired);
+  const restored = new Set<BuildPropertiesScope>();
+
+  function restorePrevious(scope: BuildPropertiesScope, current: Json | undefined): Json | undefined {
+    const change = previous?.[scope];
+    if (!change || restored.has(scope)) return current;
+
+    restored.add(scope);
+
+    return restore(current, change);
+  }
+
+  return Object.assign((scope: BuildPropertiesScope, current: Json | undefined, desired: Json) => {
+    const { value, change } = apply(restorePrevious(scope, current), desired);
+
     if (change) managed[scope] = structuredClone(change);
     else delete managed[scope];
+
     return value;
-  };
+  }, { restorePrevious });
 }
 
 function mergeBuildProperties(current: Json | undefined, desired: Json): Json | undefined {

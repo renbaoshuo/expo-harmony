@@ -40,7 +40,7 @@ HarmonyOS 构建属性配置插件。可选配置参数的类型为 [`PluginConf
 
 应用兼容的最低 HarmonyOS SDK 版本，类型为 `number | string`，默认 API 20。该值须符合应用原生依赖的最低要求，且所选版本须由本机 DevEco 环境提供。
 
-API 13、14、20、21、23 和 24 可用数字表示，也可写为带 API 级别的完整 SDK 版本字符串，例如 `24` 或 `"6.1.1(24)"`。其他低于 API 26 的版本需使用完整版本字符串。API 26 起可使用数字或点分隔版本字符串，例如 `26`、`"26.0.0"` 或 `"26.1.0"`。
+API 12 至 24 可用数字表示，也可写为对应的完整 SDK 版本字符串，例如 `24` 或 `"6.1.1(24)"`。API 26 起可使用数字或点分隔版本字符串，例如 `26`、`"26.0.0"` 或 `"26.1.0"`。最低兼容版本不能高于目标版本。
 
 ##### `targetSdkVersion`
 
@@ -48,11 +48,11 @@ API 13、14、20、21、23 和 24 可用数字表示，也可写为带 API 级�
 
 ##### `abiFilters`
 
-指定要构建的原生库 CPU 架构，类型为 `string[]`，默认值为 `["arm64-v8a", "x86_64"]`。Hvigor 支持的架构包括 `arm64-v8a` 和 `x86_64`。
+指定要构建的原生库 CPU 架构，类型为 `string[]`，默认值为 `["arm64-v8a", "x86_64"]`。HarmonyOS 构建须至少选择 `arm64-v8a` 或 `x86_64` 中的一种。
 
 ##### `nativeCompiler`
 
-指定 C/C++ 原生编译器名称，类型为 `string`，默认值为 `"BiSheng"`。
+指定 C/C++ 原生编译器，可选 `"Original"` 或 `"BiSheng"`。生成工程默认使用 `"BiSheng"`。
 
 ##### `nativeLib.filter`
 
@@ -88,15 +88,19 @@ API 13、14、20、21、23 和 24 可用数字表示，也可写为带 API 级�
 
 ##### `pickFirsts`
 
-匹配的 `.so` 文件优先打包，类型为 `string[]`。
+匹配同名 `.so` 文件时打包优先级最高的候选文件，类型为 `string[]`。
 
 ##### `pickLasts`
 
-匹配的 `.so` 文件最后打包，类型为 `string[]`。
+匹配同名 `.so` 文件时打包优先级最低的候选文件，类型为 `string[]`。
 
 ##### `enableOverride`
 
 同名 `.so` 文件存在优先级差异时，是否允许高优先级文件覆盖低优先级文件，类型为 `boolean`，默认值为 `false`。
+
+##### `select`
+
+按依赖包选择原生库，类型为 `NativeLibSelection[]`，优先级高于其他筛选字段。每条规则指定 `package`，可用 `version` 限定依赖版本。使用 `includePattern` 和 `excludePattern` 匹配 glob，或用 `include` 和 `exclude` 匹配完整文件名。同一规则应使用一种匹配方式。 [Hvigor 原生库配置](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/ide-hvigor-cpp)
 
 #### `DebugSymbol`
 

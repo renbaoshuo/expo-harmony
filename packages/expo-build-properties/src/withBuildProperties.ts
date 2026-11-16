@@ -22,6 +22,7 @@ import {
 import {
   applyBuildPropertiesConfig,
   getBuildProperties,
+  validateAbiFilters,
   validatePluginConfig,
   type PluginConfigType,
 } from './pluginConfig';
@@ -76,9 +77,13 @@ const withMods: HarmonyConfigPlugin = (config) => {
     const filter = props.nativeLib?.filter;
     const build = applyOptionalProperties(mod, 'entry', mod.modResults.buildOption,
       filter && Object.keys(filter).length ? { nativeLib: { filter } } : {});
+
     mod.modResults.buildOption = {
       ...build,
-      externalNativeOptions: { ...optionalRecord(build?.externalNativeOptions), abiFilters: harmony.abiFilters },
+      externalNativeOptions: {
+        ...optionalRecord(build?.externalNativeOptions),
+        abiFilters: validateAbiFilters(harmony.abiFilters, 'harmony.abiFilters'),
+      },
     };
 
     const modes: Json[] = Array.isArray(mod.modResults.buildOptionSet) ? [...mod.modResults.buildOptionSet] : [];
@@ -146,7 +151,11 @@ export const withBuildProperties: HarmonyConfigPlugin<PluginConfigType | void> =
     if (previous.release.debugSymbol && next.release.debugSymbol) {
       props.release.debugSymbol = { ...previous.release.debugSymbol, ...next.release.debugSymbol };
     }
+    if (previous.release.obfuscation && next.release.obfuscation) {
+      props.release.obfuscation = { ...previous.release.obfuscation, ...next.release.obfuscation };
+    }
   }
+
   config = applyBuildPropertiesConfig(config, props);
   config._internal ??= {};
 
