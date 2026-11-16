@@ -18,10 +18,9 @@ import {
   ExpoValueType,
   ExpoValueTypes,
 } from '@expo-harmony/expo-modules-core';
-import { url } from '@kit.ArkTS';
-import buffer from '@ohos.buffer';
-import cryptoFramework from '@ohos.security.cryptoFramework';
-import util from '@ohos.util';
+import { buffer, url, util } from '@kit.ArkTS';
+import { deviceInfo } from '@kit.BasicServicesKit';
+import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 
 const DEFAULT_IV_LENGTH: number = 12;
 const DEFAULT_TAG_LENGTH: number = 16;
@@ -31,6 +30,7 @@ const MAXIMUM_AES_KEY_BYTES: number = 32;
 const MAXIMUM_HEX_KEY_LENGTH: number = MAXIMUM_AES_KEY_BYTES * 2;
 const MAXIMUM_BASE64_KEY_LENGTH: number = 44;
 const EMPTY_BYTES: Uint8Array = new Uint8Array(0);
+const AES_GCM_ALGORITHM: string = 'AES|GCM|NoPadding';
 
 type IntegerTypedArray = Int8Array | Uint8Array | Uint8ClampedArray | Int16Array | Uint16Array | Int32Array | Uint32Array;
 
@@ -120,8 +120,7 @@ const BINARY_OUTPUT_TYPE: ExpoValueType<ESObject> = new ExpoValueType<ESObject>(
     throw new CryptoError('ERR_INVALID_ARGUMENT', `${path} must be a base64 string or Uint8Array.`);
   },
   (value: ESObject, path: string): ESObject => {
-    if (typeof value === 'string') return value;
-    if (value instanceof Uint8Array) return copyBytes(value) as ESObject;
+    if (typeof value === 'string' || value instanceof Uint8Array) return value;
     throw new CryptoError('ERR_INVALID_RETURN_VALUE', `${path} must be a base64 string or Uint8Array.`);
   },
 );
@@ -365,7 +364,7 @@ export class ExpoCryptoAESModule extends ExpoModule {
             let bytes: Uint8Array | undefined = undefined;
             try {
               if (input.text !== undefined) {
-                if (encoding === undefined) {
+                if (encoding === undefined || encoding === null) {
                   throw new CryptoError('ERR_CRYPTO_INVALID_KEY', 'Encoding must be provided for string key input.');
                 }
 
@@ -477,8 +476,12 @@ export class ExpoCryptoAESModule extends ExpoModule {
           KEY_OBJECT_TYPE,
           ENCRYPT_OPTIONS_TYPE.nullable().optional(),
           async (plaintext: Uint8Array, key: EncryptionKeyObject, options?: EncryptOptions | null): Promise<SealedDataObject> => {
-            const result = await encryptAesGcm(plaintext, key, options ?? new EncryptOptions());
-            return sealedClass.instance(result);
+            try {
+              const sealed = await encryptAesGcm(plaintext, key, options ?? new EncryptOptions());
+              return sealedClass.instance(sealed);
+            } finally {
+              secureErase(plaintext);
+            }
           },
         ).returns(SEALED_OBJECT_TYPE),
       )
@@ -489,11 +492,11 @@ export class ExpoCryptoAESModule extends ExpoModule {
           KEY_OBJECT_TYPE,
           DECRYPT_OPTIONS_TYPE.nullable().optional(),
           async (sealed: SealedDataObject, key: EncryptionKeyObject, options?: DecryptOptions | null): Promise<ESObject> => {
-            const resolved = options ?? new DecryptOptions();
-            const bytes = await decryptAesGcm(sealed, key, resolved.additionalData);
+            const config = options ?? new DecryptOptions();
+            const bytes = await decryptAesGcm(sealed, key, config.additionalData);
 
             try {
-              return formatBytes(bytes, resolved.output);
+              return config.output === 'bytes' ? copyBytes(bytes) : base64Encode(bytes);
             } finally {
               secureErase(bytes);
             }
@@ -580,10 +583,11 @@ function decodeDigestOptions(value: ESObject, path: string): DigestOptions {
 function decodeEncryptOptions(value: ESObject, path: string): EncryptOptions {
   const input = requireRecord(value, path);
   const result = new EncryptOptions();
+
   const tagLength = optionalSize(input['tagLength'], `${path}.tagLength`);
   if (tagLength !== undefined) result.tagLength = tagLength;
   requireTagLength(result.tagLength, 'ERR_CRYPTO_UNSUPPORTED_TAG_LENGTH');
-  requirePlatformTagLength(result.tagLength);
+  requireSupportedTagLength(result.tagLength);
 
   const nonce: ESObject = input['nonce'];
   if (nonce !== undefined && nonce !== null) {
@@ -759,35 +763,25 @@ async function encryptAesGcm(plaintext: Uint8Array, key: EncryptionKeyObject, op
   try {
     bytes = key.bytes();
     const nonce = options.nonce === undefined ? await randomBytesAsync(options.nonceLength) : copyBytes(options.nonce);
-    const tag = new Uint8Array(DEFAULT_TAG_LENGTH);
     native = await cryptoFramework.createSymKeyGenerator(`AES${key.size}`).convertKey({ data: bytes });
 
-    const cipher = cryptoFramework.createCipher(`AES${key.size}|GCM|PKCS7`);
-    const params: cryptoFramework.GcmParamsSpec = {
-      algName: 'GcmParamsSpec',
-      iv: { data: nonce },
-      aad: { data: options.additionalData },
-      authTag: { data: tag },
-    };
+    const cipher = cryptoFramework.createCipher(AES_GCM_ALGORITHM);
+    const params = gcmParams(nonce, options.additionalData, options.tagLength);
     await cipher.init(cryptoFramework.CryptoMode.ENCRYPT_MODE, native, params);
 
-    // CryptoFramework commits the AAD during update, including for an empty message.
-    const updated: cryptoFramework.DataBlob | null = await cipher.update({ data: plaintext });
-    const ciphertext = updated?.data ?? EMPTY_BYTES;
-    if (ciphertext.byteLength !== plaintext.byteLength) {
-      throw new CryptoError('ERR_CRYPTO_ENCRYPT', 'Harmony returned an invalid AES-GCM ciphertext length.');
+    if (plaintext.byteLength === 0 && options.tagLength === DEFAULT_TAG_LENGTH && options.additionalData.byteLength > 0) {
+      // The legacy GCM implementation commits AAD on update, including for an empty message.
+      await cipher.update({ data: plaintext });
     }
 
-    const finalized: cryptoFramework.DataBlob | null = await cipher.doFinal(null);
-    if (finalized === null || finalized.data.byteLength !== DEFAULT_TAG_LENGTH) {
-      throw new CryptoError('ERR_CRYPTO_ENCRYPT', 'Harmony returned an invalid AES-GCM authentication tag.');
+    const result = await cipher.doFinal(plaintext.byteLength === 0 ? null : { data: plaintext });
+    if (result === null || result.data.byteLength !== plaintext.byteLength + options.tagLength) {
+      throw new CryptoError('ERR_CRYPTO_ENCRYPT', 'Harmony returned an invalid AES-GCM ciphertext or tag length.');
     }
 
-    return new SealedDataObject(key.context, nonce, ciphertext, finalized.data);
+    return new SealedDataObject(key.context, nonce, result.data.subarray(0, plaintext.byteLength), result.data.subarray(plaintext.byteLength));
   } catch (error) {
-    if (error instanceof CryptoError) {
-      throw new CryptoError(error.code, error.message, error.cause);
-    }
+    if (error instanceof CryptoError) throw error;
 
     throw new CryptoError('ERR_CRYPTO_ENCRYPT', `AES-GCM encryption failed. ${errorMessage(error as Object)}`, error as Object);
   } finally {
@@ -799,7 +793,7 @@ async function encryptAesGcm(plaintext: Uint8Array, key: EncryptionKeyObject, op
 async function decryptAesGcm(sealed: SealedDataObject, key: EncryptionKeyObject, aad: Uint8Array): Promise<Uint8Array> {
   requireNonceLength(sealed.ivSize);
   requireTagLength(sealed.tagSize, 'ERR_CRYPTO_UNSUPPORTED_TAG_LENGTH');
-  requirePlatformTagLength(sealed.tagSize);
+  requireSupportedTagLength(sealed.tagSize);
 
   let native: cryptoFramework.SymKey | undefined = undefined;
   let bytes: Uint8Array | undefined = undefined;
@@ -808,39 +802,62 @@ async function decryptAesGcm(sealed: SealedDataObject, key: EncryptionKeyObject,
     bytes = key.bytes();
     native = await cryptoFramework.createSymKeyGenerator(`AES${key.size}`).convertKey({ data: bytes });
 
-    const cipher = cryptoFramework.createCipher(`AES${key.size}|GCM|PKCS7`);
-    const params: cryptoFramework.GcmParamsSpec = {
-      algName: 'GcmParamsSpec',
-      iv: { data: sealed.iv() },
-      aad: { data: aad },
-      authTag: { data: sealed.tag() },
-    };
+    const cipher = cryptoFramework.createCipher(AES_GCM_ALGORITHM);
+    const legacyTag = sealed.tagSize === DEFAULT_TAG_LENGTH;
+    const params = gcmParams(sealed.iv(), aad, sealed.tagSize, legacyTag ? sealed.tag() : undefined);
     await cipher.init(cryptoFramework.CryptoMode.DECRYPT_MODE, native, params);
 
-    const ciphertext = sealed.ciphertext();
-    // doFinal(null) alone does not commit AAD. Authentication must still run for empty ciphertext.
-    if (ciphertext.byteLength === 0) await cipher.update({ data: ciphertext });
-    const finalized: cryptoFramework.DataBlob | null =
-      ciphertext.byteLength > 0 ? await cipher.doFinal({ data: ciphertext }) : await cipher.doFinal(null);
+    const ciphertext = sealed.ciphertext(!legacyTag);
+    const expectedLength = legacyTag ? ciphertext.byteLength : ciphertext.byteLength - sealed.tagSize;
+    if (ciphertext.byteLength === 0 && aad.byteLength > 0) {
+      await cipher.update({ data: ciphertext });
+    }
+    const finalized = await cipher.doFinal(ciphertext.byteLength === 0 ? null : { data: ciphertext });
     if (finalized === null) {
-      if (ciphertext.byteLength === 0) return new Uint8Array(0);
+      if (expectedLength === 0) return EMPTY_BYTES;
       throw new CryptoError('ERR_CRYPTO_DECRYPT', 'Harmony returned no AES-GCM plaintext.');
     }
-    if (finalized.data.byteLength !== ciphertext.byteLength) {
+    if (finalized.data.byteLength !== expectedLength) {
+      secureErase(finalized.data);
       throw new CryptoError('ERR_CRYPTO_DECRYPT', 'Harmony returned an invalid AES-GCM plaintext length.');
     }
 
     return finalized.data;
   } catch (error) {
-    if (error instanceof CryptoError) {
-      throw new CryptoError(error.code, error.message, error.cause);
-    }
+    if (error instanceof CryptoError) throw error;
 
     throw new CryptoError('ERR_CRYPTO_DECRYPT', `AES-GCM authentication failed. ${errorMessage(error as Object)}`, error as Object);
   } finally {
     if (bytes !== undefined) secureErase(bytes);
     native?.clearMem();
   }
+}
+
+function gcmParams(iv: Uint8Array, aad: Uint8Array, tagLength: number, tag?: Uint8Array): cryptoFramework.ParamsSpec {
+  if (tagLength === DEFAULT_TAG_LENGTH) {
+    const params: cryptoFramework.GcmParamsSpec = {
+      algName: 'GcmParamsSpec',
+      iv: { data: iv },
+      aad: { data: aad },
+      authTag: { data: tag ?? new Uint8Array(DEFAULT_TAG_LENGTH) },
+    };
+    return params;
+  }
+
+  if (deviceInfo.apiAvailable('26.0.0')) {
+    const params: cryptoFramework.AeadParamsSpec = {
+      algName: 'AeadParamsSpec',
+      nonce: iv,
+      tagLen: tagLength,
+    };
+    if (aad.byteLength > 0) params.authenticatedData = aad;
+    return params;
+  }
+
+  throw new CryptoError(
+    'ERR_CRYPTO_UNSUPPORTED_TAG_LENGTH',
+    `${tagLength}-byte AES-GCM tags require HarmonyOS SDK 26.0.0 or later.`,
+  );
 }
 
 function sealedFromCombined(context: ExpoModuleContext, combined: Uint8Array, config: SealedDataConfig): SealedDataObject {
@@ -895,11 +912,11 @@ function requireTagLength(length: number, code: string): void {
   }
 }
 
-function requirePlatformTagLength(length: number): void {
-  if (length !== DEFAULT_TAG_LENGTH) {
+function requireSupportedTagLength(length: number): void {
+  if (length !== DEFAULT_TAG_LENGTH && !deviceInfo.apiAvailable('26.0.0')) {
     throw new CryptoError(
       'ERR_CRYPTO_UNSUPPORTED_TAG_LENGTH',
-      `HarmonyOS supports only 16-byte AES-GCM authentication tags; received ${length} bytes.`,
+      `${length}-byte AES-GCM tags require HarmonyOS SDK 26.0.0 or later.`,
     );
   }
 }
@@ -924,7 +941,7 @@ function requireBinaryEncoding(encoding: string): void {
 }
 
 function formatBytes(bytes: Uint8Array, encoding: string): ESObject {
-  if (encoding === 'bytes') return copyBytes(bytes) as ESObject;
+  if (encoding === 'bytes') return bytes as ESObject;
   if (encoding === 'base64') return base64Encode(bytes);
   throw new CryptoError('ERR_INVALID_ARGUMENT', `Unsupported binary output encoding '${encoding}'.`);
 }

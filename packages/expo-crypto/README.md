@@ -68,11 +68,11 @@ npm install @expo-harmony/expo-crypto expo-crypto@~57.0.4
 
 #### `Crypto.aesEncryptAsync(plaintext, key, options?)`
 
-使用 AES-GCM 加密并返回 `Promise<AESSealedData>`。`plaintext` 为 `BinaryInput`；字符串按 base64 解码。`options.nonce` 可指定 IV 字节或长度；未指定时生成 12 字节 IV。IV 长度须为 1 到 128 字节。`options.additionalData` 为附加认证数据，字符串按 base64 解码。`options.tagLength` 默认 16 字节，HarmonyOS 加密只接受 16 字节。
+使用 AES-GCM 加密并返回 `Promise<AESSealedData>`。`plaintext` 为 `BinaryInput`，字符串按 base64 解码。`options.nonce` 可指定 IV 字节或长度，省略时生成 12 字节 IV。IV 长度须为 1 到 128 字节。`options.additionalData` 为附加认证数据，字符串按 base64 解码。`options.tagLength` 默认 16 字节，支持范围见 [`GCMTagByteLength`](#gcmtagbytelength)。
 
 #### `Crypto.aesDecryptAsync(sealedData, key, options?)`
 
-使用 AES-GCM 解密并返回 `Promise<Uint8Array | string>`。`options.output` 默认 `'bytes'`，也可设为 `'base64'`；`options.additionalData` 为附加认证数据，字符串按 base64 解码。HarmonyOS 解密只接受 16 字节认证标签；标签验证失败时 Promise 会被拒绝。
+使用 AES-GCM 解密并返回 `Promise<Uint8Array | string>`。`options.output` 默认 `'bytes'`，也可设为 `'base64'`。`options.additionalData` 为附加认证数据，字符串按 base64 解码。解密使用封装数据的标签长度，标签验证失败时 Promise 会被拒绝。
 
 #### `Crypto.digest(algorithm, data)`
 
@@ -122,14 +122,14 @@ AES 密钥对象，密钥长度为 128、192 或 256 位。构造器不能直接
 
 #### `AESSealedData.tagSize`
 
-只读 `GCMTagByteLength`，表示认证标签的字节数。HarmonyOS 加解密只接受 16 字节标签。
+只读 `GCMTagByteLength`，表示认证标签的字节数。
 
 #### `AESEncryptOptions`
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
 | `nonce` | `GCMNonceParam` | 可指定 IV 字节或待生成的 IV 长度；默认生成 12 字节 IV，长度范围为 1 到 128 字节。 |
-| `tagLength` | `GCMTagByteLength` | 默认 16；HarmonyOS 加密只接受 16。 |
+| `tagLength` | `GCMTagByteLength` | 默认 16，具体支持范围取决于系统版本。 |
 | `additionalData` | `BinaryInput` | 附加认证数据；字符串按 base64 解码。 |
 
 #### `AESDecryptOptions`
@@ -164,7 +164,7 @@ AES 密钥对象，密钥长度为 128、192 或 256 位。构造器不能直接
 
 #### `GCMTagByteLength`
 
-`4 | 8 | 12 | 13 | 14 | 15 | 16`。HarmonyOS AES-GCM 加密和解密只接受 16 字节。
+`4 | 8 | 12 | 13 | 14 | 15 | 16`。HarmonyOS API 26.0.0 及以上支持这些长度。较早的系统版本要求 16 字节。
 
 ### Enums
 
@@ -239,7 +239,7 @@ AES-GCM IV 长度不在 1 到 128 字节范围内时抛出。
 
 #### `ERR_CRYPTO_UNSUPPORTED_TAG_LENGTH`
 
-AES-GCM 加解密收到非 16 字节认证标签时抛出。
+AES-GCM 加解密收到当前系统版本不支持的认证标签长度时抛出。
 
 #### `ERR_INVALID_SEALED_DATA_CONFIG`
 
