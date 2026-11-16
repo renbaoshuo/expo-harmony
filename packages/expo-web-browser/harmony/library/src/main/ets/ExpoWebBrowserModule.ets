@@ -20,6 +20,8 @@ import {
 // Stage-model Want does not expose the legacy Action and Entity enums.
 const VIEW_DATA_ACTION: string = 'ohos.want.action.viewData';
 const BROWSABLE_ENTITY: string = 'entity.system.browsable';
+const URI_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+const SCHEME_REDIRECT = /^[a-z][a-z0-9+.-]*:(?:\/\/)?$/i;
 
 enum ResultType {
   OPENED = 'opened',
@@ -40,7 +42,7 @@ interface CustomTabsBrowsers {
 
 const BROWSER_OPTIONS = ExpoValueTypes.shapedRecord<Record<string, ESObject>>(
   'WebBrowserOptions',
-  new ExpoRecordShape(),
+  new ExpoRecordShape().field('browserPackage', ExpoValueTypes.string().optional()),
   (fields: Record<string, ESObject>): Record<string, ESObject> => fields,
   (fields: Record<string, ESObject>): Record<string, ESObject> => fields,
 );
@@ -76,7 +78,8 @@ export class ExpoWebBrowserModule extends ExpoModule {
           ExpoFunction.typed2(
             ExpoValueTypes.string(),
             BROWSER_OPTIONS,
-            (url: string, _options: Record<string, ESObject>): Promise<BrowserResult> => this.openBrowser(url),
+            (url: string, options: Record<string, ESObject>): Promise<BrowserResult> =>
+              this.openBrowser(url, options.browserPackage as string | undefined),
           ),
         )
         .asyncFunction(
@@ -123,11 +126,12 @@ export class ExpoWebBrowserModule extends ExpoModule {
     );
   }
 
-  private async openBrowser(url: string): Promise<BrowserResult> {
+  private async openBrowser(url: string, browserPackage?: string): Promise<BrowserResult> {
     if (!this.canLaunchBrowser()) return { type: ResultType.LOCKED };
-    validateURL(url, true);
 
-    await this.launchBrowser(url);
+    normalizeURL(url, true);
+
+    await this.launchBrowser(url, browserPackage);
     this.assertHost();
 
     return { type: ResultType.OPENED };
@@ -138,11 +142,11 @@ export class ExpoWebBrowserModule extends ExpoModule {
       throw new ExpoModuleError('ERR_WEB_BROWSER_ALREADY_OPEN', 'A browser session is already open.');
     }
 
-    validateURL(url, true);
-    if (redirect !== undefined) validateURL(redirect, false);
+    normalizeURL(url, true);
+    const expected = redirect === undefined ? undefined : normalizeURL(redirect, false);
 
     return new Promise<BrowserResult>((resolve, reject): void => {
-      const session = new AuthSession(redirect, resolve, reject);
+      const session = new AuthSession(expected, resolve, reject);
       this.session = session;
 
       this.launchBrowser(url)
@@ -171,21 +175,17 @@ export class ExpoWebBrowserModule extends ExpoModule {
     });
   }
 
-  private async launchBrowser(url: string): Promise<void> {
+  private async launchBrowser(url: string, browserPackage?: string): Promise<void> {
     this.launching = true;
     const cancellation = new Promise<void>((_resolve, reject): void => {
       this.cancel = reject;
     });
 
     try {
-      await Promise.race([
-        this.context.uiAbilityContext.startAbility({
-          action: VIEW_DATA_ACTION,
-          entities: [BROWSABLE_ENTITY],
-          uri: url,
-        }),
-        cancellation,
-      ]);
+      const want: Want = { action: VIEW_DATA_ACTION, entities: [BROWSABLE_ENTITY], uri: url };
+      if (browserPackage) want.bundleName = browserPackage;
+
+      await Promise.race([this.context.uiAbilityContext.startAbility(want), cancellation]);
     } catch (_) {
       this.assertHost();
 
@@ -200,13 +200,12 @@ export class ExpoWebBrowserModule extends ExpoModule {
   private receiveRedirect(url: string | undefined): void {
     const session = this.session;
 
-    if (session !== undefined && session.redirect && url?.startsWith(session.redirect)) {
-      if (session.launched) {
-        this.finishAuthSession(session, { type: ResultType.SUCCESS, url });
-      } else if (session.pendingRedirect === undefined) {
-        // Keep the first redirect until the system confirms the launch.
-        session.pendingRedirect = url;
-      }
+    if (session?.redirect === undefined || url === undefined || !matchesRedirect(session.redirect, url)) return;
+
+    if (session.launched) {
+      this.finishAuthSession(session, { type: ResultType.SUCCESS, url });
+    } else if (session.pendingRedirect === undefined) {
+      session.pendingRedirect = url;
     }
   }
 
@@ -248,31 +247,53 @@ export class ExpoWebBrowserModule extends ExpoModule {
   }
 }
 
-function validateURL(value: string, requireWeb: boolean): void {
-  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(value)?.[1]?.toLowerCase();
+function normalizeURL(value: string, requireWeb: boolean): string {
+  const scheme = URI_SCHEME.exec(value)?.[0]?.toLowerCase();
 
   if (scheme === undefined || /[\s\u0000-\u001f\u007f]/.test(value)) {
     throw new ExpoModuleError('ERR_WEB_BROWSER_INVALID_URL', 'A valid absolute URL is required.');
   }
 
-  const isWeb = scheme === 'http' || scheme === 'https';
+  const isWeb = scheme === 'http:' || scheme === 'https:';
   if (requireWeb && !isWeb) {
     throw new ExpoModuleError('ERR_WEB_BROWSER_INVALID_URL', 'The browser URL must use HTTP or HTTPS.');
   }
 
   // The web URL parser can infer an authority from inputs such as https:example.com.
-  if (isWeb && !/^https?:\/\/[^/\\?#]/i.test(value)) {
+  if (isWeb && (!/^https?:\/\/[^/\\?#]/i.test(value) || value.includes('\\'))) {
     throw new ExpoModuleError('ERR_WEB_BROWSER_INVALID_URL', 'An HTTP or HTTPS URL must include a host.');
   }
 
   try {
-    if (isWeb) {
-      url.URL.parseURL(value);
-    } else {
-      new uri.URI(value);
-    }
+    if (isWeb) return url.URL.parseURL(value).href;
+
+    if (!SCHEME_REDIRECT.test(value)) new uri.URI(value);
+
+    return scheme + value.slice(scheme.length);
   } catch (_) {
     // Auth URLs can contain tokens or codes, so omit the platform's raw error.
     throw new ExpoModuleError('ERR_WEB_BROWSER_INVALID_URL', 'A valid absolute URL is required.');
   }
+}
+
+function matchesRedirect(expected: string, callback: string): boolean {
+  let actual: string;
+  try {
+    actual = normalizeURL(callback, false);
+  } catch (_) {
+    return false;
+  }
+
+  if (!actual.startsWith(expected)) return false;
+  if (actual === expected || SCHEME_REDIRECT.test(expected)) return true;
+
+  // Only allow extra callback parameters or a fragment past the expected endpoint.
+  const next = actual.charAt(expected.length);
+  const fragment = expected.indexOf('#');
+
+  if (fragment !== -1) return fragment === expected.length - 1 || next === '&';
+  if (next === '#') return true;
+
+  const query = expected.indexOf('?');
+  return query === -1 ? next === '?' : query === expected.length - 1 || next === '&';
 }

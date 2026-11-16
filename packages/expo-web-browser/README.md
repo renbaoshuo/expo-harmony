@@ -22,11 +22,13 @@ npm install @expo-harmony/expo-web-browser expo-web-browser@~57.0.3
 
 `url` 须为带主机的 HTTP 或 HTTPS 地址；`browserParams` 为可选的 `WebBrowserOpenOptions`，默认 `{}`。在系统选择的外部浏览器中打开网页，返回 `Promise<WebBrowserResult>`。浏览器启动成功后返回 `{ type: 'opened' }`，不等待页面加载或浏览器关闭。浏览器启动中或认证会话进行中再次调用时返回 `{ type: 'locked' }`。调用时应用不在前台会抛出 `ERR_WEB_BROWSER_UNAVAILABLE`。
 
-HarmonyOS 打开的是外部浏览器，浏览器由系统选择，页面外观由浏览器决定；传入的 `browserParams` 不改变浏览器选择或页面显示。
+HarmonyOS 通过系统打开外部浏览器。`browserParams.browserPackage` 可指定已安装浏览器的 HarmonyOS `bundleName`，系统会在该应用中查找匹配的网页处理能力。省略时由系统选择。页面外观和窗口行为由浏览器决定。
 
 #### `WebBrowser.openAuthSessionAsync(url, redirectUrl, options)`
 
-`url` 须为带主机的 HTTP 或 HTTPS 地址；`redirectUrl` 可省略、为 `null`，或传入绝对 URI；`options` 为可选的 `AuthSessionOpenOptions`，默认 `{}`。返回 `Promise<WebBrowserAuthSessionResult>`。收到以 `redirectUrl` 开头的回跳时返回 `{ type: 'success', url }`，其中 `url` 保留完整 query 和 fragment。
+`url` 须为带主机的 HTTP 或 HTTPS 地址。`redirectUrl` 可省略、为 `null`，或传入绝对 URI。`options` 为可选的 `AuthSessionOpenOptions`，默认 `{}`。收到匹配指定回跳地址的 URI 时返回 `{ type: 'success', url }`，其中 `url` 保留完整 query 和 fragment。传入 `myapp://` 这样的单独协议地址时，按该协议前缀匹配。
+
+认证回跳须由宿主应用注册，并路由到发起认证的 UIAbility 实例。可使用应用的自定义 scheme 或已验证的 HTTPS App Linking。宿主的链接配置仍由 Expo Linking 或应用本身管理。
 
 应用回到前台但没有匹配回跳时返回 `{ type: 'dismiss' }`；HarmonyOS 无法区分用户关闭浏览器与切回应用。没有提供 `redirectUrl` 时不会返回 `success`，等待可由 `dismissAuthSession()` 结束。已有认证会话或浏览器启动请求未完成时抛出 `ERR_WEB_BROWSER_ALREADY_OPEN`。启动浏览器失败时抛出 `ERR_WEB_AUTH_SESSION_FAILED_TO_START`；等待期间 UIAbility 被销毁时抛出 `ERR_WEB_BROWSER_DESTROYED`。
 
@@ -64,7 +66,7 @@ HarmonyOS 打开的是外部浏览器，浏览器由系统选择，页面外观�
 
 #### `WebBrowserOpenOptions`
 
-可传给 `openBrowserAsync()` 的可选配置对象。HarmonyOS 打开外部浏览器，以下字段均不改变浏览器选择、页面外观或窗口行为：`toolbarColor`、`browserPackage`、`enableBarCollapsing`、`secondaryToolbarColor`、`showTitle`、`enableDefaultShareMenuItem`、`showInRecents`、`createTask`、`useProxyActivity`、`controlsColor`、`dismissButtonStyle`、`readerMode`、`presentationStyle`、`windowName` 和 `windowFeatures`。
+可传给 `openBrowserAsync()` 的可选配置对象。HarmonyOS 支持用 `browserPackage` 限定系统打开网页时匹配的应用。外部浏览器负责页面外观和窗口行为，因此 `toolbarColor`、`enableBarCollapsing`、`secondaryToolbarColor`、`showTitle`、`enableDefaultShareMenuItem`、`showInRecents`、`createTask`、`useProxyActivity`、`controlsColor`、`dismissButtonStyle`、`readerMode`、`presentationStyle`、`windowName` 和 `windowFeatures` 在此平台不生效。
 
 #### `AuthSessionOpenOptions`
 
