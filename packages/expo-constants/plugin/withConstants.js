@@ -58,15 +58,17 @@ async function writeResourceAsync(root, config) {
   return file;
 }
 
-async function refreshExpoConstantsResourceAsync(root, directory) {
+async function refreshExpoConstantsResourceAsync(root, directory, buildMode = process.env.EXPO_HARMONY_BUILD_TYPE) {
   root = path.resolve(root);
   directory = path.resolve(directory);
 
-  // Hvigor can reuse a process across builds, while Expo's config loader caches
-  // app.config.js and its imports. Evaluate in a fresh process rooted at the app.
+  const mode = buildMode === 'release' ? 'production' : 'development';
+
+  // A fresh process avoids reusing cached Expo config imports between Hvigor builds.
   let config;
   try {
-    const child = fork(__filename, [], { cwd: root, execArgv: [] });
+    const child = fork(__filename, [mode], { cwd: root, execArgv: [] });
+
     child.once('message', (value) => {
       config = value;
     });
@@ -94,12 +96,16 @@ function withConstants(config) {
       src: mod.modResults,
       newSrc: `require('@ohos/hvigor').hvigor.nodesEvaluated(async (hvigor) => {
   const path = require('node:path');
-  const harmony = hvigor.getRootNode().getNodePath();
+  const { OhosPluginId } = require('@ohos/hvigor-ohos-plugin');
+  const node = hvigor.getRootNode();
+  const harmony = node.getNodePath();
   const root = path.dirname(harmony);
+
   const load = require('node:module').createRequire(path.join(root, 'package.json'));
+  const buildMode = node.getContext(OhosPluginId.OHOS_APP_PLUGIN).getBuildMode();
 
   await load('@expo-harmony/expo-constants/plugin/withConstants')
-    .refreshExpoConstantsResourceAsync(root, harmony);
+    .refreshExpoConstantsResourceAsync(root, harmony, buildMode);
 });`,
       tag: 'expo-harmony-constants',
       anchor: /^export default\b/m,
@@ -129,5 +135,5 @@ if (require.main === module && process.send) {
   process.send(getHarmonyProjectConfig(process.cwd(), {
     isPublicConfig: true,
     skipSDKVersionRequirement: true,
-  }).exp);
+  }, process.argv[2]).exp);
 }

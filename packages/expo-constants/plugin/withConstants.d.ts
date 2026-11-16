@@ -8,6 +8,6 @@
 import type { ConfigPlugin } from 'expo/config-plugins';
 
 declare const withConstants: ConfigPlugin & {
-  refreshExpoConstantsResourceAsync(projectRoot: string, harmonyDirectory: string): Promise<string>;
+  refreshExpoConstantsResourceAsync(projectRoot: string, harmonyDirectory: string, buildMode?: string): Promise<string>;
 };
 export = withConstants;

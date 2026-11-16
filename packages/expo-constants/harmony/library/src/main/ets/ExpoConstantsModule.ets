@@ -6,8 +6,10 @@
  */
 
 import { ExpoModule, ExpoModuleDefinition } from '@expo-harmony/expo-modules-core';
-import { webview } from '@kit.ArkWeb';
+import lazy { webview } from '@kit.ArkWeb';
 import { ExpoConstantsKey } from './ExpoConstantsService';
+
+const WEBVIEW_CAPABILITY = 'SystemCapability.Web.Webview.Core';
 
 export class ExpoConstantsModule extends ExpoModule {
   private static initialized: boolean = false;
@@ -18,18 +20,23 @@ export class ExpoConstantsModule extends ExpoModule {
     return new ExpoModuleDefinition()
       .name('ExponentConstants')
       .constants(constants)
-      .asyncFunction('getWebViewUserAgentAsync', async (): Promise<string | null> => {
-        try {
-          if (!ExpoConstantsModule.initialized) {
-            webview.WebviewController.initializeWebEngine();
-            ExpoConstantsModule.initialized = true;
-          }
+      .asyncFunction('getWebViewUserAgentAsync', (): Promise<string | null> =>
+        this.context.runOnMainQueue((): string | null => this.readWebViewUserAgent()));
+  }
 
-          return webview.WebviewController.getDefaultUserAgent();
-        } catch (error) {
-          this.context.logger.warn(`Unable to read the default Harmony WebView user agent: ${String(error)}`);
-          return null;
-        }
-      });
+  private readWebViewUserAgent(): string | null {
+    if (!canIUse(WEBVIEW_CAPABILITY)) return null;
+
+    try {
+      if (!ExpoConstantsModule.initialized) {
+        webview.WebviewController.initializeWebEngine();
+        ExpoConstantsModule.initialized = true;
+      }
+
+      return webview.WebviewController.getDefaultUserAgent() || null;
+    } catch (error) {
+      this.context.logger.warn(`Unable to read the default Harmony WebView user agent: ${String(error)}`);
+      return null;
+    }
   }
 }

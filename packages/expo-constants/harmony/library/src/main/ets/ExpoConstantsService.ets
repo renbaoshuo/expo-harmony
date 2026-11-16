@@ -11,9 +11,11 @@ import { bundleManager } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { window } from '@kit.ArkUI';
+import nativeFonts from 'libexpo_constants_fonts.so';
 
 const APP_CONFIG_RAW_FILE: string = 'app.config';
 const INVALID_RAW_FILE_PATH: number = 9001005;
+const NATIVE_DRAWING_CAPABILITY = 'SystemCapability.Graphic.Graphic2D.NativeDrawing';
 
 class HarmonyPlatformConstants {
   bundleName: string;
@@ -84,8 +86,8 @@ export class ExpoConstantsService extends ExpoService implements ExpoConstantsPr
       'manifest2': null,
       'sessionId': runtime.sessionId,
       'statusBarHeight': (): number => isHeadless ? 0 : this.readStatusBarHeight(context),
-      'systemFonts': (): string[] => isHeadless ? [] : this.readSystemFonts(context),
-      'systemVersion': systemVersion(),
+      'systemFonts': (): string[] => this.readSystemFonts(context),
+      'systemVersion': deviceInfo.displayVersion,
       'platform': (): PlatformConstants | undefined => this.readPlatformConstants(context),
     };
   }
@@ -131,16 +133,14 @@ export class ExpoConstantsService extends ExpoService implements ExpoConstantsPr
   }
 
   private readSystemFonts(context: ExpoModuleContext): string[] {
-    try {
-      const names = context.uiAbilityContext.windowStage.getMainWindowSync().getUIContext().getFont().getSystemFontList();
-      const unique = new Set<string>();
-      names.forEach((name: string): void => {
-        if (name.length > 0) unique.add(name);
-      });
+    if (!canIUse(NATIVE_DRAWING_CAPABILITY)) return [];
 
-      return Array.from(unique).sort();
+    try {
+      const names = nativeFonts.getSystemFontFamilies();
+      return Array.from(new Set<string>(names)).sort();
     } catch (error) {
       context.logger.warn(`Unable to enumerate HarmonyOS system fonts; returning an empty list: ${String(error)}`);
+
       return [];
     }
   }
@@ -167,8 +167,4 @@ function deviceName(): string {
   if (deviceInfo.productModel.length > 0) return deviceInfo.productModel;
   if (deviceInfo.deviceType.length > 0) return `HarmonyOS ${deviceInfo.deviceType}`;
   return 'HarmonyOS device';
-}
-
-function systemVersion(): string {
-  return deviceInfo.displayVersion;
 }
