@@ -1,7 +1,10 @@
 {
   "name": "{{NPM_NAME}}",
   "version": "{{PACKAGE_VERSION}}",
-  "license": "MIT",
+  "license": {{LICENSE_JSON}},
+  "description": {{DESCRIPTION_JSON}},
+  "author": {{AUTHOR_JSON}},
+  "repository": {{REPO_JSON}},
   "main": "build/index.js",
   "types": "build/index.d.ts",
   "exports": {

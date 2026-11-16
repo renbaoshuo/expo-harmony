@@ -23,7 +23,7 @@ export default function App() {
   const [count, setCount] = useState(counter.value);
 {{/SharedObject}}  return (
     <View style={{ flex: 1, gap: 12, justifyContent: 'center', padding: 24 }}>
-      <Text>{{MODULE_NAME}}: {nativeModule ? 'Native module ready' : 'Unavailable'}</Text>
+      <Text>{ {{MODULE_NAME_JSON}} }: {nativeModule ? 'Native module ready' : 'Unavailable'}</Text>
 {{#Constant}}      <Text>{platform}</Text>
 {{/Constant}}{{#Function}}      <Text>{echo('Hello from Harmony')}</Text>
 {{/Function}}{{#AsyncFunction}}      <Text>{asyncResult}</Text>

@@ -19,7 +19,7 @@ export default function App() {
 
   return (
     <View style={{ flex: 1, gap: 12, justifyContent: 'center', padding: 24 }}>
-      <Text>{echo('Hello from {{MODULE_NAME}}')}</Text>
+      <Text>{echo('Hello from ' + {{MODULE_NAME_JSON}})}</Text>
       <{{MODULE_BASE}}View
         label="ArkTS Expo View"
         onValueChanged={(event) => setValue(event.nativeEvent.value)}

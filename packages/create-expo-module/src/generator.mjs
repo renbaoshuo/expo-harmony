@@ -71,7 +71,7 @@ async function readJson(file) {
   }
 }
 
-async function findAppRoot(cwd) {
+async function findAppRoot(cwd, optional = false) {
   let dir = path.resolve(cwd);
 
   while (true) {
@@ -86,6 +86,7 @@ async function findAppRoot(cwd) {
 
     const parent = path.dirname(dir);
     if (parent === dir) {
+      if (optional) return undefined;
       throw new Error(`Cannot create a local Expo module: no package.json was found above ${path.resolve(cwd)}.`);
     }
 
@@ -172,7 +173,7 @@ function replaceTokens(source, values) {
     const key = braces ?? underscores;
     if (!Object.hasOwn(values, key)) throw new Error(`Unknown template placeholder: ${key}`);
     return values[key];
-  }).replace(/\n {6};/g, ';');
+  });
 }
 
 async function renderDirectory(template, directory, values, skipExample = false) {
@@ -278,11 +279,11 @@ async function sourceFiles(root) {
   return files.sort();
 }
 
-const PUBLIC_NAME = /\bName\s*\(\s*(['"])([^'"\n]+)\1\s*\)/;
+const PUBLIC_NAME = /\bName\s*\(\s*(['"])((?:(?!\1)[^\\\r\n])+)\1\s*\)/;
 const SOURCE_NAMES = [
-  /\brequire(?:Optional)?NativeModule(?:<[\s\S]*?>)?\s*\(\s*(['"`])([^'"`\n]+)\1\s*\)/,
-  /\bregisterWebModule\s*\(\s*[^,]+,\s*(['"`])([^'"`\n]+)\1\s*\)/,
-  /\bglobalThis\.expo\??\.\s*modules\??\.?\s*\[\s*(['"`])([^'"`\n]+)\1\s*\]/,
+  /\brequire(?:Optional)?NativeModule(?:<[\s\S]*?>)?\s*\(\s*(['"`])((?:(?!\1)[^\\\r\n])+)\1\s*\)/,
+  /\bregisterWebModule\s*\(\s*[^,]+,\s*(['"`])((?:(?!\1)[^\\\r\n])+)\1\s*\)/,
+  /\bglobalThis\.expo\??\.\s*modules\??\.?\s*\[\s*(['"`])((?:(?!\1)[^\\\r\n])+)\1\s*\]/,
 ];
 
 function stripSourceComments(source) {
@@ -330,14 +331,18 @@ async function inspectExistingModule(target, config) {
   return { name, features: [...features], entry };
 }
 
-function assertInside(root, target, label) {
+function isInside(root, target) {
   const relative = path.relative(root, target);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+  return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function assertInside(root, target, label) {
+  if (!isInside(root, target)) {
     throw new TypeError(`${label} must be inside ${root}.`);
   }
 }
 
-async function localDirectory(project) {
+async function localDirectory(project, optional = false) {
   const pkg = await readJson(path.join(project, 'package.json'));
   if (!pkg) throw new TypeError(`Cannot parse the app package.json in ${project}.`);
 
@@ -347,27 +352,45 @@ async function localDirectory(project) {
     ? harmony.nativeModulesDir
     : Object.hasOwn(shared, 'nativeModulesDir') ? shared.nativeModulesDir : 'modules';
   if (typeof value !== 'string' || !value.trim()) {
+    if (optional) return undefined;
     throw new TypeError('Harmony nativeModulesDir is disabled or invalid; configure it before creating a local module.');
   }
 
-  const directory = path.resolve(project, value);
-  assertInside(project, directory, 'nativeModulesDir');
-  return directory;
+  return path.resolve(project, value);
+}
+
+async function resolveProspectivePath(target) {
+  let ancestor = target;
+
+  while (true) {
+    try {
+      return path.resolve(await fs.promises.realpath(ancestor), path.relative(ancestor, target));
+    } catch (error) {
+      const parent = path.dirname(ancestor);
+      if (error.code !== 'ENOENT' || parent === ancestor) throw error;
+      ancestor = parent;
+    }
+  }
 }
 
 async function validateLocalTarget(project, target) {
-  const directory = await localDirectory(project);
-  assertInside(directory, target, 'Local module');
-  const relative = path.relative(directory, target);
+  const dir = await localDirectory(project);
+  assertInside(dir, target, 'Local module');
+
+  const relative = path.relative(dir, target);
   if (!/^(?:@[^/\\]+[/\\])?[^./\\][^/\\]*$/.test(relative)) {
     throw new TypeError('Local module must be a direct child or scoped package of nativeModulesDir.');
   }
-  if (fs.existsSync(path.join(directory, 'package.json'))) {
+  if (fs.existsSync(path.join(dir, 'package.json'))) {
     throw new TypeError('nativeModulesDir already points to a package; configure a directory of local modules.');
   }
-  let ancestor = target;
-  while (!fs.existsSync(ancestor)) ancestor = path.dirname(ancestor);
-  assertInside(await fs.promises.realpath(project), await fs.promises.realpath(ancestor), 'Local module real path');
+
+  const [realDir, realTarget] = await Promise.all([
+    resolveProspectivePath(dir),
+    resolveProspectivePath(target),
+  ]);
+  assertInside(realDir, realTarget, 'Local module real path');
+
   return relative.split(path.sep).join('/');
 }
 
@@ -412,13 +435,19 @@ async function addHarmonyToExisting(options, cwd, sdk, templates) {
   if (config.harmony !== undefined || config.platforms?.includes('harmony')) {
     throw new Error('expo-module.config.json already declares harmony; refusing to overwrite it.');
   }
+
   await ensureAbsent(harmony);
 
   const existing = await inspectExistingModule(target, config);
   const local = originalPackage === undefined;
   let localName;
   if (local) {
-    const project = await findAppRoot(path.dirname(requested));
+    const app = await findAppRoot(cwd, true);
+    const dir = app && await localDirectory(app, true);
+    const project = dir && isInside(dir, requested)
+      ? app
+      : await findAppRoot(path.dirname(requested));
+
     localName = await validateLocalTarget(project, requested);
     if (!existing.entry) throw new Error('Cannot find the local module JavaScript entry point.');
   }
@@ -437,7 +466,7 @@ async function addHarmonyToExisting(options, cwd, sdk, templates) {
     : resolveFeatures(options.features ?? existing.features, options.fullExample);
   const values = replacements(names, sdk.major, {
     ...options,
-    license: options.license ?? pkg.license,
+    license: options.license ?? (typeof pkg.license === 'string' ? pkg.license : pkg.license?.type),
     moduleVersion: pkg.version,
     features,
   });
@@ -463,6 +492,7 @@ async function addHarmonyToExisting(options, cwd, sdk, templates) {
   const devCore = pkg.devDependencies?.[CORE_PACKAGE];
   compatibleCoreDependency(runtimeCore, sdk.major, 'Harmony Core runtime');
   compatibleCoreDependency(devCore, sdk.major, 'Harmony Core development');
+
   const nextPackage = {
     ...pkg,
     ...(Array.isArray(pkg.files) ? { files: [...new Set([...pkg.files, ...HARMONY_PACK_FILES])] } : {}),
@@ -481,6 +511,7 @@ async function addHarmonyToExisting(options, cwd, sdk, templates) {
   const template = path.join(templates, `standalone/sdk-${sdk.major}`);
   const generatedConfig = JSON.parse(replaceTokens(await fs.promises.readFile(path.join(template, 'expo-module.config.json.tpl'), 'utf8'), values));
   const nextConfig = { ...config, platforms: [...(config.platforms ?? []), 'harmony'], harmony: generatedConfig.harmony };
+
   const writes = [{ file: manifest, content: jsonBytes(nextPackage), previous: originalPackage }];
   if (!pkg.private && !Array.isArray(pkg.files)) {
     const file = path.join(target, '.npmignore');
@@ -514,6 +545,7 @@ async function addHarmonyToExisting(options, cwd, sdk, templates) {
         else await fs.promises.rm(file);
       }),
     ]);
+
     const failures = rollback.filter(result => result.status === 'rejected').map(result => result.reason);
     if (failures.length) {
       throw new AggregateError([error, ...failures], `Adding Harmony failed and could not be fully rolled back: ${error.message}`);
@@ -532,6 +564,7 @@ export async function createModule(options) {
   const cwd = path.resolve(options.cwd ?? process.env.INIT_CWD ?? process.cwd());
   const local = options.local === true;
   const adding = options.addToExisting === true;
+
   if (local && adding) throw new TypeError('--local and --add-to-existing cannot be combined.');
   if (options.platform?.some(platform => platform !== 'harmony')) throw new TypeError('Only the harmony platform is supported.');
   if (options.moduleVersion !== undefined && !isVersion(options.moduleVersion)) {
@@ -539,11 +572,13 @@ export async function createModule(options) {
   }
 
   const project = local ? await findAppRoot(cwd) : undefined;
-  const sdk = options.sdkMajor !== undefined
+  const inferredSdk = options.sdkMajor !== undefined
     ? { major: Number(options.sdkMajor), source: 'explicit' }
     : local || adding
       ? await detectExpoSdkMajor(adding ? path.resolve(cwd, options.target ?? '.') : project)
       : { major: DEFAULT_SDK_MAJOR, source: 'cli' };
+  const sdk = adding && inferredSdk.source === 'fallback' ? await detectExpoSdkMajor(cwd) : inferredSdk;
+
   if (!Object.hasOwn(SDK_VERSIONS, sdk.major)) {
     throw new Error(`Expo SDK ${sdk.major} is not supported; available templates: ${Object.keys(SDK_VERSIONS).join(', ')}.`);
   }
@@ -552,32 +587,39 @@ export async function createModule(options) {
   if (sdk.major === 55 && (options.features !== undefined || options.fullExample)) {
     throw new TypeError('Feature selection requires SDK 57; SDK 55 retains its original complete example.');
   }
+
   if (adding) return addHarmonyToExisting(options, cwd, sdk, templates);
 
   const features = sdk.major === 55 ? LEGACY_FEATURES : resolveFeatures(options.features, options.fullExample);
   const names = deriveNames(options.name, options.moduleName);
   const fallback = local
-    ? path.join(await localDirectory(project), names.packageBasename)
+    ? path.join(await localDirectory(project), names.packageName)
     : path.join(cwd, names.packageBasename);
   const target = path.resolve(cwd, options.target ?? fallback);
+
   if (target === path.parse(target).root) throw new Error('Refusing to generate into a filesystem root.');
   if (local) await validateLocalTarget(project, target);
   await ensureAbsent(target);
+
   await fs.promises.mkdir(path.dirname(target), { recursive: true });
   const staging = await fs.promises.mkdtemp(path.join(path.dirname(target), '.create-expo-harmony-module-'));
   try {
     const values = replacements(names, sdk.major, { ...options, features });
     const skipExample = local || options.example === false;
+
     await renderDirectory(path.join(templates, `standalone/sdk-${sdk.major}`), staging, values, skipExample);
+
     if (!skipExample) {
       const file = path.join(staging, 'example/package.json');
       const pkg = JSON.parse(await fs.promises.readFile(file, 'utf8'));
       if (Object.hasOwn(pkg.dependencies, names.packageName)) {
         throw new TypeError(`${names.packageName} is required by the example app. Choose a different name or use --no-example.`);
       }
+
       pkg.dependencies[names.packageName] = 'file:..';
       await fs.promises.writeFile(file, jsonBytes(pkg));
     }
+
     if (local) {
       await renderDirectory(path.join(templates, `local/sdk-${sdk.major}`), staging, values);
       if (sdk.major === 57 && options.barrel) {
@@ -587,14 +629,16 @@ export async function createModule(options) {
         await fs.promises.writeFile(path.join(staging, 'package.json'), jsonBytes(pkg));
       }
     }
+
     await fs.promises.mkdir(target);
+    let published = false;
     try {
       for (const entry of await fs.promises.readdir(staging)) {
         await fs.promises.rename(path.join(staging, entry), path.join(target, entry));
       }
-    } catch (error) {
-      await fs.promises.rm(target, { recursive: true, force: true });
-      throw error;
+      published = true;
+    } finally {
+      if (!published) await fs.promises.rm(target, { recursive: true, force: true });
     }
   } finally {
     await fs.promises.rm(staging, { recursive: true, force: true });

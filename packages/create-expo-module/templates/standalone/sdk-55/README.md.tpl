@@ -22,7 +22,7 @@ npm run harmony:inspect  # 输出解析后的模块配置和约定路径
 ├── harmony/
 │   ├── library/             # 存放 ArkTS 源码的 Hvigor HAR 模块
 │   └── library.har          # 构建产物，随 npm 包一起发布
-└── example/                 # 演示模块用法的 Expo 应用
+└── example/                 # 可选的 Expo 示例应用
 ```
 
 ## 示例模块
@@ -33,7 +33,7 @@ npm run harmony:inspect  # 输出解析后的模块配置和约定路径
 
 ## 示例应用
 
-`example/` 是一个通过 `file:..` 依赖本模块的最小 Expo 应用。先在模块根目录执行 `npm install --legacy-peer-deps`，安装构建工具并生成 facade 和 HAR，再进入 `example/` 运行以下命令。
+若生成了 `example/`，它通过 `file:..` 依赖本模块。先在模块根目录执行 `npm install --legacy-peer-deps`，安装构建工具并生成 facade 和 HAR，再进入 `example/` 运行以下命令。
 
 ```sh
 npm install --legacy-peer-deps

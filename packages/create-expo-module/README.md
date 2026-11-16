@@ -30,7 +30,7 @@ npx create-expo-harmony-module add-platform-support ../expo-sensor
 
 常用参数：
 
-- `--local` 在应用内创建模块，使用应用配置的 Harmony 模块目录；未配置时使用 `modules/`。
+- `--local` 在应用配置的 Harmony 模块目录下创建模块，未配置时使用 `modules/`。带 npm scope 的模块保留 scope 路径，例如 `modules/@acme/expo-sensor`。
 - `--path <directory>` 指定生成位置。
 - `--features <features...>` 选择示例功能；`--full-example` 包含全部示例。
 - `--barrel` 为本地模块添加根目录入口文件；`--no-example` 不生成独立模块的示例应用。

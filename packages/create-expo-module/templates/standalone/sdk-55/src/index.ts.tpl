@@ -50,12 +50,12 @@ export type {{MODULE_BASE}}ViewProps = Omit<ViewProps, 'ref'> & {
   value?: number | null;
 };
 
-const nativeModule = requireNativeModule<{{MODULE_BASE}}NativeModule>('{{MODULE_NAME}}');
+const nativeModule = requireNativeModule<{{MODULE_BASE}}NativeModule>({{MODULE_NAME_JSON}});
 
 export const platform = nativeModule.platform;
 export const {{MODULE_BASE}}Counter = nativeModule.{{MODULE_BASE}}Counter;
 export const {{MODULE_BASE}}View = requireNativeViewManager<{{MODULE_BASE}}ViewProps>(
-  '{{MODULE_NAME}}'
+  {{MODULE_NAME_JSON}}
 );
 export const echo = (value: string): string => nativeModule.echo(value);
 export const echoAsync = (value: string): Promise<string> => nativeModule.echoAsync(value);

@@ -9,7 +9,7 @@
   "name": "{{NPM_NAME}}",
   "version": "{{PACKAGE_VERSION}}",
   "main": "Index.ets",
-  "license": "MIT",
+  "license": {{LICENSE_JSON}},
   "dependencies": {
     "@expo-harmony/expo-modules-core": "{{HARMONY_CORE_VERSION}}"
   }

@@ -118,28 +118,27 @@ function build{{MODULE_BASE}}NativeView(context: ExpoViewContentContext): void {
       ).returns(ExpoValueTypes.number()));
 {{/View}}
     return new ExpoModuleDefinition()
-      .name({{MODULE_NAME_JSON}})
-{{#Constant}}      .constant('platform', 'harmony')
-{{/Constant}}{{#SharedObject}}      .sharedObjectClass(counterClass)
-{{/SharedObject}}{{#View}}      .view(nativeView)
-{{/View}}{{#Function}}      .syncFunction('echo', ExpoFunction.typed1(
+      .name({{MODULE_NAME_JSON}}){{#Constant}}
+      .constant('platform', 'harmony'){{/Constant}}{{#SharedObject}}
+      .sharedObjectClass(counterClass){{/SharedObject}}{{#View}}
+      .view(nativeView){{/View}}{{#Function}}
+      .syncFunction('echo', ExpoFunction.typed1(
         ExpoValueTypes.string(),
         (value: string): string => value,
-      ).returns(ExpoValueTypes.string()))
-{{/Function}}{{#AsyncFunction}}      .asyncFunction('echoAsync', ExpoFunction.typed1(
+      ).returns(ExpoValueTypes.string())){{/Function}}{{#AsyncFunction}}
+      .asyncFunction('echoAsync', ExpoFunction.typed1(
         ExpoValueTypes.string(),
         async (value: string): Promise<string> => value,
-      ).returns(ExpoValueTypes.string()))
-{{/AsyncFunction}}{{#Event}}      .events(['onChange'])
+      ).returns(ExpoValueTypes.string())){{/AsyncFunction}}{{#Event}}
+      .events(['onChange'])
       .syncFunction('emitChange', ExpoFunction.typed1(
         ExpoValueTypes.string(),
         (value: string): void => { this.sendEvent('onChange', { value }); },
-      ))
-{{/Event}}{{#SharedObject}}      .syncFunction('createCounter', ExpoFunction.typed1(
+      )){{/Event}}{{#SharedObject}}
+      .syncFunction('createCounter', ExpoFunction.typed1(
         ExpoValueTypes.number(),
         (value: number): {{MODULE_BASE}}Counter =>
           counterClass.instance(new {{MODULE_BASE}}Counter(this.appContext, value)),
-      ))
-{{/SharedObject}}      ;
+      )){{/SharedObject}};
   }
 }

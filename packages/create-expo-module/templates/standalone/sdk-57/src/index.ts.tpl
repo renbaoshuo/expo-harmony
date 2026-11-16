@@ -55,7 +55,7 @@ export type {{MODULE_BASE}}ViewProps = Omit<ViewProps, 'ref'> & {
   value?: number | null;
 };
 
-{{/View}}const nativeModule = requireNativeModule<{{MODULE_BASE}}NativeModule>('{{MODULE_NAME}}');
+{{/View}}const nativeModule = requireNativeModule<{{MODULE_BASE}}NativeModule>({{MODULE_NAME_JSON}});
 export default nativeModule;
 
 {{#Constant}}export const platform = nativeModule.platform;
@@ -64,5 +64,5 @@ export default nativeModule;
 {{/AsyncFunction}}{{#Event}}export const emitChange = (value: string): void => nativeModule.emitChange(value);
 {{/Event}}{{#SharedObject}}export const {{MODULE_BASE}}Counter = nativeModule.{{MODULE_BASE}}Counter;
 export const createCounter = (initialValue: number): {{MODULE_BASE}}Counter => nativeModule.createCounter(initialValue);
-{{/SharedObject}}{{#View}}export const {{MODULE_BASE}}View = requireNativeViewManager<{{MODULE_BASE}}ViewProps>('{{MODULE_NAME}}');
+{{/SharedObject}}{{#View}}export const {{MODULE_BASE}}View = requireNativeViewManager<{{MODULE_BASE}}ViewProps>({{MODULE_NAME_JSON}});
 {{/View}}

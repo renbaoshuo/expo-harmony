@@ -9,7 +9,7 @@
   "modelVersion": "5.0.0",
   "name": "{{HARMONY_MODULE}}-harmony",
   "version": "{{PACKAGE_VERSION}}",
-  "license": "MIT",
+  "license": {{LICENSE_JSON}},
   "dependencies": {
     "{{NPM_NAME}}": "./library"
   },
