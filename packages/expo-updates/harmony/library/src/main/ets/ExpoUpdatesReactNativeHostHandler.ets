@@ -11,8 +11,10 @@ import { ReactNativeHostHandler } from '@expo-harmony/expo-modules-core';
 import { UpdatesControllerRegistry } from '@expo-harmony/expo-updates-interface';
 import type { RNInstance } from '@rnoh/react-native-openharmony';
 import { UpdatesController } from './UpdatesController';
+import { UpdatesHostPriority } from './UpdatesProtocol';
 
 export class ExpoUpdatesReactNativeHostHandler implements ReactNativeHostHandler {
+  readonly priority: number = UpdatesHostPriority;
   private readonly context: common.ApplicationContext;
 
   constructor(context: common.Context) {

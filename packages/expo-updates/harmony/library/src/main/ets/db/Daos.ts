@@ -183,6 +183,11 @@ export class UpdatesDao {
     this.db.executeSync('DELETE FROM update_asset_records WHERE update_id=?', [id]);
     this.db.executeSync('DELETE FROM update_records WHERE id=?', [id]);
   }
+
+  deleteAll(): void {
+    this.db.executeSync('DELETE FROM update_asset_records');
+    this.db.executeSync('DELETE FROM update_records');
+  }
 }
 
 export class JSONDataDao {
@@ -209,5 +214,9 @@ export class JSONDataDao {
     const value = this.get(scope, key)?.value ?? null;
     this.db.executeSync('DELETE FROM json_data WHERE scope=? AND key=?', [scope, key]);
     return value;
+  }
+
+  clearManifestMetadata(): void {
+    this.db.executeSync("DELETE FROM json_data WHERE key IN ('extra','headers','filters')");
   }
 }

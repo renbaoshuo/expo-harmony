@@ -90,6 +90,10 @@ npm install @expo-harmony/expo-updates expo-updates@~57.0.26
 
 返回 `Promise<void>`，使用最近下载的更新重载应用。`options.reloadScreenOptions` 可设置重载画面的背景色、图片、图片缩放方式、加载指示器和淡出效果。HarmonyOS 显示系统重载画面；图片加载失败时改为显示加载指示器。
 
+#### `Updates.showReloadScreen(options?)` 和 `Updates.hideReloadScreen()`
+
+返回 `Promise<void>`。调试构建启用 Expo Updates 时，可通过 `showReloadScreen({ reloadScreenOptions })` 预览原生重载画面，再调用 `hideReloadScreen()` 关闭。
+
 #### `Updates.getExtraParamsAsync()`
 
 返回 `Promise<Record<string, string>>`，读取当前额外参数。参数会持久保存，并随更新请求发送；更新未启用时以 `ERR_UPDATES_DISABLED` 拒绝。

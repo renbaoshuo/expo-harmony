@@ -62,9 +62,22 @@ export class ExpoUpdatesModule extends ExpoModule {
       .asyncFunction(
         'reload',
         ExpoFunction.typed1(object.nullable().optional(), async (options: Json | null | undefined): Promise<void> => {
-          if (!this.context.isHeadless) UpdatesReloadScreen.show(this.context.uiAbilityContext, options ?? {});
+          const controller = this.controller;
+
+          if (controller.enabled && !this.context.isHeadless) {
+            try {
+              UpdatesReloadScreen.show(this.context.uiAbilityContext, options ?? {});
+            } catch (error) {
+              if (!(error instanceof ExpoUpdatesError) || error.code !== 'ERR_UPDATES_RELOAD_SCREEN') {
+                return Promise.reject(error as Error);
+              }
+
+              console.warn(error.message);
+            }
+          }
+
           try {
-            await this.controller.reload(this.context.runtimeId, async (reason: string): Promise<void> => this.context.reloadAppAsync(reason));
+            await controller.reload(this.context.runtimeId, async (reason: string): Promise<void> => this.context.reloadAppAsync(reason));
           } catch (error) {
             UpdatesReloadScreen.hide(this.context.uiAbilityContext);
             throw new ExpoUpdatesError(error instanceof ExpoUpdatesError ? error.code : 'ERR_UPDATES_RELOAD', String(error));
@@ -74,7 +87,11 @@ export class ExpoUpdatesModule extends ExpoModule {
       .syncFunction(
         'setUpdateURLAndRequestHeadersOverride',
         ExpoFunction.typed1(object.nullable(), (value: Json | null): void => {
-          this.controller.override(value === null ? null : { url: value.updateUrl, requestHeaders: value.requestHeaders ?? {} });
+          if (value !== null && (typeof value.updateUrl !== 'string' || !value.updateUrl)) {
+            throw new ExpoUpdatesError('ERR_UPDATES_RUNTIME_OVERRIDE', 'An Updates URL override requires a nonempty URL string.');
+          }
+
+          this.controller.override(value === null ? null : { url: value.updateUrl, requestHeaders: value.requestHeaders });
         }),
       )
       .syncFunction(
@@ -86,7 +103,9 @@ export class ExpoUpdatesModule extends ExpoModule {
       .asyncFunction(
         'showReloadScreen',
         ExpoFunction.typed1(object.nullable().optional(), async (options: Json | null | undefined): Promise<void> => {
-          if (this.context.isDebug && !this.context.isHeadless) UpdatesReloadScreen.show(this.context.uiAbilityContext, options ?? {});
+          if (this.context.isDebug && this.controller.enabled && !this.context.isHeadless) {
+            UpdatesReloadScreen.show(this.context.uiAbilityContext, options ?? {});
+          }
         }),
       )
       .asyncFunction('hideReloadScreen', async (): Promise<void> => {

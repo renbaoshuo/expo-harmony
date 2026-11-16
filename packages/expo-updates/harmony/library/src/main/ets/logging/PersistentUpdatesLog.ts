@@ -43,21 +43,26 @@ export class PersistentUpdatesLog {
 
   clear(): Promise<void> { return this.file.updateEntries(() => [imported]); }
 
-  migrateLegacy(readEntries: () => string[] | undefined): Promise<void> {
-    return this.file.updateEntries(current => {
+  async migrateLegacy(readEntries: () => Promise<string[] | undefined>): Promise<void> {
+    if ((await this.file.readEntriesAsync()).includes(imported)) return;
+
+    let legacy: string[] | undefined;
+    try {
+      legacy = await readEntries();
+    } catch (error) {
+      console.warn(`[ExpoUpdates] Unable to read legacy logs; migration will retry: ${String(error)}`);
+      return;
+    }
+
+    if (legacy === undefined) return;
+
+    const retained = legacy.filter(line => this.retained(line));
+
+    await this.file.updateEntries(current => {
       if (current.includes(imported)) return undefined;
 
-      let legacy: string[] | undefined;
-
-      try { legacy = readEntries(); }
-      catch (error) {
-        console.warn(`[ExpoUpdates] Unable to read legacy logs; migration will retry: ${String(error)}`);
-        return undefined;
-      }
-      if (legacy === undefined) return undefined;
-
       // Commit the entries and marker together so retries cannot duplicate an interrupted import.
-      return [imported, ...legacy.filter(line => this.retained(line)), ...current.filter(line => this.retained(line))];
+      return [imported, ...retained, ...current.filter(line => this.retained(line))];
     });
   }
 }

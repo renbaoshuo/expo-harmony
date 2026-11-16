@@ -6,7 +6,7 @@
  */
 
 import { common } from '@kit.AbilityKit';
-import { ComponentContent } from '@kit.ArkUI';
+import { ComponentContent, UIContext } from '@kit.ArkUI';
 import { ExpoUpdatesError, Json } from './UpdatesProtocol';
 import { isRecord } from './UpdatesJson';
 
@@ -97,11 +97,14 @@ function reloadContent(value: ReloadAppearance) {
 }
 
 class ReloadOverlay {
+  readonly ui: UIContext;
   readonly content: ComponentContent<ReloadAppearance>;
   readonly appearance: ReloadAppearance;
   readonly fade: boolean;
+  hiding: boolean = false;
 
-  constructor(content: ComponentContent<ReloadAppearance>, appearance: ReloadAppearance, fade: boolean) {
+  constructor(ui: UIContext, content: ComponentContent<ReloadAppearance>, appearance: ReloadAppearance, fade: boolean) {
+    this.ui = ui;
     this.content = content;
     this.appearance = appearance;
     this.fade = fade;
@@ -109,42 +112,54 @@ class ReloadOverlay {
 }
 
 export class UpdatesReloadScreen {
-  private static readonly overlays = new Map<common.UIAbilityContext, ReloadOverlay>();
+  private static readonly overlays = new WeakMap<common.UIAbilityContext, ReloadOverlay>();
 
   static show(context: common.UIAbilityContext, options: Json): void {
     if (UpdatesReloadScreen.overlays.has(context)) return;
-    const appearance = new ReloadAppearance(options);
 
-    const ui = context.windowStage.getMainWindowSync().getUIContext();
-    const content = new ComponentContent<ReloadAppearance>(ui, wrapBuilder(reloadContent), appearance);
-    const overlay = new ReloadOverlay(content, appearance, options.fade === true);
-    appearance.failed = (): void => {
-      if (UpdatesReloadScreen.overlays.get(context) !== overlay) return;
-      appearance.image = '';
-      appearance.spinner = true;
-      content.update(appearance);
-    };
+    const appearance = new ReloadAppearance(options);
+    let content: ComponentContent<ReloadAppearance> | undefined;
+
     try {
+      const ui = context.windowStage.getMainWindowSync().getUIContext();
+      const node = new ComponentContent<ReloadAppearance>(ui, wrapBuilder(reloadContent), appearance);
+      content = node;
+      const overlay = new ReloadOverlay(ui, node, appearance, options.fade === true);
+
+      appearance.failed = (): void => {
+        if (UpdatesReloadScreen.overlays.get(context) !== overlay || overlay.hiding) return;
+
+        appearance.image = '';
+        appearance.spinner = true;
+
+        try {
+          node.update(appearance);
+        } catch (error) {
+          console.warn(`Unable to replace the Updates reload image: ${String(error)}`);
+        }
+      };
+
       ui.getOverlayManager().addComponentContent(content);
       UpdatesReloadScreen.overlays.set(context, overlay);
     } catch (error) {
-      content.dispose();
+      content?.dispose();
+
       throw new ExpoUpdatesError('ERR_UPDATES_RELOAD_SCREEN', `Unable to show the reload screen: ${String(error)}`);
     }
   }
 
   static hide(context: common.UIAbilityContext): void {
     const overlay = UpdatesReloadScreen.overlays.get(context);
-    if (!overlay) return;
+    if (!overlay || overlay.hiding) return;
     if (!overlay.fade) {
       UpdatesReloadScreen.remove(context);
       return;
     }
 
-    context.windowStage
-      .getMainWindowSync()
-      .getUIContext()
-      .animateTo(
+    overlay.hiding = true;
+
+    try {
+      overlay.ui.animateTo(
         {
           duration: 300,
           onFinish: (): void => {
@@ -156,16 +171,24 @@ export class UpdatesReloadScreen {
           overlay.content.update(overlay.appearance);
         },
       );
+    } catch (error) {
+      console.warn(`Unable to animate the Updates reload screen: ${String(error)}`);
+      UpdatesReloadScreen.remove(context);
+    }
   }
 
   private static remove(context: common.UIAbilityContext): void {
     const overlay = UpdatesReloadScreen.overlays.get(context);
     if (!overlay) return;
+
+    UpdatesReloadScreen.overlays.delete(context);
+
     try {
-      context.windowStage.getMainWindowSync().getUIContext().getOverlayManager().removeComponentContent(overlay.content);
+      overlay.ui.getOverlayManager().removeComponentContent(overlay.content);
+    } catch (error) {
+      console.warn(`Unable to remove the Updates reload screen: ${String(error)}`);
     } finally {
       overlay.content.dispose();
-      UpdatesReloadScreen.overlays.delete(context);
     }
   }
 }

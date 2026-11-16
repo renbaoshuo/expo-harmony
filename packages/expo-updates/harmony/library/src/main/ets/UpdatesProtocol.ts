@@ -11,6 +11,7 @@ import { domBundleDirectory, isSafeAssetFilename, isSafeFilename, isUpdateId } f
 import { Decimal, parseDictionary, serializeDictionary } from '@expo-harmony/expo-structured-headers';
 import { matchesFilters as policyMatchesFilters } from './selectionpolicy/Filters';
 
+export const UpdatesHostPriority = 10;
 export type Json = Record<string, ESObject>;
 export type Headers = Record<string, string>;
 export type Filters = Record<string, string | number | boolean>;
@@ -89,6 +90,12 @@ interface Part {
   headers: Headers;
 }
 
+interface Boundary {
+  start: number;
+  end: number;
+  closing: boolean;
+}
+
 export function normalizeHeaders(value: Record<string, ESObject>): Headers {
   const headers: Headers = Object.create(null);
   for (const [key, item] of Object.entries(value)) headers[key.toLowerCase()] = Array.isArray(item) ? item.join(', ') : String(item);
@@ -125,6 +132,24 @@ export function parameters(value: string): Headers {
   return result;
 }
 
+function nextBoundary(body: string, delimiter: string, offset: number): Boundary | undefined {
+  const line = '\r\n' + delimiter;
+  let start = offset === 0 && body.startsWith(delimiter) ? 0 : body.indexOf(line, offset);
+
+  while (start !== -1) {
+    let end = start + (start === 0 && body.startsWith(delimiter) ? delimiter.length : line.length);
+    const closing = body.startsWith('--', end);
+    if (closing) end += 2;
+    while (body[end] === ' ' || body[end] === '\t') end++;
+    if (body.startsWith('\r\n', end)) return { start, end: end + 2, closing };
+    if (closing && end === body.length) return { start, end, closing };
+
+    start = body.indexOf(line, end);
+  }
+
+  return undefined;
+}
+
 function multipart(body: string, content: string): Record<string, Part> {
   if (!body.length) return {};
 
@@ -133,19 +158,20 @@ function multipart(body: string, content: string): Record<string, Part> {
 
   const delimiter = '--' + boundary;
   const parts: Record<string, Part> = Object.create(null);
-  let start = body.startsWith(delimiter) ? 0 : body.indexOf('\r\n' + delimiter) + 2;
-  if (start < 2 && !body.startsWith(delimiter)) throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'Multipart response has no opening boundary.');
+  let current = nextBoundary(body, delimiter, 0);
+  if (!current) throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'Multipart response has no opening boundary.');
 
-  while (start < body.length) {
-    start += delimiter.length;
-    if (body.slice(start, start + 2) === '--') return parts;
-    if (body.slice(start, start + 2) !== '\r\n') throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'Invalid multipart delimiter.');
+  while (!current.closing) {
+    const start = current.end;
+    const next = nextBoundary(body, delimiter, start);
 
-    start += 2;
+    if (!next) throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'Multipart response has no closing boundary.');
+    current = next;
 
+    // Without Content-Disposition, this part has no name.
+    if (body.startsWith('\r\n', start)) continue;
     const split = body.indexOf('\r\n\r\n', start);
-    const end = body.indexOf('\r\n' + delimiter, split + 4);
-    if (split < 0 || end < 0) throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'Incomplete multipart response.');
+    if (split < 0 || split > next.start - 4) throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'Incomplete multipart response.');
 
     const headers: Headers = Object.create(null);
     for (const line of body.slice(start, split).replace(/\r\n[ \t]+/g, ' ').split('\r\n')) {
@@ -155,11 +181,10 @@ function multipart(body: string, content: string): Record<string, Part> {
     }
 
     const name = parameters(headers['content-disposition'] ?? '').name;
-    if (name) parts[name] = { body: body.slice(split + 4, end), headers };
-    start = end + 2;
+    if (name) parts[name] = { body: body.slice(split + 4, next.start), headers };
   }
 
-  throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'Multipart response has no closing boundary.');
+  return parts;
 }
 
 function asset(value: unknown, headers: Json, launch: boolean): UpdateAsset {

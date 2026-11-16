@@ -47,6 +47,7 @@ export class UpdatesDownloader {
     const request = http.createHttp();
     let file: fs.File | undefined;
     let response: Headers = {};
+    let receiving = true;
 
     try {
       file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
@@ -54,27 +55,44 @@ export class UpdatesDownloader {
       request.on('headersReceive', value => { response = normalizeHeaders(value as Record<string, ESObject>); });
       const completed = new Promise<void>((resolve, reject) => {
         request.on('dataReceive', bytes => {
-          try { write(file!, bytes); }
-          catch (error) {
+          if (!receiving) return;
+
+          try {
+            write(file!, bytes);
+          } catch (error) {
+            receiving = false;
             reject(new ExpoUpdatesError('ERR_UPDATES_ASSET', `Unable to write update asset: ${String(error)}`));
-            request.destroy();
           }
         });
         request.on('dataEnd', resolve);
-        request.on('dataReceiveProgress', value => progress(value.receiveSize, value.totalSize));
+        request.on('dataReceiveProgress', value => {
+          if (receiving) progress(value.receiveSize, value.totalSize);
+        });
       });
 
-      const pending = request.requestInStream(url, { method: http.RequestMethod.GET,
-        header: headers, usingCache: false, connectTimeout: timeout, readTimeout: timeout });
-      const [status] = await Promise.all([pending, completed]);
-      if (status < 200 || status >= 300) throw new ExpoUpdatesError('ERR_UPDATES_ASSET', `Asset request returned HTTP ${status}.`);
+      const pending = request.requestInStream(url, {
+        method: http.RequestMethod.GET,
+        header: headers,
+        usingCache: false,
+        connectTimeout: timeout,
+        readTimeout: timeout,
+      }).then(status => {
+        if (status < 200 || status >= 300) throw new ExpoUpdatesError('ERR_UPDATES_ASSET', `Asset request returned HTTP ${status}.`);
+        return status;
+      });
 
+      const [status] = await Promise.all([pending, completed]);
       fs.fsyncSync(file.fd);
 
       return { status, headers: response };
     } finally {
-      request.destroy();
-      if (file) fs.closeSync(file);
+      receiving = false;
+
+      try {
+        request.destroy();
+      } finally {
+        if (file) fs.closeSync(file);
+      }
     }
   }
 

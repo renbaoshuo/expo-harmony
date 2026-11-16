@@ -8,8 +8,10 @@
 import type { common } from '@kit.AbilityKit';
 import type { ReactActivityHandler, ReactRootViewContext } from '@expo-harmony/expo-modules-core';
 import { UpdatesController } from './UpdatesController';
+import { UpdatesHostPriority } from './UpdatesProtocol';
 
 export class ExpoUpdatesReactActivityHandler implements ReactActivityHandler {
+  readonly priority: number = UpdatesHostPriority;
   private readonly context: common.ApplicationContext;
 
   constructor(context: common.Context) {

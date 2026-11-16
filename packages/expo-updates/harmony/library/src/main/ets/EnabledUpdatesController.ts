@@ -92,6 +92,7 @@ export class EnabledUpdatesController implements IUpdatesController {
 
   start(): void {
     if (this.started) return;
+
     this.started = true;
     void this.launch().catch((error: Error): void => {
       this.disable(new ExpoUpdatesError('ERR_UPDATES_INITIALIZATION', `Unable to initialize Updates: ${String(error)}`, error));
@@ -111,15 +112,21 @@ export class EnabledUpdatesController implements IUpdatesController {
 
     this.overrides = new UpdatesConfigurationOverride(this.context);
     if (!this.overrides.initialized) this.overrides.save(await this.storage.metadata('', 'configuration'));
-    this.initialized = true;
 
+    let hasOverride = false;
     try {
       const override = this.overrides.load();
-      if (override) this.configuration = this.original.override(override, this.development, true);
+      if (override) {
+        this.configuration = this.original.override(override, this.development, true);
+        hasOverride = true;
+      }
     } catch (error) {
       this.storage.logger.log(`Ignoring invalid persisted configuration: ${String(error)}`, 'InitializationError', 'warn');
       this.overrides.save(null);
     }
+
+    if (!hasOverride) await this.storage.ensureBuildData(this.configuration);
+    this.initialized = true;
 
     await this.state.queue(this.startup);
     this.startup.reap();
@@ -175,10 +182,10 @@ export class EnabledUpdatesController implements IUpdatesController {
   async setExtra(key: string, value: string | null): Promise<void> {
     await this.ready;
     this.requireEnabled();
+
     await this.storage.updateMetadata(this.configuration.scope, 'extra', extra => {
-      const next = { ...extra };
+      const next = value === null ? { ...extra } : { ...extra, [key]: value };
       if (value === null) delete next[key];
-      else next[key] = value;
       serializeHeaders(next);
 
       return next;

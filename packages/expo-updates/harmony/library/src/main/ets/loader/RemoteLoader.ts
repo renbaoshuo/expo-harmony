@@ -16,6 +16,7 @@ import { EASClientID } from '@expo-harmony/expo-eas-client/EASClientID';
 import { UpdatesSelectionPolicy } from '../selectionpolicy/UpdatesSelectionPolicy';
 
 export type DownloadProgress = (progress: number) => void;
+const concurrentAssetDownloads = 5;
 
 export class RemoteLoader {
   constructor(private readonly storage: UpdatesStorage, private readonly downloader: UpdatesDownloader, private readonly identity: EASClientID) {}
@@ -115,42 +116,54 @@ export class RemoteLoader {
     count?: (successful: number, failed: number, total: number) => void): Promise<UpdateRecord> {
     await this.storage.insert(update);
 
-    const progress = new Array(update.assets.length).fill(0);
-    const results = await Promise.allSettled(update.assets.map(async (asset, index) => {
-      const result = await this.downloader.asset(asset, headers, (received, total) => {
-        progress[index] = total > 0 ? received / total : 0;
-        report(progress.reduce((sum, value) => sum + value, 0) / progress.length);
-      }, {
-        base,
-        requested: update.id,
-        patch: asset.launch && config.enableBsdiffPatchSupport,
-        headers: config.headers,
-        timeout: Math.max(config.wait, 10000),
-      });
-      progress[index] = 1;
-
-      return result;
-    }));
-
+    const total = update.assets.length;
+    const progress = new Array<number>(total).fill(0);
     const failures: Error[] = [];
+    let next = 0;
+    let fraction = 0;
     let successful = 0;
     let failed = 0;
 
-    for (let index = 0; index < results.length; index++) {
-      const result = results[index];
-      if (result.status === 'rejected') {
-        failed++;
-        count?.(successful, failed, update.assets.length);
-        failures.push(result.reason instanceof Error ? result.reason : new Error(String(result.reason)));
-        continue;
+    const updateProgress = (index: number, value: number): void => {
+      if (value <= progress[index]) return;
+
+      fraction += (value - progress[index]) / total;
+      progress[index] = value;
+      report(Math.min(1, fraction));
+    };
+
+    const download = async (): Promise<void> => {
+      while (next < total) {
+        const index = next++;
+        const asset = update.assets[index];
+
+        try {
+          update.assets[index] = await this.downloader.asset(asset, headers, (received, size) => {
+            if (size > 0 && Number.isFinite(received)) updateProgress(index, Math.min(1, received / size));
+          }, {
+            base,
+            requested: update.id,
+            patch: asset.launch && config.enableBsdiffPatchSupport,
+            headers: config.headers,
+            timeout: Math.max(config.wait, 10000),
+          });
+          successful++;
+          updateProgress(index, 1);
+        } catch (error) {
+          failed++;
+          failures.push(error instanceof Error ? error : new Error(String(error)));
+        }
+
+        try {
+          count?.(successful, failed, total);
+        } catch (error) {
+          this.storage.logger.warn(`Unable to report asset progress: ${String(error)}`);
+        }
       }
+    };
 
-      update.assets[index] = result.value;
-      successful++;
-      count?.(successful, failed, update.assets.length);
-    }
+    await Promise.all(Array.from({ length: Math.min(total, concurrentAssetDownloads) }, download));
 
-    report(progress.reduce((sum, value) => sum + value, 0) / progress.length);
     if (failures.length) {
       const error = failures[0];
       throw new ExpoUpdatesError(error instanceof ExpoUpdatesError ? error.code : 'ERR_UPDATES_ASSET', String(error), error instanceof Error ? error : undefined);
@@ -158,6 +171,8 @@ export class RemoteLoader {
 
     update.status = status;
     await this.storage.finish(update);
+
+    if (fraction < 1) report(1);
 
     return update;
   }

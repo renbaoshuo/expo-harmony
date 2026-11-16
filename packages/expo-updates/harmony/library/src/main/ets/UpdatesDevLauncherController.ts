@@ -26,6 +26,11 @@ interface DevelopmentUpdate {
   activate?: () => void;
 }
 
+interface DevelopmentRuntime {
+  configuration: UpdatesConfiguration;
+  update?: UpdateRecord;
+}
+
 export class UpdatesDevLauncherController implements IUpdatesController {
   readonly state = new UpdatesState();
   readonly ready: Promise<void> = Promise.resolve();
@@ -35,6 +40,7 @@ export class UpdatesDevLauncherController implements IUpdatesController {
   private readonly storage: UpdatesStorage;
   private readonly downloader: UpdatesDownloader;
   private readonly loader: RemoteLoader;
+  private readonly runtimes = new Map<number, DevelopmentRuntime>();
   private opened = false;
   private current?: UpdateRecord;
   private selectionGeneration = 0;
@@ -58,8 +64,11 @@ export class UpdatesDevLauncherController implements IUpdatesController {
 
   start(): void {}
 
-  constants(_id?: number): Json {
-    const update = this.current;
+  constants(id?: number): Json {
+    const runtime = id === undefined ? undefined : this.runtimes.get(id);
+    const update = runtime === undefined ? this.current : runtime.update;
+    const config = runtime?.configuration ?? this.config;
+
     return {
       isEnabled: true,
       isEmergencyLaunch: false,
@@ -67,9 +76,9 @@ export class UpdatesDevLauncherController implements IUpdatesController {
       launchDuration: null,
       isEmbeddedLaunch: false,
       isUsingEmbeddedAssets: false,
-      runtimeVersion: this.config.runtime || '1',
-      checkAutomatically: this.config.check,
-      channel: this.config.headers['expo-channel-name'] ?? '',
+      runtimeVersion: config.runtime || '1',
+      checkAutomatically: config.check,
+      channel: config.headers['expo-channel-name'] ?? '',
       shouldDeferToNativeForAPIMethodAvailabilityInDevelopment: true,
       updateId: update?.id,
       commitTime: update?.time,
@@ -80,11 +89,21 @@ export class UpdatesDevLauncherController implements IUpdatesController {
     };
   }
 
-  attach(_id: number, _reload: (reason: string) => Promise<void>, _owner: Object): () => void { return () => {}; }
+  attach(id: number, _reload: (reason: string) => Promise<void>, _owner: Object): () => void {
+    const runtime: DevelopmentRuntime = { configuration: this.config, update: this.current };
+    this.runtimes.set(id, runtime);
+
+    return () => {
+      if (this.runtimes.get(id) === runtime) this.runtimes.delete(id);
+    };
+  }
+
   loaded(_id: number): void {}
   contentAppeared(_id: number): void {}
-  hasAsset(_id: number, path: string): boolean {
-    return this.current?.assets.some(asset => asset.path === path) === true || [...this.current?.domAssets?.files.values() ?? []].includes(path);
+
+  hasAsset(id: number, path: string): boolean {
+    const update = this.runtimes.get(id)?.update;
+    return update?.assets.some(asset => asset.path === path) === true || [...update?.domAssets?.files.values() ?? []].includes(path);
   }
   onReactInstanceException(_id: number, _error: Error): void {}
 
@@ -162,24 +181,30 @@ export class UpdatesDevLauncherController implements IUpdatesController {
       const launcher = new UpdatesDatabaseLauncher(this.storage, this.downloader, policy, () => undefined);
       const update = await launcher.launch(configuration, async () => headers);
       const path = update?.assets.find(asset => asset.launch)?.path;
+
       if (!update || !path) throw new ExpoUpdatesError('ERR_UPDATES_ASSET', 'The development update has no launch asset.');
 
       const activate = (): void => {
         if (generation !== this.selectionGeneration) {
           throw new ExpoUpdatesError('ERR_UPDATES_DEV_CLIENT', 'The development update selection was superseded.');
         }
+
         ++this.selectionGeneration;
         const previous = this.current;
         this.current = update;
         this.config = configuration;
+
         void this.state.queue({
           run: async (): Promise<void> => {
             const updates = await this.storage.updates();
             const obsolete = policy.toDelete(updates, update);
-            await this.storage.delete(obsolete.filter(record => record.id !== previous?.id && record.id !== this.current?.id));
+            const active = new Set([...this.runtimes.values()].map(runtime => runtime.update?.id));
+
+            await this.storage.delete(obsolete.filter(record => record.id !== previous?.id && record.id !== this.current?.id && !active.has(record.id)));
           },
         }).catch(error => this.storage.logger.log(`Unable to reap development updates: ${String(error)}`, 'Unknown', 'warn'));
       };
+
       const result = { manifest: update.manifest, launchAssetPath: path };
       if (deferActivation) return { ...result, activate };
       activate();

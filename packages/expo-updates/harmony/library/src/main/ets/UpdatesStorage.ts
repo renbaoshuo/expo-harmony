@@ -23,6 +23,8 @@ import { DatabaseIntegrityCheck } from './db/DatabaseIntegrityCheck';
 import { Reaper } from './db/Reaper';
 import { UpdatesLogger } from './logging/UpdatesLogger';
 import { assetFileUrl, domBundleDirectory, isAssetPath, isUpdateId } from './UpdatesAssetPaths';
+import type { UpdatesConfiguration } from './UpdatesConfiguration';
+import { equalHeaders } from './selectionpolicy/Configuration';
 
 export function encode(value: string): Uint8Array { return new util.TextEncoder().encode(value); }
 export function decode(value: Uint8Array): string { return new util.TextDecoder('utf-8', { fatal: true }).decodeToString(value); }
@@ -252,6 +254,22 @@ export class UpdatesStorage {
   update(id: string): Promise<UpdateRecord | undefined> { return this.read((_a, updates) => updates.get(id)); }
   failed(): Promise<UpdateRecord[]> { return this.read((_a, updates) => updates.failed()); }
   launchable(scope: string): Promise<UpdateRecord[]> { return this.write((_a, updates) => updates.launchable(scope)); }
+
+  async ensureBuildData(configuration: UpdatesConfiguration): Promise<void> {
+    const { scope, url, headers, embedded } = configuration;
+
+    await this.write((_a, updates, metadata) => {
+      const previous = metadata.get(scope, 'buildData')?.value;
+      if (previous && previous.url === url && previous.embedded === embedded && equalHeaders(previous.headers, headers)) return;
+
+      if (previous) {
+        updates.deleteAll();
+        metadata.clearManifestMetadata();
+      }
+
+      metadata.set(scope, 'buildData', { url, headers, embedded });
+    });
+  }
 
   async insert(update: UpdateRecord): Promise<void> {
     if (update.assets.filter(asset => asset.launch).length !== 1) throw new ExpoUpdatesError('ERR_UPDATES_DATABASE', 'An update must have exactly one launch asset.');

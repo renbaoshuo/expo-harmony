@@ -17,9 +17,10 @@ import {
 import { assetAccess } from './UpdatesAssetAccess';
 import { prepareClientIdentity } from './UpdatesClientIdentity';
 import { UpdatesController } from './UpdatesController';
-import { ExpoUpdatesError } from './UpdatesProtocol';
+import { ExpoUpdatesError, UpdatesHostPriority } from './UpdatesProtocol';
 
 export class ExpoUpdatesRuntimeBinding implements ReactRuntimeBinding {
+  readonly priority: number = UpdatesHostPriority;
   private readonly context: common.ApplicationContext;
 
   constructor(context: common.Context) {
@@ -33,7 +34,7 @@ export class ExpoUpdatesRuntimeBinding implements ReactRuntimeBinding {
     });
 
     const controller = UpdatesController.get(this.context);
-    if (!controller.active) return;
+    if (!controller.enabled) return;
 
     const instance = context.instance;
     const id = instance.getId();
@@ -60,11 +61,15 @@ export class ExpoUpdatesRuntimeBinding implements ReactRuntimeBinding {
           return assetAccess(path, mode, (candidate: string): boolean => controller.hasAsset(id, candidate));
         }),
       );
-      subscriptions.push(instance.cppEventEmitter.subscribe(EXPO_CONTENT_APPEARED, (): void => controller.contentAppeared(id)));
+
+      if (controller.active) {
+        subscriptions.push(instance.cppEventEmitter.subscribe(EXPO_CONTENT_APPEARED, (): void => controller.contentAppeared(id)));
+      }
 
       return cleanup;
     } catch (error) {
       cleanup();
+
       throw new ExpoUpdatesError('ERR_UPDATES_RUNTIME', 'Unable to attach the React runtime.', error as Error);
     }
   }

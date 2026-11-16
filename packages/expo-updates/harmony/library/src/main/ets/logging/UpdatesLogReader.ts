@@ -30,30 +30,42 @@ export class UpdatesLogReader {
     } catch (error) { throw new ExpoUpdatesError('ERR_UPDATES_READ_LOGS', `Unable to read expo-updates logs: ${String(error)}`, error as Error); }
   }
 
-  private readLegacyEntries(): string[] | undefined {
+  private async readLegacyEntries(): Promise<string[] | undefined> {
     const path = `${this.context.databaseDir}/rdb/expo-updates.db`;
 
-    try { if (!fs.accessSync(path)) return undefined; } catch (_) { return undefined; }
+    try {
+      if (!fs.accessSync(path)) return undefined;
+    } catch (_) {
+      return undefined;
+    }
 
-    const store = relationalStore.getRdbStoreSync(this.context, {
+    const store = await relationalStore.getRdbStore(this.context, {
       name: 'expo-updates.db',
       securityLevel: relationalStore.SecurityLevel.S1,
       isReadOnly: true,
     });
 
     try {
-      const tables = store.querySqlSync("SELECT 1 FROM sqlite_master WHERE type='table' AND name='logs'");
+      const tables = await store.querySql("SELECT 1 FROM sqlite_master WHERE type='table' AND name='logs'");
 
-      try { if (!tables.goToNextRow()) return []; } finally { tables.close(); }
+      try {
+        if (!tables.goToNextRow()) return [];
+      } finally {
+        tables.close();
+      }
 
-      const rows = store.querySqlSync('SELECT payload FROM logs ORDER BY timestamp', []);
+      const rows = await store.querySql('SELECT payload FROM logs ORDER BY timestamp');
 
       try {
         const entries: string[] = [];
         while (rows.goToNextRow()) entries.push(rows.getString(0));
         return entries;
-      } finally { rows.close(); }
-    } finally { store.close().catch(error => console.warn(`[ExpoUpdates] Unable to close the legacy log database: ${String(error)}`)); }
+      } finally {
+        rows.close();
+      }
+    } finally {
+      await store.close().catch(error => console.warn(`[ExpoUpdates] Unable to close the legacy log database: ${String(error)}`));
+    }
   }
 
   async clear(): Promise<void> {

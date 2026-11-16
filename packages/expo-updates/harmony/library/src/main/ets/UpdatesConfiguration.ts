@@ -35,14 +35,23 @@ export class UpdatesConfiguration {
     this.url = typeof raw.url === 'string' ? raw.url : '';
     this.debug = raw.useNativeDebug === true;
     this.enabled = raw.enabled !== false && (!development || this.debug) && !!this.url && !!this.runtime;
-    if (this.url && !/^https?:\/\/[^/?#\s]+(?:[/?#]|$)/i.test(this.url)) {
-      throw new ExpoUpdatesError('ERR_UPDATES_CONFIGURATION', 'Updates URL must use HTTP or HTTPS.');
-    }
+
     if (raw.scopeKey !== undefined && (typeof raw.scopeKey !== 'string' || !raw.scopeKey)) {
       throw new ExpoUpdatesError('ERR_UPDATES_CONFIGURATION', 'scopeKey must be a nonempty string.');
     }
 
-    this.scope = raw.scopeKey ?? (this.url ? new url.URL(this.url).origin : '');
+    let origin = '';
+    if (this.url) {
+      try {
+        const parsed = url.URL.parseURL(this.url);
+        if (!parsed.hostname || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) throw new Error('Expected HTTP or HTTPS.');
+        origin = parsed.origin;
+      } catch (error) {
+        throw new ExpoUpdatesError('ERR_UPDATES_CONFIGURATION', 'Updates URL must be an absolute HTTP or HTTPS URL.', error as Error);
+      }
+    }
+
+    this.scope = raw.scopeKey ?? origin;
     this.headers = UpdatesConfiguration.headers(raw.requestHeaders ?? {});
     this.check = raw.checkAutomatically === 'ON_LOAD' ? 'ALWAYS'
       : raw.checkAutomatically === 'ON_ERROR_RECOVERY' ? 'ERROR_RECOVERY_ONLY' : raw.checkAutomatically ?? 'ALWAYS';
@@ -55,6 +64,7 @@ export class UpdatesConfiguration {
 
     this.embedded = raw.useEmbeddedUpdate !== false;
     this.unsafe = raw.disableAntiBrickingMeasures === true;
+
     if (raw.codeSigningCertificate !== undefined && (typeof raw.codeSigningCertificate !== 'string' || !raw.codeSigningCertificate.trim())) {
       throw new ExpoUpdatesError('ERR_UPDATES_CONFIGURATION', 'The signing certificate must be nonempty PEM text.');
     }
@@ -86,6 +96,9 @@ export class UpdatesConfiguration {
 
   override(value: Json | null, development: boolean, persisted: boolean = false): UpdatesConfiguration {
     if (value === null) return new UpdatesConfiguration(this.raw, development);
+    if (!isRecord(value) || (value.url !== undefined && (typeof value.url !== 'string' || !value.url))) {
+      throw new ExpoUpdatesError('ERR_UPDATES_RUNTIME_OVERRIDE', 'An Updates URL override requires a nonempty URL string.');
+    }
     if (value.url !== undefined && !this.unsafe) throw new ExpoUpdatesError('ERR_UPDATES_CONFIGURATION', 'URL overrides require disableAntiBrickingMeasures.');
 
     let headers: Headers;
@@ -93,6 +106,7 @@ export class UpdatesConfiguration {
       headers = UpdatesConfiguration.headers(value.requestHeaders ?? this.headers);
     } catch (error) {
       if (!persisted) throw new ExpoUpdatesError('ERR_UPDATES_CONFIGURATION', 'Invalid request header override.', error instanceof Error ? error : undefined);
+
       console.warn('[ExpoUpdates] Invalid persisted request header override; using embedded request headers.');
       headers = this.headers;
     }
@@ -103,7 +117,7 @@ export class UpdatesConfiguration {
       headers = this.headers;
     }
 
-    return new UpdatesConfiguration({ ...this.raw, ...value, requestHeaders: headers,
+    return new UpdatesConfiguration({ ...this.raw, url: value.url ?? this.url, requestHeaders: headers,
       useEmbeddedUpdate: this.unsafe ? false : this.raw.useEmbeddedUpdate }, development);
   }
 }
