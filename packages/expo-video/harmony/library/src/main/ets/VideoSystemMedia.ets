@@ -247,15 +247,22 @@ export class VideoSystemMedia {
   }
 
   private async stopTask(): Promise<void> {
-    const taskId = this.taskId;
-    if (taskId === undefined) return;
-    this.stoppingTaskId = taskId;
+    const id = this.taskId;
+    if (id === undefined) return;
+
+    this.stoppingTaskId = id;
     try {
-      await backgroundTaskManager.stopBackgroundRunning(this.context, taskId);
-      this.taskId = undefined;
+      await backgroundTaskManager.stopBackgroundRunning(this.context, id);
+    } catch (error) {
+      if (this.taskId === id) {
+        const active = await backgroundTaskManager.getAllContinuousTasks(this.context, true);
+        if (active.some((task): boolean => task.continuousTaskId === id)) throw error as Error;
+      }
     } finally {
       this.stoppingTaskId = undefined;
     }
+
+    this.taskId = undefined;
   }
 
   private async destroySession(): Promise<void> {

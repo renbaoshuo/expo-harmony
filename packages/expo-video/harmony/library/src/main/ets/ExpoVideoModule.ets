@@ -112,7 +112,8 @@ export class ExpoVideoModule extends ExpoModule {
       .sharedRef('image')
       .property('width', ExpoValueTypes.number(), (value: VideoThumbnail): number => value.width)
       .property('height', ExpoValueTypes.number(), (value: VideoThumbnail): number => value.height)
-      .property('requestedTime', ExpoValueTypes.number(), (value: VideoThumbnail): number => value.requestedTime);
+      .property('requestedTime', ExpoValueTypes.number(), (value: VideoThumbnail): number => value.requestedTime)
+      .property('actualTime', ExpoValueTypes.number(), (value: VideoThumbnail): number => value.actualTime);
 
     const player = new ExpoSharedObjectClassDefinition<VideoPlayer>('VideoPlayer')
       .construct(

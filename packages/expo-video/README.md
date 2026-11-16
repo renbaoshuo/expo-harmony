@@ -435,12 +435,10 @@ export function Player({ uri }: { uri: string }) {
 
 #### `BufferOptions`
 
-只有 `preferredForwardBufferDuration` 会生效，单位为秒。设为 `0` 使用系统默认值，或设为 1 到 20 秒。必须在数据源准备前设置。
+`preferredForwardBufferDuration` 和 `minBufferForPlayback` 必须在数据源准备前设置，单位为秒。前者设为 `0` 使用系统默认值，也可设为 1 到 20 秒。
 
-- `waitsToMinimizeStalling`：HarmonyOS 不支持此选项，设置后会抛出 `ERR_VIDEO_UNSUPPORTED`。
-- `minBufferForPlayback`：HarmonyOS 不支持此选项，设置后会抛出 `ERR_VIDEO_UNSUPPORTED`。
-- `maxBufferBytes`：HarmonyOS 不支持此选项，设置后会抛出 `ERR_VIDEO_UNSUPPORTED`。
-- `prioritizeTimeOverSizeThreshold`：HarmonyOS 不支持此选项，设置后会抛出 `ERR_VIDEO_UNSUPPORTED`。
+- `minBufferForPlayback`：可设为 0 到 20 秒，缓冲达到阈值后开始或恢复播放。若向前缓冲时长小于此值，则使用系统起播阈值。
+- `waitsToMinimizeStalling`、`maxBufferBytes` 和 `prioritizeTimeOverSizeThreshold` 接受上游默认值。自定义值会抛出 `ERR_VIDEO_UNSUPPORTED`。
 
 #### `SeekTolerance`
 
@@ -480,9 +478,7 @@ export function Player({ uri }: { uri: string }) {
 
 #### `VideoThumbnail`
 
-`generateThumbnailsAsync()` 返回的图像对象，包含 `width`、`height` 和 `requestedTime`。图像资源不再使用时调用 `release()`。
-
-- HarmonyOS 不提供 `actualTime`。
+`generateThumbnailsAsync()` 返回的图像对象，包含 `width`、`height`、`requestedTime` 和 `actualTime`。API 23 及以上从 Media Kit 获取实际帧时间。系统未提供帧时间时，`actualTime` 回退到请求时间。图像资源不再使用时调用 `release()`。
 
 #### `VideoAirPlayButtonProps`
 

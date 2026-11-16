@@ -81,6 +81,7 @@ class VideoLoad {
   preparing: boolean = false;
   sourceLoaded: boolean = false;
   buffering: boolean = false;
+  bufferedPosition: number = 0;
   firstFrameRendered: boolean = false;
   videoRanges: Promise<Record<string, VideoRange>> = Promise.resolve<Record<string, VideoRange>>({});
   nativeError?: Error;
@@ -372,6 +373,9 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
       this.schedule(load, async (player: media.AVPlayer): Promise<void> => {
         if (this.surface !== surface) return;
 
+        if (load.surface !== surface) await this.waitForSurface(load, surface);
+        if (!this.active(load) || this.surface !== surface) return;
+
         player.surfaceId = surface;
         load.surface = surface;
       });
@@ -396,11 +400,11 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
     if (this.released || this.load !== previous || this.source === null) return;
 
     const load = new VideoLoad();
-
     this.load = load;
     this.setPlaying(false);
     this.setStatus('loading');
     this.releaseAudioFocus();
+
     void this.dispose(previous);
     this.initialize(load, this.source).catch((): void => {});
   }
@@ -417,25 +421,20 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
         return;
       }
 
-      // Let the retiring decoder stop writing to this surface before a replacement prepares on it.
-      const retiring = Array.from(this.retired).filter((previous: VideoLoad): boolean => previous.surface === surface);
-      if (retiring.length > 0) {
-        await withLoadTimeout(
-          Promise.all(retiring.map((previous: VideoLoad): Promise<void> => this.dispose(previous))),
-          'Previous video surface release timed out.',
-        );
-        if (!this.active(load)) return;
-        if (retiring.some((previous: VideoLoad): boolean => previous.player !== undefined)) {
-          throw new ExpoModuleError('ERR_VIDEO_PLAYBACK', 'The previous video surface could not be released.');
-        }
-      }
+      await this.waitForSurface(load, surface);
+      if (!this.active(load)) return;
 
       const strategy: media.PlaybackStrategy = { showFirstFrameOnPrepare: true };
       if ((this.bufferOptions.preferredForwardBufferDuration ?? 0) > 0) {
         strategy.preferredBufferDuration = this.bufferOptions.preferredForwardBufferDuration;
       }
+      const minimum = this.bufferOptions.minBufferForPlayback;
+      if (minimum !== undefined && (strategy.preferredBufferDuration ?? MAX_BUFFER_SECONDS) >= minimum) {
+        strategy.preferredBufferDurationForPlaying = minimum;
+      }
+
       await player.setPlaybackStrategy(strategy);
-      if (!this.active(load) || !this.surface) {
+      if (!this.active(load) || this.surface !== surface) {
         load.preparing = false;
         return;
       }
@@ -453,7 +452,7 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
 
       if (!this.isLive) player.loop = this.loop;
       this.applyVolume(player);
-      await player.setMediaMuted(media.MediaType.MEDIA_TYPE_AUD, this.audioDisabled);
+      if (this.audioDisabled) await player.setMediaMuted(media.MediaType.MEDIA_TYPE_AUD, true);
       if (!this.active(load)) return;
       if (!this.isLive) player.setPlaybackRate(this.playbackRate);
       if (this.pendingSeek !== undefined) this.performSeek(player, this.pendingSeek);
@@ -472,6 +471,21 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
       });
       this.reconcilePlayback();
     });
+  }
+
+  private async waitForSurface(load: VideoLoad, surface: string): Promise<void> {
+    const retiring = Array.from(this.retired).filter((item: VideoLoad): boolean => item.surface === surface);
+    if (retiring.length === 0) return;
+
+    // Wait until the old decoder stops writing to this surface.
+    await withLoadTimeout(
+      Promise.all(retiring.map((previous: VideoLoad): Promise<void> => this.dispose(previous))),
+      'Previous video surface release timed out.',
+    );
+
+    if (this.active(load) && retiring.some((item: VideoLoad): boolean => item.player !== undefined)) {
+      throw new ExpoModuleError('ERR_VIDEO_PLAYBACK', 'The previous video surface could not be released.');
+    }
   }
 
   private listen(load: VideoLoad, player: media.AVPlayer): void {
@@ -531,18 +545,23 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
 
       if (kind === media.BufferingInfoType.BUFFERING_START) {
         load.buffering = true;
+        load.bufferedPosition = 0;
         this.bufferedPosition = 0;
         this.setPlaying(false);
         if (load.sourceLoaded) this.setStatus('loading');
       }
+
       if (kind === media.BufferingInfoType.BUFFERING_END) {
         load.buffering = false;
+        this.bufferedPosition = load.bufferedPosition;
         this.setPlaying(player.state === 'playing');
         if (load.sourceLoaded) this.setStatus('readyToPlay');
       }
-      if (kind === media.BufferingInfoType.CACHED_DURATION && !load.buffering && Number.isFinite(value) && value >= 0) {
-        this.bufferedPosition = this.currentTime + value / 1000;
-        if (!this.isLive && this.duration > 0) this.bufferedPosition = Math.min(this.duration, this.bufferedPosition);
+
+      if (kind === media.BufferingInfoType.CACHED_DURATION && Number.isFinite(value) && value >= 0) {
+        const position = this.currentTime + value / 1000;
+        load.bufferedPosition = !this.isLive && this.duration > 0 ? Math.min(this.duration, position) : position;
+        if (!load.buffering) this.bufferedPosition = load.bufferedPosition;
       }
     });
 
@@ -859,27 +878,36 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
 
   setBufferOptions(value: BufferOptions): void {
     if (value.preferredForwardBufferDuration !== undefined) {
-      requireFinite(value.preferredForwardBufferDuration, 'preferredForwardBufferDuration');
-      if (
-        value.preferredForwardBufferDuration !== 0 &&
-        (value.preferredForwardBufferDuration < MIN_BUFFER_SECONDS || value.preferredForwardBufferDuration > MAX_BUFFER_SECONDS)
-      )
+      const duration = value.preferredForwardBufferDuration;
+      requireFinite(duration, 'preferredForwardBufferDuration');
+      if (duration !== 0 && (duration < MIN_BUFFER_SECONDS || duration > MAX_BUFFER_SECONDS)) {
         throw new ExpoModuleError(
           'ERR_VIDEO_INVALID_ARGUMENT',
           'preferredForwardBufferDuration must be zero (system default) or between 1 and 20 seconds on HarmonyOS.',
         );
+      }
     }
-    if (this.load?.prepared || this.load?.preparing)
+
+    if (this.load?.prepared || this.load?.preparing) {
       throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'Buffer options must be set before the source is prepared on HarmonyOS.');
+    }
+
+    if (value.minBufferForPlayback !== undefined) {
+      const minimum = value.minBufferForPlayback;
+      requireFinite(minimum, 'minBufferForPlayback');
+      if (minimum > MAX_BUFFER_SECONDS) {
+        throw new ExpoModuleError('ERR_VIDEO_INVALID_ARGUMENT', 'minBufferForPlayback must be between 0 and 20 seconds on HarmonyOS.');
+      }
+    }
+
     if (
-      value.minBufferForPlayback !== undefined ||
-      value.maxBufferBytes != null ||
-      value.prioritizeTimeOverSizeThreshold !== undefined ||
-      value.waitsToMinimizeStalling !== undefined
+      (value.maxBufferBytes != null && value.maxBufferBytes !== 0) ||
+      value.prioritizeTimeOverSizeThreshold === true ||
+      value.waitsToMinimizeStalling === false
     ) {
       throw new ExpoModuleError(
         'ERR_VIDEO_UNSUPPORTED',
-        'Custom buffer thresholds other than preferredForwardBufferDuration are not supported by expo-video on HarmonyOS.',
+        'Byte limits, size prioritization and automatic stalling policy are not supported by expo-video on HarmonyOS.',
       );
     }
 
@@ -894,13 +922,19 @@ export class VideoPlayer extends ExpoSharedObject implements VideoAudioParticipa
   }
 
   async thumbnails(times: number[], options: ThumbnailOptions): Promise<VideoThumbnail[]> {
-    const result = await generateThumbnails(this.context, this.source, times, options);
-    if (this.released) {
-      result.forEach((thumbnail: VideoThumbnail): void => thumbnail.sharedObjectWillRelease());
-      throw new ExpoModuleError('ERR_VIDEO_RELEASED', 'The player was released while generating thumbnails.');
+    const assertActive = (): void => {
+      if (this.released) throw new ExpoModuleError('ERR_VIDEO_RELEASED', 'The player was released while generating thumbnails.');
+    };
+    assertActive();
+
+    const thumbnails = await generateThumbnails(this.context, this.source, times, options, assertActive);
+    if (this.released || !this.context.isValid) {
+      thumbnails.forEach((thumbnail: VideoThumbnail): void => thumbnail.sharedObjectWillRelease());
+      assertActive();
+      this.context.assertActive();
     }
 
-    return result;
+    return thumbnails;
   }
 
   selectTrack(track: MediaTrack | null, subtitle: boolean): void {
