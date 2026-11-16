@@ -7,9 +7,9 @@
 
 import { WorkSchedulerExtensionAbility, workScheduler } from '@kit.BackgroundTasksKit';
 
-import { ExpoTaskManagerRegistry, ExpoTaskManagerWorkMetadata } from '@expo-harmony/expo-task-manager';
-import { SCHEDULER_GENERATION_PARAMETER, WORK_SCHEDULER_EXTENSION_NAME } from './BackgroundFetchConstants';
-import { BackgroundFetchRuntime } from './BackgroundFetchRuntime';
+import { ExpoTaskManagerRegistry } from '@expo-harmony/expo-task-manager';
+import { WORK_SCHEDULER_EXTENSION_NAME } from './BackgroundFetchConstants';
+import { BackgroundFetchRuntime, schedulerGenerationFromWork } from './BackgroundFetchRuntime';
 
 class WorkRun {
   stopped: boolean = false;
@@ -21,10 +21,10 @@ export class ExpoBackgroundFetchWorkSchedulerExtension extends WorkSchedulerExte
 
   override onWorkStart(work: workScheduler.WorkInfo): void {
     const startedAt = Date.now();
-    work.parameters = ExpoTaskManagerWorkMetadata.parameters(work.parameters);
+
     ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
 
-    const key = `${work.workId}:${work.parameters?.[SCHEDULER_GENERATION_PARAMETER] ?? ''}`;
+    const key = `${work.workId}:${schedulerGenerationFromWork(work)}`;
     const requests = this.requests.get(key) ?? [];
     const run = new WorkRun();
 
@@ -34,10 +34,10 @@ export class ExpoBackgroundFetchWorkSchedulerExtension extends WorkSchedulerExte
   }
 
   override onWorkStop(work: workScheduler.WorkInfo): void {
-    work.parameters = ExpoTaskManagerWorkMetadata.parameters(work.parameters);
     ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
 
-    const key = `${work.workId}:${work.parameters?.[SCHEDULER_GENERATION_PARAMETER] ?? ''}`;
+
+    const key = `${work.workId}:${schedulerGenerationFromWork(work)}`;
     const requests = this.requests.get(key);
     const run = requests?.shift();
 

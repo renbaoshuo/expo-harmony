@@ -7,6 +7,7 @@
 
 export const PENDING_WORK_SCHEMA_VERSION: number = 3;
 export const MAXIMUM_PENDING_WORKS: number = 128;
+export const MAXIMUM_PENDING_WORKS_LENGTH: number = 1024 * 1024;
 
 export class StoredPendingWork {
   version: number = PENDING_WORK_SCHEMA_VERSION;
@@ -125,7 +126,7 @@ export function decodePendingWorks(raw: ESObject): PendingWorkDecodeResult {
 }
 
 function decodeArray(raw: ESObject): ESObject[] | undefined {
-  if (typeof raw !== 'string' || raw.length > 1024 * 1024) return undefined;
+  if (typeof raw !== 'string' || raw.length > MAXIMUM_PENDING_WORKS_LENGTH) return undefined;
 
   try {
     const value: ESObject = JSON.parse(raw);

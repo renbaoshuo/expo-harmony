@@ -20,7 +20,6 @@ export const OWNER_PARAMETER: string = 'expo.backgroundFetch.owner';
 export const OWNER_PARAMETER_VALUE: string = '@expo-harmony/expo-background-fetch';
 export const TASK_NAME_PARAMETER: string = 'expo.backgroundFetch.taskName';
 export const SCHEDULER_GENERATION_PARAMETER: string = 'expo.backgroundFetch.schedulerGeneration';
-export const MINIMUM_INTERVAL_PARAMETER: string = 'expo.backgroundFetch.minimumInterval';
 export const STOP_ON_TERMINATE_PARAMETER: string = 'expo.backgroundFetch.stopOnTerminate';
 export const START_ON_BOOT_PARAMETER: string = 'expo.backgroundFetch.startOnBoot';
 

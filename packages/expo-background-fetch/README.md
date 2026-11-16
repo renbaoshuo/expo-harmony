@@ -67,7 +67,7 @@ TypeScript 配置可从 `@expo-harmony/expo-background-fetch/plugin` 导入 `bac
 | `stopOnTerminate` | `boolean` |
 | `startOnBoot`     | `boolean` |
 
-`minimumInterval` 以秒为单位，默认 `600` 秒，必须是正有限数且不大于 `2147483.647` 秒。HarmonyOS 的循环任务间隔至少为 2 小时；系统还按应用活跃分组限制执行频率：
+`minimumInterval` 以秒为单位，默认 `600` 秒，可设为 `0`，上限为 `2147483.647` 秒。HarmonyOS 会将其限制在系统支持的循环任务间隔内，至少为 2 小时。系统还按应用活跃分组限制执行频率：
 
 - 活跃分组：最短 2 小时
 - 经常使用分组：4 小时
@@ -75,9 +75,9 @@ TypeScript 配置可从 `@expo-harmony/expo-background-fetch/plugin` 导入 `bac
 - 极少使用分组：48 小时
 - 受限使用分组、从未使用分组：禁止执行
 
-`stopOnTerminate` 默认 `true`，应用正常终止后停止任务；设为 `false` 时任务可继续调度。`startOnBoot` 默认 `false`，设为 `true` 时任务会在设备重启后恢复。这两个选项可独立设置。
+`stopOnTerminate` 默认 `true`，应用进程退出后暂停执行任务。设为 `false` 时任务可继续调度。`startOnBoot` 默认 `false`，设为 `true` 时任务可由 WorkScheduler 在设备重启后恢复。这两个选项可独立设置。
 
-`stopOnTerminate` 和 `startOnBoot` 只能取布尔值；不支持未列出的选项字段。
+`stopOnTerminate` 和 `startOnBoot` 只能取布尔值。TaskManager 保留应用传入的附加选项。
 
 ### Enums
 

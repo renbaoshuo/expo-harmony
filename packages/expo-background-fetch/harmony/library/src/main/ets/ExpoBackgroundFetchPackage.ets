@@ -16,7 +16,6 @@ import {
   ExpoModuleContext,
   ExpoModuleDefinition,
   ExpoModuleError,
-  ExpoValueType,
   ExpoValueTypes,
 } from '@expo-harmony/expo-modules-core';
 import {
@@ -31,7 +30,6 @@ import {
   BACKGROUND_FETCH_STATUS_AVAILABLE,
   BACKGROUND_FETCH_STATUS_RESTRICTED,
   DEFAULT_MINIMUM_INTERVAL_SECONDS,
-  MINIMUM_INTERVAL_PARAMETER,
   OWNER_PARAMETER,
   OWNER_PARAMETER_VALUE,
   SCHEDULER_GENERATION_PARAMETER,
@@ -47,7 +45,16 @@ import {
   WORK_SCHEDULER_MAXIMUM_INTERVAL_MS,
   WORK_SCHEDULER_MINIMUM_INTERVAL_MS,
 } from './BackgroundFetchConstants';
-import { BackgroundFetchRuntime, BackgroundFetchState } from './BackgroundFetchRuntime';
+import {
+  BackgroundFetchRuntime,
+  BackgroundFetchState,
+  isOwnedWork,
+  registrationGenerationFromWork,
+  schedulerGenerationFromWork,
+  startOnBootFromWork,
+  stopOnTerminateFromWork,
+  taskNameFromWork,
+} from './BackgroundFetchRuntime';
 import { stableWorkId, workIdentity } from './BackgroundFetchSemantics.ts';
 
 interface OptionsInput {
@@ -107,17 +114,9 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
   }
 
   private async update(context: common.UIAbilityContext, tasks: ExpoTaskRecord[]): Promise<void> {
-    const expired: workScheduler.WorkInfo[] = [];
-
-    try {
-      await BackgroundFetchRuntime.updateSchedule(context, async (): Promise<void> => {
-        await this.reconcile(context, tasks, expired);
-      });
-    } finally {
-      for (const work of expired) await BackgroundFetchRuntime.expire(context, work);
-    }
-
-    if (tasks.length === 0) await BackgroundFetchRuntime.expireAll(context);
+    await BackgroundFetchRuntime.updateSchedule(context, tasks.length === 0, (expired: workScheduler.WorkInfo[]): Promise<void> =>
+      this.reconcile(context, tasks, expired),
+    );
   }
 
   private async reconcile(context: common.UIAbilityContext, tasks: ExpoTaskRecord[], expired: workScheduler.WorkInfo[]): Promise<void> {
@@ -128,7 +127,8 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
     }
 
     const works = await readAllWorks();
-    const owned = works.filter((work: workScheduler.WorkInfo): boolean => isOwnedWork(context, work));
+    const owner = context.abilityInfo.bundleName;
+    const owned = works.filter((work: workScheduler.WorkInfo): boolean => isOwnedWork(work, owner));
 
     if (tasks.length === 0) {
       cancelWorks(owned, expired);
@@ -137,13 +137,12 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
     }
 
     requireAvailable(context);
-    requireConfigured();
 
-    const state = await BackgroundFetchRuntime.getState(context, context.abilityInfo.bundleName);
+    const state = await BackgroundFetchRuntime.getState(context, owner);
 
     const reserved = works.slice();
     const names = new Set<string>(tasks.map((task: ExpoTaskRecord): string => task.taskName));
-    const matchingByName = new Map<string, workScheduler.WorkInfo[]>();
+    const matches = new Map<string, workScheduler.WorkInfo[]>();
     const obsolete: workScheduler.WorkInfo[] = [];
 
     for (const work of owned) {
@@ -153,22 +152,22 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
         continue;
       }
 
-      const matching = matchingByName.get(name) ?? [];
+      const matching = matches.get(name) ?? [];
       matching.push(work);
-      matchingByName.set(name, matching);
+      matches.set(name, matching);
     }
 
     cancelWorks(obsolete, expired);
 
     // Clear duplicates before restoring tasks that need a new scheduler slot.
     const ordered = tasks.slice().sort((left: ExpoTaskRecord, right: ExpoTaskRecord): number =>
-      Number(matchingByName.has(right.taskName)) - Number(matchingByName.has(left.taskName)),
+      Number(matches.has(right.taskName)) - Number(matches.has(left.taskName)),
     );
 
     for (const task of ordered) {
       const name = task.taskName;
       const options = parseOptions(task.options);
-      const matching = matchingByName.get(name) ?? [];
+      const matching = matches.get(name) ?? [];
 
       const paused =
         (state === BackgroundFetchState.Terminated && options.stopOnTerminate !== false) ||
@@ -181,15 +180,16 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
       }
 
       const current = matching.find(
-        (work: workScheduler.WorkInfo): boolean => workMatchesOptions(work, task, options, context.abilityInfo.bundleName),
+        (work: workScheduler.WorkInfo): boolean => workMatchesOptions(work, task, options, owner),
       );
+
       if (current !== undefined) {
         cancelWorks(matching.filter((work: workScheduler.WorkInfo): boolean => work.workId !== current.workId), expired);
 
         continue;
       }
 
-      const id = matching[0]?.workId ?? allocateWorkId(reserved, name, context.abilityInfo.bundleName);
+      const id = matching[0]?.workId ?? allocateWorkId(reserved, name, owner);
       const next = createWorkInfo(context, id, task, options);
 
       // Replacing a task must not require an extra WorkScheduler slot when the app is at its quota.
@@ -216,23 +216,19 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
     }
 
     if (state === BackgroundFetchState.Foreground || state === BackgroundFetchState.Terminated) {
-      const paused = (await readAllWorks()).filter(
+      // stopWork(false) ends a current invocation. The periodic registration must survive
+      // the foreground transition and, for persisted work, this process's termination.
+      const paused = reserved.filter(
         (work: workScheduler.WorkInfo): boolean =>
-          isOwnedWork(context, work) && (state === BackgroundFetchState.Foreground || stopOnTerminateFromWork(work)),
+          isOwnedWork(work, owner) && (state === BackgroundFetchState.Foreground || stopOnTerminateFromWork(work)),
       );
 
-      pauseWorks(paused, expired);
+      expired.push(...paused);
     }
   }
 }
 
 const consumer = new BackgroundFetchConsumer();
-
-const BACKGROUND_FETCH_OPTIONS_TYPE: ExpoValueType<Options> = new ExpoValueType<Options>(
-  'BackgroundFetch options object',
-  (value: ESObject): Options => parseOptions(value),
-  (value: Options): ESObject => value,
-);
 
 export class ExpoBackgroundFetchModule extends ExpoModule {
   constructor(context: ExpoModuleContext) {
@@ -248,10 +244,10 @@ export class ExpoBackgroundFetchModule extends ExpoModule {
       )
       .asyncFunction(
         'registerTaskAsync',
-        ExpoFunction.typed2(ExpoValueTypes.string(), BACKGROUND_FETCH_OPTIONS_TYPE, async (name: string, options: Options): Promise<void> => {
-          requireConfigured();
+        ExpoFunction.typed2(ExpoValueTypes.string(), ExpoValueTypes.any(), async (name: string, options: ESObject): Promise<void> => {
           requireAvailable(this.context.uiAbilityContext);
-          if (options.minimumInterval !== undefined && options.minimumInterval > WORK_SCHEDULER_MAXIMUM_INTERVAL_MS / 1000) {
+          const minimumInterval = parseOptions(options).minimumInterval;
+          if (minimumInterval !== undefined && minimumInterval > WORK_SCHEDULER_MAXIMUM_INTERVAL_MS / 1000) {
             throw new ExpoBackgroundFetchError('ERR_BACKGROUND_FETCH_INTERVAL', 'minimumInterval is too large for HarmonyOS WorkScheduler.');
           }
 
@@ -268,14 +264,13 @@ export class ExpoBackgroundFetchModule extends ExpoModule {
 }
 
 function status(context: common.UIAbilityContext): number {
-  return hasWorkSchedulerExtension() && ExpoTaskManagerRegistry.hasRuntimeLoader(context.abilityInfo.bundleName)
+  return canIUse(WORK_SCHEDULER_CAPABILITY) && hasWorkSchedulerExtension() &&
+    ExpoTaskManagerRegistry.hasRuntimeLoader(context.abilityInfo.bundleName)
     ? BACKGROUND_FETCH_STATUS_AVAILABLE
     : BACKGROUND_FETCH_STATUS_RESTRICTED;
 }
 
 function hasWorkSchedulerExtension(): boolean {
-  if (!canIUse(WORK_SCHEDULER_CAPABILITY)) return false;
-
   try {
     const flags = bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_HAP_MODULE | bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_EXTENSION_ABILITY;
     const info = bundleManager.getBundleInfoForSelfSync(flags);
@@ -294,21 +289,22 @@ function hasWorkSchedulerExtension(): boolean {
 }
 
 function requireAvailable(context: common.UIAbilityContext): void {
-  if (status(context) !== BACKGROUND_FETCH_STATUS_AVAILABLE) {
+  if (!canIUse(WORK_SCHEDULER_CAPABILITY)) {
     throw new ExpoBackgroundFetchError(
       'ERR_BACKGROUND_FETCH_UNAVAILABLE',
-      'HarmonyOS WorkScheduler or a TaskManager cold-start runtime loader is unavailable.',
+      'HarmonyOS WorkScheduler is unavailable on this device.',
     );
   }
-}
 
-function requireConfigured(): void {
   if (!hasWorkSchedulerExtension()) {
     throw new ExpoBackgroundFetchError(
       'ERR_BACKGROUND_FETCH_NOT_CONFIGURED',
       `WorkScheduler extension '${WORK_SCHEDULER_EXTENSION_NAME}' is missing. ` +
         'Run Expo prebuild with the @expo-harmony/expo-background-fetch config plugin.',
     );
+  }
+  if (!ExpoTaskManagerRegistry.hasRuntimeLoader(context.abilityInfo.bundleName)) {
+    throw new ExpoBackgroundFetchError('ERR_BACKGROUND_FETCH_UNAVAILABLE', 'A TaskManager cold-start runtime loader is unavailable.');
   }
 }
 
@@ -326,18 +322,11 @@ function parseOptions(value: ESObject): Options {
   }
 
   const input = value as OptionsInput;
-
-  for (const key of Object.keys(value as Record<string, ESObject>)) {
-    if (key !== 'minimumInterval' && key !== 'stopOnTerminate' && key !== 'startOnBoot') {
-      throw new ExpoBackgroundFetchError('ERR_BACKGROUND_FETCH_OPTIONS', `Unsupported BackgroundFetch option '${key}'.`);
-    }
-  }
-
   const options = new Options();
 
   if (input.minimumInterval !== undefined) {
-    if (typeof input.minimumInterval !== 'number' || !Number.isFinite(input.minimumInterval) || input.minimumInterval <= 0) {
-      throw new ExpoBackgroundFetchError('ERR_BACKGROUND_FETCH_INTERVAL', 'minimumInterval must be a positive finite number of seconds.');
+    if (typeof input.minimumInterval !== 'number' || !Number.isFinite(input.minimumInterval) || input.minimumInterval < 0) {
+      throw new ExpoBackgroundFetchError('ERR_BACKGROUND_FETCH_INTERVAL', 'minimumInterval must be a non-negative finite number of seconds.');
     }
 
     options.minimumInterval = input.minimumInterval;
@@ -370,7 +359,6 @@ function createWorkInfo(context: common.UIAbilityContext, id: number, task: Expo
   params[REGISTRATION_GENERATION_PARAMETER] = task.registrationGeneration;
   params[SCHEDULER_GENERATION_PARAMETER] = util.generateRandomUUID(true);
   ExpoTaskManagerWorkMetadata.write(params, context.abilityInfo.bundleName);
-  params[MINIMUM_INTERVAL_PARAMETER] = options.minimumInterval ?? DEFAULT_MINIMUM_INTERVAL_SECONDS;
   params[STOP_ON_TERMINATE_PARAMETER] = options.stopOnTerminate !== false;
   params[START_ON_BOOT_PARAMETER] = options.startOnBoot === true;
 
@@ -392,40 +380,18 @@ function schedulerInterval(seconds: number): number {
 
 function workMatchesOptions(work: workScheduler.WorkInfo, task: ExpoTaskRecord, options: Options, owner: string): boolean {
   const seconds = options.minimumInterval ?? DEFAULT_MINIMUM_INTERVAL_SECONDS;
-  const params = work.parameters;
-
   return (
     work.isRepeat === true &&
     work.networkType === undefined &&
     work.repeatCycleTime === schedulerInterval(seconds) &&
     (work.isPersisted === true) === (options.startOnBoot === true) &&
-    params?.[TASK_NAME_PARAMETER] === task.taskName &&
-    params?.[REGISTRATION_GENERATION_PARAMETER] === task.registrationGeneration &&
-    ExpoTaskManagerWorkMetadata.owner(params) === owner &&
-    typeof params?.[SCHEDULER_GENERATION_PARAMETER] === 'string' &&
-    params?.[MINIMUM_INTERVAL_PARAMETER] === seconds &&
-    params?.[STOP_ON_TERMINATE_PARAMETER] === (options.stopOnTerminate !== false) &&
-    params?.[START_ON_BOOT_PARAMETER] === (options.startOnBoot === true)
+    taskNameFromWork(work) === task.taskName &&
+    registrationGenerationFromWork(work) === task.registrationGeneration &&
+    ExpoTaskManagerWorkMetadata.owner(ExpoTaskManagerWorkMetadata.parameters(work.parameters)) === owner &&
+    schedulerGenerationFromWork(work).length > 0 &&
+    stopOnTerminateFromWork(work) === (options.stopOnTerminate !== false) &&
+    startOnBootFromWork(work) === (options.startOnBoot === true)
   );
-}
-
-function isOwnedWork(context: common.UIAbilityContext, work: workScheduler.WorkInfo): boolean {
-  return (
-    work.bundleName === context.abilityInfo.bundleName &&
-    work.abilityName === WORK_SCHEDULER_EXTENSION_NAME &&
-    work.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE &&
-    ExpoTaskManagerWorkMetadata.owner(work.parameters, true) === context.abilityInfo.bundleName
-  );
-}
-
-function stopOnTerminateFromWork(work: workScheduler.WorkInfo): boolean {
-  return work.parameters?.[STOP_ON_TERMINATE_PARAMETER] !== false;
-}
-
-function taskNameFromWork(work: workScheduler.WorkInfo): string | undefined {
-  const value = work.parameters?.[TASK_NAME_PARAMETER];
-
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 async function readAllWorks(): Promise<workScheduler.WorkInfo[]> {
@@ -479,13 +445,6 @@ function cancelWorks(works: workScheduler.WorkInfo[], expired: workScheduler.Wor
 
   if (failures > 0) {
     throw new ExpoBackgroundFetchError('ERR_BACKGROUND_FETCH_SCHEDULER', `Unable to cancel ${failures} Expo Background Fetch work(s).`);
-  }
-}
-
-function pauseWorks(works: workScheduler.WorkInfo[], expired: workScheduler.WorkInfo[]): void {
-  for (const work of works) {
-    workScheduler.stopWork(work, false);
-    expired.push(work);
   }
 }
 
