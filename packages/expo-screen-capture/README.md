@@ -34,11 +34,11 @@ npm install @expo-harmony/expo-screen-capture expo-screen-capture@~57.0.4
 
 #### `isAvailableAsync()`
 
-返回 `Promise<boolean>`，HarmonyOS 上始终为 `true`。
+返回 `Promise<boolean>`，按照 Expo 上游规则检查原生保护接口是否已注册。启用保护时还需要当前运行时关联的 UIAbility 窗口和系统窗口管理能力。
 
 #### `preventScreenCaptureAsync(key?)`
 
-启用当前应用窗口的隐私模式，返回 `Promise<void>`。默认 `key` 为 `'default'`；每个 `key` 对应一项保护。保护期间，窗口内容不能被截屏或录屏，应用退到后台时多任务预览由系统遮罩或模糊处理。最后一项保护解除前，窗口保持受保护状态。若宿主已启用隐私模式，本包不会在解除保护时关闭该模式。
+启用当前应用窗口的隐私模式，返回 `Promise<void>`。默认 `key` 为 `'default'`。每个 `key` 对应一项保护。保护期间，窗口内容不能被截屏或录屏，应用退到后台时多任务预览由系统遮罩或模糊处理。PC 和 2in1 设备仍可截取其他窗口，受保护窗口在截图中为黑屏。只有释放最后一项由本包启用的保护，才会关闭窗口隐私模式。[HarmonyOS 窗口隐私模式](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/screenshot-and-privacy-mode/)
 
 #### `allowScreenCaptureAsync(key?)`
 

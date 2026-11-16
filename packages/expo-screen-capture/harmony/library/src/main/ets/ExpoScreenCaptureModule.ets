@@ -10,8 +10,10 @@ import { deviceInfo } from '@kit.BasicServicesKit';
 import { ExpoAppLifecycleState, ExpoModule, ExpoModuleDefinition, ExpoModuleError } from '@expo-harmony/expo-modules-core';
 
 const SCREENSHOT_EVENT: string = 'onScreenshot';
+const WINDOW_MANAGER_CAPABILITY: string = 'SystemCapability.WindowManager.WindowManager.Core';
 
 interface WindowBinding {
+  id: number;
   target: window.Window;
   generation: number;
 }
@@ -36,18 +38,20 @@ class WindowPrivacyLease {
     this.id = id;
   }
 
-  retain(owner: Object, target: window.Window, isWindowCurrent: () => boolean): Promise<void> {
+  retain(owner: Object, target: window.Window, assertWindowCurrent: () => void): Promise<void> {
     this.pendingRetains += 1;
+
     return this.serialize(async (): Promise<void> => {
       try {
-        if (!isWindowCurrent()) return;
+        assertWindowCurrent();
 
         if (!target.getWindowProperties().isPrivacyMode) {
           await target.setWindowPrivacyMode(true);
           this.enabledByExpo = true;
         }
 
-        if (isWindowCurrent()) this.owners.add(owner);
+        // Teardown is queued after the native write, so it must see this owner even if the stage changed.
+        this.owners.add(owner);
       } finally {
         this.pendingRetains -= 1;
         this.deleteIfIdle();
@@ -68,7 +72,11 @@ class WindowPrivacyLease {
     });
   }
 
-  forget(owner: Object): void {
+  retire(owner: Object): Promise<void> {
+    return this.serialize(async (): Promise<void> => this.forget(owner));
+  }
+
+  private forget(owner: Object): void {
     this.owners.delete(owner);
     this.deleteIfIdle();
   }
@@ -88,6 +96,7 @@ class WindowPrivacyLease {
 
 interface WindowProtection {
   target: window.Window;
+  generation: number;
   lease: WindowPrivacyLease;
 }
 
@@ -132,13 +141,14 @@ export class ExpoScreenCaptureModule extends ExpoModule {
       })
       .onWindowStageWillDestroy((): void => {
         this.available = false;
+        const generation = this.generation;
         this.generation += 1;
 
         this.stopObserving();
-
         this.retiredObservers.clear();
-        this.windows.forEach((protection: WindowProtection): void => protection.lease.forget(this));
-        this.windows.clear();
+
+        this.serialize((): Promise<void> => this.retireStage(generation))
+          .catch((error: Object): void => this.warn('retire window privacy leases', error));
       })
       .onPrepareForReload(async (): Promise<void> => this.destroy())
       .onDestroy((): void => {
@@ -148,7 +158,8 @@ export class ExpoScreenCaptureModule extends ExpoModule {
 
   private async currentWindow(): Promise<WindowBinding> {
     this.assertActive();
-    if (this.context.isHeadless || !this.available) {
+
+    if (this.context.isHeadless || !this.available || !canIUse(WINDOW_MANAGER_CAPABILITY)) {
       throw new ExpoModuleError('ERR_SCREEN_CAPTURE_WINDOW', 'Screen capture requires a UIAbility window.');
     }
 
@@ -157,7 +168,7 @@ export class ExpoScreenCaptureModule extends ExpoModule {
     try {
       const target: window.Window = await this.context.getReactNativeWindow();
 
-      return { target, generation };
+      return { id: target.getWindowProperties().id, target, generation };
     } catch (error) {
       this.assertActive();
       throw new ExpoModuleError('ERR_SCREEN_CAPTURE_WINDOW', `Unable to find the React Native window: ${String(error)}`);
@@ -175,7 +186,7 @@ export class ExpoScreenCaptureModule extends ExpoModule {
     this.assertCurrentWindow(binding);
 
     const target: window.Window = binding.target;
-    const id: number = target.getWindowProperties().id;
+    const id: number = binding.id;
     let lease: WindowPrivacyLease | undefined = privacyLeases.get(id);
 
     if (lease === undefined) {
@@ -183,9 +194,8 @@ export class ExpoScreenCaptureModule extends ExpoModule {
       privacyLeases.set(id, lease);
     }
 
-    // Record ownership before the asynchronous write so stage destruction can retire it.
-    this.windows.set(id, { target, lease });
-    await lease.retain(this, target, (): boolean => this.available && binding.generation === this.generation);
+    await lease.retain(this, target, (): void => this.assertCurrentWindow(binding));
+    this.windows.set(id, { target, generation: binding.generation, lease });
     this.assertCurrentWindow(binding);
 
     this.protecting = true;
@@ -195,6 +205,17 @@ export class ExpoScreenCaptureModule extends ExpoModule {
     } catch (error) {
       // The current window is already protected. Rejecting would drop the JS owner's key.
       this.warn('release previous window privacy mode', error);
+    }
+  }
+
+  private async retireStage(generation: number): Promise<void> {
+    for (const entry of this.windows.entries()) {
+      const state = entry[1];
+      if (state.generation !== generation) continue;
+
+      // Keep the departing window protected until the system destroys it.
+      await state.lease.retire(this);
+      this.windows.delete(entry[0]);
     }
   }
 
@@ -230,7 +251,7 @@ export class ExpoScreenCaptureModule extends ExpoModule {
         const binding: WindowBinding = await this.currentWindow();
         this.assertCurrentWindow(binding);
 
-        this.refreshObserver(binding.target);
+        this.refreshObserver(binding);
         if (this.protecting) await this.protectWindow(binding);
       } finally {
         if (!this.protecting && !this.destroyed) await this.releaseWindows();
@@ -238,18 +259,23 @@ export class ExpoScreenCaptureModule extends ExpoModule {
     }).catch((error: Object): void => this.warn('refresh screen-capture state', error));
   }
 
-  private refreshObserver(target: window.Window): void {
-    if (!this.shouldObserve()) return;
+  private refreshObserver(binding: WindowBinding): void {
+    if (!this.shouldObserve() || this.observer?.id === binding.id) return;
 
     try {
-      const id: number = target.getWindowProperties().id;
-      if (this.observer?.id === id) return;
-
       this.stopObserving();
+
       const callback = (): void => {
-        if (this.observer?.callback === callback && this.shouldObserve()) this.sendEvent(SCREENSHOT_EVENT);
+        if (this.observer?.callback !== callback || !this.shouldObserve()) return;
+
+        try {
+          this.sendEvent(SCREENSHOT_EVENT);
+        } catch (error) {
+          this.warn('emit the screenshot event', error);
+        }
       };
-      this.observer = { id, callback, detach: this.subscribeToScreenshots(target, callback) };
+
+      this.observer = { id: binding.id, callback, detach: this.subscribeToScreenshots(binding.target, callback) };
     } catch (error) {
       this.warn('attach the screenshot listener', error);
     }
