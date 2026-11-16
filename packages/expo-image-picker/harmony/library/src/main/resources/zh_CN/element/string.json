@@ -1,0 +1,6 @@
+{
+  "string": [
+    { "name": "expo_image_picker_cancel", "value": "取消" },
+    { "name": "expo_image_picker_crop", "value": "裁剪" }
+  ]
+}

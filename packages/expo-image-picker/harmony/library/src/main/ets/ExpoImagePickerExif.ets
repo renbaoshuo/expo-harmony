@@ -27,6 +27,9 @@ export const EXIF_KEYS: image.PropertyKey[] = [
   image.PropertyKey.FOCAL_LENGTH,
   image.PropertyKey.PIXEL_X_DIMENSION,
   image.PropertyKey.PIXEL_Y_DIMENSION,
+];
+
+export const EXIF_LOCATION_KEYS: image.PropertyKey[] = [
   image.PropertyKey.GPS_LATITUDE,
   image.PropertyKey.GPS_LATITUDE_REF,
   image.PropertyKey.GPS_LONGITUDE,
@@ -82,7 +85,8 @@ function coordinate(value: string, ref: string | null | undefined): number | und
 
 export function decodeExifProperties(data: Record<image.PropertyKey, string | null>): Record<string, ESObject> {
   const exif: Record<string, ESObject> = {};
-  for (const key of EXIF_KEYS) {
+
+  for (const key of EXIF_KEYS.concat(EXIF_LOCATION_KEYS)) {
     const raw = data[key];
     if (raw == null || raw.length === 0) continue;
 

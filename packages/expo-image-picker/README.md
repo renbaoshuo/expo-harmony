@@ -56,6 +56,8 @@ const result = await ImagePicker.launchImageLibraryAsync({
 
 返回 `Promise<ImagePickerResult>`，打开系统相机拍照或录像。系统相机负责拍摄，无需应用申请相机权限。只有 `mediaTypes` 只包含 `'videos'` 时录像；包含图片和视频时按拍照处理。`cameraType` 可指定前置或后置摄像头，`videoMaxDuration` 设置录像时长上限。
 
+单张照片可通过 `allowsEditing` 在拍摄后进入裁剪界面。裁剪支持固定比例和椭圆选框，取消裁剪时返回取消结果。裁剪组件通过 OHPM 引入。[HarmonyCandies Image Cropper](https://github.com/HarmonyCandies/image_cropper)
+
 拍摄结果的 `uri` 指向应用缓存中的文件，需要长期保存时请复制到其他位置。视频按系统返回的元数据提供尺寸、时长和旋转角。用户取消时返回 `{ canceled: true, assets: null }`；系统可能无法区分取消和拍摄失败。系统相机或图库选择界面已打开时再次调用，也会返回取消结果。
 
 系统相机不可用时抛出 `ERR_IMAGE_PICKER_UNAVAILABLE`；拍摄结果不可用时抛出 `ERR_IMAGE_PICKER_CAMERA`。应用不在前台或没有可显示界面时抛出 `ERR_IMAGE_PICKER_CONTEXT`。系统界面打开后，即使应用暂时进入后台，仍会返回结果。
@@ -64,7 +66,7 @@ const result = await ImagePicker.launchImageLibraryAsync({
 
 返回 `Promise<ImagePickerResult>`，打开系统图库选择界面。用户选中的文件不需要整库访问权限。照片中的位置信息可能被系统移除；若需读取照片 EXIF 中的 GPS 信息，还需声明并申请 `ohos.permission.MEDIA_LOCATION`。
 
-`allowsMultipleSelection` 为 `false` 时最多选择一项；为 `true` 时由 `selectionLimit` 限制，`selectionLimit` 为 `0` 或大于 `500` 时按 `500` 处理。单选图片时可通过 `allowsEditing` 请求系统编辑入口，是否显示由系统决定；多选或仅选视频时忽略编辑选项。
+`allowsMultipleSelection` 为 `false` 时最多选择一项；为 `true` 时由 `selectionLimit` 限制，`selectionLimit` 为 `0` 或大于 `500` 时按 `500` 处理。选中单张图片后可通过 `allowsEditing` 进入裁剪界面，多选和视频忽略编辑选项。
 
 图库结果的 `uri` 指向应用缓存中的文件，需要长期保存时请复制到其他位置。取消时返回 `{ canceled: true, assets: null }`。系统相机或图库选择界面已打开时再次调用，也会返回取消结果。
 
@@ -88,7 +90,7 @@ const result = await ImagePicker.launchImageLibraryAsync({
 
 #### `CropShape`
 
-裁剪区域形状：`'rectangle' | 'oval'`。HarmonyOS 编辑不支持椭圆裁剪；与 `allowsEditing: true` 一起传入 `'oval'` 会抛出 `ERR_IMAGE_PICKER_UNSUPPORTED_EDITING`。
+裁剪区域形状为 `'rectangle'` 或 `'oval'`。`'oval'` 显示椭圆选框，输出为该选框的矩形边界内的像素。
 
 #### `DefaultTab`
 
@@ -129,7 +131,7 @@ const result = await ImagePicker.launchImageLibraryAsync({
 
 | 选项 | 默认值 | HarmonyOS 行为 |
 | --- | --- | --- |
-| `allowsEditing` | `false` | 单选图片时请求系统编辑入口；是否显示由系统决定。多选或仅选视频时忽略。 |
+| `allowsEditing` | `false` | 单张图片进入裁剪界面。多选和视频忽略该选项。 |
 | `allowsMultipleSelection` | `false` | 是否允许图库多选。 |
 | `aspect` | — | 固定裁剪比例。必须是两个正的有限数。 |
 | `base64` | `false` | 是否返回图片 JPEG Base64 数据；按 `quality` 编码，不改变缓存文件格式。 |
@@ -141,12 +143,11 @@ const result = await ImagePicker.launchImageLibraryAsync({
 | `shape` | `'rectangle'` | 裁剪形状。 |
 | `videoMaxDuration` | `0` | 拍摄视频的时长上限，单位为秒；`0` 表示不限，非整数向下取整。录像时正数小于 1 或取整后超过 `2147483647` 会抛出 `ERR_INVALID_ARGUMENT`。 |
 
-- `aspect`：系统编辑入口不支持固定比例；单独传入时忽略，与开启编辑一起使用时抛出 `ERR_IMAGE_PICKER_UNSUPPORTED_EDITING`。
-- `shape: 'oval'`：系统选择器不支持椭圆裁剪；开启编辑时抛出 `ERR_IMAGE_PICKER_UNSUPPORTED_EDITING`。
+- `aspect` 和 `shape` 在 `allowsEditing` 生效时应用。
 - `defaultTab`：系统选择器不提供默认标签页设置。
 - `legacy`：系统选择器不提供旧版选择模式。
-- `orderedSelection`：系统选择器不提供选择顺序设置。
-- `preferredAssetRepresentationMode`：资源表示方式由系统选择器决定。
+- `orderedSelection`：HarmonyOS 26.0.0 起，多选时显示顺序编号并允许在系统选择器中调整顺序。较早版本使用系统默认顺序。
+- `preferredAssetRepresentationMode`：HarmonyOS 26.0.0 起支持 `'automatic'`、`'current'` 和 `'compatible'`。较早版本使用系统默认表示方式。
 - `presentationStyle`：选择器界面样式由系统决定。
 - `shouldDownloadFromNetwork`：系统选择器不提供网络下载设置。
 - `videoExportPreset`、`videoQuality`：系统相机和图库选择器不提供视频导出或录像质量设置。
@@ -231,10 +232,6 @@ const result = await ImagePicker.launchImageLibraryAsync({
 
 应用不在前台、没有可显示界面，或选择器运行所需的应用上下文不可用时抛出。
 
-#### `ERR_IMAGE_PICKER_UNSUPPORTED_EDITING`
-
-单选图片开启编辑后，又请求拍照、固定比例裁剪或椭圆裁剪时抛出。
-
 #### `ERR_IMAGE_PICKER_CAMERA`
 
 系统相机没有返回可用的拍摄结果时抛出。
@@ -267,7 +264,7 @@ const result = await ImagePicker.launchImageLibraryAsync({
 
 #### `ohos.permission.MEDIA_LOCATION`
 
-系统图库选择器只向应用提供用户选中的资源，不需要申请整个图库的读写权限。若需读取所选照片 EXIF 中的 GPS 信息，需要声明并申请 `ohos.permission.MEDIA_LOCATION`。详见[HarmonyOS 受限权限说明](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/restricted-permissions)。
+图库选择器只向应用授予所选资源的访问权限。需要 EXIF GPS 字段时，由宿主声明 `ohos.permission.MEDIA_LOCATION` 并请求用户授权。未授权时仍可读取可用的其他 EXIF 字段。[HarmonyOS 用户授权权限](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/permissions-for-all-user/)
 
 ## Author
 

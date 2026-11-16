@@ -14,7 +14,7 @@ import { image } from '@kit.ImageKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { media } from '@kit.MediaKit';
 
-import { EXIF_KEYS, decodeExifProperties, orientationCode } from './ExpoImagePickerExif';
+import { EXIF_KEYS, EXIF_LOCATION_KEYS, decodeExifProperties, orientationCode } from './ExpoImagePickerExif';
 import { ExpoImagePickerError } from './ExpoImagePickerError';
 
 const CACHE_DIRECTORY: string = 'expo-image-picker';
@@ -39,6 +39,7 @@ export interface ProcessingOptions {
   quality: number;
   base64: boolean;
   exif: boolean;
+  includeLocation?: boolean;
 }
 
 interface ImageInfo {
@@ -118,13 +119,19 @@ export async function removeCapture(file: CaptureFile): Promise<void> {
   await removeFile(file.path);
 }
 
-export async function exportImage(uri: string, cache: string, options: ProcessingOptions, name?: string): Promise<ImagePickerAsset> {
+export async function exportImage(
+  uri: string,
+  cache: string,
+  options: ProcessingOptions,
+  name?: string,
+  pixels?: image.PixelMap,
+): Promise<ImagePickerAsset> {
   let path: string | undefined;
 
   try {
-    const source = await inspectImage(uri, options.exif);
+    const source = await inspectImage(uri, options);
 
-    const compress = options.quality < 1;
+    const compress = pixels !== undefined || options.quality < 1;
     const mime = compress ? compressionMimeType(source.mimeType) : source.mimeType;
 
     const dir = `${cache}/${CACHE_DIRECTORY}`;
@@ -134,26 +141,26 @@ export async function exportImage(uri: string, cache: string, options: Processin
     path = `${dir}/${filename}`;
 
     if (compress) {
-      await packImage(uri, path, mime, options.quality);
+      await packImage(pixels ?? uri, path, mime, options.quality);
     } else {
       await copyFile(uri, path);
     }
 
-    const output = await inspectImage(path);
+    const output = compress ? await inspectImage(path) : source;
     if (output.mimeType !== mime) {
       throw new ExpoImagePickerError(CODE_MEDIA_PROCESSING, `Expected ${mime}, but the exported image is ${output.mimeType}.`);
     }
 
     const original = name ?? source.fileName ?? filename;
-    const display = mime === source.mimeType ? original : replaceExtension(original, filename);
-    const asset = new ImagePickerAsset('image', fileUriFromPath(path), output.width, output.height, display, output.fileSize, output.mimeType);
+    const display = mime === source.mimeType ? matchImageExtension(original, filename, mime) : replaceExtension(original, filename);
+    const size = compress ? output.fileSize : checkedFileSize((await fileIo.stat(path)).size);
+
+    const asset = new ImagePickerAsset('image', fileUriFromPath(path), output.width, output.height, display, size, output.mimeType);
 
     if (options.base64) {
-      // Reuse JPEG bytes already encoded at the requested quality. For other
-      // exports, encode from the original to avoid a second compression pass.
-      asset.base64 = compress && mime === JPEG_MIME_TYPE
+      asset.base64 = mime === JPEG_MIME_TYPE
         ? await readJpegBase64(path)
-        : await encodeJpegBase64(uri, path, options.quality);
+        : await encodeJpegBase64(pixels ?? uri, path, options.quality);
     }
 
     if (options.exif) asset.exif = source.exif;
@@ -212,11 +219,13 @@ export async function exportMovingPhoto(
 
   try {
     await ensureDirectory(dir);
+
     // MovingPhoto requires sandbox URIs with the app authority.
     await photo.requestContent(fileUri.getUriFromPath(imagePath), fileUri.getUriFromPath(videoPath));
 
-    const imageInfo = await inspectImage(imagePath, options.exif);
+    const imageInfo = await inspectImage(imagePath, options);
     const videoInfo = await inspectVideo(videoPath);
+
     const coverExtension = extensionForMime(imageInfo.mimeType, imageExtension);
     const videoExtension = videoInfo.mimeType === undefined ? 'mp4' : extensionForMime(videoInfo.mimeType, 'mp4');
     if (coverExtension !== imageExtension) {
@@ -224,15 +233,18 @@ export async function exportMovingPhoto(
       await fileIo.rename(imagePath, target);
       imagePath = target;
     }
+
     if (videoExtension !== 'mp4') {
       const target = `${dir}/${stem}-video.${videoExtension}`;
       await fileIo.rename(videoPath, target);
       videoPath = target;
     }
+
     const coverName = name || `${stem}.${coverExtension}`;
     const asset = new ImagePickerAsset('livePhoto', fileUriFromPath(imagePath), imageInfo.width, imageInfo.height, coverName,
       imageInfo.fileSize, imageInfo.mimeType);
     asset.pairedVideoAsset = await videoAsset('pairedVideo', videoPath, replaceExtension(coverName, videoPath), videoInfo);
+
     if (options.exif) asset.exif = imageInfo.exif;
     if (options.base64) {
       asset.base64 = imageInfo.mimeType === JPEG_MIME_TYPE
@@ -244,7 +256,9 @@ export async function exportMovingPhoto(
   } catch (cause) {
     await removeFile(imagePath);
     await removeFile(videoPath);
+
     if (cause instanceof ExpoImagePickerError) throw new ExpoImagePickerError(cause.code, cause.message, cause);
+
     throw new ExpoImagePickerError(CODE_MEDIA_PROCESSING, `Failed to export the selected moving photo: ${String(cause)}`, cause as Object);
   }
 }
@@ -265,15 +279,15 @@ export async function removeAssets(assets: ImagePickerAsset[]): Promise<void> {
   }
 }
 
-async function inspectImage(uri: string, includeExif: boolean = false): Promise<ImageInfo> {
+async function inspectImage(uri: string, options?: ProcessingOptions): Promise<ImageInfo> {
   let file: fileIo.File | undefined;
   let source: image.ImageSource | undefined;
 
   try {
     file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
     const stat = await fileIo.stat(file.fd);
-    source = image.createImageSource(file.fd);
 
+    source = image.createImageSource(file.fd);
     const info = await source.getImageInfo();
     const mimeType = normalizedMimeType(info.mimeType);
     if (mimeType === undefined || !mimeType.startsWith('image/')) {
@@ -289,7 +303,7 @@ async function inspectImage(uri: string, includeExif: boolean = false): Promise<
       mimeType,
       fileSize: checkedFileSize(stat.size),
       fileName: file.name.length > 0 ? file.name : undefined,
-      exif: includeExif ? await readExif(source, mimeType) : undefined,
+      exif: options?.exif ? await readExif(source, mimeType, options.includeLocation ?? false) : undefined,
     };
   } finally {
     await releaseImageSource(source);
@@ -354,15 +368,18 @@ async function inspectVideo(uri: string): Promise<VideoInfo> {
   }
 }
 
-async function packImage(uri: string, path: string, mime: string, quality: number): Promise<void> {
+async function packImage(inputImage: string | image.PixelMap, path: string, mime: string, quality: number): Promise<void> {
   let input: fileIo.File | undefined;
   let output: fileIo.File | undefined;
   let source: image.ImageSource | undefined;
   let packer: image.ImagePacker | undefined;
 
   try {
-    input = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
-    source = image.createImageSource(input.fd);
+    if (typeof inputImage === 'string') {
+      input = await fileIo.open(inputImage, fileIo.OpenMode.READ_ONLY);
+      source = image.createImageSource(input.fd);
+    }
+
     packer = image.createImagePacker();
     if (!packer.supportedFormats.includes(mime)) {
       throw new ExpoImagePickerError(CODE_MEDIA_PROCESSING, `This device cannot encode ${mime}.`);
@@ -370,11 +387,17 @@ async function packImage(uri: string, path: string, mime: string, quality: numbe
 
     output = await fileIo.open(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
 
-    await packer.packToFile(source, output.fd, {
+    const options: image.PackingOption = {
       format: mime,
       quality: Math.floor(quality * 100),
-      needsPackProperties: true,
-    });
+      needsPackProperties: source !== undefined,
+    };
+
+    if (source !== undefined) {
+      await packer.packToFile(source, output.fd, options);
+    } else if (typeof inputImage !== 'string') {
+      await packer.packToFile(inputImage, output.fd, options);
+    }
   } finally {
     await releaseImagePacker(packer);
     await releaseImageSource(source);
@@ -383,16 +406,14 @@ async function packImage(uri: string, path: string, mime: string, quality: numbe
   }
 }
 
-async function readExif(source: image.ImageSource, mime: string): Promise<Record<string, ESObject>> {
+async function readExif(source: image.ImageSource, mime: string, includeLocation: boolean): Promise<Record<string, ESObject>> {
   try {
-    // ImageKit's EXIF APIs support JPEG/PNG/HEIF at the minimum SDK; WebP and
-    // DNG are added at API 23. Missing EXIF must not fail an otherwise valid GIF.
     const supported =
       [JPEG_MIME_TYPE, PNG_MIME_TYPE, 'image/heif', 'image/heic'].includes(mime) ||
-      (deviceInfo.sdkApiVersion >= 23 && [WEBP_MIME_TYPE, 'image/x-adobe-dng'].includes(mime));
+      (deviceInfo.apiAvailable(23) && [WEBP_MIME_TYPE, 'image/x-adobe-dng'].includes(mime));
     if (!supported) return {};
 
-    const data = await source.getImageProperties(EXIF_KEYS);
+    const data = await source.getImageProperties(includeLocation ? EXIF_KEYS.concat(EXIF_LOCATION_KEYS) : EXIF_KEYS);
 
     return data == null ? {} : decodeExifProperties(data);
   } catch (_) {
@@ -401,11 +422,13 @@ async function readExif(source: image.ImageSource, mime: string): Promise<Record
   }
 }
 
-async function encodeJpegBase64(uri: string, cachedPath: string, quality: number): Promise<string> {
+async function encodeJpegBase64(input: string | image.PixelMap, cachedPath: string, quality: number): Promise<string> {
   // File encoding has no ImagePacker.packToData 25 MB buffer ceiling.
   const path = `${cachedPath}.${util.generateRandomUUID(true)}.jpg`;
+
   try {
-    await packImage(uri, path, JPEG_MIME_TYPE, quality);
+    await packImage(input, path, JPEG_MIME_TYPE, quality);
+
     return await readJpegBase64(path);
   } finally {
     await removeFile(path);
@@ -524,6 +547,21 @@ function replaceExtension(name: string, output: string): string {
   const index = name.lastIndexOf('.');
   const stem = index > 0 ? name.slice(0, index) : name;
   return `${stem}${output.slice(output.lastIndexOf('.'))}`;
+}
+
+function matchImageExtension(name: string, output: string, mime: string): string {
+  const extension = name.match(/\.[a-zA-Z0-9]+$/)?.[0];
+  if (extension === undefined) return name;
+
+  try {
+    const type = uniformTypeDescriptor.getUniformDataTypeByFilenameExtension(extension.toLowerCase());
+    const expected = uniformTypeDescriptor.getTypeDescriptor(type)?.mimeTypes;
+    if (expected?.some((candidate: string): boolean => candidate.startsWith('image/')) && !expected.includes(mime)) {
+      return replaceExtension(name, output);
+    }
+  } catch (_) {}
+
+  return name;
 }
 
 function extensionForMime(mime: string, fallback: string): string {

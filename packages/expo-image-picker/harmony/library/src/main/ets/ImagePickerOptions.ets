@@ -12,6 +12,8 @@ import { ProcessingOptions } from './ExpoImagePickerMedia';
 export interface ImagePickerOptions extends ProcessingOptions {
   allowsEditing: boolean;
   allowsMultipleSelection: boolean;
+  orderedSelection: boolean;
+  preferredAssetRepresentationMode: string;
   selectionLimit: number;
   mediaTypes: string[];
   videoMaxDuration: number;
@@ -48,9 +50,18 @@ function readOptions(value: ESObject): ImagePickerOptions {
     throw new ExpoImagePickerError('ERR_INVALID_ARGUMENT', 'aspect must contain two positive, finite numbers.');
   }
 
+  if (aspect !== undefined) {
+    const ratio = aspect[0] / aspect[1];
+    if (!Number.isFinite(ratio) || ratio <= 0) {
+      throw new ExpoImagePickerError('ERR_INVALID_ARGUMENT', 'aspect must produce a positive, finite ratio.');
+    }
+  }
+
   return {
     allowsEditing: readBoolean(record, 'allowsEditing'),
     allowsMultipleSelection: readBoolean(record, 'allowsMultipleSelection'),
+    orderedSelection: readBoolean(record, 'orderedSelection'),
+    preferredAssetRepresentationMode: readEnum(record, 'preferredAssetRepresentationMode', ['automatic', 'current', 'compatible']),
     quality,
     selectionLimit: limit,
     base64: readBoolean(record, 'base64'),
@@ -89,12 +100,6 @@ export function selectsImages(options: ImagePickerOptions): boolean {
   return options.mediaTypes.includes('images') || !selectsVideos(options);
 }
 
-export function validateEditing(options: ImagePickerOptions, camera: boolean): void {
-  if (!options.allowsEditing || options.allowsMultipleSelection || !selectsImages(options)) return;
-  if (camera || options.aspect !== undefined || options.shape !== 'rectangle') {
-    throw new ExpoImagePickerError(
-      'ERR_IMAGE_PICKER_UNSUPPORTED_EDITING',
-      'HarmonyOS supports optional editing in the library picker only; camera editing, a fixed aspect ratio and oval cropping are unavailable.',
-    );
-  }
+export function allowsCrop(options: ImagePickerOptions): boolean {
+  return options.allowsEditing && !options.allowsMultipleSelection;
 }

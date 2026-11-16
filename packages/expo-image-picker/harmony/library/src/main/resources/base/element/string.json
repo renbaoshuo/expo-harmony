@@ -1,0 +1,6 @@
+{
+  "string": [
+    { "name": "expo_image_picker_cancel", "value": "Cancel" },
+    { "name": "expo_image_picker_crop", "value": "Crop" }
+  ]
+}

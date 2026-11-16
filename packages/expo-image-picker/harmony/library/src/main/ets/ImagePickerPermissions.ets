@@ -29,10 +29,15 @@ export function cameraPickerPermission(): PermissionResponse {
   return new PermissionResponse(available ? 'granted' : 'denied', available);
 }
 
+export function hasPhotoPicker(): boolean {
+  return canIUse('SystemCapability.FileManagement.PhotoAccessHelper.Core');
+}
+
 export function mediaLibraryPermission(): PermissionResponse {
-  // Picker access does not grant permission to enumerate or write the library.
-  const available = canIUse('SystemCapability.FileManagement.PhotoAccessHelper.Core');
+  // Access covers the system picker only.
+  const available = hasPhotoPicker();
   const response = new PermissionResponse(available ? 'granted' : 'denied', available);
   response.accessPrivileges = available ? 'all' : 'none';
+
   return response;
 }
