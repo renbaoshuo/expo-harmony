@@ -13,8 +13,9 @@ import type {
   HarmonySkill,
 } from './config';
 import { HarmonyConfigPluginError } from './errors';
+import { stableJson } from './files';
 import { toArgb } from './resources';
-import { parseHarmonySdkVersion } from './sdkVersion';
+import { compareHarmonyApiVersions, parseHarmonySdkVersion } from './sdkVersion';
 
 type HarmonyExpoConfig = ExpoConfigWithHarmony;
 
@@ -42,7 +43,7 @@ interface NormalizedHarmonyConfig {
   versionName: string;
 }
 
-const BundlePattern = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*){2,}$/;
+const BundlePattern = /^[A-Za-z](?:[A-Za-z0-9_]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9_]*[A-Za-z0-9])?){2,}$/;
 const IdentifierPattern = /^[A-Za-z][A-Za-z0-9_]*$/;
 const DefaultCompatibleApi = 20;
 const TargetApi = 24;
@@ -87,11 +88,8 @@ function normalizeStringArray(value: unknown, field: string): string[] {
 
   const result: string[] = [];
   for (const item of value) {
-    if (typeof item !== 'string' || !item) {
-      throw new HarmonyConfigError(`Invalid ${field} entry: ${item}`);
-    }
-
-    if (!result.includes(item)) result.push(item);
+    const entry = readString(item, `${field} entry`);
+    if (!result.includes(entry)) result.push(entry);
   }
 
   return result;
@@ -159,16 +157,19 @@ export function mergePermissions(
   return [...permissions.values()];
 }
 
-function normalizeSkill(skill: HarmonySkill) {
-  if (!skill || typeof skill !== 'object') {
+export function getDeclaredPermissions(config: ExpoConfigWithHarmony): HarmonyPermission[] | undefined {
+  const pending = config._internal?.harmonyPermissionDeclarations as HarmonyPermission[] | undefined;
+  const configured = config.harmony?.permissions;
+
+  return pending && configured ? mergePermissions(pending, configured) : configured ?? pending;
+}
+
+function normalizeSkill(skill: HarmonySkill): HarmonySkill {
+  if (!skill || typeof skill !== 'object' || Array.isArray(skill)) {
     throw new HarmonyConfigError('harmony.skills entries must be objects.');
   }
 
-  const result: {
-    actions?: string[];
-    entities?: string[];
-    uris?: HarmonySkill['uris'];
-  } = {};
+  const result: HarmonySkill = {};
 
   for (const field of ['entities', 'actions'] as const) {
     if (skill[field] !== undefined) result[field] = normalizeStringArray(skill[field], `harmony.skills[].${field}`);
@@ -184,19 +185,30 @@ function normalizeSkill(skill: HarmonySkill) {
         throw new HarmonyConfigError('Harmony skill URI must be an object.');
       }
 
-      const result: NonNullable<HarmonySkill['uris']>[number] = {};
+      const fields: NonNullable<HarmonySkill['uris']>[number] = {};
       for (const [key, value] of Object.entries(uri)) {
-        result[key] = typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))
+        fields[key] = typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))
           ? value
           : readString(value, `harmony.skills[].uris[].${key}`);
       }
 
-      return result;
+      return fields;
     });
   }
 
   if (Object.keys(result).length === 0) {
     throw new HarmonyConfigError('Harmony skill must contain entities, actions, or uris.');
+  }
+
+  if (skill.permissions !== undefined) {
+    result.permissions = normalizeStringArray(skill.permissions, 'harmony.skills[].permissions');
+  }
+
+  if (skill.domainVerify !== undefined) {
+    if (typeof skill.domainVerify !== 'boolean') {
+      throw new HarmonyConfigError('harmony.skills[].domainVerify must be a boolean.');
+    }
+    result.domainVerify = skill.domainVerify;
   }
 
   return result;
@@ -215,9 +227,9 @@ function normalizeHarmonyConfig(config: HarmonyExpoConfig): NormalizedHarmonyCon
   }
 
   const bundle = readString(harmony.bundleName, 'harmony.bundleName');
-  if (!BundlePattern.test(bundle)) {
+  if (bundle.length < 7 || bundle.length > 128 || !BundlePattern.test(bundle)) {
     throw new HarmonyConfigError(
-      'harmony.bundleName must contain at least three valid dot-separated segments.'
+      'harmony.bundleName must contain at least three valid dot-separated segments and be 7 to 128 bytes.'
     );
   }
 
@@ -232,12 +244,18 @@ function normalizeHarmonyConfig(config: HarmonyExpoConfig): NormalizedHarmonyCon
 
   const version = readString(harmony.versionName, 'harmony.versionName', config.version || '1.0.0');
   const code = harmony.versionCode ?? 1;
+  if (!Number.isInteger(code) || code < 0 || code > 2147483647) {
+    throw new HarmonyConfigError('harmony.versionCode must be an integer from 0 to 2147483647.');
+  }
 
   const target = parseHarmonySdkVersion(
     harmony.targetSdkVersion ?? harmony.targetApiVersion ?? TargetApi, 'harmony.targetSdkVersion'
   );
-
   const compatible = parseHarmonySdkVersion(harmony.compatibleSdkVersion ?? DefaultCompatibleApi, 'harmony.compatibleSdkVersion');
+  if (compareHarmonyApiVersions(compatible.api, target.api) > 0) {
+    throw new HarmonyConfigError('harmony.compatibleSdkVersion must not exceed harmony.targetSdkVersion.');
+  }
+
   const orientation = readString(harmony.orientation ?? config.orientation, 'harmony.orientation', 'default');
 
   const background = normalizeColor(
@@ -255,15 +273,16 @@ function normalizeHarmonyConfig(config: HarmonyExpoConfig): NormalizedHarmonyCon
     ? ['arm64-v8a', 'x86_64']
     : normalizeStringArray(harmony.abiFilters, 'harmony.abiFilters');
 
-  const permissions = mergePermissions(harmony.permissions ?? [], []);
-
+  const permissions = mergePermissions(getDeclaredPermissions(config) ?? [], []);
   if (!permissions.some(permission => permission.name === 'ohos.permission.INTERNET')) {
     permissions.unshift({ name: 'ohos.permission.INTERNET' });
   }
 
   const schemes = readExpoSchemes(config);
-  let skills = (harmony.skills || []).map(normalizeSkill);
+  const entries = harmony.skills ?? [];
+  if (!Array.isArray(entries)) throw new HarmonyConfigError('harmony.skills must be an array.');
 
+  let skills = entries.map(normalizeSkill);
   for (const scheme of schemes) {
     skills.push({
       actions: ['ohos.want.action.viewData'],
@@ -272,7 +291,7 @@ function normalizeHarmonyConfig(config: HarmonyExpoConfig): NormalizedHarmonyCon
     });
   }
 
-  skills = [...new Map(skills.map(skill => [JSON.stringify(skill), skill])).values()];
+  skills = [...new Map(skills.map(skill => [stableJson(skill), skill])).values()];
 
   const queries = [...new Set([
     'http',

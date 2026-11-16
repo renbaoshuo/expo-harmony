@@ -187,7 +187,8 @@ function withFileProvider(config: ExpoConfig, name: FileModName, hasActions: () 
     saveToInternal: JsonMods.has(name),
     async action(value) {
       const { nextMod: next, ...request } = value.modRequest;
-      if (!request.introspect && !hasActions()) return value;
+      const { introspect } = request;
+      if (!introspect && !hasActions()) return value;
 
       const project = name in ProjectPaths;
       const root = project ? request.projectRoot : request.platformProjectRoot;
@@ -217,7 +218,7 @@ function withFileProvider(config: ExpoConfig, name: FileModName, hasActions: () 
 
       assertModResults(name, result.modResults, JsonMods.has(name) ? 'json' : 'text');
 
-      if (!result.modRequest.introspect) {
+      if (!introspect) {
         if (!isDeepStrictEqual(original, result.modResults)) {
           if (typeof result.modResults === 'string') {
             const text = result.modResults.replace(/\r\n?/g, '\n').replace(/\n?$/, '\n');
@@ -444,7 +445,8 @@ function withResourceProvider(config: ExpoConfig, name: ResourceModName, hasActi
     saveToInternal: introspective,
     async action(value) {
       const { nextMod: next, ...request } = value.modRequest;
-      if (!request.introspect && !hasActions()) return value;
+      const { introspect } = request;
+      if (!introspect && !hasActions()) return value;
 
       const root = request.platformProjectRoot;
       const data = name === 'media'
@@ -455,18 +457,18 @@ function withResourceProvider(config: ExpoConfig, name: ResourceModName, hasActi
             root, ResourcePaths[name], name,
             value._internal?.harmonyTemplateDirectory, request.ignoreExistingNativeFiles
           );
+
       const previous = name === 'media'
         ? Object.fromEntries(
             Object.entries(data).map(([scope, files]) => [scope, Object.keys(files)])
           )
         : {};
-      const originalResources = name === 'media' || request.introspect ? {} : structuredClone(data);
+      const original = name === 'media' || introspect ? {} : structuredClone(data);
 
       const result = await next!({ ...value, modRequest: request, modResults: data });
-
       assertModResults(name, result.modResults, 'resource');
 
-      if (!result.modRequest.introspect) {
+      if (!introspect) {
         if (name === 'media') {
           await writeMediaMap(root, result.modResults as HarmonyMediaMap, result, previous);
         } else {
@@ -492,7 +494,7 @@ function withResourceProvider(config: ExpoConfig, name: ResourceModName, hasActi
               continue;
             }
 
-            const changed = !isDeepStrictEqual(originalResources[scope], resource);
+            const changed = !isDeepStrictEqual(original[scope], resource);
             if (request.ignoreExistingNativeFiles || changed || !fs.existsSync(file)) {
               await writeJson5(file, resource);
             }

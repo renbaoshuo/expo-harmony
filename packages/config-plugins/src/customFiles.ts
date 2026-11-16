@@ -68,6 +68,8 @@ export function createHarmonyFileMod<T>(options: HarmonyFileModOptions<T>): Harm
         saveToInternal: isIntrospective,
         async action(value) {
           const { nextMod: _next, ...request } = value.modRequest;
+          const { introspect } = request;
+
           const file = await resolveUnreservedHarmonyFilePath(request.platformProjectRoot, relative);
           let source: string | null = null;
 
@@ -86,7 +88,7 @@ export function createHarmonyFileMod<T>(options: HarmonyFileModOptions<T>): Harm
           }
 
           const data = parse(source);
-          const originalJson = source !== null && !request.introspect && parse === parseJson
+          const original = source !== null && !introspect && parse === parseJson
             ? structuredClone(data)
             : undefined;
           let result = {
@@ -94,16 +96,17 @@ export function createHarmonyFileMod<T>(options: HarmonyFileModOptions<T>): Harm
             modRequest: { ...request, modFile: file, modFileExists: source !== null },
             modResults: data,
           } as unknown as HarmonyModConfig<T>;
+
           for (let index = actions.length - 1; index >= 0; index--) {
             result = await actions[index](result) as HarmonyModConfig<T>;
           }
 
-          const output = serialize(result.modResults);
-          if (typeof output !== 'string') throw new TypeError(`Serializer for ${relative} must return a string.`);
+          if (!introspect) {
+            const output = serialize(result.modResults);
+            if (typeof output !== 'string') throw new TypeError(`Serializer for ${relative} must return a string.`);
 
-          if (!request.introspect) {
-            const unchangedJson = originalJson !== undefined && isDeepStrictEqual(result.modResults, originalJson);
-            if (output !== source && !unchangedJson) {
+            const unchanged = original !== undefined && isDeepStrictEqual(result.modResults, original);
+            if (output !== source && !unchanged) {
               await atomicWrite(file, output);
             }
             recordManagedFile(result, file, owner);

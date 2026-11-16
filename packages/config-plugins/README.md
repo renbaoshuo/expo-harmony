@@ -57,11 +57,11 @@ Harmony Mod 名称列表：`dangerous`、`reactNativeConfig`、`appJson`、`proj
 
 #### `normalizeHarmonyConfig(config)`
 
-返回补齐默认值并校验后的 `NormalizedHarmonyConfig`。`harmony.bundleName` 必须是至少三段的点分隔标识符；SDK 版本值、权限、技能、设备类型、颜色和模块构建选项不符合类型或格式时会抛出 `HarmonyConfigPluginError`。
+返回补齐默认值并校验后的 `NormalizedHarmonyConfig`。`harmony.bundleName` 必须是至少三段、共 7 到 128 字节的点分隔标识符。`compatibleSdkVersion` 不能高于 `targetSdkVersion`。
 
 #### `parseHarmonySdkVersion(value, field?)`
 
-把 API 级别或 SDK 标签解析为 `{ api, native }`。数字 API 支持 13、14、20、21、23、24，以及 26 及以上；其他低于 26 的 API 级别需传入完整标签，例如 `6.1.1(24)`。API 26 及以上使用 `26.0.0` 格式。`field` 可用于指定错误信息中的字段名。
+把 API 级别或 SDK 标签解析为 `{ api, native }`。数字 API 支持 12 到 24，以及 26 及以上。API 12 到 24 也接受对应的完整 SDK 标签，例如 `6.1.1(24)`。API 26 及以上使用 `26.0.0` 格式。`field` 可用于指定错误信息中的字段名。
 
 #### `compareHarmonyApiVersions(left, right)`
 
@@ -314,7 +314,7 @@ function withExample(config) {
 | `abilityName` | `string` | `EntryAbility` |
 | `productName` | `string` | `default` |
 | `vendor` | `string` | `expo-harmony` |
-| `versionCode` | `number` | `1` |
+| `versionCode` | `number` | `1`，接受 0 到 2147483647 的整数 |
 | `versionName` | `string` | Expo 配置中的 `version`，默认 `1.0.0` |
 | `runtimeVersion` | `string \| object` | 版本字符串或 `nativeVersion`、`sdkVersion`、`appVersion`、`fingerprint` 策略 |
 | `targetSdkVersion` | `number \| string` | 默认 API 24；SDK 标签或 API 26 起的点分隔版本 |
@@ -341,7 +341,7 @@ function withExample(config) {
 
 #### `HarmonySkill` 与 `HarmonySkillUri`
 
-`HarmonySkill` 支持 `entities`、`actions` 和 `uris`；至少提供其中一项。`HarmonySkillUri` 的各字段值可以是字符串、数字或布尔值。
+`HarmonySkill` 至少包含 `entities`、`actions` 或 `uris` 之一，可选填 `permissions` 和布尔值 `domainVerify`。`HarmonySkillUri` 的各字段值可以是字符串、数字或布尔值。
 
 #### `HarmonyConfigPlugin<Props>`
 

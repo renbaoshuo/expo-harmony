@@ -13,8 +13,9 @@ export interface HarmonySdkVersion {
 }
 
 const Labels = new Map([
-  [13, '5.0.1(13)'], [14, '5.0.2(14)'], [20, '6.0.0(20)'],
-  [21, '6.0.1(21)'], [23, '6.1.0(23)'], [24, '6.1.1(24)'],
+  [12, '5.0.0(12)'], [13, '5.0.1(13)'], [14, '5.0.2(14)'], [15, '5.0.3(15)'],
+  [16, '5.0.4(16)'], [17, '5.0.5(17)'], [18, '5.1.0(18)'], [19, '5.1.1(19)'],
+  [20, '6.0.0(20)'], [21, '6.0.1(21)'], [22, '6.0.2(22)'], [23, '6.1.0(23)'], [24, '6.1.1(24)'],
 ]);
 
 export function parseHarmonySdkVersion(value: unknown, field = 'SDK version'): HarmonySdkVersion {
@@ -24,13 +25,12 @@ export function parseHarmonySdkVersion(value: unknown, field = 'SDK version'): H
     }
     if (value >= 26) return { api: `${value}.0.0`, native: `${value}.0.0` };
 
-    const native = Labels.get(value);
-
-    if (!native) {
+    const label = Labels.get(value);
+    if (!label) {
       throw new HarmonyConfigPluginError('ERR_HARMONY_CONFIG_INVALID', `${field}: API ${value} requires an explicit HarmonyOS SDK label.`);
     }
 
-    return { api: value, native };
+    return { api: value, native: label };
   }
   if (typeof value !== 'string') {
     throw new HarmonyConfigPluginError('ERR_HARMONY_CONFIG_INVALID', `${field}: expected an API number or HarmonyOS SDK version.`);
@@ -38,16 +38,18 @@ export function parseHarmonySdkVersion(value: unknown, field = 'SDK version'): H
 
   const version = value.trim();
   const dotted = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(version);
-
   if (dotted && Number(dotted[1]) >= 26
     && dotted.slice(1).every(part => String(Number(part)) === part)) {
     return { api: version, native: version };
   }
 
   const label = /^\d+\.\d+\.\d+\(([1-9]\d*)\)$/.exec(version);
-
   if (label && Number(label[1]) < 26) {
     const api = Number(label[1]);
+    const native = Labels.get(api);
+    if (native !== undefined && native !== version) {
+      throw new HarmonyConfigPluginError('ERR_HARMONY_CONFIG_INVALID', `${field}: API ${api} is labeled ${native}.`);
+    }
 
     return { api, native: version };
   }

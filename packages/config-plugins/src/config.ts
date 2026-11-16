@@ -25,6 +25,8 @@ export interface HarmonySkill {
   entities?: string[];
   actions?: string[];
   uris?: HarmonySkillUri[];
+  permissions?: string[];
+  domainVerify?: boolean;
 }
 
 export interface HarmonyConfig {
