@@ -16,6 +16,9 @@ const BACKGROUND_PERMISSION: Permissions = 'ohos.permission.LOCATION_IN_BACKGROU
 const SELF_PERMISSION_STATUS_API: number = 20;
 const REQUEST_ERROR_REASONS_API: number = 18;
 const PERMISSION_CHANGE_API: number = 18;
+const PERMISSION_SETTINGS_API: number = 22;
+const NOT_MANUAL_SETTINGS_PERMISSION: number = 12100014;
+const APP_SETTINGS_ACTION: string = 'action.settings.app.info';
 const PREFERENCES_NAME: string = 'ExpoLocation';
 const DENIED_KEY: string = 'foregroundPermissionDenied';
 
@@ -157,16 +160,29 @@ export class LocationPermissions {
 
   private async openBackgroundSettings(): Promise<PermissionResponse> {
     const permission = this.getBackground();
-    if (permission.granted || !this.hasForeground() || deviceInfo.sdkApiVersion < 22 ||
+    if (permission.granted || !this.hasForeground() ||
       this.context.services.get(ExpoRuntimePermissionsKey) !== undefined) return permission;
 
-    try {
-      await abilityAccessCtrl.createAtManager().openPermissionOnSetting(this.context.uiAbilityContext, BACKGROUND_PERMISSION);
-    } catch (error) {
-      // Some releases classify this permission as user_grant despite requiring manual Settings.
-      if (Number((error as BusinessError).code) !== 12100014) {
-        throw new ExpoModuleError('ERR_LOCATION_PERMISSION_REQUEST', 'Unable to open the HarmonyOS background location settings.', error);
+    const ability = this.context.uiAbilityContext;
+    if (deviceInfo.sdkApiVersion >= PERMISSION_SETTINGS_API) {
+      try {
+        await abilityAccessCtrl.createAtManager().openPermissionOnSetting(ability, BACKGROUND_PERMISSION);
+        return this.getBackground();
+      } catch (error) {
+        // This API accepts only permissions classified as manual_settings.
+        if (Number((error as BusinessError).code) !== NOT_MANUAL_SETTINGS_PERMISSION) {
+          throw new ExpoModuleError('ERR_LOCATION_PERMISSION_REQUEST', 'Unable to open the HarmonyOS background location settings.', error);
+        }
       }
+    }
+
+    try {
+      await ability.startAbility({
+        action: APP_SETTINGS_ACTION,
+        parameters: { settingsParamBundleName: ability.abilityInfo.bundleName },
+      });
+    } catch (error) {
+      throw new ExpoModuleError('ERR_LOCATION_PERMISSION_REQUEST', 'Unable to open the HarmonyOS background location settings.', error);
     }
 
     return this.getBackground();

@@ -14,6 +14,28 @@
 npm install @expo-harmony/expo-location expo-location@~57.0.22
 ```
 
+### 启用后台定位和地理围栏
+
+在应用的 Expo 配置中按需开启以下选项，并重新生成及编译 HarmonyOS 工程。后台定位从 API 21 开始可用，地理围栏从 API 23 开始可用。[华为定位权限说明](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V14/permissions-for-all-user-V14/)
+
+```json
+{
+  "expo": {
+    "plugins": [
+      [
+        "@expo-harmony/expo-location",
+        {
+          "isHarmonyBackgroundLocationEnabled": true,
+          "isHarmonyGeofencingEnabled": true
+        }
+      ]
+    ]
+  }
+}
+```
+
+应用应先取得前台定位权限，再说明后台用途并引导用户在系统设置中选择“始终允许”。地理围栏还需要精确定位。
+
 ## API 对照表
 
 ### Hooks
@@ -468,7 +490,7 @@ HarmonyOS SDK API 20 及以上可直接读取系统权限状态；API 13–19 �
 
 #### `Location.requestBackgroundPermissionsAsync()`
 
-返回 `Promise<PermissionResponse>`。API 22 及以上可打开系统后台定位权限设置页；同一时刻的重复申请共用一次设置交互。系统要求用户手动进入设置时返回 `denied` 和 `canAskAgain: false`。API 13–21 或后台位置、地理围栏能力均未启用时返回当前权限状态，不打开设置页。
+返回 `Promise<PermissionResponse>`。已启用后台定位或地理围栏时，会打开系统权限设置。同一时刻的重复申请共用一次设置交互；打开应用详情页时，响应反映当前权限，应用回到前台后可用 `getBackgroundPermissionsAsync()` 读取用户的选择。
 
 #### `Location.getMotionActivityPermissionsAsync()`
 

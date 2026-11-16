@@ -14,12 +14,20 @@ import { ExpoModuleContext, ExpoModuleError } from '@expo-harmony/expo-modules-c
 import { ExpoTaskConsumer, ExpoTaskManagerRegistry, ExpoTaskRecord } from '@expo-harmony/expo-task-manager';
 
 import { message, validCoordinate } from './LocationRecords';
-import { FENCES_KEY, GEOFENCE_EVENT_EXPIRY_MS, takeGeofenceTransitions, withGeofenceStore } from './LocationFenceIngress';
+import {
+  acknowledgeGeofenceTransitions,
+  FENCES_KEY,
+  GEOFENCE_EVENT_EXPIRY_MS,
+  PendingFenceTransition,
+  readGeofenceTransitions,
+  withGeofenceStore,
+} from './LocationFenceIngress';
 import { FENCE_EXTENSION_NAME, GEOFENCE_TASK_TYPE, deliverLocationTask, hasGeofenceConfiguration, hasLocationTaskPermission } from './LocationTaskSupport';
 
 const MAXIMUM_FENCES: number = 100;
 const FENCE_LIFETIME_MS: number = 31_536_000_000;
 const DUPLICATE_WINDOW_MS: number = 2000;
+const FENCE_NOT_FOUND_ERROR_CODE: number = 3301602;
 
 // These values are part of Expo Location's JS event and region contracts.
 enum GeofencingEventType {
@@ -226,7 +234,7 @@ export class LocationGeofencingConsumer implements ExpoTaskConsumer {
           try {
             await geoLocationManager.removeGnssGeofence(fence.id);
           } catch (error) {
-            if (Number((error as BusinessError).code) !== 3301602) {
+            if (Number((error as BusinessError).code) !== FENCE_NOT_FOUND_ERROR_CODE) {
               throw new ExpoModuleError('ERR_LOCATION_GEOFENCING_STOP', message(error), error);
             }
           }
@@ -285,10 +293,21 @@ export class LocationGeofencingConsumer implements ExpoTaskConsumer {
       context.uiAbilityContext, ExpoTaskManagerRegistry.ownerKey(context), this.taskType,
       (tasks: ExpoTaskRecord[]): Promise<void> => this.onTasksChanged(context, tasks),
     ).then(async (): Promise<void> => {
-      for (const transition of await takeGeofenceTransitions(context.uiAbilityContext)) {
-        await this.deliverTransition(context.uiAbilityContext, transition, transition.receivedAt, transition.generation)
-          .catch(reportDeliveryFailure);
+      const ability = context.uiAbilityContext;
+      const pending = await readGeofenceTransitions(ability);
+      const handled: PendingFenceTransition[] = [];
+
+      for (const transition of pending) {
+        try {
+          if (await this.deliverTransition(ability, transition, transition.receivedAt, transition.generation)) {
+            handled.push(transition);
+          }
+        } catch (error) {
+          reportDeliveryFailure(error);
+        }
       }
+
+      await acknowledgeGeofenceTransitions(ability, handled);
     }).catch((error: Object): void => console.warn(`Unable to restore Expo geofences: ${message(error)}`));
   }
 
@@ -297,11 +316,12 @@ export class LocationGeofencingConsumer implements ExpoTaskConsumer {
     transition: geoLocationManager.GeofenceTransition,
     receivedAt: number = Date.now(),
     generation?: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const event = transition.transitionEvent;
     const entering = event === geoLocationManager.GeofenceTransitionEvent.GEOFENCE_TRANSITION_EVENT_ENTER;
-    if (!entering && event !== geoLocationManager.GeofenceTransitionEvent.GEOFENCE_TRANSITION_EVENT_EXIT) return;
+    if (!entering && event !== geoLocationManager.GeofenceTransitionEvent.GEOFENCE_TRANSITION_EVENT_EXIT) return true;
 
+    let handled = true;
     await FenceStore.withLock(context, async (store: FenceStore): Promise<void> => {
       const fence = store.fences.find((value: Fence): boolean =>
         value.id === transition.geofenceId && value.owner === context.applicationInfo.name);
@@ -315,17 +335,23 @@ export class LocationGeofencingConsumer implements ExpoTaskConsumer {
       if (receivedAt < previous || (fence.lastTransition === event && receivedAt - previous < DUPLICATE_WINDOW_MS)) return;
 
       const runtime = this.runtime;
-      if (runtime === undefined || !runtime.isValid || !this.canExecute(runtime)) return;
+      if (runtime === undefined || !runtime.isValid || !this.canExecute(runtime)) {
+        handled = false;
+        return;
+      }
 
       const task = new ExpoTaskRecord(fence.taskName, this.taskType, {}, fence.owner, this.consumerId, this.consumerVersion, fence.generation);
       const region = new Region(fence.region);
       region.state = entering ? GeofencingRegionState.Inside : GeofencingRegionState.Outside;
       const eventType = entering ? GeofencingEventType.Enter : GeofencingEventType.Exit;
+
       await deliverLocationTask(context, task, { eventType, region }, null, expiresAt);
       fence.lastTransition = event;
       fence.lastDeliveredAt = receivedAt;
       await store.save();
     });
+
+    return handled;
   }
 }
 

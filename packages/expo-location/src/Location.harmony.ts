@@ -16,8 +16,12 @@ import type {
   MotionActivityObject,
 } from 'expo-location';
 import ExpoLocation from 'expo-location/build/ExpoLocation';
-import { HeadingSubscriber, LocationSubscriber } from 'expo-location/build/LocationSubscribers';
-import { CodedError, type EventSubscription } from 'expo-modules-core';
+import {
+  HeadingSubscriber,
+  LocationSubscriber,
+  MotionActivitySubscriber,
+} from 'expo-location/build/LocationSubscribers';
+import type { EventSubscription } from 'expo-modules-core';
 
 export * from 'expo-location/build/Location';
 
@@ -33,20 +37,23 @@ async function startWatch<Callback>(
 ): Promise<LocationSubscription> {
   const id = subscriber.registerCallback(callback);
   let errors: EventSubscription | undefined;
+  let started = false;
 
   try {
     if (errorHandler) {
+      // Upstream's error subscriber removes unmatched native watches, including polyfill watches.
       errors = ExpoLocation.addListener('Expo.locationError', (event: { watchId: number; reason: string }) => {
         if (event.watchId === id) errorHandler(event.reason);
       });
     }
 
     await start(id);
-  } catch (error) {
-    subscriber.forgetCallback(id);
-    errors?.remove();
-
-    throw error;
+    started = true;
+  } finally {
+    if (!started) {
+      subscriber.forgetCallback(id);
+      errors?.remove();
+    }
   }
 
   return {
@@ -78,9 +85,12 @@ export function watchHeadingAsync(
   return startWatch(HeadingSubscriber, id => ExpoLocation.watchDeviceHeading(id), callback, errorHandler);
 }
 
-export function getHeadingAsync(): Promise<LocationHeadingObject> {
+function firstWatchUpdate<Value>(
+  watch: (callback: (value: Value) => void, errorHandler: LocationErrorCallback) => Promise<LocationSubscription>,
+  accepts: (value: Value) => boolean,
+  wrapError = false
+): Promise<Value> {
   return new Promise((resolve, reject) => {
-    let tries = 0;
     let settled = false;
     let subscription: LocationSubscription | undefined;
 
@@ -89,33 +99,38 @@ export function getHeadingAsync(): Promise<LocationHeadingObject> {
       subscription?.remove();
     };
 
-    watchHeadingAsync((heading) => {
-      if (!settled && (heading.accuracy > 1 || tries++ > 5)) {
+    watch((value) => {
+      if (!settled && accepts(value)) {
         stop();
-        resolve(heading);
+        resolve(value);
       }
     }, (reason) => {
       if (!settled) {
         stop();
-        reject(reason);
+        reject(wrapError ? new Error(reason) : reason);
       }
-    }).then((watch) => {
-      subscription = watch;
-      if (settled) watch.remove();
+    }).then((current) => {
+      subscription = current;
+      if (settled) current.remove();
     }, reject);
   });
 }
 
-const MOTION_UNAVAILABLE = 'Motion activity recognition is not available on HarmonyOS.';
+export function getHeadingAsync(): Promise<LocationHeadingObject> {
+  let tries = 0;
 
-export async function getMotionActivityAsync(): Promise<MotionActivityObject> {
-  throw new CodedError('ERR_MOTION_ACTIVITY_UNAVAILABLE', MOTION_UNAVAILABLE);
+  return firstWatchUpdate<LocationHeadingObject>(
+    watchHeadingAsync, heading => heading.accuracy > 1 || tries++ > 5
+  );
 }
 
-// Fail before upstream allocates callbacks that would outlive the rejected watch.
-export async function watchMotionActivityAsync(
-  _callback: MotionActivityCallback,
-  _errorHandler?: LocationErrorCallback
+export function watchMotionActivityAsync(
+  callback: MotionActivityCallback,
+  errorHandler?: LocationErrorCallback
 ): Promise<LocationSubscription> {
-  throw new CodedError('ERR_MOTION_ACTIVITY_UNAVAILABLE', MOTION_UNAVAILABLE);
+  return startWatch(MotionActivitySubscriber, id => ExpoLocation.watchMotionActivityImplAsync(id), callback, errorHandler);
+}
+
+export function getMotionActivityAsync(): Promise<MotionActivityObject> {
+  return firstWatchUpdate<MotionActivityObject>(watchMotionActivityAsync, () => true, true);
 }

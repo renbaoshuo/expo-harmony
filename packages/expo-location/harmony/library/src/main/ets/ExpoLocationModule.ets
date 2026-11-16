@@ -198,6 +198,9 @@ export class ExpoLocationModule extends ExpoModule {
         'hasStartedGeofencingAsync',
         ExpoFunction.typed1(ExpoValueTypes.string(), async (name: string): Promise<boolean> => this.hasTask(name, GEOFENCE_TASK_TYPE)),
       )
+      .onCreate((): void => {
+        if (this.foreground) geofencingConsumer.refresh(this.context);
+      })
       .onForeground((): void => {
         this.setForeground(true);
         backgroundLocationConsumer.refresh(this.context);
@@ -372,8 +375,9 @@ export class ExpoLocationModule extends ExpoModule {
       }
     };
 
-    watch.callback = callback;
     geoLocationManager.on('locationChange', locationRequest(watch.options), callback);
+
+    watch.callback = callback;
     watch.active = true;
   }
 
@@ -452,8 +456,9 @@ export class ExpoLocationModule extends ExpoModule {
       }
     };
 
-    this.headingCallback = callback;
     sensor.on(sensor.SensorId.ORIENTATION, callback);
+
+    this.headingCallback = callback;
     this.headingActive = true;
     this.startHeadingLocation();
   }
@@ -470,11 +475,13 @@ export class ExpoLocationModule extends ExpoModule {
       };
 
       this.startErrorObserver();
-      this.locationCallback = callback;
+
       const options = new LocationOptions();
       options.distanceInterval = 0;
 
       geoLocationManager.on('locationChange', locationRequest(options), callback);
+
+      this.locationCallback = callback;
       this.locationActive = true;
 
       try {
@@ -573,13 +580,11 @@ export class ExpoLocationModule extends ExpoModule {
       }
     };
 
-    this.errorCallback = callback;
     try {
       geoLocationManager.on('locationError', callback);
+      this.errorCallback = callback;
       this.errorActive = true;
     } catch (error) {
-      this.cleanup((): void => this.stopErrorObserver());
-
       throw new ExpoLocationError(error);
     }
   }

@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { abilityAccessCtrl, common, wantAgent } from '@kit.AbilityKit';
+import { abilityAccessCtrl, common, Permissions, wantAgent } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -26,6 +26,8 @@ const MAXIMUM_BATCH_SIZE: number = 100;
 const LOCATION_NOTIFICATION_REQUEST_CODE: number = 24_005_701;
 const BACKGROUND_PREFERENCES: string = 'ExpoLocationBackground';
 const CANCELLED_TASKS_KEY: string = 'cancelledTasks';
+const BACKGROUND_LOCATION_PERMISSIONS: Permissions[] = ['ohos.permission.APPROXIMATELY_LOCATION', 'ohos.permission.LOCATION_IN_BACKGROUND'];
+const MAX_TIMEOUT_MS: number = 2_147_483_647;
 
 class CancelledTask {
   name: string;
@@ -63,15 +65,6 @@ export function validateBackgroundOptions(options: ESObject): void {
   new BackgroundOptions(options);
 }
 
-function distanceBetween(from: LocationRecord, to: LocationRecord): number {
-  const radians = Math.PI / 180;
-  const latitude = (to.coords.latitude - from.coords.latitude) * radians;
-  const longitude = (to.coords.longitude - from.coords.longitude) * radians;
-  const a = Math.sin(latitude / 2) ** 2 +
-    Math.cos(from.coords.latitude * radians) * Math.cos(to.coords.latitude * radians) * Math.sin(longitude / 2) ** 2;
-  return 12_742_000 * Math.asin(Math.min(1, Math.sqrt(a)));
-}
-
 class BackgroundWatch {
   readonly task: ExpoTaskRecord;
   readonly callback: (location: geoLocationManager.Location) => void;
@@ -82,9 +75,9 @@ class BackgroundWatch {
   private active: boolean = false;
   private attached: boolean = false;
   private pending: LocationRecord[] = [];
-  private previous?: LocationRecord;
+  private previous?: geoLocationManager.Location;
+  private batchStart?: number;
   private distance: number = 0;
-  private lastSent: number = 0;
   private timer: number = -1;
   private delivering: boolean = false;
   private forcePending: boolean = false;
@@ -99,8 +92,10 @@ class BackgroundWatch {
   }
 
   start(): void {
+    const options = LOCATION_OPTIONS.decode(this.task.options, 'options');
+    geoLocationManager.on('locationChange', locationRequest(options), this.callback);
+
     this.attached = true;
-    geoLocationManager.on('locationChange', locationRequest(LOCATION_OPTIONS.decode(this.task.options, 'options')), this.callback);
     this.active = true;
   }
 
@@ -121,16 +116,25 @@ class BackgroundWatch {
 
     try {
       const location = new LocationRecord(value);
+      const previous = this.previous;
+      if (previous !== undefined && value.timeStamp === previous.timeStamp &&
+        (value.timeSinceBoot === previous.timeSinceBoot || value.timeSinceBoot <= 0 || previous.timeSinceBoot <= 0)) return;
+
+      if (this.options.distance > 0 && previous !== undefined) {
+        this.distance += geoLocationManager.getDistanceBetweenLocations(previous, value);
+      }
+
+      this.batchStart = this.batchStart ?? value.timeStamp;
+      this.previous = value;
       if (this.pending.length >= MAXIMUM_BATCH_SIZE) this.pending.shift();
       this.pending.push(location);
-      if (this.previous !== undefined) this.distance += distanceBetween(this.previous, location);
-      this.previous = location;
+
       if (this.options.timeout > 0 && this.timer < 0) {
         this.timer = setTimeout((): void => {
           this.timer = -1;
           this.forcePending = true;
           this.flush();
-        }, Math.min(this.options.timeout, 2_147_483_647));
+        }, Math.min(this.options.timeout, MAX_TIMEOUT_MS));
       }
       this.flush();
     } catch (error) {
@@ -141,18 +145,22 @@ class BackgroundWatch {
   flush(): void {
     if (!this.active || this.delivering || this.pending.length === 0 || !this.hasPermission()) return;
 
-    const now = Date.now();
-    if (!this.forcePending && this.shouldDefer() && this.lastSent > 0 && this.pending.length < MAXIMUM_BATCH_SIZE &&
-      (now - this.lastSent < this.options.interval || this.distance < this.options.distance)) return;
+    const current = this.previous;
+    if (current === undefined) return;
+
+    const last = current.timeStamp;
+    if (!this.forcePending && this.shouldDefer() && this.pending.length < MAXIMUM_BATCH_SIZE &&
+      (last - (this.batchStart ?? last) < this.options.interval || this.distance < this.options.distance)) return;
 
     const locations = this.pending;
     this.pending = [];
     this.forcePending = false;
-    this.lastSent = now;
+    this.batchStart = last;
     this.distance = 0;
     if (this.timer >= 0) clearTimeout(this.timer);
     this.timer = -1;
     this.delivering = true;
+
     deliverLocationTask(this.ability, this.task, { locations })
       .catch((error: Object): void => console.warn(`Unable to queue Expo background location: ${message(error)}`))
       .finally((): void => {
@@ -186,12 +194,14 @@ export class LocationBackgroundConsumer implements ExpoTaskConsumer {
       if (event.id !== this.id) return;
 
       this.id = undefined;
-      for (const watch of this.watches.values()) {
-        this.cancelled.set(watch.task.taskName, watch.task.registrationGeneration);
-      }
-
       try {
-        await this.persistCancelled();
+        if (event.reason === backgroundTaskManager.ContinuousTaskCancelReason.USER_CANCEL ||
+          event.reason === backgroundTaskManager.ContinuousTaskCancelReason.USER_CANCEL_REMOVE_NOTIFICATION) {
+          for (const watch of this.watches.values()) {
+            this.cancelled.set(watch.task.taskName, watch.task.registrationGeneration);
+          }
+          await this.persistCancelled();
+        }
       } finally {
         await this.release();
       }
@@ -234,6 +244,7 @@ export class LocationBackgroundConsumer implements ExpoTaskConsumer {
       }
 
       if (pruned) await this.persistCancelled();
+
       const active = tasks.filter((task: ExpoTaskRecord): boolean => this.cancelled.get(task.taskName) !== task.registrationGeneration);
       if (active.length === 0 || !hasLocationTaskPermission(current)) {
         await this.release();
@@ -242,6 +253,8 @@ export class LocationBackgroundConsumer implements ExpoTaskConsumer {
       if (this.ability !== undefined && this.ability !== ability) await this.release();
       if (this.id === undefined) {
         if (context.isHeadless || current.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) return;
+
+        if (this.ability !== undefined) await this.release();
         await this.start(ability);
       }
 
@@ -309,14 +322,16 @@ export class LocationBackgroundConsumer implements ExpoTaskConsumer {
       requestCode: LOCATION_NOTIFICATION_REQUEST_CODE,
       actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG],
     });
+
     const request = continuousLocationRequest();
     request.wantAgent = agent;
     if (!request.isModeSupported()) {
       throw new ExpoModuleError('ERR_LOCATION_BACKGROUND_UNAVAILABLE', 'Continuous location tasks are unavailable on this device.');
     }
 
-    this.ability = ability;
     backgroundTaskManager.on('continuousTaskCancel', this.taskCancelled);
+    this.ability = ability;
+
     try {
       const task = await backgroundTaskManager.startBackgroundRunning(ability, request);
       if (task.continuousTaskId === undefined || task.continuousTaskId < 0) {
@@ -325,10 +340,11 @@ export class LocationBackgroundConsumer implements ExpoTaskConsumer {
 
       this.id = task.continuousTaskId;
       const observer = abilityAccessCtrl.createAtManager();
-      observer.on('selfPermissionStateChange', ['ohos.permission.APPROXIMATELY_LOCATION', 'ohos.permission.LOCATION_IN_BACKGROUND'], this.permissionChanged);
+      observer.on('selfPermissionStateChange', BACKGROUND_LOCATION_PERMISSIONS, this.permissionChanged);
       this.permissionObserver = observer;
     } catch (error) {
       await this.release();
+
       throw new ExpoModuleError('ERR_LOCATION_BACKGROUND_UNAVAILABLE', message(error), error);
     }
   }
@@ -374,9 +390,8 @@ export class LocationBackgroundConsumer implements ExpoTaskConsumer {
 
       this.id = undefined;
     }
-    this.permissionObserver?.off(
-      'selfPermissionStateChange', ['ohos.permission.APPROXIMATELY_LOCATION', 'ohos.permission.LOCATION_IN_BACKGROUND'], this.permissionChanged,
-    );
+
+    this.permissionObserver?.off('selfPermissionStateChange', BACKGROUND_LOCATION_PERMISSIONS, this.permissionChanged);
     this.permissionObserver = undefined;
     backgroundTaskManager.off('continuousTaskCancel', this.taskCancelled);
     this.ability = undefined;

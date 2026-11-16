@@ -68,16 +68,31 @@ async function pendingTransitions(store: preferences.Preferences): Promise<Pendi
   }
 }
 
-export async function takeGeofenceTransitions(context: common.Context): Promise<PendingFenceTransition[]> {
+export async function readGeofenceTransitions(context: common.Context): Promise<PendingFenceTransition[]> {
   let pending: PendingFenceTransition[] = [];
   await withGeofenceStore(context, async (store: preferences.Preferences): Promise<void> => {
-    if (!(await store.has(PENDING_TRANSITIONS_KEY))) return;
-
     pending = await pendingTransitions(store);
-    await store.delete(PENDING_TRANSITIONS_KEY);
+  });
+
+  return pending;
+}
+
+export async function acknowledgeGeofenceTransitions(context: common.Context, handled: PendingFenceTransition[]): Promise<void> {
+  if (handled.length === 0) return;
+
+  await withGeofenceStore(context, async (store: preferences.Preferences): Promise<void> => {
+    const pending = (await pendingTransitions(store)).filter((transition: PendingFenceTransition): boolean =>
+      !handled.some((item: PendingFenceTransition): boolean => item.geofenceId === transition.geofenceId &&
+        item.generation === transition.generation && item.receivedAt === transition.receivedAt && item.transitionEvent === transition.transitionEvent),
+    );
+
+    if (pending.length === 0) {
+      await store.delete(PENDING_TRANSITIONS_KEY);
+    } else {
+      await store.put(PENDING_TRANSITIONS_KEY, JSON.stringify(pending));
+    }
     await store.flush();
   });
-  return pending;
 }
 
 // Imported directly by the generated FenceExtensionAbility. This entry may
