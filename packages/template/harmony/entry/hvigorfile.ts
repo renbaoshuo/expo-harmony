@@ -11,16 +11,20 @@ import { hapTasks } from '@ohos/hvigor-ohos-plugin';
 import { createRNOHModulePlugin } from '@rnoh/hvigor-plugin';
 
 const projectRoot = path.resolve('..');
-function resolveNodeModulesPath() {
-  let directory = projectRoot;
+function resolveNodeModulesPath(): string {
+  const executable = process.platform === 'win32' ? 'react-native.cmd' : 'react-native';
+  let dir = projectRoot;
+
   while (true) {
-    const candidate = path.join(directory, 'node_modules');
-    if (fs.existsSync(candidate)) return candidate;
-    const parent = path.dirname(directory);
-    if (parent === directory) throw new Error('Unable to find node_modules for the Harmony project.');
-    directory = parent;
+    const candidate = path.join(dir, 'node_modules');
+    if (fs.existsSync(path.join(candidate, '.bin', executable))) return candidate;
+
+    const parent = path.dirname(dir);
+    if (parent === dir) throw new Error('Unable to find the React Native CLI in node_modules/.bin for Harmony Codegen.');
+    dir = parent;
   }
 }
+
 const nodeModulesPath = resolveNodeModulesPath();
 
 export default {
@@ -29,7 +33,8 @@ export default {
     createRNOHModulePlugin({
       nodeModulesPath,
       codegen: {
-        rnohModulePath: './oh_modules/@rnoh/react-native-openharmony',
+        projectRootPath: projectRoot,
+        etsOutputPath: './entry/src/main/ets/rnoh_codegen',
         cppOutputPath: './entry/src/main/cpp/rnoh_codegen/generated',
       },
       autolinking: null,

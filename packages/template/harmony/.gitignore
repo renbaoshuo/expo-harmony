@@ -10,6 +10,7 @@ oh-package-lock.json5
 *.hsp
 *.har
 entry/src/main/ets/generated/inline/
+entry/src/main/ets/rnoh_codegen/
 entry/src/main/resources/rawfile/expo-harmony-runtime.json
 entry/src/main/resources/rawfile/expo-updates/
 entry/src/main/resources/rawfile/*.hbc

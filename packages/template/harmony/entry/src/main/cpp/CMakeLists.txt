@@ -15,8 +15,11 @@ set(RNOH_CPP_DIR "${OH_MODULES_DIR}/@rnoh/react-native-openharmony/src/main/cpp"
 set(RNOH_CODEGEN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/rnoh_codegen")
 set(RNOH_GENERATED_DIR "${RNOH_CODEGEN_ROOT}/generated")
 set(LOG_VERBOSITY_LEVEL 1)
-set(CMAKE_ASM_FLAGS "-Wno-error=unused-command-line-argument -Qunused-arguments")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fstack-protector-strong -Wl,-z,relro,-z,now,-z,noexecstack")
+
+add_compile_options(
+  "$<$<COMPILE_LANGUAGE:ASM>:-Wno-error=unused-command-line-argument;-Qunused-arguments>"
+  "$<$<COMPILE_LANGUAGE:CXX>:-fstack-protector-strong>")
+add_link_options("-Wl,-z,relro,-z,now,-z,noexecstack")
 
 # Hvigor rewrites this ignored stamp only when the bytes of a linked HAR change.
 # The digest is part of every native compile command, so deterministic archives
@@ -31,14 +34,13 @@ include("${EXPO_HARMONY_NATIVE_INPUTS_STAMP}")
 if((CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin"
     OR CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
     AND DEFINED OHOS_SDK_NATIVE)
-  set(CMAKE_CXX_FLAGS
-    "${CMAKE_CXX_FLAGS} -include \"${OHOS_SDK_NATIVE}/sysroot/usr/include/assert.h\"")
+  add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include \"${OHOS_SDK_NATIVE}/sysroot/usr/include/assert.h\">")
 endif()
 
 add_subdirectory("${RNOH_CPP_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/rnoh")
 include("${CMAKE_CURRENT_SOURCE_DIR}/autolinking.cmake")
 
-file(GLOB GENERATED_CPP_FILES "${RNOH_GENERATED_DIR}/*.cpp")
+file(GLOB GENERATED_CPP_FILES CONFIGURE_DEPENDS "${RNOH_GENERATED_DIR}/*.cpp")
 add_library(rnoh_app SHARED
   ${GENERATED_CPP_FILES}
   "./PackageProvider.cpp"
