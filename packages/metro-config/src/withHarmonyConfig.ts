@@ -180,25 +180,6 @@ function resolvePackageFile(root: string, entry: string): string | undefined {
   }
 }
 
-function resolveCompatibleUpstream(require: NodeRequire, carrier: PackageManifest, name: string) {
-  const range = carrier.peerDependencies?.[name];
-  if (typeof range !== 'string') return;
-
-  const upstreamPath = resolveManifest(require, name);
-  if (!upstreamPath) return;
-
-  const { version } = require(upstreamPath) as PackageManifest;
-  if (typeof version === 'string' && satisfies(version, range)) return path.dirname(upstreamPath);
-}
-
-function resolveCompatibleUpstreams(
-  projectRequire: NodeRequire, carrierRequire: NodeRequire, carrier: PackageManifest, name: string
-): Set<string> {
-  return new Set([projectRequire, carrierRequire]
-    .map(require => resolveCompatibleUpstream(require, carrier, name))
-    .filter((root): root is string => root !== undefined));
-}
-
 function addScopedRedirects(
   require: NodeRequire,
   manifestPaths: Iterable<string>,
@@ -270,52 +251,61 @@ function addScopedRedirects(
 }
 
 function addEntryRedirects(
-  projectRequire: NodeRequire,
+  require: NodeRequire,
   manifestPaths: Iterable<string>,
   redirects: Map<string, HarmonyRedirect>,
-  hasAlias: (name: string) => boolean
+  hasUserOverride: (name: string) => boolean
 ): void {
-  const byRequest = new Map<string, Map<string, { carrier: string; target: string }>>();
+  const registry = new Map<string, { carrier: string; range: string; target: string }[]>();
+
   for (const manifestPath of manifestPaths) {
-    const require = createRequire(manifestPath);
     const carrier = path.dirname(manifestPath);
     const manifest = require(manifestPath) as PackageManifest;
     const entries = manifest.harmony?.metro?.entrypoints;
     if (!Array.isArray(entries)) continue;
 
     for (const entry of entries) {
-      if (typeof entry?.upstream !== 'string' || redirects.has(entry.upstream) || hasAlias(entry.upstream)) continue;
+      if (typeof entry?.upstream !== 'string' || hasUserOverride(entry.upstream)) continue;
 
       const target = resolvePackageFile(carrier, entry.target);
-      if (!target) continue;
+      const range = manifest.peerDependencies?.[entry.upstream];
+      if (!target || typeof range !== 'string') continue;
 
-      for (const upstream of resolveCompatibleUpstreams(projectRequire, require, manifest, entry.upstream)) {
-        const matches = byRequest.get(entry.upstream) ?? new Map();
-        const previous = matches.get(upstream);
-        if (previous && previous.target !== target) {
-          throw new ExpoHarmonyMetroError(
-            'ERR_EXPO_HARMONY_CONFLICTING_REDIRECT',
-            `Conflicting Harmony entrypoints for "${entry.upstream}" from ${upstream}: `
-            + `${previous.target} and ${target}.`
-          );
-        }
-
-        matches.set(upstream, { carrier, target });
-        byRequest.set(entry.upstream, matches);
-      }
+      const rules = registry.get(entry.upstream) ?? [];
+      rules.push({ carrier, range, target });
+      registry.set(entry.upstream, rules);
     }
   }
-  for (const [request, matches] of byRequest) {
-    redirects.set(request, ({ context, resolve }) => {
-      const original = resolve(request);
+
+  for (const [name, rules] of registry) {
+    const scoped = redirects.get(name);
+    redirects.set(name, (request) => {
+      const override = typeof scoped === 'function' ? scoped(request) : scoped;
+      if (override != null) return override;
+
+      const { context } = request;
+      const original = request.resolveHarmony();
       if (original.type !== 'sourceFile') return original;
 
-      for (const [upstream, { carrier, target }] of matches) {
-        if (!isInside(upstream, original.filePath)) continue;
-        const origin = context.originModulePath;
-        if (isInside(carrier, origin) || isInside(upstream, origin)) return original;
-        return target;
+      const upstream = context.getPackageForModule(original.filePath);
+      const manifest = upstream?.packageJson as PackageManifest | undefined;
+      if (!upstream || manifest?.name !== name || typeof manifest.version !== 'string') return original;
+      if (isInside(upstream.rootPath, context.originModulePath)
+        || rules.some(({ carrier }) => isInside(carrier, context.originModulePath))) return original;
+
+      let target: string | undefined;
+      for (const rule of rules) {
+        if (!satisfies(manifest.version, rule.range)) continue;
+        if (target && target !== rule.target) {
+          throw new ExpoHarmonyMetroError(
+            'ERR_EXPO_HARMONY_CONFLICTING_REDIRECT',
+            `Conflicting Harmony entrypoints for "${name}" from ${upstream.rootPath}: ${target} and ${rule.target}.`
+          );
+        }
+        target = rule.target;
       }
+
+      return target ?? original;
     });
   }
 }
@@ -327,6 +317,7 @@ function getPackageConfig(
 ): { redirects: WithHarmonyConfigOptions['redirects']; getScreensPackageRoot?: () => string } {
   const appManifestPath = path.join(projectRoot, 'package.json');
   const app: PackageManifest = fs.existsSync(appManifestPath) ? require(appManifestPath) : {};
+
   const names = new Set([
     ...RedirectCarriers,
     ...Object.keys(app.dependencies ?? {}),
@@ -338,11 +329,13 @@ function getPackageConfig(
     const manifest = resolveManifest(require, name);
     if (manifest) carriers.set(name, manifest);
   }
+
   const aliases = getEntries(options.aliases, 'options.aliases').map(([name]) => name);
   const hasAlias = (name: string) => aliases.some(alias => name === alias || name.startsWith(`${alias}/`));
   const redirects = new Map(getEntries<HarmonyRedirect>(options.redirects, 'options.redirects'));
+  const userRedirects = new Set(redirects.keys());
   addScopedRedirects(require, carriers.values(), redirects, hasAlias);
-  addEntryRedirects(require, carriers.values(), redirects, hasAlias);
+  addEntryRedirects(require, carriers.values(), redirects, name => userRedirects.has(name) || hasAlias(name));
 
   const manifestPath = carriers.get(RouterPackage);
   if (!manifestPath) return { redirects };

@@ -5,7 +5,6 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import fs from 'node:fs';
 import path from 'node:path';
 
 import type { InputConfigT } from 'metro-config';
@@ -102,73 +101,25 @@ interface ResolverOptions {
 
 const NoResolution = Symbol('NoResolution');
 const HarmonySourceCode = path.join(__dirname, 'NativeSourceCode.harmony.js');
-interface OriginPackage {
-  harmonyAlias: string | null;
-  name: string | null;
-}
-const DirectoryOriginPackages = new Map<string, OriginPackage | null>();
 
-function getPackageName(moduleName: string): string | null {
-  if (moduleName.startsWith('.') || moduleName.startsWith('/')) return null;
+function getPackageName(name: string): string | null {
+  if (name.startsWith('.') || path.isAbsolute(name)) return null;
 
-  const parts = moduleName.split('/');
-  if (moduleName.startsWith('@')) {
+  const parts = name.split('/');
+  if (name.startsWith('@')) {
     return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null;
   }
 
   return parts[0] || null;
 }
 
-function getOriginPackage(originModulePath: string): OriginPackage | null {
-  let directory = path.dirname(originModulePath);
-  const visited: string[] = [];
-
-  while (true) {
-    const cached = DirectoryOriginPackages.get(directory);
-    if (cached !== undefined) {
-      visited.forEach(item => DirectoryOriginPackages.set(item, cached));
-      return cached;
-    }
-
-    visited.push(directory);
-
-    const manifestPath = path.join(directory, 'package.json');
-    if (fs.existsSync(manifestPath)) {
-      try {
-        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
-          name?: unknown;
-          harmony?: { alias?: unknown };
-        };
-        const originPackage: OriginPackage = {
-          harmonyAlias: typeof manifest.harmony?.alias === 'string'
-            ? manifest.harmony.alias
-            : null,
-          name: typeof manifest.name === 'string' ? manifest.name : null,
-        };
-
-        visited.forEach(item => DirectoryOriginPackages.set(item, originPackage));
-        return originPackage;
-      } catch {
-        visited.forEach(item => DirectoryOriginPackages.set(item, null));
-        return null;
-      }
-    }
-
-    const parent = path.dirname(directory);
-    if (parent === directory) break;
-
-    directory = parent;
-  }
-
-  visited.forEach(item => DirectoryOriginPackages.set(item, null));
-  return null;
-}
-
 function isUpstreamAliasRequest(request: HarmonyResolverRequest): boolean {
-  const packageName = getPackageName(request.moduleName);
-  if (!packageName) return false;
+  const name = getPackageName(request.moduleName);
+  if (!name) return false;
 
-  return packageName === getOriginPackage(request.context.originModulePath)?.harmonyAlias;
+  const origin = request.context.getPackageForModule(request.context.originModulePath);
+  const manifest = origin?.packageJson as { harmony?: { alias?: unknown } } | undefined;
+  return name === manifest?.harmony?.alias;
 }
 
 export function getEntries<T = unknown>(value: unknown, name: string): [string, T][] {
@@ -185,11 +136,19 @@ export function getEntries<T = unknown>(value: unknown, name: string): [string, 
   return Object.entries(value) as [string, T][];
 }
 
-function normalizeResolution(result: HarmonyResolution, normalizePath: PathNormalizer): HarmonyResolution {
+function normalizeResolution(
+  result: HarmonyResolution,
+  normalizePath: PathNormalizer,
+  context: HarmonyResolutionContext
+): HarmonyResolution {
   if (result?.type !== 'sourceFile' || typeof result.filePath !== 'string') return result;
-  const filePath = normalizePath(result.filePath);
 
-  return filePath === result.filePath ? result : { ...result, filePath };
+  const file = normalizePath(result.filePath);
+  if (file === result.filePath) return result;
+
+  // The preferred copy may lack this platform variant or be outside Metro's watched graph.
+  const lookup = context.fileSystemLookup(file);
+  return lookup.exists && lookup.type === 'f' ? { ...result, filePath: lookup.realPath } : result;
 }
 
 function matchesModule(matcher: HarmonyModuleMatcher, request: HarmonyResolverRequest): boolean {
@@ -236,7 +195,14 @@ function resolveTarget(target: HarmonyRedirect, req: HarmonyResolverRequest): Ha
   if (result === undefined || result === null) return NoResolution;
   if (result === false) return { type: 'empty' };
   if (typeof result === 'string') return req.resolve(result);
-  if (typeof result === 'object') return result;
+  if (typeof result === 'object' && (
+    result.type === 'empty'
+    || (result.type === 'sourceFile' && typeof result.filePath === 'string')
+    || (result.type === 'assetFiles' && Array.isArray(result.filePaths)
+      && result.filePaths.every(file => typeof file === 'string'))
+  )) {
+    return result;
+  }
 
   throw new ExpoHarmonyMetroError(
     'ERR_EXPO_HARMONY_INVALID_REDIRECT',
@@ -290,12 +256,13 @@ export function createResolver({
 
   return function resolveRequest(context, moduleName, platform) {
     const metroResolver = context.resolveRequest;
+
     const resolveBase = (
       targetModuleName: string,
       targetPlatform: string | null = platform,
       targetContext: HarmonyResolutionContext = context
     ): HarmonyResolution => {
-      if (platform === HarmonyPlatform) {
+      if (targetPlatform === HarmonyPlatform) {
         // Bind the default runtime to Core even when the app has another copy.
         if (harmonyPackage === DefaultReactNativeHarmonyPackage
           && (targetModuleName === harmonyPackage || targetModuleName.startsWith(`${harmonyPackage}/`))) {
@@ -354,7 +321,7 @@ export function createResolver({
         resolve: resolveBase,
         resolveHarmony,
       }
-    ), normalizePath);
+    ), normalizePath, context);
 
     if (context.dev && resolution.type === 'sourceFile' && resolution.filePath === runtimeSourceCode
       && context.originModulePath !== HarmonySourceCode) {

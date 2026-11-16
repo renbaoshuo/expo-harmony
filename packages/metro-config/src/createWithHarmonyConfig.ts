@@ -107,7 +107,7 @@ function validateOptions(value: unknown): asserts value is WithHarmonyConfigOpti
 
   if (value.env !== undefined && value.env !== false) {
     for (const [name, entry] of getEntries(value.env, 'options.env')) {
-      if (typeof entry !== 'string') {
+      if (typeof name !== 'string' || typeof entry !== 'string') {
         throw new ExpoHarmonyMetroError(
           'ERR_EXPO_HARMONY_INVALID_OPTIONS',
           `options.env["${name}"] must be a string.`
@@ -208,7 +208,11 @@ export function createWithHarmonyConfig({
     assertObject(config, 'config');
     validateOptions(options);
 
-    if (options.env) Object.assign(process.env, options.env);
+    if (options.env) {
+      for (const [name, value] of getEntries<string>(options.env, 'options.env')) {
+        process.env[name] = value;
+      }
+    }
 
     const harmonyPackage = options.reactNativeHarmonyPackageName ?? DefaultReactNativeHarmonyPackage;
     const native = createHarmonyMetroConfig({
@@ -217,6 +221,7 @@ export function createWithHarmonyConfig({
     });
     const baseResolver = config.resolver?.resolveRequest;
     const harmonyResolver = native?.resolver?.resolveRequest;
+
     if (typeof harmonyResolver !== 'function') {
       throw new ExpoHarmonyMetroError(
         'ERR_EXPO_HARMONY_INCOMPATIBLE_PEER_DEPENDENCY',
@@ -228,12 +233,18 @@ export function createWithHarmonyConfig({
     const baseTransform = config.transformer?.getTransformOptions;
     const harmonyTransform = native.transformer?.getTransformOptions;
     const transformer = { ...merged.transformer };
+
     if (baseTransform && harmonyTransform) {
-      transformer.getTransformOptions = function (entryPoints, options, getDependencies) {
-        const getTransformOptions = options.platform === HarmonyPlatform
-          ? harmonyTransform
-          : baseTransform;
-        return getTransformOptions.call(this, entryPoints, options, getDependencies);
+      transformer.getTransformOptions = async function (entryPoints, options, getDependencies) {
+        const base = await baseTransform.call(this, entryPoints, options, getDependencies);
+        if (options.platform !== HarmonyPlatform) return base;
+
+        const defaults = await harmonyTransform.call(this, entryPoints, options, getDependencies);
+        return {
+          ...defaults,
+          ...base,
+          transform: { ...defaults.transform, ...base.transform },
+        };
       };
     }
 
@@ -241,13 +252,16 @@ export function createWithHarmonyConfig({
     const existing = merged.resolver?.unstable_conditionsByPlatform?.[HarmonyPlatform] ?? [];
     const extensions = readPlatformExtensions(merged.resolver);
     const blockList = mergeBlockLists(config.resolver?.blockList, native.resolver?.blockList);
+
     const root = options.projectRoot ?? merged.projectRoot ?? process.cwd();
     const harmonyPackageRoot = getHarmonyPackageRoot(harmonyPackage, root);
     const reactPackage = getEntries<string>(options.aliases, 'options.aliases').find(([name]) => name === 'react')?.[1] || 'react';
     const normalizePath = createHarmonyPathNormalizer(harmonyPackage, root, reactPackage);
     const bootstrap = getBootstrapModules(harmonyPackage, root);
+
     const rewriteRequestUrl = wrapRequestUrl(merged.server?.rewriteRequestUrl);
     const server = normalizeServer(merged.server, rewriteRequestUrl);
+
     const environment = Object.keys(process.env).filter(key => key.startsWith('EXPO_PUBLIC_')).sort()
       .map(key => [key, process.env[key]]);
     const cache = process.env.NODE_ENV === 'production'
@@ -258,12 +272,6 @@ export function createWithHarmonyConfig({
       config.serializer,
       native.serializer,
     ], bootstrap);
-
-    if (config.serializer && typeof serializer?.getModulesRunBeforeMainModule === 'function') {
-      Object.assign(config.serializer, {
-        getModulesRunBeforeMainModule: serializer.getModulesRunBeforeMainModule,
-      });
-    }
 
     return {
       ...merged,
