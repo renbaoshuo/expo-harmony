@@ -1731,6 +1731,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@expo-harmony/expo-dev-client@workspace:packages/expo-dev-client"
   dependencies:
+    "@expo-harmony/config-plugins": "workspace:*"
     "@expo-harmony/expo-dev-launcher": "workspace:*"
   peerDependencies:
     expo-dev-client: ~57.0.20
@@ -2153,6 +2154,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@expo-harmony/expo-manifests@workspace:packages/expo-manifests"
   dependencies:
+    "@expo-harmony/expo-json-utils": "workspace:*"
     "@expo-harmony/expo-module-scripts": "workspace:*"
     expo: "npm:~57.0.31"
     expo-manifests: "npm:~57.0.2"
@@ -2415,6 +2417,7 @@ __metadata:
     react-native: "npm:0.86.3"
   peerDependencies:
     "@expo-harmony/expo-modules-core": "workspace:*"
+    expo-modules-core: ~57.0.24
     expo-screen-orientation: ~57.0.3
   languageName: unknown
   linkType: soft
@@ -2591,6 +2594,7 @@ __metadata:
     react-native: "npm:0.86.3"
   peerDependencies:
     "@expo-harmony/expo-modules-core": "workspace:*"
+    expo-modules-core: ~57.0.24
     expo-store-review: ~57.0.3
   languageName: unknown
   linkType: soft
@@ -2618,12 +2622,17 @@ __metadata:
     react-native: "npm:0.86.3"
     typescript: "npm:6.0.3"
   peerDependencies:
+    "@expo-harmony/expo-font": "workspace:*"
     "@expo-harmony/expo-modules-core": "workspace:*"
     expo: ~57.0.31
+    expo-font: ~57.0.4
     expo-modules-core: ~57.0.24
     expo-symbols: ~57.0.3
     react: ^19.2.0
     react-native: 0.86.3
+  peerDependenciesMeta:
+    "@expo-harmony/expo-font":
+      optional: true
   languageName: unknown
   linkType: soft
 
@@ -2824,6 +2833,7 @@ __metadata:
     expo-modules-core: "npm:~57.0.24"
     react: "npm:19.2.3"
     react-native: "npm:0.86.3"
+    semver: "npm:7.7.3"
   peerDependencies:
     "@expo-harmony/expo-modules-core": "workspace:*"
     "@expo/dom-webview": ~57.0.1
@@ -2887,6 +2897,7 @@ __metadata:
     expo-modules-core: "npm:~57.0.24"
     react: "npm:19.2.3"
     react-native: "npm:0.86.3"
+    semver: "npm:7.7.3"
     stacktrace-parser: "npm:0.1.11"
   peerDependencies:
     "@expo-harmony/expo-modules-core": "workspace:*"
