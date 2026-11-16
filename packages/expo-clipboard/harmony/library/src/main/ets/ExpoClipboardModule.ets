@@ -16,16 +16,17 @@ import {
 } from '@expo-harmony/expo-modules-core';
 import { bundleManager, Permissions } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
-import { BusinessError, deviceInfo, pasteboard } from '@kit.BasicServicesKit';
+import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
 import { ContentType, GET_IMAGE_OPTIONS, GET_STRING_OPTIONS, GetImageOptions, ImageFormat, SET_STRING_OPTIONS, StringFormat } from './ClipboardOptions';
 import { defineClipboardPasteButton, PasteButtonResult } from './ClipboardPasteButton';
 
 const CLIPBOARD_CHANGED_EVENT: string = 'onClipboardChanged';
+const PASTEBOARD_CAPABILITY: string = 'SystemCapability.MiscServices.Pasteboard';
+const PASTE_BUTTON_CAPABILITY: string = 'SystemCapability.ArkUI.ArkUI.Full';
 const READ_PERMISSION: Permissions = 'ohos.permission.READ_PASTEBOARD';
 const PERMISSION_DENIED: number = 201;
-const PERMISSION_STATUS_API: number = 20;
 const IMAGE_QUALITY_MAX: number = 100;
 const FILE_READ_CHUNK_SIZE: number = 64 * 1024;
 const HTML_TAG_END = /(?:[^"'<>]|"[^"]*"|'[^']*')*>/.source;
@@ -42,38 +43,56 @@ interface ClipboardImage {
 }
 
 export class ExpoClipboardModule extends ExpoModule {
-  private readonly board: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
+  private systemBoard?: pasteboard.SystemPasteboard;
   private pending: Promise<void> = Promise.resolve();
   private readonly pendingTransfers: Set<Promise<void>> = new Set<Promise<void>>();
   private destroyed: boolean = false;
   private observing: boolean = false;
   private listening: boolean = false;
+  private observationRevision: number = 0;
 
   private readonly changed = (): void => {
-    if (!this.listening || !this.observing || this.destroyed || !this.context.isValid || this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) return;
+    void this.emitClipboardChanged();
+  };
+
+  private get board(): pasteboard.SystemPasteboard {
+    if (!canIUse(PASTEBOARD_CAPABILITY)) {
+      throw new ExpoModuleError('ERR_CLIPBOARD', 'The device does not support the system clipboard.');
+    }
+
+    return this.systemBoard ??= pasteboard.getSystemPasteboard();
+  }
+
+  private async emitClipboardChanged(): Promise<void> {
+    if (!this.observing || !this.listening || this.destroyed || !this.context.isValid) return;
+
+    const revision = ++this.observationRevision;
 
     try {
-      const html = this.board.hasDataType(pasteboard.MIMETYPE_TEXT_HTML);
+      const mimes = await this.board.getMimeTypes();
+      if (revision !== this.observationRevision || !this.context.isValid ||
+        this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) return;
 
       const types: ContentType[] = [];
-      if (html || this.board.hasDataType(pasteboard.MIMETYPE_TEXT_PLAIN)) types.push(ContentType.PlainText);
+      const html = mimes.includes(pasteboard.MIMETYPE_TEXT_HTML);
+      if (html || mimes.includes(pasteboard.MIMETYPE_TEXT_PLAIN)) types.push(ContentType.PlainText);
       if (html) types.push(ContentType.HTML);
-      if (this.board.hasDataType(pasteboard.MIMETYPE_PIXELMAP)) types.push(ContentType.Image);
-      if (this.board.hasDataType(pasteboard.MIMETYPE_TEXT_URI)) types.push(ContentType.URL);
+      if (mimes.includes(pasteboard.MIMETYPE_PIXELMAP)) types.push(ContentType.Image);
+      if (mimes.includes(pasteboard.MIMETYPE_TEXT_URI)) types.push(ContentType.URL);
 
       const payload: Record<string, ESObject> = { 'contentTypes': types };
       this.sendEvent(CLIPBOARD_CHANGED_EVENT, payload);
     } catch (error) {
       this.warn('inspect clipboard changes', error);
     }
-  };
+  }
 
   definition(): ExpoModuleDefinition {
     return new ExpoModuleDefinition()
       .name('ExpoClipboard')
-      .constant('isPasteButtonAvailable', canIUse('SystemCapability.ArkUI.ArkUI.Full'))
-      .view(defineClipboardPasteButton((types: ContentType[], options: GetImageOptions): Promise<PasteButtonResult | undefined> =>
-        this.pasteFromButton(types, options)))
+      .constant('isPasteButtonAvailable', canIUse(PASTEBOARD_CAPABILITY) && canIUse(PASTE_BUTTON_CAPABILITY))
+      .view(defineClipboardPasteButton((types: ContentType[], options: GetImageOptions, emit: (result: PasteButtonResult) => void): Promise<void> =>
+        this.pasteFromButton(types, options, emit)))
       .events([CLIPBOARD_CHANGED_EVENT])
       .asyncFunction(
         'getStringAsync',
@@ -110,10 +129,7 @@ export class ExpoClipboardModule extends ExpoModule {
       .asyncFunction(
         'hasStringAsync',
         (): Promise<boolean> =>
-          this.perform(
-            async (): Promise<boolean> =>
-              this.board.hasDataType(pasteboard.MIMETYPE_TEXT_PLAIN) || this.board.hasDataType(pasteboard.MIMETYPE_TEXT_HTML),
-          ),
+          this.perform((): Promise<boolean> => this.hasAnyType([pasteboard.MIMETYPE_TEXT_PLAIN, pasteboard.MIMETYPE_TEXT_HTML])),
       )
       .asyncFunction(
         'getImageAsync',
@@ -132,7 +148,7 @@ export class ExpoClipboardModule extends ExpoModule {
       )
       .asyncFunction(
         'hasImageAsync',
-        (): Promise<boolean> => this.perform(async (): Promise<boolean> => this.board.hasDataType(pasteboard.MIMETYPE_PIXELMAP)),
+        (): Promise<boolean> => this.perform((): Promise<boolean> => this.hasAnyType([pasteboard.MIMETYPE_PIXELMAP])),
       )
       .asyncFunction(
         'getUrlAsync',
@@ -159,7 +175,7 @@ export class ExpoClipboardModule extends ExpoModule {
       )
       .asyncFunction(
         'hasUrlAsync',
-        (): Promise<boolean> => this.perform(async (): Promise<boolean> => this.board.hasDataType(pasteboard.MIMETYPE_TEXT_URI)),
+        (): Promise<boolean> => this.perform((): Promise<boolean> => this.hasAnyType([pasteboard.MIMETYPE_TEXT_URI])),
       )
       .onStartObserving((): void => {
         this.listening = true;
@@ -210,11 +226,12 @@ export class ExpoClipboardModule extends ExpoModule {
 
   private async readImage(options: GetImageOptions): Promise<ClipboardImage | null> {
     return this.withPasteData([pasteboard.MIMETYPE_PIXELMAP], null,
-      (data: pasteboard.PasteData): Promise<ClipboardImage | null> => this.readImageData(data, options));
+      async (data: pasteboard.PasteData): Promise<ClipboardImage | null> =>
+        this.readImageData(await readEntry(data, pasteboard.MIMETYPE_PIXELMAP), options));
   }
 
-  private async readImageData(data: pasteboard.PasteData, options: GetImageOptions): Promise<ClipboardImage | null> {
-    const bitmap = (await readEntry(data, pasteboard.MIMETYPE_PIXELMAP)) as image.PixelMap | undefined;
+  private async readImageData(value: pasteboard.ValueType | undefined, options: GetImageOptions): Promise<ClipboardImage | null> {
+    const bitmap = value as image.PixelMap | undefined;
     if (bitmap === undefined || bitmap === null) return null;
 
     try {
@@ -226,43 +243,55 @@ export class ExpoClipboardModule extends ExpoModule {
     }
   }
 
-  private async pasteFromButton(types: ContentType[], options: GetImageOptions): Promise<PasteButtonResult | undefined> {
+  private async pasteFromButton(
+    types: ContentType[], options: GetImageOptions, emit: (result: PasteButtonResult) => void,
+  ): Promise<void> {
     this.assertActive();
-    if (this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) return undefined;
+    if (this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) return;
 
     // Capture the pasteboard at the authorized gesture, before queued operations or permission prompts.
-    const payload = await this.trackTransfer(this.readPasteData(async (data: pasteboard.PasteData): Promise<PasteButtonResult | undefined> => {
-      if (types.includes(ContentType.Image)) {
-        const image = await this.readImageData(data, options);
-        if (image !== null) return { type: 'image', data: image.data, size: image.size };
-      }
+    await this.trackTransfer(this.readPasteData(async (data: pasteboard.PasteData): Promise<void> => {
+      for (let index = 0; index < data.getRecordCount(); index += 1) {
+        if (this.destroyed || !this.context.isValid || this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) return;
 
-      if (types.includes(ContentType.URL)) {
-        const url = await readEntry(data, pasteboard.MIMETYPE_TEXT_URI);
-        if (typeof url === 'string') return { type: 'text', text: url };
-      }
+        try {
+          const result = await this.readButtonRecord(data.getRecord(index), types, options);
 
-      if (types.includes(ContentType.HTML)) {
-        const html = await readEntry(data, pasteboard.MIMETYPE_TEXT_HTML);
-        if (typeof html === 'string') return { type: 'text', text: html };
-      }
-
-      if (types.includes(ContentType.PlainText)) {
-        const text = await readEntry(data, pasteboard.MIMETYPE_TEXT_PLAIN);
-        if (typeof text === 'string') return { type: 'text', text: text };
-
-        const html = await readEntry(data, pasteboard.MIMETYPE_TEXT_HTML);
-
-        if (typeof html === 'string') {
-          this.assertActive();
-          return { type: 'text', text: await plainTextFromHtml(html) };
+          if (result !== undefined && !this.destroyed && this.context.isValid &&
+            this.context.appLifecycleState === ExpoAppLifecycleState.FOREGROUND) emit(result);
+        } catch (error) {
+          this.warn('read a clipboard item', error);
         }
       }
-
-      return undefined;
     }));
-    this.assertActive();
-    return this.context.appLifecycleState === ExpoAppLifecycleState.FOREGROUND ? payload : undefined;
+  }
+
+  private async readButtonRecord(record: pasteboard.PasteDataRecord, types: ContentType[], options: GetImageOptions): Promise<PasteButtonResult | undefined> {
+    if (types.includes(ContentType.Image)) {
+      const bitmap = await readRecordEntry(record, pasteboard.MIMETYPE_PIXELMAP);
+      const image = await this.readImageData(bitmap, options);
+      if (image !== null) return { type: 'image', data: image.data, size: image.size };
+    }
+
+    if (types.includes(ContentType.URL)) {
+      const url = await readRecordEntry(record, pasteboard.MIMETYPE_TEXT_URI);
+      if (typeof url === 'string') return { type: 'text', text: url };
+    }
+
+    const acceptHtml = types.includes(ContentType.HTML);
+    if (acceptHtml) {
+      const html = await readRecordEntry(record, pasteboard.MIMETYPE_TEXT_HTML);
+      if (typeof html === 'string') return { type: 'text', text: html };
+    }
+
+    if (!types.includes(ContentType.PlainText)) return undefined;
+
+    const text = await readRecordEntry(record, pasteboard.MIMETYPE_TEXT_PLAIN);
+    if (typeof text === 'string') return { type: 'text', text };
+    if (acceptHtml) return undefined;
+
+    const html = await readRecordEntry(record, pasteboard.MIMETYPE_TEXT_HTML);
+    return typeof html === 'string' ? { type: 'text', text: await plainTextFromHtml(html) } : undefined;
   }
 
   private async encodeImage(bitmap: image.PixelMap, options: GetImageOptions): Promise<ClipboardImage> {
@@ -341,7 +370,8 @@ export class ExpoClipboardModule extends ExpoModule {
   }
 
   private async withPasteData<T>(types: string[], empty: T, read: (data: pasteboard.PasteData) => Promise<T>): Promise<T> {
-    if (!types.some((type: string): boolean => this.board.hasDataType(type))) return empty;
+    if (!(await this.hasAnyType(types))) return empty;
+    this.assertActive();
 
     // A PasteButton grants temporary access at the OS level, even when the app has no ACL declaration.
     const details = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_REQUESTED_PERMISSION).reqPermissionDetails;
@@ -349,14 +379,12 @@ export class ExpoClipboardModule extends ExpoModule {
       throw new ExpoModuleError('ERR_NO_PERMISSION', 'Clipboard reads require READ_PASTEBOARD in the app manifest. For user-initiated paste, use ClipboardPasteButton.');
     }
 
-    const permission = this.context.permissionStatus(READ_PERMISSION);
-    if (permission !== ExpoPermissionStatus.GRANTED) {
-      if (permission === ExpoPermissionStatus.INVALID || permission === ExpoPermissionStatus.RESTRICTED
-        || (permission === ExpoPermissionStatus.DENIED && deviceInfo.sdkApiVersion >= PERMISSION_STATUS_API
-          && this.context.systemPermissionStatus(READ_PERMISSION) === ExpoPermissionStatus.DENIED)) {
+    const permission = this.context.getPermissionResponse(READ_PERMISSION);
+    if (permission.status !== ExpoPermissionStatus.GRANTED) {
+      if (!permission.canAskAgain) {
         throw new ExpoModuleError('ERR_NO_PERMISSION', 'Clipboard read permission is unavailable or was denied in system settings.');
       }
-      if (this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) {
+      if (this.context.isHeadless || this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) {
         throw new ExpoModuleError('ERR_NO_PERMISSION', 'Clipboard read permission can only be requested in the foreground.');
       }
 
@@ -368,10 +396,16 @@ export class ExpoClipboardModule extends ExpoModule {
       }
 
       // The clipboard can change while the system permission prompt is visible.
-      if (!types.some((type: string): boolean => this.board.hasDataType(type))) return empty;
+      if (!(await this.hasAnyType(types))) return empty;
     }
 
+    this.assertActive();
     return this.trackTransfer(this.readPasteData(read));
+  }
+
+  private async hasAnyType(types: string[]): Promise<boolean> {
+    const mimes = await this.board.getMimeTypes();
+    return types.some((type: string): boolean => mimes.includes(type));
   }
 
   private async readPasteData<T>(read: (data: pasteboard.PasteData) => Promise<T>): Promise<T> {
@@ -448,6 +482,7 @@ export class ExpoClipboardModule extends ExpoModule {
   }
 
   private stopObservation(): void {
+    this.observationRevision += 1;
     if (!this.observing) return;
 
     try {
@@ -500,11 +535,15 @@ function htmlFromPlainText(text: string): string {
 
 async function readEntry(data: pasteboard.PasteData, type: string): Promise<pasteboard.ValueType | undefined> {
   for (let index = 0; index < data.getRecordCount(); index += 1) {
-    const record = data.getRecord(index);
-    if (record.getValidTypes([type]).length > 0) return await record.getData(type);
+    const value = await readRecordEntry(data.getRecord(index), type);
+    if (value !== undefined) return value;
   }
 
   return undefined;
+}
+
+async function readRecordEntry(record: pasteboard.PasteDataRecord, type: string): Promise<pasteboard.ValueType | undefined> {
+  return record.getValidTypes([type]).length > 0 ? await record.getData(type) : undefined;
 }
 
 async function readImageFile(fd: number): Promise<Uint8Array> {

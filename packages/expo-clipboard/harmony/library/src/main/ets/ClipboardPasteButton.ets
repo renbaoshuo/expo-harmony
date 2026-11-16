@@ -31,7 +31,11 @@ export interface PasteButtonResult {
   size?: image.Size;
 }
 
-type ReadPasteButton = (types: ContentType[], options: GetImageOptions) => Promise<PasteButtonResult | undefined>;
+type ReadPasteButton = (
+  types: ContentType[],
+  options: GetImageOptions,
+  emit: (result: PasteButtonResult) => void,
+) => Promise<void>;
 
 @Observed
 class ClipboardPasteButtonView extends ExpoView {
@@ -53,8 +57,9 @@ class ClipboardPasteButtonView extends ExpoView {
     if (this.destroyed) return;
 
     try {
-      const payload = await this.read(this.acceptedContentTypes, this.imageOptions);
-      if (!this.destroyed && payload !== undefined) this.sendEvent('onPastePressed', payload);
+      await this.read(this.acceptedContentTypes, this.imageOptions, (result: PasteButtonResult): void => {
+        if (!this.destroyed) this.sendEvent('onPastePressed', result);
+      });
     } catch (error) {
       if (!this.destroyed && this.context.moduleContext.isValid) {
         this.context.moduleContext.logger.warn(`Unable to paste from ClipboardPasteButton: ${String(error)}`);
@@ -63,13 +68,19 @@ class ClipboardPasteButtonView extends ExpoView {
   }
 
   options(): PasteButtonOptions {
-    const options: PasteButtonOptions = {
-      buttonType: this.cornerStyle === null || this.cornerStyle === 'capsule' || this.cornerStyle === 'dynamic'
-        ? ButtonType.Capsule : ButtonType.Normal,
-    };
-    if (this.displayMode !== 'labelOnly') options.icon = PasteIconStyle.LINES;
-    if (this.displayMode !== 'iconOnly') options.text = PasteDescription.PASTE;
-    return options;
+    const style: PasteButtonOptions = { buttonType: this.buttonType() };
+    if (this.displayMode !== 'labelOnly') style.icon = PasteIconStyle.LINES;
+    if (this.displayMode !== 'iconOnly') style.text = PasteDescription.PASTE;
+    return style;
+  }
+
+  configurationKey(): string {
+    return `${this.buttonType()}:${this.displayMode ?? 'iconAndLabel'}`;
+  }
+
+  private buttonType(): ButtonType {
+    return this.cornerStyle === null || this.cornerStyle === 'capsule' || this.cornerStyle === 'dynamic'
+      ? ButtonType.Capsule : ButtonType.Normal;
   }
 }
 
@@ -78,15 +89,22 @@ struct ClipboardPasteButtonContent {
   @ObjectLink view: ClipboardPasteButtonView;
 
   build(): void {
-    PasteButton(this.view.options())
-      .width('100%')
-      .height('100%')
-      .backgroundColor(this.view.backgroundColor ?? $r('sys.color.ohos_id_color_emphasize'))
-      .fontColor(this.view.foregroundColor ?? $r('sys.color.ohos_id_color_foreground_contrary'))
-      .iconColor(this.view.foregroundColor ?? $r('sys.color.ohos_id_color_foreground_contrary'))
-      .onClick((_event: ClickEvent, result: PasteButtonOnClickResult): void => {
-        if (result === PasteButtonOnClickResult.SUCCESS) void this.view.paste();
-      });
+    Stack() {
+      // ArkUI only validates the icon, label and shape when constructing the PasteButton.
+      ForEach([this.view.configurationKey()], (_key: string): void => {
+        PasteButton(this.view.options())
+          .width('100%')
+          .height('100%')
+          .backgroundColor(this.view.backgroundColor ?? $r('sys.color.ohos_id_color_emphasize'))
+          .fontColor(this.view.foregroundColor ?? $r('sys.color.ohos_id_color_foreground_contrary'))
+          .iconColor(this.view.foregroundColor ?? $r('sys.color.ohos_id_color_foreground_contrary'))
+          .onClick((_event: ClickEvent, result: PasteButtonOnClickResult): void => {
+            if (result === PasteButtonOnClickResult.SUCCESS) void this.view.paste();
+          });
+      }, (key: string): string => key);
+    }
+    .width('100%')
+    .height('100%');
   }
 }
 
@@ -106,9 +124,9 @@ export function defineClipboardPasteButton(read: ReadPasteButton): ExpoViewDefin
     .prop('foregroundColor', ExpoValueTypes.string().nullable(), (view, value) => { view.foregroundColor = value; }, null)
     .prop('cornerStyle', ExpoValueTypes.string().nullable(), (view, value) => { view.cornerStyle = value; }, null)
     .prop('displayMode', ExpoValueTypes.string().nullable(), (view, value) => { view.displayMode = value; }, null)
-    .prop('acceptedContentTypes', ExpoValueTypes.array(CONTENT_TYPES), (view, value) => {
-      view.acceptedContentTypes = value.length === 0 ? DEFAULT_CONTENT_TYPES : value;
-    }, DEFAULT_CONTENT_TYPES)
+    .prop('acceptedContentTypes', ExpoValueTypes.array(CONTENT_TYPES).nullable(), (view, value) => {
+      view.acceptedContentTypes = value === null || value.length === 0 ? DEFAULT_CONTENT_TYPES : value;
+    }, null)
     .prop('imageOptions', GET_IMAGE_OPTIONS.nullable(), (view, value) => {
       view.imageOptions = value ?? new GetImageOptions();
     }, null)

@@ -8,7 +8,7 @@
 
 本包适配 Expo SDK 57。
 
-引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 14（HarmonyOS 5.0.2）。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 14（HarmonyOS 5.0.2）。剪贴板的多格式记录和异步 MIME 类型查询从该版本开始提供。
 
 ```bash
 npm install @expo-harmony/expo-clipboard expo-clipboard@~57.0.2
@@ -26,9 +26,9 @@ npm install @expo-harmony/expo-clipboard expo-clipboard@~57.0.2
 
 #### `Clipboard.ClipboardPasteButton`
 
-HarmonyOS 系统粘贴控件。用户点击并通过系统授权后，`onPress` 收到第一项匹配的内容，类型为 `TextPasteEvent` 或 `ImagePasteEvent`。默认接受纯文本和图片；`acceptedContentTypes` 可设置为纯文本、HTML、图片或 URL。HTML 和 URL 以文本形式回调。没有匹配内容或用户未授权时，不触发 `onPress`。
+HarmonyOS 系统粘贴控件。用户点击并通过系统授权后，`onPress` 按记录顺序接收每项匹配的内容，类型为 `TextPasteEvent` 或 `ImagePasteEvent`。默认接受纯文本和图片，也可通过 `acceptedContentTypes` 接受 HTML 或 URL。HTML 和 URL 以文本形式回调。一条记录同时包含已接受的 HTML 和纯文本时优先返回 HTML。用户未授权或剪贴板无匹配内容时，没有回调。
 
-系统绘制本地化文字和图标。`displayMode` 支持 `iconAndLabel`、`iconOnly`、`labelOnly`；`backgroundColor` 和 `foregroundColor` 设置背景色与前景色。`cornerStyle` 为 `capsule` 或 `dynamic` 时使用胶囊形状，其余取值使用普通形状。`imageOptions` 设置粘贴图片的输出格式。请在 `style` 中设置明确的宽高，并保持控件可见。
+系统绘制本地化文字和图标。`displayMode` 支持 `iconAndLabel`、`iconOnly`、`labelOnly`。`backgroundColor` 和 `foregroundColor` 设置背景色与前景色。`cornerStyle` 为 `capsule` 或 `dynamic` 时使用胶囊形状，其余取值使用普通形状。`imageOptions` 设置粘贴图片的输出格式。请在 `style` 中设置明确的宽高，并保持样式和可见性满足系统授权要求。 [PasteButton 参考](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/ts-security-components-pastebutton/)
 
 #### `ClipboardPasteButtonProps`
 
@@ -87,7 +87,7 @@ HarmonyOS 系统粘贴控件。用户点击并通过系统授权后，`onPress` 
 
 #### `Clipboard.addClipboardListener(listener)`
 
-返回 `Subscription`，订阅剪贴板变化。回调参数为 `ClipboardEvent`，其中 `contentTypes` 列出当前剪贴板的内容类型；HTML 内容也会报告为纯文本。只在应用处于前台且存在订阅时发送事件，后台期间的变化不会在应用回到前台后补发。监听无需读取权限。
+返回 `Subscription`，订阅剪贴板变化。回调参数为 `ClipboardEvent`，其中 `contentTypes` 列出当前剪贴板的内容类型，HTML 内容也会报告为纯文本。只在应用处于前台且存在订阅时发送事件。快速连续更新时，以最新一次类型查询为准。监听无需读取权限。
 
 #### `Clipboard.removeClipboardListener(subscription)`
 
