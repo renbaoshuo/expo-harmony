@@ -24,7 +24,7 @@ interface Response {
 
 const CAPABILITY: string = 'SystemCapability.AuthenticationServices.HuaweiID.MinorsProtection';
 
-const AGE_GROUP_BOUNDARIES: number[] = [0, 3, 8, 12, 16, 18];
+const YOUTH_MODE_AGE_LIMIT: number = 18;
 
 const REQUEST: ExpoValueType<Object> = ExpoValueTypes.custom<Object>(
   'Any',
@@ -54,42 +54,43 @@ export class ExpoAgeRangeModule extends ExpoModule {
   }
 
   private async request(): Promise<Response> {
-    if (canIUse(CAPABILITY)) {
-      try {
-        if (minorsProtection.supportMinorsMode()) {
-          const info = await minorsProtection.getMinorsProtectionInfo();
-          if (typeof info?.minorsProtectionMode !== 'boolean') {
-            throw new ExpoModuleError('ERR_AGE_RANGE_UNKNOWN_RESPONSE', 'The Age Range service returned invalid youth mode information');
-          }
+    let supported = false;
+    let info: minorsProtection.MinorsProtectionInfo | undefined;
+    try {
+      supported = canIUse(CAPABILITY) && minorsProtection.supportMinorsMode();
+      if (supported) info = await minorsProtection.getMinorsProtectionInfo();
+    } catch (error) {
+      const failure = error as BusinessError | undefined;
+      const code = failure?.code;
+      const message = failure?.message;
 
-          const group = info.ageGroup;
-          // Disabled youth mode does not prove adulthood.
-          if (!info.minorsProtectionMode || group === undefined || group === null) {
-            return { lowerBound: null, upperBound: null };
-          }
-
-          const lower = AGE_GROUP_BOUNDARIES.indexOf(group.lowerAge);
-          const upper = AGE_GROUP_BOUNDARIES.indexOf(group.upperAge);
-          if (lower < 0 || upper !== lower + 1) {
-            throw new ExpoModuleError('ERR_AGE_RANGE_UNKNOWN_RESPONSE', 'The Age Range service returned invalid age bounds');
-          }
-
-          // Convert Account Kit's exclusive upper age to the last whole year in the group.
-          return { lowerBound: group.lowerAge, upperBound: group.upperAge - 1 };
-        }
-      } catch (error) {
-        if (error instanceof ExpoModuleError) throw error;
-
-        const failure = error as BusinessError | undefined;
-
-        throw new ExpoModuleError(
-          failure?.code?.toString() || 'ERR_AGE_RANGE_REQUEST_FAILED',
-          failure?.message || 'Failed to request the age range from HarmonyOS.',
-          failure,
-        );
-      }
+      throw new ExpoModuleError(
+        typeof code === 'number' && Number.isSafeInteger(code) ? String(code) : 'ERR_AGE_RANGE_REQUEST_FAILED',
+        typeof message === 'string' && message.length > 0 ? message : 'Failed to request the age range from HarmonyOS.',
+        failure,
+      );
     }
 
-    throw new ExpoModuleError('ERR_AGE_RANGE_NOT_AVAILABLE', 'The Age Range service is not available');
+    if (!supported) {
+      throw new ExpoModuleError('ERR_AGE_RANGE_NOT_AVAILABLE', 'The Age Range service is not available');
+    }
+    if (typeof info?.minorsProtectionMode !== 'boolean') {
+      throw new ExpoModuleError('ERR_AGE_RANGE_UNKNOWN_RESPONSE', 'The Age Range service returned invalid youth mode information');
+    }
+
+    const group = info.ageGroup;
+    if (!info.minorsProtectionMode || group === undefined || group === null) {
+      return { lowerBound: null, upperBound: null };
+    }
+
+    const lower = group.lowerAge;
+    const upper = group.upperAge;
+    if (!Number.isInteger(lower) || !Number.isInteger(upper)
+      || lower < 0 || upper <= lower || upper > YOUTH_MODE_AGE_LIMIT) {
+      throw new ExpoModuleError('ERR_AGE_RANGE_UNKNOWN_RESPONSE', 'The Age Range service returned invalid age bounds');
+    }
+
+    // Account Kit reports an exclusive upper bound.
+    return { lowerBound: lower, upperBound: upper - 1 };
   }
 }

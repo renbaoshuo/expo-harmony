@@ -14,6 +14,8 @@
 npm install @expo-harmony/expo-age-range expo-age-range@~57.0.5
 ```
 
+如果宿主应用接入系统未成年人模式并按年龄段提供适龄内容，需要由应用在入口模块的 `module.json5` 中将 `{ "name": "minors_mode", "value": "1" }` 添加到 `module.metadata`。该声明会影响系统未成年人模式下能否打开应用。（[华为未成年人模式接入规范](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/account-overview-minorsprotection/)）
+
 ## API 对照表
 
 ### Methods
@@ -22,7 +24,7 @@ npm install @expo-harmony/expo-age-range expo-age-range@~57.0.5
 
 参数 `options` 的类型为 `AgeRangeRequest`，返回 `Promise<AgeRangeResponse>`。读取系统未成年人模式提供的年龄段，不会弹出系统界面或改变模式开关。`threshold1`、`threshold2` 和 `threshold3` 会被接受但不影响结果，年龄段由系统提供。
 
-未成年人模式开启且系统提供年龄段时，返回整数年龄边界，`upperBound` 是包含在范围内的上限：
+未成年人模式开启且系统提供年龄段时，返回包含式的整数年龄边界。以下是当前系统的分组。
 
 | 系统年龄段 | `lowerBound` | `upperBound` |
 | --- | --- | --- |
@@ -32,7 +34,7 @@ npm install @expo-harmony/expo-age-range expo-age-range@~57.0.5
 | 12 周岁及以上、不满 16 周岁 | `12` | `15` |
 | 16 周岁及以上、不满 18 周岁 | `16` | `17` |
 
-模式关闭或系统未提供年龄段时，`lowerBound` 和 `upperBound` 均为 `null`；这不能据此认定用户已成年。年龄范围取自[华为未成年人模式 API](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/account-api-minorsprotection)。
+模式关闭或系统未提供年龄段时，`lowerBound` 和 `upperBound` 均为 `null`。年龄范围取自 [华为未成年人模式 API](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/account-api-minorsprotection)。
 
 #### `AgeRange.isEligibleForAgeFeaturesAsync()`
 
