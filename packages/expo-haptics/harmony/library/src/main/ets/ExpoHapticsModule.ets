@@ -8,27 +8,20 @@
 import { ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoModuleError, ExpoValueType } from '@expo-harmony/expo-modules-core';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { vibrator } from '@kit.SensorServiceKit';
-import {
-  NOTICE_PRESET_API,
-  PATTERN_API,
-  PRESET_HARD,
-  PRESET_NOTICE_FAILURE,
-  PRESET_NOTICE_SUCCESS,
-  PRESET_NOTICE_WARNING,
-  PRESET_SHARP,
-  PRESET_SOFT,
-  impactRecipe,
-  notificationRecipe,
-  selectionRecipe,
-} from './HapticsSemantics';
-import type { HapticPreset, HapticPresetName, HapticRecipe, HapticUsage } from './HapticsSemantics';
+import { impactRecipe, notificationRecipe, selectionRecipe } from './HapticsSemantics';
+import type { HapticNotification, HapticPresetName, HapticRecipe, HapticUsage } from './HapticsSemantics';
 
 const VIBRATOR_CAPABILITY: string = 'SystemCapability.Sensors.MiscDevice';
 const UNSUPPORTED_CODE: number = 801;
+const DEVICE_OPERATION_FAILED: number = 14600101;
 const ERROR_DESTROYED: string = 'ERR_HAPTICS_DESTROYED';
 const ERROR_INVALID_ARGUMENT: string = 'ERR_HAPTICS_INVALID_ARGUMENT';
 const ERROR_VIBRATION: string = 'ERR_HAPTICS_VIBRATION';
 const UNKNOWN_VIBRATOR_ERROR: string = 'Unknown HarmonyOS vibrator error.';
+
+// Requests from different React instances address the same local vibrator.
+let queue: Promise<void> = Promise.resolve();
+
 const ARGUMENT = new ExpoValueType<string>(
   'haptics argument',
   (value: ESObject, path: string): string => {
@@ -50,7 +43,6 @@ class ExpoHapticsError extends ExpoModuleError {
 
 export class ExpoHapticsModule extends ExpoModule {
   private destroyed: boolean = false;
-  private pending: Promise<void> = Promise.resolve();
 
   constructor(context: ExpoModuleContext) {
     super(context);
@@ -69,7 +61,6 @@ export class ExpoHapticsModule extends ExpoModule {
           this.assertActive();
 
           const recipe = notificationRecipe(type);
-
           if (recipe === undefined) {
             throw new ExpoHapticsError(ERROR_INVALID_ARGUMENT, `'type' must be one of ['success', 'warning', 'error']. Obtained '${type}'.`);
           }
@@ -83,7 +74,6 @@ export class ExpoHapticsModule extends ExpoModule {
           this.assertActive();
 
           const recipe = impactRecipe(style);
-
           if (recipe === undefined) {
             throw new ExpoHapticsError(
               ERROR_INVALID_ARGUMENT,
@@ -110,81 +100,68 @@ export class ExpoHapticsModule extends ExpoModule {
   }
 
   private enqueue(recipe: HapticRecipe): Promise<void> {
-    // A fallback for an older request must start before the newer request.
-    const request = this.pending.then(async (): Promise<void> => {
+    const request = queue.then(async (): Promise<void> => {
       if (this.destroyed || !canIUse(VIBRATOR_CAPABILITY)) return;
 
-      await this.vibrate(recipe);
+      try {
+        await this.vibrate(recipe);
+      } catch (error) {
+        if (this.destroyed || isUnavailable(error)) return;
+
+        throw new ExpoHapticsError(ERROR_VIBRATION, `Unable to trigger HarmonyOS haptic feedback: ${errorMessage(error)}`);
+      }
     });
 
-    this.pending = request.catch((): void => {});
+    queue = request.catch((): void => {});
 
     return request;
   }
 
   private async vibrate(recipe: HapticRecipe): Promise<void> {
-    const first: HapticPreset | undefined = recipe.presets[0];
-    const notice: boolean = first !== undefined && isNoticePreset(first.name);
-
-    if (notice && (await this.tryPreset(first, recipe.usage))) return;
+    const id = recipe.notification === undefined ? undefined : notificationPresetId(recipe.notification);
+    if (id !== undefined && await this.tryVibration({ type: 'preset', effectId: id }, recipe.usage)) return;
 
     if (this.destroyed) return;
 
-    if (recipe.pattern !== undefined && deviceInfo.sdkApiVersion >= PATTERN_API) {
+    if (recipe.pattern !== undefined && deviceInfo.apiAvailable(18)) {
       try {
         if (vibrator.isHdHapticSupported()) {
           const builder = new vibrator.VibratorPatternBuilder();
-
           for (const pulse of recipe.pattern) {
             builder.addContinuousEvent(pulse.startMs, pulse.durationMs, { intensity: pulse.intensity });
           }
 
-          await vibrator.startVibration({ type: 'pattern', pattern: builder.build() }, { usage: recipe.usage });
-          return;
+          if (await this.tryVibration({ type: 'pattern', pattern: builder.build() }, recipe.usage)) return;
         }
       } catch (error) {
-        rejectUnlessUnsupported(error);
+        if (errorCode(error) !== UNSUPPORTED_CODE) throw error as Error;
       }
-    }
-
-    for (let index = notice ? 1 : 0; index < recipe.presets.length; index += 1) {
-      if (this.destroyed) return;
-
-      const preset: HapticPreset = recipe.presets[index];
-
-      if (await this.tryPreset(preset, recipe.usage)) return;
     }
 
     if (this.destroyed) return;
 
-    try {
-      await vibrator.startVibration({ type: 'time', duration: recipe.fallbackMs }, { usage: recipe.usage });
-    } catch (error) {
-      rejectUnlessUnsupported(error);
-    }
+    const preset = recipe.preset;
+    if (await this.tryVibration({
+      type: 'preset',
+      effectId: presetId(preset.name),
+      count: preset.count,
+      intensity: preset.intensity,
+    }, recipe.usage)) return;
+
+    if (this.destroyed) return;
+    await this.tryVibration({ type: 'time', duration: recipe.fallbackMs }, recipe.usage);
   }
 
-  private async tryPreset(preset: HapticPreset, usage: HapticUsage): Promise<boolean> {
-    if (deviceInfo.sdkApiVersion < preset.minApi) return false;
-
-    const id: string | undefined = presetId(preset.name);
-
-    if (id === undefined) return false;
-
+  private async tryVibration(effect: vibrator.VibrateEffect, usage: HapticUsage): Promise<boolean> {
     try {
-      // The asynchronous query can report service failures as unsupported effects.
-      if (!vibrator.isSupportEffectSync(id)) return false;
+      if (effect.type === 'preset' && !vibrator.isSupportEffectSync(effect.effectId)) return false;
 
-      if (isNoticePreset(preset.name)) {
-        await vibrator.startVibration({ type: 'preset', effectId: id, count: preset.count }, { usage });
-      } else {
-        await vibrator.startVibration({ type: 'preset', effectId: id, count: preset.count, intensity: preset.intensity }, { usage });
-      }
+      await vibrator.startVibration(effect, { usage });
 
       return true;
     } catch (error) {
-      rejectUnlessUnsupported(error);
-      return false;
+      if (errorCode(error) === UNSUPPORTED_CODE) return false;
+      throw error as Error;
     }
   }
 }
@@ -194,20 +171,27 @@ interface CodedError {
   readonly message?: string;
 }
 
-function rejectUnlessUnsupported(error: Object): void {
-  if (!isUnavailable(error)) {
-    throw new ExpoHapticsError(ERROR_VIBRATION, `Unable to trigger HarmonyOS haptic feedback: ${errorMessage(error)}`);
+function errorCode(error: Object): number | undefined {
+  try {
+    return (error as CodedError)?.code;
+  } catch (_) {
+    return undefined;
   }
 }
 
 function isUnavailable(error: Object): boolean {
-  if (error === null || typeof error !== 'object') return false;
+  const code = errorCode(error);
+  if (code === UNSUPPORTED_CODE) return true;
 
-  try {
-    return (error as CodedError).code === UNSUPPORTED_CODE;
-  } catch (_) {
-    return false;
+  if (code === DEVICE_OPERATION_FAILED && deviceInfo.apiAvailable(19)) {
+    try {
+      return vibrator.getVibratorInfoSync().length === 0;
+    } catch (_) {
+      // Keep the original failure if the device inventory cannot be checked.
+    }
   }
+
+  return false;
 }
 
 function errorMessage(error: Object): string {
@@ -230,30 +214,28 @@ function errorMessage(error: Object): string {
   }
 }
 
-function presetId(name: HapticPresetName): string | undefined {
+function presetId(name: HapticPresetName): string {
   switch (name) {
-    case PRESET_SOFT:
+    case 'soft':
       return vibrator.HapticFeedback.EFFECT_SOFT;
-    case PRESET_HARD:
+    case 'hard':
       return vibrator.HapticFeedback.EFFECT_HARD;
-    case PRESET_SHARP:
+    case 'sharp':
       return vibrator.HapticFeedback.EFFECT_SHARP;
   }
+}
 
-  if (deviceInfo.sdkApiVersion >= NOTICE_PRESET_API) {
-    switch (name) {
-      case PRESET_NOTICE_SUCCESS:
+function notificationPresetId(notification: HapticNotification): string | undefined {
+  if (deviceInfo.apiAvailable(18)) {
+    switch (notification) {
+      case 'success':
         return vibrator.HapticFeedback.EFFECT_NOTICE_SUCCESS;
-      case PRESET_NOTICE_WARNING:
+      case 'warning':
         return vibrator.HapticFeedback.EFFECT_NOTICE_WARNING;
-      case PRESET_NOTICE_FAILURE:
+      case 'error':
         return vibrator.HapticFeedback.EFFECT_NOTICE_FAILURE;
     }
   }
 
   return undefined;
-}
-
-function isNoticePreset(name: HapticPresetName): boolean {
-  return name === PRESET_NOTICE_SUCCESS || name === PRESET_NOTICE_WARNING || name === PRESET_NOTICE_FAILURE;
 }

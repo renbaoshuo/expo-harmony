@@ -5,39 +5,12 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-const NOTIFICATION_SUCCESS: string = 'success';
-const NOTIFICATION_WARNING: string = 'warning';
-const NOTIFICATION_ERROR: string = 'error';
-
-const IMPACT_LIGHT: string = 'light';
-const IMPACT_MEDIUM: string = 'medium';
-const IMPACT_HEAVY: string = 'heavy';
-const IMPACT_SOFT: string = 'soft';
-const IMPACT_RIGID: string = 'rigid';
-
-export type HapticPresetName =
-  | 'noticeSuccess'
-  | 'noticeWarning'
-  | 'noticeFailure'
-  | 'soft'
-  | 'hard'
-  | 'sharp';
-
-export const PRESET_NOTICE_SUCCESS: HapticPresetName = 'noticeSuccess';
-export const PRESET_NOTICE_WARNING: HapticPresetName = 'noticeWarning';
-export const PRESET_NOTICE_FAILURE: HapticPresetName = 'noticeFailure';
-export const PRESET_SOFT: HapticPresetName = 'soft';
-export const PRESET_HARD: HapticPresetName = 'hard';
-export const PRESET_SHARP: HapticPresetName = 'sharp';
-
-const COMMON_PRESET_API: number = 12;
-export const NOTICE_PRESET_API: number = 18;
-export const PATTERN_API: number = 18;
+export type HapticNotification = 'success' | 'warning' | 'error';
+export type HapticPresetName = 'soft' | 'hard' | 'sharp';
 
 const ANDROID_MAX_AMPLITUDE: number = 255;
 const HARMONY_MAX_INTENSITY: number = 100;
 
-// Android amplitudes use [0, 255]; HarmonyOS pattern intensity uses [0, 100].
 function notificationIntensity(amplitude: number): number {
   return Math.round(amplitude * HARMONY_MAX_INTENSITY / ANDROID_MAX_AMPLITUDE);
 }
@@ -53,58 +26,52 @@ export interface HapticPulse {
 export interface HapticPreset {
   readonly count: number;
   readonly intensity: number;
-  readonly minApi: number;
   readonly name: HapticPresetName;
 }
 
 export interface HapticRecipe {
   readonly fallbackMs: number;
+  readonly notification?: HapticNotification;
   readonly pattern?: readonly HapticPulse[];
-  readonly presets: readonly HapticPreset[];
+  readonly preset: HapticPreset;
   readonly usage: HapticUsage;
 }
 
 export function notificationRecipe(type: string): HapticRecipe | undefined {
   // Patterns retain SDK 57 HapticsNotificationType's timings, pauses and relative amplitudes.
   switch (type) {
-    case NOTIFICATION_SUCCESS:
+    case 'success':
       return {
         fallbackMs: 80,
+        notification: type,
         pattern: [
           { durationMs: 40, intensity: notificationIntensity(50), startMs: 0 },
           { durationMs: 40, intensity: notificationIntensity(60), startMs: 140 },
         ],
-        presets: [
-          { count: 1, intensity: 50, minApi: NOTICE_PRESET_API, name: PRESET_NOTICE_SUCCESS },
-          { count: 2, intensity: 50, minApi: COMMON_PRESET_API, name: PRESET_SOFT },
-        ],
+        preset: { count: 2, intensity: 50, name: 'soft' },
         usage: 'notification',
       };
-    case NOTIFICATION_WARNING:
+    case 'warning':
       return {
         fallbackMs: 100,
+        notification: type,
         pattern: [
           { durationMs: 40, intensity: notificationIntensity(40), startMs: 0 },
           { durationMs: 60, intensity: notificationIntensity(60), startMs: 160 },
         ],
-        presets: [
-          { count: 1, intensity: 60, minApi: NOTICE_PRESET_API, name: PRESET_NOTICE_WARNING },
-          { count: 2, intensity: 60, minApi: COMMON_PRESET_API, name: PRESET_SHARP },
-        ],
+        preset: { count: 2, intensity: 60, name: 'sharp' },
         usage: 'notification',
       };
-    case NOTIFICATION_ERROR:
+    case 'error':
       return {
         fallbackMs: 150,
+        notification: type,
         pattern: [
           { durationMs: 60, intensity: notificationIntensity(50), startMs: 0 },
           { durationMs: 40, intensity: notificationIntensity(40), startMs: 160 },
           { durationMs: 50, intensity: notificationIntensity(50), startMs: 280 },
         ],
-        presets: [
-          { count: 1, intensity: 70, minApi: NOTICE_PRESET_API, name: PRESET_NOTICE_FAILURE },
-          { count: 3, intensity: 70, minApi: COMMON_PRESET_API, name: PRESET_HARD },
-        ],
+        preset: { count: 3, intensity: 70, name: 'hard' },
         usage: 'notification',
       };
     default:
@@ -115,34 +82,34 @@ export function notificationRecipe(type: string): HapticRecipe | undefined {
 export function impactRecipe(style: string): HapticRecipe | undefined {
   // Timed fallbacks retain SDK 57 HapticsImpactType's oldSDKPattern durations.
   switch (style) {
-    case IMPACT_LIGHT:
+    case 'light':
       return {
         fallbackMs: 20,
-        presets: [{ count: 1, intensity: 25, minApi: COMMON_PRESET_API, name: PRESET_SOFT }],
+        preset: { count: 1, intensity: 25, name: 'soft' },
         usage: 'physicalFeedback',
       };
-    case IMPACT_SOFT:
+    case 'soft':
       return {
         fallbackMs: 20,
-        presets: [{ count: 1, intensity: 30, minApi: COMMON_PRESET_API, name: PRESET_SOFT }],
+        preset: { count: 1, intensity: 30, name: 'soft' },
         usage: 'physicalFeedback',
       };
-    case IMPACT_MEDIUM:
+    case 'medium':
       return {
         fallbackMs: 43,
-        presets: [{ count: 1, intensity: 50, minApi: COMMON_PRESET_API, name: PRESET_HARD }],
+        preset: { count: 1, intensity: 50, name: 'hard' },
         usage: 'physicalFeedback',
       };
-    case IMPACT_HEAVY:
+    case 'heavy':
       return {
         fallbackMs: 61,
-        presets: [{ count: 1, intensity: 70, minApi: COMMON_PRESET_API, name: PRESET_HARD }],
+        preset: { count: 1, intensity: 70, name: 'hard' },
         usage: 'physicalFeedback',
       };
-    case IMPACT_RIGID:
+    case 'rigid':
       return {
         fallbackMs: 43,
-        presets: [{ count: 1, intensity: 50, minApi: COMMON_PRESET_API, name: PRESET_SHARP }],
+        preset: { count: 1, intensity: 50, name: 'sharp' },
         usage: 'physicalFeedback',
       };
     default:
@@ -153,7 +120,7 @@ export function impactRecipe(style: string): HapticRecipe | undefined {
 export function selectionRecipe(): HapticRecipe {
   return {
     fallbackMs: 70,
-    presets: [{ count: 1, intensity: 30, minApi: COMMON_PRESET_API, name: PRESET_SOFT }],
+    preset: { count: 1, intensity: 30, name: 'soft' },
     usage: 'touch',
   };
 }

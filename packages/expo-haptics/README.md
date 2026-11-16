@@ -86,7 +86,7 @@ npm install @expo-harmony/expo-haptics expo-haptics@~57.0.3
 
 #### `ERR_HAPTICS_VIBRATION`
 
-系统启动振动失败时，Promise 会以此错误码拒绝。
+系统启动振动失败时，Promise 会以此错误码拒绝。API 19 及以上会在设备操作失败后查询本地振动器。系统确认没有本地振动器时，调用正常完成。
 
 #### `ERR_HAPTICS_DESTROYED`
 
