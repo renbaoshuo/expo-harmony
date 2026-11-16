@@ -24,7 +24,9 @@ npm install @expo-harmony/expo-sms expo-sms@~57.0.2
 
 #### `SMS.sendSMSAsync(addresses, message, options?)`
 
-返回 `Promise<SMSResponse>`，打开系统短信编辑页并预填收件人和正文，由用户决定是否发送。`addresses` 为单个号码字符串或字符串数组；空数组表示不预填收件人，号码中的前导零和国际区号会保留。`message` 为短信正文字符串，`options` 为可选的 `SMSOptions`。应用需处于前台，且同时只能有一个未完成的请求。编辑页打开后，应用恢复前台时 Promise 以 `{ result: 'unknown' }` 完成；若应用没有转入后台，Promise 会继续等待。HarmonyOS 不提供短信发送或取消状态。发送操作由用户在系统编辑页中完成，无需短信权限。
+返回 `Promise<SMSResponse>`，打开系统短信编辑页并预填收件人和正文，由用户决定是否发送。`addresses` 为单个号码字符串或字符串数组。空数组表示不预填收件人，号码中的前导零和国际区号会保留。`message` 为短信正文字符串，`options` 为可选的 `SMSOptions`。应用需处于前台，且同时只能有一个未完成的请求。
+
+系统确认打开编辑页后，原窗口重新获得焦点或应用恢复前台时，Promise 以 `{ result: 'unknown' }` 完成。若系统没有报告窗口焦点或应用前后台切换，请求会继续等待。发送操作由用户在系统编辑页中完成，无需短信权限。[华为短信编辑页文档](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/telephony-sms)
 
 ### Types
 

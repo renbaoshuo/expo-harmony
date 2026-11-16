@@ -6,6 +6,7 @@
  */
 
 import { Want } from '@kit.AbilityKit';
+import { window } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { sms } from '@kit.TelephonyKit';
 import {
@@ -20,6 +21,7 @@ import {
 import { SMS_OPTIONS } from './SMSOptions';
 
 const CAPABILITY: string = 'SystemCapability.Telephony.SmsMms';
+const WINDOW_CAPABILITY: string = 'SystemCapability.WindowManager.WindowManager.Core';
 
 // https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/telephony-sms
 const SMS_BUNDLE_NAME: string = 'com.ohos.mms';
@@ -33,8 +35,9 @@ interface SMSResponse {
 
 class SMSRequest {
   started: boolean = false;
-  backgrounded: boolean = false;
+  leftHost: boolean = false;
   returned: boolean = false;
+  stopObserving?: () => void;
   resolve: (response: SMSResponse) => void;
   reject: (error: ExpoModuleError) => void;
 
@@ -46,6 +49,7 @@ class SMSRequest {
 
 export class ExpoSMSModule extends ExpoModule {
   private pending?: SMSRequest;
+  private stage?: window.WindowStage;
   private destroyed: boolean = false;
 
   definition(): ExpoModuleDefinition {
@@ -63,15 +67,21 @@ export class ExpoSMSModule extends ExpoModule {
         ),
       )
       .onBackground((): void => {
-        if (this.pending !== undefined) this.pending.backgrounded = true;
+        if (this.pending !== undefined) this.pending.leftHost = true;
       })
-      .onForeground((): void => {
+      .onForeground((): void => this.onReturn())
+      .onWindowStageSetup((stage: window.WindowStage): void => {
+        this.stage = stage;
+
         const request = this.pending;
-
-        if (request === undefined || !request.backgrounded) return;
-
-        request.returned = true;
-        this.finish(request);
+        if (request !== undefined) {
+          request.stopObserving?.();
+          this.observeWindow(request);
+        }
+      })
+      .onWindowStageWillDestroy((): void => {
+        this.stage = undefined;
+        this.pending?.stopObserving?.();
       })
       .onPrepareForReload(async (): Promise<void> => this.destroy())
       .onAbilityDestroy((): void => this.destroy())
@@ -95,12 +105,51 @@ export class ExpoSMSModule extends ExpoModule {
       throw new ExpoModuleError('ERR_SMS_ATTACHMENTS_UNSUPPORTED', 'HarmonyOS does not expose SMS composer attachment parameters.');
     }
 
+    const recipients = addresses.filter((address: string): boolean => address.length > 0);
+
     return new Promise<SMSResponse>((resolve, reject): void => {
       const request = new SMSRequest(resolve, reject);
       this.pending = request;
+      this.observeWindow(request);
 
-      this.openComposer(request, addresses, message).catch((error: Object): void => this.fail(request, error));
+      this.openComposer(request, recipients, message).catch((error: Object): void => this.fail(request, error));
     });
+  }
+
+  private observeWindow(request: SMSRequest): void {
+    const stage = this.stage;
+    if (stage === undefined || !canIUse(WINDOW_CAPABILITY)) return;
+
+    const listener = (event: window.WindowStageEventType): void => {
+      if (this.pending !== request) return;
+      if (event === window.WindowStageEventType.INACTIVE) {
+        request.leftHost = true;
+      } else if (event === window.WindowStageEventType.ACTIVE) {
+        this.onReturn();
+      }
+    };
+
+    try {
+      stage.on('windowStageEvent', listener);
+      request.stopObserving = (): void => {
+        request.stopObserving = undefined;
+        try {
+          stage.off('windowStageEvent', listener);
+        } catch (_) {
+          // Stage teardown can retire the native listener before this callback runs.
+        }
+      };
+    } catch (_) {
+      // Ability lifecycle callbacks still cover full-screen returns.
+    }
+  }
+
+  private onReturn(): void {
+    const request = this.pending;
+    if (request === undefined || !request.leftHost) return;
+
+    request.returned = true;
+    this.finish(request);
   }
 
   private assertForeground(): void {
@@ -112,12 +161,9 @@ export class ExpoSMSModule extends ExpoModule {
   private async openComposer(request: SMSRequest, addresses: string[], message: string): Promise<void> {
     // The SMS URI grammar uses a literal leading '+' for international numbers.
     const recipients = addresses
-      .map((address: string): string => encodeURIComponent(address).replace(/^%2B/, '+'))
+      .map((address: string): string => encodeSmsComponent(address).replace(/^%2B/, '+'))
       .join(',');
-    const body = encodeURIComponent(message).replace(
-      /[!'()*]/g,
-      (character: string): string => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
-    );
+    const body = encodeSmsComponent(message);
 
     const want: Want = {
       bundleName: SMS_BUNDLE_NAME,
@@ -130,32 +176,37 @@ export class ExpoSMSModule extends ExpoModule {
     try {
       await context.startAbility(want);
     } catch (error) {
-      if ((error as BusinessError | undefined)?.code !== NO_MATCHING_ABILITY) throw error as Error;
+      if ((error as BusinessError | undefined)?.code !== NO_MATCHING_ABILITY) {
+        throw new ExpoModuleError('ERR_SMS_SENDING', 'Unable to open the SMS composer.', error);
+      }
       if (this.pending !== request) return;
       this.assertForeground();
 
-      // The legacy composer combines telephone fields into a comma-separated list.
+      // The legacy composer joins telephone fields with commas.
       if (addresses.some((address: string): boolean => address.includes(','))) {
         throw new ExpoModuleError('ERR_SMS_SENDING', 'The legacy SMS composer cannot open a recipient containing a comma.');
       }
 
       // Keep the external field names stable when an app enables property obfuscation.
-      const contacts = addresses
-        .filter((address: string): boolean => address.length > 0)
-        .map((telephone: string): string => `{"telephone":${JSON.stringify(telephone)}}`);
-      const parameters = JSON.parse(`{
-        "contactObjects": ${JSON.stringify(`[${contacts.join(',')}]`)},
-        "pageFlag": "conversation",
-        "content": ${JSON.stringify(message)}
-      }`) as Record<string, Object>;
+      const contacts = addresses.map((address: string): Record<string, string> => {
+        const contact: Record<string, string> = {};
+        Reflect.set(contact, 'telephone', address);
 
-      // A lifecycle cycle during failed URI resolution does not belong to the explicit launch.
-      request.backgrounded = false;
+        return contact;
+      });
+      const params: Record<string, Object> = {};
+      Reflect.set(params, 'contactObjects', JSON.stringify(contacts));
+      Reflect.set(params, 'pageFlag', 'conversation');
+      Reflect.set(params, 'content', message);
+
+      // Ignore focus changes from the failed URI launch.
+      request.leftHost = false;
       request.returned = false;
+
       await context.startAbility({
         bundleName: SMS_BUNDLE_NAME,
         abilityName: SMS_ABILITY_NAME,
-        parameters,
+        parameters: params,
       });
     }
 
@@ -168,6 +219,7 @@ export class ExpoSMSModule extends ExpoModule {
     if (this.pending !== request || !request.started || !request.returned) return;
 
     this.pending = undefined;
+    request.stopObserving?.();
 
     request.resolve({ result: 'unknown' });
   }
@@ -176,6 +228,7 @@ export class ExpoSMSModule extends ExpoModule {
     if (this.pending !== request) return;
 
     this.pending = undefined;
+    request.stopObserving?.();
 
     request.reject(
       error instanceof ExpoModuleError ? error : new ExpoModuleError('ERR_SMS_SENDING', 'Unable to open the SMS composer.', error),
@@ -186,8 +239,17 @@ export class ExpoSMSModule extends ExpoModule {
     const request = this.pending;
 
     this.destroyed = true;
+    this.stage = undefined;
     this.pending = undefined;
+    request?.stopObserving?.();
 
     request?.reject(new ExpoModuleError('ERR_SMS_DESTROYED', 'The SMS module host was destroyed while the composer was open.'));
   }
+}
+
+function encodeSmsComponent(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (character: string): string => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
 }
