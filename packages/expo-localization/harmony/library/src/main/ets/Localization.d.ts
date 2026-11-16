@@ -6,16 +6,22 @@
  */
 
 declare module 'libexpo_localization.so' {
-  export interface NumericInfo {
+  export interface LocaleInfo {
     decimalSeparator: string | null;
     digitGroupingSeparator: string | null;
     currencyCode: string | null;
     currencySymbol: string | null;
+    isRTL: boolean;
   }
 
-  declare const localization: {
-    getNumericInfo(languageTag: string): NumericInfo;
-    getCalendarType(languageTag: string): string | null;
+  export interface CalendarInfo {
+    calendar: string | null;
+    firstWeekday: number | null;
+  }
+
+  const localization: {
+    getLocaleInfo(languageTag: string): LocaleInfo;
+    getCalendarInfo(languageTag: string): CalendarInfo;
   };
 
   export default localization;

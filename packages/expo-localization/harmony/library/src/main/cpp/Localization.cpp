@@ -107,7 +107,7 @@ bool ReadLocale(napi_env env, napi_callback_info info, std::string &result) {
   return true;
 }
 
-napi_value GetNumericInfo(napi_env env, napi_callback_info info) {
+napi_value GetLocaleInfo(napi_env env, napi_callback_info info) {
   std::string locale;
   if (!ReadLocale(env, info, locale)) {
     return nullptr;
@@ -160,10 +160,16 @@ napi_value GetNumericInfo(napi_env env, napi_callback_info info) {
     }
   }
 
+  napi_value rtl = nullptr;
+  if (napi_get_boolean(env, uloc_isRightToLeft(locale.c_str()), &rtl) != napi_ok ||
+      napi_set_named_property(env, result, "isRTL", rtl) != napi_ok) {
+    return nullptr;
+  }
+
   return result;
 }
 
-napi_value GetCalendarType(napi_env env, napi_callback_info info) {
+napi_value GetCalendarInfo(napi_env env, napi_callback_info info) {
   std::string locale;
   if (!ReadLocale(env, info, locale)) {
     return nullptr;
@@ -172,9 +178,11 @@ napi_value GetCalendarType(napi_env env, napi_callback_info info) {
   UErrorCode status = U_ZERO_ERROR;
   std::unique_ptr<UCalendar, decltype(&ucal_close)> calendar(
       ucal_open(nullptr, 0, locale.c_str(), UCAL_DEFAULT, &status), ucal_close);
+  int32_t firstWeekday = 0;
   const char *type = nullptr;
 
   if (U_SUCCESS(status) && calendar) {
+    firstWeekday = ucal_getAttribute(calendar.get(), UCAL_FIRST_DAY_OF_WEEK);
     type = ucal_getType(calendar.get(), &status);
 
     // ICU uses "gregorian" where Expo expects the Unicode identifier "gregory".
@@ -192,10 +200,24 @@ napi_value GetCalendarType(napi_env env, napi_callback_info info) {
   }
 
   napi_value result = nullptr;
-  if (U_FAILURE(status) || type == nullptr || type[0] == '\0') {
-    napi_get_null(env, &result);
-  } else {
-    napi_create_string_utf8(env, type, NAPI_AUTO_LENGTH, &result);
+  if (napi_create_object(env, &result) != napi_ok) {
+    return nullptr;
+  }
+
+  napi_value identifier = nullptr;
+  const napi_status identifierStatus = U_SUCCESS(status) && type != nullptr && type[0] != '\0'
+      ? napi_create_string_utf8(env, type, NAPI_AUTO_LENGTH, &identifier)
+      : napi_get_null(env, &identifier);
+  if (identifierStatus != napi_ok || napi_set_named_property(env, result, "calendar", identifier) != napi_ok) {
+    return nullptr;
+  }
+
+  napi_value weekday = nullptr;
+  const napi_status weekdayStatus = firstWeekday >= UCAL_SUNDAY && firstWeekday <= UCAL_SATURDAY
+      ? napi_create_int32(env, firstWeekday, &weekday)
+      : napi_get_null(env, &weekday);
+  if (weekdayStatus != napi_ok || napi_set_named_property(env, result, "firstWeekday", weekday) != napi_ok) {
+    return nullptr;
   }
 
   return result;
@@ -203,8 +225,8 @@ napi_value GetCalendarType(napi_env env, napi_callback_info info) {
 
 napi_value Init(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
-      {"getNumericInfo", nullptr, GetNumericInfo, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"getCalendarType", nullptr, GetCalendarType, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"getLocaleInfo", nullptr, GetLocaleInfo, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"getCalendarInfo", nullptr, GetCalendarInfo, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
 
   if (napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties) != napi_ok) {

@@ -20,7 +20,7 @@ npm install @expo-harmony/expo-localization expo-localization@~57.0.2
 
 #### `useLocales()`
 
-返回至少包含一项的 `Locale[]`，按 HarmonyOS 系统偏好语言的顺序排列。系统语言或地区设置变化后，以及应用回到前台时，Hook 会重新读取并更新结果。
+返回至少包含一项的 `Locale[]`，按 HarmonyOS 系统偏好语言的顺序排列。系统语言或地区设置变化后，以及应用回到前台时，Hook 会重新读取并更新结果。系统偏好语言独立于应用的资源语言。
 
 #### `useCalendars()`
 
@@ -40,7 +40,7 @@ HarmonyOS SDK API 18 及以上读取系统温度单位偏好；系统设为 Kelv
 
 参数：无。
 
-返回：一项 `Calendar[]`，同步读取系统语言对应的历法标识、系统时区和 24 小时制设置。API 18 及以上读取系统的每周起始日偏好；API 13–17 根据系统语言推断。
+返回：一项 `Calendar[]`，同步读取系统区域设置对应的历法标识、系统时区和 24 小时制设置。API 18 及以上读取系统的每周起始日偏好；API 13–17 使用该历法的默认起始日。
 
 ### Types
 
@@ -67,7 +67,7 @@ HarmonyOS SDK API 18 及以上读取系统温度单位偏好；系统设为 Kelv
 
 | 属性 | 类型 | HarmonyOS 上的值 |
 | --- | --- | --- |
-| `calendar` | `CalendarIdentifier \| null` | 系统语言对应的 Unicode 历法标识；无法读取时为 `null`。 |
+| `calendar` | `CalendarIdentifier \| null` | 系统区域设置对应的 Unicode 历法标识；无法读取时为 `null`。 |
 | `firstWeekday` | `Weekday \| null` | 每周起始日，周日为 `1`，周六为 `7`。 |
 | `timeZone` | `string \| null` | HarmonyOS 系统时区标识。 |
 | `uses24hourClock` | `boolean \| null` | 系统是否使用 24 小时制。 |
@@ -76,7 +76,7 @@ HarmonyOS SDK API 18 及以上读取系统温度单位偏好；系统设为 Kelv
 
 #### `CalendarIdentifier`
 
-Unicode 历法标识。HarmonyOS 返回系统语言对应的历法类型；公历标识为 `'gregory'`，无法读取时 `Calendar.calendar` 为 `null`。
+Unicode 历法标识。HarmonyOS 返回系统区域设置对应的历法类型；公历标识为 `'gregory'`，无法读取时 `Calendar.calendar` 为 `null`。
 
 | 枚举成员 | 值 |
 | --- | --- |
