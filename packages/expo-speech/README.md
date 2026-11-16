@@ -22,7 +22,7 @@ npm install @expo-harmony/expo-speech expo-speech@~57.0.3
 
 类型：`number`。
 
-返回 `10000`，表示文本长度上限，单位为 UTF-16 代码单元。检查文本前会移除首尾空白；超出上限时，`Speech.speak()` 会通过 `onError` 报告错误。
+返回 `10000`，表示文本长度上限，单位为 UTF-16 代码单元，包含首尾空白。超出上限时，`Speech.speak()` 会通过 `onError` 报告错误。
 
 ### Methods
 
@@ -30,7 +30,7 @@ npm install @expo-harmony/expo-speech expo-speech@~57.0.3
 
 参数：`text` 为待播报文本；`options` 为可选的 `SpeechOptions`。
 
-返回 `void`，将文本加入队列并按调用顺序播报。语音由系统已安装的离线音色合成，不会自动下载音色。空文本不会播报，但仍会触发 `onStart` 和 `onDone`。
+返回 `void`，将文本加入队列并按调用顺序播报。语音由系统已安装的离线音色合成，不会自动下载音色。长度有效的空白文本会直接触发 `onStart` 和 `onDone`。
 
 | 选项 | HarmonyOS 行为 |
 | --- | --- |
@@ -57,13 +57,13 @@ npm install @expo-harmony/expo-speech expo-speech@~57.0.3
 
 返回 `Promise<void>`。
 
-- HarmonyOS 系统语音服务不支持暂停，调用会抛出 `UnavailabilityError`。
+- 当前适配的 Core Speech Kit SDK 未提供暂停接口，调用会抛出 `UnavailabilityError`。
 
 #### `Speech.resume()`
 
 返回 `Promise<void>`。
 
-- HarmonyOS 系统语音服务不支持恢复播报，调用会抛出 `UnavailabilityError`。
+- 当前适配的 Core Speech Kit SDK 未提供恢复接口，调用会抛出 `UnavailabilityError`。
 
 ### Event subscriptions
 
@@ -157,7 +157,7 @@ SDK 定义的回调类型带有事件参数；HarmonyOS 触发 `SpeechOptions` �
 
 #### `ERR_SPEECH_INPUT_IS_TOO_LONG`
 
-`Speech.speak()` 的文本去除首尾空白后，长度超过 `Speech.maxSpeechInputLength` 时通过 `onError` 报告。
+`Speech.speak()` 的文本长度超过 `Speech.maxSpeechInputLength` 时通过 `onError` 报告。
 
 #### `ERR_SPEECH_INVALID_OPTIONS`
 
@@ -178,6 +178,10 @@ SDK 定义的回调类型带有事件参数；HarmonyOS 触发 `SpeechOptions` �
 #### `ERR_SPEECH_UNABLE_TO_GET_VOICES`
 
 音色查询失败时，`getAvailableVoicesAsync()` 的 Promise 以此错误拒绝。
+
+#### `ERR_SPEECH_ENGINE`
+
+系统语音引擎无法注册播报状态监听时，`Speech.speak()` 通过 `onError` 报告此错误。
 
 #### `ERR_SPEECH_STOP`
 

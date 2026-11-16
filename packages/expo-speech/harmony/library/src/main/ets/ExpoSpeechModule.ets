@@ -38,6 +38,7 @@ class Utterance {
   readonly id: string;
   readonly text: string;
   readonly options: SpeechOptions;
+  submitted: boolean = false;
   started: boolean = false;
 
   constructor(id: string, text: string, options: SpeechOptions) {
@@ -53,6 +54,7 @@ export class ExpoSpeechModule extends ExpoModule {
   private queue: Utterance[] = [];
   private current?: Utterance;
   private creatingEngine?: Promise<void>;
+  private queryingVoices?: Promise<textToSpeech.VoiceInfo[]>;
   private destroyed: boolean = false;
 
   definition(): ExpoModuleDefinition {
@@ -104,7 +106,8 @@ export class ExpoSpeechModule extends ExpoModule {
       .asyncFunction('stop', async (): Promise<void> => this.stop())
       .onPrepareForReload(async (): Promise<void> => {
         this.destroy();
-        await this.creatingEngine;
+
+        await this.creatingEngine?.catch((): void => {});
       })
       .onAbilityDestroy((): void => this.destroy())
       .onDestroy((): void => this.destroy());
@@ -116,11 +119,16 @@ export class ExpoSpeechModule extends ExpoModule {
       throw new ExpoModuleError(ERR_SPEECH_UNAVAILABLE, 'This device does not support Core Speech Kit text-to-speech.');
     }
 
-    const voices = await textToSpeech.listVoices({
-      requestId: createRequestId(),
-      online: OFFLINE_MODE,
-    });
+    if (this.queryingVoices === undefined) {
+      this.queryingVoices = textToSpeech.listVoices({
+        requestId: createRequestId(),
+        online: OFFLINE_MODE,
+      }).finally((): void => {
+        this.queryingVoices = undefined;
+      });
+    }
 
+    const voices = await this.queryingVoices;
     this.assertActive();
 
     return voices.filter((voice: textToSpeech.VoiceInfo): boolean => voice.status === undefined || voice.status === INSTALLED_VOICE);
@@ -140,30 +148,29 @@ export class ExpoSpeechModule extends ExpoModule {
     try {
       if (!this.isCurrent(item.request)) return;
 
-      const textLength = item.text.trim().length;
-      validateUtterance(item.options, textLength);
+      validateUtterance(item.options, item.text.length);
 
-      const voices = await this.getNativeVoices();
-
-      if (!this.isCurrent(item.request)) return;
-
-      const voice = selectVoice(voices, item.options);
-      if (textLength === 0) {
+      if (item.text.trim().length === 0) {
         this.started(item.request);
         this.finish(item.request, SPEAKING_DONE);
 
         return;
       }
 
-      const identifier = voiceIdentifier(voice);
+      const voices = await this.getNativeVoices();
 
-      if (this.voice !== identifier) {
-        // Voice queries only read catalog data. Only engine creation needs to hold the queue after stop().
-        this.creatingEngine = this.createEngine(item.request, voice, identifier).finally((): void => {
+      if (!this.isCurrent(item.request)) return;
+
+      const voice = selectVoice(voices, item.options);
+      const id = voiceIdentifier(voice);
+
+      if (this.voice !== id) {
+        this.creatingEngine = this.createEngine(item.request, voice, id).finally((): void => {
           this.creatingEngine = undefined;
           this.startNext();
         });
         await this.creatingEngine;
+
         if (!this.isCurrent(item.request)) return;
       }
 
@@ -172,9 +179,11 @@ export class ExpoSpeechModule extends ExpoModule {
       params['speed'] = options.rate;
       params['pitch'] = options.pitch;
       params['volume'] = Math.min(1, Math.max(0, options.volume));
+
       // Core Speech Kit defaults to zh-CN for numerals and only accepts zh-CN or en-US here.
       if (normalizeLanguage(voice.language) === 'en-US') params['languageContext'] = 'en-US';
 
+      item.submitted = true;
       this.engine!.speak(item.text, { requestId: item.request, extraParams: params });
     } catch (error) {
       // Upstream JS wraps this event's error string in Error, so retain our code in its message.
@@ -194,24 +203,26 @@ export class ExpoSpeechModule extends ExpoModule {
 
     this.engine = engine;
     if (!this.isCurrent(request)) {
-      try {
-        this.releaseEngine();
-      } catch (error) {
-        console.warn(`ExpoSpeech: failed to shut down the cancelled speech engine: ${describeError(error)}`);
-      }
+      this.releaseEngineSafely();
       return;
     }
 
-    engine.setListener({
-      onStart: (request: string, _response: textToSpeech.StartResponse): void => this.started(request),
-      onComplete: (request: string, response: textToSpeech.CompleteResponse): void => {
-        if (response.type === PLAYBACK_COMPLETE) this.finish(request, SPEAKING_DONE);
-      },
-      onStop: (request: string, _response: textToSpeech.StopResponse): void => this.finish(request, SPEAKING_STOPPED),
-      onError: (request: string, code: number, message: string): void => {
-        this.finish(request, SPEAKING_ERROR, `${message} (${code})`);
-      },
-    });
+    try {
+      engine.setListener({
+        onStart: (request: string, _response: textToSpeech.StartResponse): void => this.started(request),
+        onComplete: (request: string, response: textToSpeech.CompleteResponse): void => {
+          if (response.type === PLAYBACK_COMPLETE) this.finish(request, SPEAKING_DONE);
+        },
+        onStop: (request: string, _response: textToSpeech.StopResponse): void => this.finish(request, SPEAKING_STOPPED),
+        onError: (request: string, code: number, message: string): void => {
+          this.finish(request, SPEAKING_ERROR, `${message} (${code})`);
+        },
+      });
+    } catch (error) {
+      this.releaseEngineSafely();
+
+      throw new ExpoModuleError('ERR_SPEECH_ENGINE', `Unable to register the speech listener: ${describeError(error)}`);
+    }
     this.voice = identifier;
   }
 
@@ -227,24 +238,29 @@ export class ExpoSpeechModule extends ExpoModule {
 
     const item = this.current!;
     this.current = undefined;
-    this.publish(event, item.id, error);
-    this.startNext();
+    try {
+      this.publish(event, item.id, error);
+    } finally {
+      this.startNext();
+    }
   }
 
   private stop(): void {
     this.assertActive();
 
     const cancelled = this.queue;
+    const submitted = this.current?.submitted === true;
+
     this.queue = [];
     if (this.current !== undefined) cancelled.unshift(this.current);
     this.current = undefined;
 
     try {
       try {
-        this.engine?.stop();
+        if (submitted) this.engine?.stop();
       } finally {
         // A pending native stop must not cancel speech submitted after this call.
-        this.releaseEngine();
+        if (submitted || this.voice === undefined) this.releaseEngine();
       }
     } catch (error) {
       const message = describeError(error);
@@ -274,19 +290,27 @@ export class ExpoSpeechModule extends ExpoModule {
     this.engine = undefined;
   }
 
+  private releaseEngineSafely(): void {
+    try {
+      this.releaseEngine();
+    } catch (error) {
+      console.warn(`ExpoSpeech: failed to shut down the speech engine: ${describeError(error)}`);
+    }
+  }
+
   private destroy(): void {
+    const submitted = this.current?.submitted === true;
+
     this.destroyed = true;
     this.queue = [];
     this.current = undefined;
 
     try {
-      try {
-        this.engine?.stop();
-      } finally {
-        this.releaseEngine();
-      }
+      if (submitted) this.engine?.stop();
     } catch (error) {
-      console.warn(`ExpoSpeech: failed to stop or shut down the speech engine: ${describeError(error)}`);
+      console.warn(`ExpoSpeech: failed to stop the speech engine: ${describeError(error)}`);
+    } finally {
+      this.releaseEngineSafely();
     }
   }
 
