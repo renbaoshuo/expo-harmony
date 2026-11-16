@@ -13,7 +13,7 @@ import { http } from '@kit.NetworkKit';
 
 import { ImageLoaderInterface, ImageLoaderInterfaceKey, ImageLoaderResultListener } from './ImageLoaderInterface';
 import { applyImageOrientation } from './ImageLoaderOrientation';
-import { decodeImageDataURL, ImageLoaderSource, ImageLoaderSourceType, resolveImageLoaderSource } from './ImageLoaderSource';
+import { decodeImageDataURL, imageBytesBuffer, ImageLoaderSource, ImageLoaderSourceType, resolveImageLoaderSource } from './ImageLoaderSource';
 
 const MAX_HTTP_RESPONSE_BYTES: number = 100 * 1024 * 1024;
 const NO_STORE_HEADERS: Record<string, string> = { 'cache-control': 'no-store' };
@@ -75,7 +75,8 @@ export class ImageLoaderService extends ExpoService implements ImageLoaderInterf
           case ImageLoaderSourceType.RAW_RESOURCE: {
             const bytes = await this.readResource(source);
             this.context.assertActive();
-            decoder = image.createImageSource(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+
+            decoder = image.createImageSource(imageBytesBuffer(bytes));
             break;
           }
           case ImageLoaderSourceType.FILE: {
@@ -147,9 +148,10 @@ export class ImageLoaderService extends ExpoService implements ImageLoaderInterf
     try {
       return await resources.getRawFileContent(source.value);
     } catch (error) {
-      if (source.fallback === undefined || (error as BusinessError).code !== RAW_RESOURCE_NOT_FOUND) throw error as Error;
+      if (source.fallback === undefined || (error as BusinessError).code !== RAW_RESOURCE_NOT_FOUND) return Promise.reject(error as Error);
 
       this.context.assertActive();
+
       return resources.getRawFileContent(source.fallback);
     }
   }

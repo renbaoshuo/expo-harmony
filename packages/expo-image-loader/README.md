@@ -30,7 +30,7 @@ npm install @expo-harmony/expo-image-loader expo-image-loader@~57.0.1
 
 支持以下地址形式：
 
-- `http://`、`https://` 远程地址，使用系统 HTTP 缓存，响应大小不能超过 100 MiB。
+- `http://`、`https://` 远程地址。应用启用 Network Kit 的 HTTP 响应缓存时，展示请求会遵循系统和服务器的缓存规则。响应大小不能超过 100 MiB。
 - 应用沙箱内的绝对路径，以 `/` 开头。
 - `file://` 地址，需要应用已经获得该文件的访问授权。
 - `data:image/<subtype>[;参数];base64,<数据>` 地址。协议、媒体类型和 `base64` 标记不区分大小写；数据中的空白会被忽略，末尾填充字符 `=` 可以省略。

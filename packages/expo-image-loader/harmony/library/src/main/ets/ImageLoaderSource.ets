@@ -38,13 +38,15 @@ export function resolveImageLoaderSource(url: string): ImageLoaderSource {
   }
 
   const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):/.exec(url);
-  if (scheme !== null && !/^(?:asset|rawfile):\/\//i.test(url)) throw new Error('The image URI scheme is unsupported.');
+  if (scheme !== null) {
+    if (scheme[1].toLowerCase() === 'rawfile') {
+      return new ImageLoaderSource(ImageLoaderSourceType.RAW_RESOURCE, rawResourcePathFromUri(url));
+    }
 
-  if (!/^asset:\/\//i.test(url)) {
-    return new ImageLoaderSource(ImageLoaderSourceType.RAW_RESOURCE, rawResourcePathFromUri(url, true));
+    if (!/^asset:\/\//i.test(url)) throw new Error('The image URI scheme is unsupported.');
   }
 
-  // RNOH can emit either literal or URL-encoded asset names.
+  // Look up literal packaged names first. Older Metro URLs can contain escapes.
   let path: string;
   try {
     path = rawResourcePathFromUri(url);
@@ -73,9 +75,16 @@ export async function decodeImageDataURL(url: string): Promise<ArrayBuffer> {
     throw new Error('Invalid base64 image data.');
   }
 
-  // Base64Helper expects complete four-character groups.
   if (remainder !== 0) encoded = encoded.padEnd(encoded.length + 4 - remainder, '=');
+
   const bytes = await new util.Base64Helper().decode(encoded);
 
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  return imageBytesBuffer(bytes);
+}
+
+export function imageBytesBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = bytes.buffer;
+  if (bytes.byteOffset === 0 && bytes.byteLength === buffer.byteLength) return buffer;
+
+  return buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
