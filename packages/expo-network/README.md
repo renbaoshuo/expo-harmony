@@ -30,17 +30,17 @@ import * as Network from 'expo-network';
 
 #### `Network.getNetworkStateAsync()`
 
-无参数，返回 `Promise<NetworkState>`，包含系统默认网络的类型、连接状态和互联网可达状态。没有默认网络时，`type` 为 `NONE`，另外两个字段为 `false`；无法识别网络类型或读取网络信息失败时，`type` 为 `UNKNOWN`，`isConnected` 和 `isInternetReachable` 为 `false`。
+无参数，返回 `Promise<NetworkState>`，包含系统默认网络的类型、连接状态和互联网可达状态。没有默认网络时，`type` 为 `NONE`，另外两个字段为 `false`。无法识别网络类型时，`type` 为 `UNKNOWN`，`isConnected` 为 `false`。读取网络信息失败时，`isInternetReachable` 也为 `false`。
 
-`isInternetReachable` 仅在系统确认网络可访问互联网且未处于连通性检查状态时为 `true`；VPN 网络还要求系统报告非零下行带宽。该字段表示系统的连通性判断，不保证特定网站可访问。
+`isInternetReachable` 使用系统的互联网连通性判断。若连通性检查仍在进行，或系统已通知当前网络因应用的访问策略而受阻，该字段为 `false`。默认网络查询通常返回 VPN 下层的系统网络。
 
 #### `Network.getIpAddressAsync()`
 
-无参数，返回 `Promise<string>`，包含系统默认网络的 IPv4 地址。没有默认网络或没有可用的 IPv4 地址时返回 `"0.0.0.0"`；读取失败时抛出 `ERR_NETWORK_IP_ADDRESS`。
+无参数，返回 `Promise<string>`，包含系统默认网络的 IPv4 地址。默认网络可使用 Wi-Fi、蜂窝或以太网。没有默认网络或没有可用的 IPv4 地址时，返回 `"0.0.0.0"`。纯 IPv6 网络也适用此回退。读取失败时抛出 `ERR_NETWORK_IP_ADDRESS`。
 
 #### `Network.isAirplaneModeEnabledAsync()`
 
-无参数，返回 `Promise<boolean>`，表示系统飞行模式开关状态。读取失败或系统返回无效值时抛出 `ERR_NETWORK_AIRPLANE_MODE`。HarmonyOS API 21 起，飞行模式相关系统设置项已废弃。
+无参数，返回 `Promise<boolean>`，表示系统飞行模式开关状态。HarmonyOS API 21 起已废弃该系统设置项。读取失败、系统未提供该设置或返回无效值时，抛出 `ERR_NETWORK_AIRPLANE_MODE`。
 
 ### Event subscriptions
 
@@ -86,7 +86,7 @@ import * as Network from 'expo-network';
 | 错误码 | 触发条件 |
 | --- | --- |
 | `ERR_NETWORK_IP_ADDRESS` | 读取默认网络或其连接属性失败，或系统返回无效网络句柄。 |
-| `ERR_NETWORK_AIRPLANE_MODE` | 读取飞行模式设置失败或设置值无效。 |
+| `ERR_NETWORK_AIRPLANE_MODE` | 飞行模式设置缺失、读取失败或值无效。 |
 
 ### Permissions
 
