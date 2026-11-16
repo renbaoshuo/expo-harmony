@@ -7,6 +7,7 @@
 
 'use strict';
 
+const { realpathSync } = require('node:fs');
 const { createRequire } = require('node:module');
 const path = require('node:path');
 const { getOriginalEnv, loadProjectEnv } = require('@expo/env');
@@ -42,10 +43,41 @@ function stripPrivateHarmonyConfig(config) {
   return { ...config, harmony };
 }
 
+function resetProjectConfigCache(root, entry) {
+  const roots = [...new Set([path.resolve(root), realpathSync(root)])];
+  const entries = new Set([entry, require.resolve(entry)]);
+  const isProjectModule = filename => entries.has(filename) || roots.some((dir) => {
+    const relative = path.relative(dir, filename);
+
+    return relative !== '..'
+      && !relative.startsWith(`..${path.sep}`)
+      && !path.isAbsolute(relative)
+      && !relative.split(path.sep).includes('node_modules');
+  });
+
+  // Project imports may capture dotenv values when they are loaded.
+  const saved = new Map();
+  for (const [filename, module] of Object.entries(require.cache)) {
+    if (!isProjectModule(filename)) continue;
+
+    saved.set(filename, module);
+    if (module?.loaded) delete require.cache[filename];
+  }
+
+  return () => {
+    for (const filename of Object.keys(require.cache)) {
+      if (isProjectModule(filename) && !saved.has(filename)) delete require.cache[filename];
+    }
+
+    for (const [filename, module] of saved) require.cache[filename] = module;
+  };
+}
+
 function getHarmonyProjectConfig(root, options, mode = 'development') {
   const processEnv = process.env;
   const originalEnv = { ...processEnv };
   const systemEnv = getOriginalEnv(processEnv);
+
   systemEnv.NODE_ENV ||= mode;
   systemEnv.BABEL_ENV ||= systemEnv.NODE_ENV;
   loadProjectEnv(root, { mode: systemEnv.NODE_ENV, systemEnv, silent: true });
@@ -53,33 +85,28 @@ function getHarmonyProjectConfig(root, options, mode = 'development') {
   // Dynamic Expo config is evaluated synchronously. Keep project variables out
   // of other projects and native tool invocations in this process.
   const previousDev = Object.getOwnPropertyDescriptor(globalThis, '__DEV__');
-  const previousModules = new Map();
+  let restore;
+
   try {
     applyEnvironment(processEnv, systemEnv);
     globalThis.__DEV__ = systemEnv.NODE_ENV !== 'production';
+
     const { getConfig, getConfigFilePaths } = requireProjectConfig(root);
-    // Re-evaluate the entrypoint with this environment while preserving any
-    // previously cached export used by unscoped Expo readers.
     const { dynamicConfigPath } = getConfigFilePaths(root);
-    if (dynamicConfigPath) {
-      for (const filename of new Set([dynamicConfigPath, require.resolve(dynamicConfigPath)])) {
-        previousModules.set(filename, require.cache[filename]);
-        delete require.cache[filename];
-      }
-    }
+    if (dynamicConfigPath) restore = resetProjectConfigCache(root, dynamicConfigPath);
+
     const config = getConfig(root, options);
     if (options?.isPublicConfig) config.exp = stripPrivateHarmonyConfig(config.exp);
 
     return config;
   } finally {
+    restore?.();
+
     if (process.env !== processEnv) process.env = processEnv;
     applyEnvironment(processEnv, originalEnv);
+
     if (previousDev) Object.defineProperty(globalThis, '__DEV__', previousDev);
     else delete globalThis.__DEV__;
-    for (const [filename, previous] of previousModules) {
-      if (previous) require.cache[filename] = previous;
-      else delete require.cache[filename];
-    }
   }
 }
 
