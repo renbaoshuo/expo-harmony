@@ -6,12 +6,13 @@
  */
 
 import { ExpoModuleContext, ExpoModuleError } from '@expo-harmony/expo-modules-core';
-import { fileIo, fileUri } from '@kit.CoreFileKit';
-import { util } from '@kit.ArkTS';
-import { http } from '@kit.NetworkKit';
+import { fileIo } from '@kit.CoreFileKit';
+import { taskpool, util } from '@kit.ArkTS';
 import { pdfService } from '@kit.PDFKit';
 import { print } from '@kit.BasicServicesKit';
+import { rcp } from '@kit.RemoteCommunicationKit';
 import uri from '@ohos.uri';
+import { ORIENTATION_LANDSCAPE, ORIENTATION_PORTRAIT } from './PrintOptions';
 
 const NETWORK_TIMEOUT_MS: number = 60_000;
 // PDF readers permit the version header within the first 1024 bytes.
@@ -23,7 +24,9 @@ export async function outputPath(cache: string, job: boolean = false): Promise<s
   try {
     await fileIo.mkdir(dir, true);
   } catch (error) {
-    if (!(await fileIo.stat(dir)).isDirectory()) {
+    const stat = await fileIo.stat(dir).catch((): undefined => undefined);
+
+    if (!stat?.isDirectory()) {
       throw new ExpoModuleError('ERR_PRINT_CACHE_DIRECTORY', 'Unable to create the print cache directory.', error as Object);
     }
   }
@@ -58,7 +61,7 @@ export async function writeBytes(path: string, bytes: Uint8Array): Promise<void>
 export async function materializePdf(
   source: string,
   path: string,
-  downloadCancels: Set<(error: ExpoModuleError) => void>,
+  downloadCancels: Set<() => void>,
   assertActive: () => void,
   context: ExpoModuleContext,
 ): Promise<void> {
@@ -66,7 +69,7 @@ export async function materializePdf(
     assertActive();
 
     if (/^https?:/i.test(source)) {
-      await downloadPdf(new uri.URI(source).toString(), path, downloadCancels, assertActive);
+      await downloadPdf(new uri.URI(source).toString(), path, downloadCancels);
     } else if (/^data:/i.test(source)) {
       const comma = source.indexOf(',');
       const metadata = source.slice(5, comma).toLowerCase().split(';');
@@ -85,20 +88,10 @@ export async function materializePdf(
     assertActive();
     await assertPdfHeader(path);
     assertActive();
+
     if (canIUse('SystemCapability.OfficeService.PDFService.Core')) {
-      const document = new pdfService.PdfDocument();
-      try {
-        const status = document.loadDocument(path);
-        if (
-          status !== pdfService.ParseResult.PARSE_SUCCESS &&
-          status !== pdfService.ParseResult.PARSE_ERROR_PASSWORD &&
-          status !== pdfService.ParseResult.PARSE_ERROR_CERT
-        ) {
-          throw new Error(`PDF Kit could not open the source PDF (${status}).`);
-        }
-      } finally {
-        document.releaseDocument();
-      }
+      await taskpool.execute(inspectPdf, path, true);
+      assertActive();
     }
   } catch (error) {
     if (error instanceof ExpoModuleError) {
@@ -130,65 +123,33 @@ async function copyLocalPdf(source: string, path: string, assertActive: () => vo
 async function downloadPdf(
   source: string,
   path: string,
-  downloadCancels: Set<(error: ExpoModuleError) => void>,
-  assertActive: () => void,
+  downloadCancels: Set<() => void>,
 ): Promise<void> {
-  const file = await fileIo.open(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
-  let client: http.HttpRequest | undefined;
-  let cancel: (error: ExpoModuleError) => void = (): void => {};
-  let stopped = false;
+  const session = rcp.createSession({
+    headers: { 'accept-encoding': 'gzip' },
+    requestConfiguration: {
+      transfer: { timeout: { connectMs: NETWORK_TIMEOUT_MS, transferMs: 0, inactivityMs: NETWORK_TIMEOUT_MS } },
+    },
+  });
+
+  const cancel = (): void => {
+    try {
+      session.cancel();
+    } catch (_) {}
+  };
+  downloadCancels.add(cancel);
 
   try {
-    assertActive();
+    const response = await session.downloadToFile(source, { kind: 'file', file: path });
+    const status = response.statusCode;
 
-    client = http.createHttp();
-    const cancelled = new Promise<number>((_resolve: (status: number) => void, reject: (error: ExpoModuleError) => void): void => {
-      cancel = (error: ExpoModuleError): void => {
-        stopped = true;
-        reject(error);
-      };
-    });
-    downloadCancels.add(cancel);
-
-    client.on('dataReceive', (buffer: ArrayBuffer): void => {
-      if (stopped) return;
-
-      try {
-        // Synchronous writes preserve stream order without buffering the entire PDF.
-        let offset = 0;
-        while (offset < buffer.byteLength) {
-          const count = fileIo.writeSync(file.fd, offset === 0 ? buffer : buffer.slice(offset));
-          if (count <= 0) throw new Error('Unable to write downloaded PDF data.');
-          offset += count;
-        }
-      } catch (error) {
-        cancel(new ExpoModuleError('ERR_PRINT_CANNOT_LOAD_URI', 'Unable to save downloaded PDF data.', error as Object));
-      }
-    });
-
-    // Destroying the request can leave its promise pending.
-    const status = await Promise.race([
-      cancelled,
-      client.requestInStream(source, {
-        method: http.RequestMethod.GET,
-        connectTimeout: NETWORK_TIMEOUT_MS,
-        readTimeout: NETWORK_TIMEOUT_MS,
-        usingCache: false,
-      }),
-    ]);
     if (status < 200 || status >= 300) throw new Error(`PDF request failed with HTTP status ${status}.`);
   } finally {
-    stopped = true;
     downloadCancels.delete(cancel);
 
     try {
-      client?.off('dataReceive');
+      session.close();
     } catch (_) {}
-    try {
-      client?.destroy();
-    } catch (_) {}
-
-    await fileIo.close(file);
   }
 }
 
@@ -217,60 +178,95 @@ async function assertPdfHeader(path: string): Promise<void> {
   }
 }
 
-export function pageCount(path: string): number {
+@Concurrent
+function inspectPdf(path: string, allowEncrypted: boolean): number {
   const document = new pdfService.PdfDocument();
 
   try {
     const status = document.loadDocument(path);
-    if (status !== pdfService.ParseResult.PARSE_SUCCESS) {
-      throw new ExpoModuleError('ERR_PRINT_PDF_PARSE', `PDF Kit could not open the generated PDF (${status}).`);
+    if (status === pdfService.ParseResult.PARSE_SUCCESS) {
+      return document.getPageCount();
+    }
+    if (allowEncrypted && (status === pdfService.ParseResult.PARSE_ERROR_PASSWORD || status === pdfService.ParseResult.PARSE_ERROR_CERT)) {
+      return 0;
     }
 
-    const count = document.getPageCount();
-    if (!Number.isSafeInteger(count) || count <= 0) {
-      throw new ExpoModuleError('ERR_PRINT_PDF_PARSE', 'PDF Kit returned an invalid page count.');
-    }
-
-    return count;
+    throw new Error(`PDF Kit could not open the document (${status}).`);
   } finally {
     document.releaseDocument();
   }
 }
 
-export async function startPrint(path: string, context: Context): Promise<void> {
-  const task = await print.print([fileUri.getUriFromPath(path)], context);
-
-  let finished = false;
-  const detach = (): void => {
-    try {
-      task.off('succeed', finish);
-    } catch (_) {}
-    try {
-      task.off('fail', finish);
-    } catch (_) {}
-    try {
-      task.off('cancel', finish);
-    } catch (_) {}
-  };
-  const finish = (): void => {
-    if (finished) return;
-    finished = true;
-    detach();
-    void removeFile(path);
-  };
-
-  // Register independently; if events fail, retain the file for the accepted system job.
+export async function pageCount(path: string): Promise<number> {
   try {
-    task.on('succeed', finish);
-  } catch (_) {}
-  if (!finished) {
-    try {
-      task.on('fail', finish);
-    } catch (_) {}
+    const count = (await taskpool.execute(inspectPdf, path, false)) as number;
+    if (!Number.isSafeInteger(count) || count <= 0) {
+      throw new Error('PDF Kit returned an invalid page count.');
+    }
+
+    return count;
+  } catch (error) {
+    throw new ExpoModuleError('ERR_PRINT_PDF_PARSE', 'Unable to read the generated PDF page count.', error as Object);
   }
-  if (!finished) {
-    try {
-      task.on('cancel', finish);
-    } catch (_) {}
+}
+
+class PdfPrintAdapter implements print.PrintDocumentAdapter {
+  private readonly path: string;
+  private finished: boolean = false;
+
+  constructor(path: string) {
+    this.path = path;
   }
+
+  onStartLayoutWrite(
+    jobId: string,
+    _oldAttributes: print.PrintAttributes,
+    _newAttributes: print.PrintAttributes,
+    fd: number,
+    complete: (jobId: string, state: print.PrintFileCreationState) => void,
+  ): void {
+    void this.write(jobId, fd, complete);
+  }
+
+  private async write(jobId: string, fd: number, complete: (jobId: string, state: print.PrintFileCreationState) => void): Promise<void> {
+    let state = print.PrintFileCreationState.PRINT_FILE_CREATION_FAILED;
+
+    try {
+      // The print service owns the destination descriptor.
+      await fileIo.copyFile(this.path, fd);
+      state = print.PrintFileCreationState.PRINT_FILE_CREATED;
+    } catch (error) {
+      console.warn(`Unable to provide the PDF to the print service: ${String(error)}`);
+    }
+
+    try {
+      complete(jobId, state);
+    } catch (_) {
+      // The preview may close during the copy.
+    }
+  }
+
+  onJobStateChanged(_jobId: string, state: print.PrintDocumentAdapterState): void {
+    if (this.finished) return;
+    if (
+      state !== print.PrintDocumentAdapterState.PREVIEW_DESTROY &&
+      state !== print.PrintDocumentAdapterState.PRINT_TASK_SUCCEED &&
+      state !== print.PrintDocumentAdapterState.PRINT_TASK_FAIL &&
+      state !== print.PrintDocumentAdapterState.PRINT_TASK_CANCEL
+    ) return;
+
+    this.finished = true;
+    void removeFile(this.path);
+  }
+}
+
+export async function startPrint(path: string, context: Context, orientation?: string): Promise<void> {
+  const attributes: print.PrintAttributes = {};
+  if (orientation === ORIENTATION_LANDSCAPE) {
+    attributes.directionMode = print.PrintDirectionMode.DIRECTION_MODE_LANDSCAPE;
+  } else if (orientation === ORIENTATION_PORTRAIT) {
+    attributes.directionMode = print.PrintDirectionMode.DIRECTION_MODE_PORTRAIT;
+  }
+
+  await print.print('Document.pdf', new PdfPrintAdapter(path), attributes, context);
 }

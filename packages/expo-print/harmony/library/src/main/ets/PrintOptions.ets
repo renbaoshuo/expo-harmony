@@ -10,6 +10,7 @@ import { webview } from '@kit.ArkWeb';
 
 export const POINTS_PER_INCH: number = 72;
 export const CSS_PIXELS_PER_INCH: number = 96;
+export const ORIENTATION_PORTRAIT: string = 'portrait';
 export const ORIENTATION_LANDSCAPE: string = 'landscape';
 const MAX_TEXT_ZOOM: number = 2147483647;
 

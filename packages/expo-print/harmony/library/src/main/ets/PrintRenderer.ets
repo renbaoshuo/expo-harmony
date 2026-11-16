@@ -23,10 +23,9 @@ class PrintFrameCallback extends FrameCallback {
     this.callback = callback;
   }
 
-  onFrame(): void {}
-
-  onIdle(): void {
-    this.callback();
+  onFrame(): void {
+    // Mutate the overlay after the frame callback unwinds.
+    Promise.resolve().then(this.callback);
   }
 }
 
@@ -39,7 +38,7 @@ function printWebView(renderer: PrintRenderer) {
       .imageAccess(true)
       .onlineImageAccess(true)
       .textZoomRatio(renderer.options.textZoom)
-      .onControllerAttached((): void => renderer.load())
+      .onControllerAttached((): void => { void renderer.load(); })
       .onPageEnd((event): void => renderer.pageEnded(event.url))
       .onErrorReceive((event): void => {
         if (event.request.isMainFrame()) {
@@ -93,18 +92,22 @@ export class PrintRenderer {
         this.fail(new ExpoModuleError('ERR_PRINT_HTML_TIMEOUT', 'Timed out while rendering HTML to PDF.'));
       }, RENDER_TIMEOUT_MS);
 
-      this.ui.postFrameCallback(
-        new PrintFrameCallback((): void => {
-          if (this.settled) return;
+      try {
+        this.ui.postFrameCallback(
+          new PrintFrameCallback((): void => {
+            if (this.settled) return;
 
-          try {
-            this.content = new ComponentContent(this.ui, wrapBuilder<[PrintRenderer]>(printWebView), this);
-            this.ui.getOverlayManager().addComponentContent(this.content);
-          } catch (error) {
-            this.fail(new ExpoModuleError('ERR_PRINT_HTML_RENDER', 'Unable to attach the print WebView.', error as Object));
-          }
-        }),
-      );
+            try {
+              this.content = new ComponentContent(this.ui, wrapBuilder<[PrintRenderer]>(printWebView), this);
+              this.ui.getOverlayManager().addComponentContent(this.content);
+            } catch (error) {
+              this.fail(new ExpoModuleError('ERR_PRINT_HTML_RENDER', 'Unable to attach the print WebView.', error as Object));
+            }
+          }),
+        );
+      } catch (error) {
+        this.fail(new ExpoModuleError('ERR_PRINT_HTML_RENDER', 'Unable to schedule the print WebView.', error as Object));
+      }
 
       return await result;
     } finally {
@@ -112,14 +115,16 @@ export class PrintRenderer {
     }
   }
 
-  load(): void {
+  async load(): Promise<void> {
     if (this.settled || this.attached) return;
 
     this.attached = true;
+
     try {
-      // Base64 avoids loadData interpreting literal '%' or '#' in the supplied HTML as URL escapes.
-      const bytes = new util.TextEncoder().encodeInto(this.options.html || '<!doctype html><html><body></body></html>');
-      const html = new util.Base64Helper().encodeToStringSync(bytes);
+      // Base64 keeps loadData from treating literal '%' or '#' as URL syntax.
+      const bytes = util.TextEncoder.create().encodeInto(this.options.html || '<!doctype html><html><body></body></html>');
+      const html = await new util.Base64Helper().encodeToString(bytes);
+      if (this.settled) return;
 
       this.controller.onActive();
       this.controller.loadData(html, 'text/html; charset=utf-8', 'base64');

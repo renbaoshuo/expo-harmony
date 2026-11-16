@@ -15,7 +15,7 @@ import {
 } from '@expo-harmony/expo-modules-core';
 import { util } from '@kit.ArkTS';
 import { materializePdf, outputPath, pageCount, removeFile, startPrint, writeBytes } from './PrintFiles';
-import { ORIENTATION_LANDSCAPE, PRINT_OPTIONS, PrintOptions } from './PrintOptions';
+import { ORIENTATION_LANDSCAPE, ORIENTATION_PORTRAIT, PRINT_OPTIONS, PrintOptions } from './PrintOptions';
 import { PrintRenderer } from './PrintRenderer';
 
 class PrintResult {
@@ -35,12 +35,12 @@ export class ExpoPrintModule extends ExpoModule {
   private printing: boolean = false;
   private queue: Promise<void> = Promise.resolve();
   private renderers: Set<PrintRenderer> = new Set<PrintRenderer>();
-  private downloadCancels: Set<(error: ExpoModuleError) => void> = new Set<(error: ExpoModuleError) => void>();
+  private downloadCancels: Set<() => void> = new Set<() => void>();
 
   definition(): ExpoModuleDefinition {
     return new ExpoModuleDefinition()
       .name('ExpoPrint')
-      .constant('Orientation', { portrait: 'portrait', landscape: ORIENTATION_LANDSCAPE })
+      .constant('Orientation', { portrait: ORIENTATION_PORTRAIT, landscape: ORIENTATION_LANDSCAPE })
       .asyncFunction(
         'print',
         ExpoFunction.typed1(PRINT_OPTIONS, async (options: PrintOptions): Promise<void> => {
@@ -92,9 +92,9 @@ export class ExpoPrintModule extends ExpoModule {
       }
 
       this.assertActive(generation);
-      await startPrint(path, this.context.uiAbilityContext);
+      await startPrint(path, this.context.uiAbilityContext, options.orientation);
 
-      // The system job now owns the file until a terminal event.
+      // The adapter owns cleanup once the system accepts the file.
       path = undefined;
     } catch (error) {
       if (error instanceof ExpoModuleError) {
@@ -127,7 +127,10 @@ export class ExpoPrintModule extends ExpoModule {
       await writeBytes(path, bytes);
       this.assertActive(generation);
 
-      const result = new PrintResult(path, pageCount(path));
+      const count = await pageCount(path);
+      this.assertActive(generation);
+
+      const result = new PrintResult(path, count);
       if (options.base64) result.base64 = await new util.Base64Helper().encodeToString(bytes);
 
       this.assertActive(generation);
@@ -177,7 +180,10 @@ export class ExpoPrintModule extends ExpoModule {
     if (this.destroyed || !this.context.isValid) {
       throw new ExpoModuleError('ERR_PRINT_DESTROYED', 'The Expo Print module has been destroyed.');
     }
-    if (generation !== this.generation || this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) {
+    if (generation !== this.generation) {
+      throw new ExpoModuleError('ERR_PRINT_CANCELLED', 'The application left the foreground before the print request completed.');
+    }
+    if (this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) {
       throw new ExpoModuleError('ERR_PRINT_BACKGROUND', 'Printing requires an active foreground application.');
     }
   }
@@ -188,7 +194,7 @@ export class ExpoPrintModule extends ExpoModule {
     this.renderers.forEach((renderer: PrintRenderer): void => {
       renderer.fail(error);
     });
-    this.downloadCancels.forEach((cancel: (error: ExpoModuleError) => void): void => cancel(error));
+    this.downloadCancels.forEach((cancel: () => void): void => cancel());
     this.downloadCancels.clear();
   }
 

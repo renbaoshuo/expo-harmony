@@ -108,9 +108,9 @@ HTML 导出 PDF 时使用的选项。
 | `height` | `number?` | HTML 页面高度，按 72 PPI 换算，默认 `792`。 |
 | `margins` | `PageMargins?` | HTML 页面边距，默认各侧为 `0`。 |
 | `textZoom` | `number?` | HTML 文字缩放百分比，默认 `100`；须为正 int32 整数。 |
-| `orientation` | `string?` | HTML 页面方向，取 `Orientation.portrait` 或 `Orientation.landscape`。 |
+| `orientation` | `string?` | 系统打印方向，取 `Orientation.portrait` 或 `Orientation.landscape`。打印 HTML 时也用于设置生成的 PDF 页面。 |
 
-HTML 页面宽高须为正有限数值；每侧边距须为非负数，且小于对应页面尺寸的一半。`width`、`height`、`margins`、`textZoom` 和 `orientation` 不影响通过 `uri` 打印的 PDF。
+HTML 页面宽高须为正有限数值；每侧边距须为非负数，且小于对应页面尺寸的一半。`width`、`height`、`margins` 和 `textZoom` 只用于生成 HTML 的 PDF。系统根据 `orientation` 设置打印方向，并保留原始 PDF 的页面内容。
 
 - `printerUrl`：HarmonyOS 打印请求不支持指定打印机 URL。
 - `useMarkupFormatter`：HarmonyOS 不提供此 HTML 格式化方式。
