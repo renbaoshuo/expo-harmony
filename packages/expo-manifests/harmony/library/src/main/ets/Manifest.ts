@@ -5,6 +5,8 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+import { JSONObjectUtils, JSONUtilsError } from '@expo-harmony/expo-json-utils';
+
 export class ExpoManifestError extends Error {
   readonly code = 'ERR_MANIFEST_INVALID';
 
@@ -66,8 +68,22 @@ function clonePluginProperties(value: Record<string, ESObject>): Record<string, 
 
 type FieldType = 'object' | 'array' | 'string' | 'boolean';
 
-function hasOwn(value: Record<string, ESObject>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
+function requiredField(value: Record<string, ESObject>, key: string): ESObject {
+  try {
+    return JSONObjectUtils.require(value, key);
+  } catch (error) {
+    if (error instanceof JSONUtilsError) throw new ExpoManifestError(error.message);
+    throw error;
+  }
+}
+
+function appearanceField(value: Record<string, ESObject>, key: string): ESObject {
+  try {
+    return JSONObjectUtils.getNullable(value, key);
+  } catch (error) {
+    if (error instanceof JSONUtilsError) return null;
+    throw error;
+  }
 }
 
 export abstract class Manifest {
@@ -81,9 +97,9 @@ export abstract class Manifest {
 
   static fromManifestJson(value: unknown): Manifest {
     if (!isRecord(value)) throw new ExpoManifestError('A manifest must be a JSON object.');
-    if (hasOwn(value, 'releaseId')) throw new ExpoManifestError('Legacy manifests are no longer supported.');
+    if (JSONObjectUtils.hasValue(value, 'releaseId')) throw new ExpoManifestError('Legacy manifests are no longer supported.');
 
-    return hasOwn(value, 'metadata') ? new ExpoUpdatesManifest(value) : new EmbeddedManifest(value);
+    return JSONObjectUtils.hasValue(value, 'metadata') ? new ExpoUpdatesManifest(value) : new EmbeddedManifest(value);
   }
 
   getRawJson(): Record<string, ESObject> { return this.json; }
@@ -104,12 +120,13 @@ export abstract class Manifest {
   abstract getAppKey(): string | null;
 
   isDevelopmentMode(): boolean {
-    const config = this.getExpoGoConfigRootObject();
-
     try {
-      return !!config && ownDataProperty(config, 'developer') !== undefined && (this.value(this.value(config, 'packagerOpts', 'object'), 'dev', 'boolean') ?? false);
-    } catch (_) {
-      return false;
+      const config = this.getExpoGoConfigRootObject();
+      return config !== null && JSONObjectUtils.hasValue(config, 'developer')
+        && (this.value(this.value(config, 'packagerOpts', 'object'), 'dev', 'boolean') ?? false);
+    } catch (error) {
+      if (error instanceof ExpoManifestError) return false;
+      throw error;
     }
   }
 
@@ -117,7 +134,7 @@ export abstract class Manifest {
   isUsingDeveloperTool(): boolean {
     const developer = this.value(this.getExpoGoConfigRootObject(), 'developer', 'object');
 
-    return developer !== null && ownDataProperty(developer, 'tool') !== undefined;
+    return developer !== null && JSONObjectUtils.hasValue(developer, 'tool');
   }
   getRevisionId(): string { return this.string(this.getExpoClientConfigRootObject(), 'revisionId'); }
   getDebuggerHost(): string { return this.string(this.getExpoGoConfigRootObject(), 'debuggerHost'); }
@@ -145,11 +162,27 @@ export abstract class Manifest {
   getPlatformConfig(): Record<string, ESObject> | null { return this.value(this.getExpoClientConfigRootObject(), 'harmony', 'object'); }
 
   private platformStringOrRoot(key: string): string | null {
-    const platform = this.getPlatformConfig();
-    if (platform !== null && hasOwn(platform, key)) return this.string(platform, key);
+    let config: Record<string, ESObject> | null;
+    try {
+      config = this.getExpoClientConfigRootObject();
+    } catch (error) {
+      if (error instanceof ExpoManifestError) return null;
+      throw error;
+    }
 
-    return this.value(this.getExpoClientConfigRootObject(), key, 'string');
+    if (config === null) return null;
+
+    const platform = appearanceField(config, 'harmony');
+    if (isRecord(platform)) {
+      const override = appearanceField(platform, key);
+      if (typeof override === 'string') return override;
+    }
+
+    const fallback = appearanceField(config, key);
+
+    return typeof fallback === 'string' ? fallback : null;
   }
+
   getUserInterfaceStyle(): string | null { return this.platformStringOrRoot('userInterfaceStyle'); }
   getBackgroundColor(): string | null { return this.platformStringOrRoot('backgroundColor'); }
 
@@ -175,10 +208,9 @@ export abstract class Manifest {
   }
 
   protected value(value: Record<string, ESObject> | null, key: string, type: FieldType): ESObject {
-    const property = value === null ? undefined : ownDataProperty(value, key);
-    if (property === undefined) return null;
+    if (value === null || !JSONObjectUtils.hasValue(value, key)) return null;
 
-    const field = property.value;
+    const field = requiredField(value, key);
     const valid = type === 'object' ? isRecord(field) : type === 'array' ? Array.isArray(field) : typeof field === type;
     if (!valid) throw new ExpoManifestError(`Manifest field '${key}' must be ${type}.`);
 
@@ -187,12 +219,12 @@ export abstract class Manifest {
 
   protected string(value: Record<string, ESObject> | null, key: string): string {
     if (value === null) throw new ExpoManifestError(`Manifest object containing '${key}' is missing.`);
+    if (!JSONObjectUtils.hasValue(value, key)) throw new ExpoManifestError(`Required manifest field '${key}' is missing.`);
 
-    const field = ownDataProperty(value, key);
-    if (field === undefined) throw new ExpoManifestError(`Required manifest field '${key}' is missing.`);
-    if (typeof field.value !== 'string') throw new ExpoManifestError(`Manifest field '${key}' must be a string.`);
+    const field = requiredField(value, key);
+    if (typeof field !== 'string') throw new ExpoManifestError(`Manifest field '${key}' must be a string.`);
 
-    return field.value;
+    return field;
   }
 }
 
@@ -210,10 +242,10 @@ export class ExpoUpdatesManifest extends Manifest {
   getAppKey(): null { return null; }
 
   getLaunchAsset(): Record<string, ESObject> {
-    const launchAsset = ownDataProperty(this.json, 'launchAsset')?.value;
-    if (!isRecord(launchAsset)) throw new ExpoManifestError('A remote manifest requires a launchAsset.');
+    const asset = this.value(this.json, 'launchAsset', 'object');
+    if (asset === null) throw new ExpoManifestError('A remote manifest requires a launchAsset.');
 
-    return launchAsset;
+    return asset;
   }
 }
 
@@ -229,17 +261,14 @@ export class EmbeddedManifest extends Manifest {
   getAppKey(): string | null { return this.value(this.json, 'appKey', 'string'); }
 
   getCommitTimeLong(): number {
-    const field = ownDataProperty(this.json, 'commitTime');
-    if (field === undefined) throw new ExpoManifestError('An embedded manifest requires a commitTime.');
-
-    const value = field.value;
-    const raw = typeof value === 'string' ? value.trim() : value;
-    if (typeof raw === 'string' && !/^[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?)|(?:\.[0-9]+))(?:[eE][+-]?[0-9]+)?$/.test(raw)) {
-      throw new ExpoManifestError('An embedded manifest requires a decimal commitTime.');
+    let time: number;
+    try {
+      time = Math.trunc(JSONObjectUtils.requireNumber(this.json, 'commitTime'));
+    } catch (error) {
+      if (error instanceof JSONUtilsError) throw new ExpoManifestError(`Invalid embedded manifest commitTime: ${error.message}.`);
+      throw error;
     }
 
-    const parsed = typeof raw === 'string' ? Number(raw) : raw;
-    const time = typeof parsed === 'number' ? Math.trunc(parsed) : parsed;
     if (!Number.isSafeInteger(time)) throw new ExpoManifestError('An embedded manifest requires a safely representable integer commitTime.');
 
     return time;

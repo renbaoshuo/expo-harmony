@@ -37,6 +37,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@expo-harmony/expo-json-utils": "workspace:*",
     "expo-manifests": "~57.0.2"
   },
   "peerDependencies": {

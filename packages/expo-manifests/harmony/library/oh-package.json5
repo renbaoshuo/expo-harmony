@@ -24,5 +24,7 @@
   },
   "main": "Index.ts",
   "license": "MIT",
-  "dependencies": {}
+  "dependencies": {
+    "@expo-harmony/expo-json-utils": "57.0.2-harmony.0"
+  }
 }

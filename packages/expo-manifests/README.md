@@ -166,11 +166,11 @@ Expo Go 配置不存在时返回 `main`；配置存在时返回其中的必需�
 
 #### `Manifest.getUserInterfaceStyle()`
 
-优先返回 `harmony.userInterfaceStyle`，缺少时读取 Expo 客户端配置中的 `userInterfaceStyle`；均缺失时返回 `null`。返回类型为 `string | null`。
+优先返回 `harmony.userInterfaceStyle` 字符串，再读取 Expo 客户端配置中的 `userInterfaceStyle` 字符串；没有有效字符串时返回 `null`。
 
 #### `Manifest.getBackgroundColor()`
 
-优先返回 `harmony.backgroundColor`，缺少时读取 Expo 客户端配置中的 `backgroundColor`；均缺失时返回 `null`。返回类型为 `string | null`。
+优先返回 `harmony.backgroundColor` 字符串，再读取 Expo 客户端配置中的 `backgroundColor` 字符串；没有有效字符串时返回 `null`。
 
 #### `Manifest.getPluginProperties(name)`
 
