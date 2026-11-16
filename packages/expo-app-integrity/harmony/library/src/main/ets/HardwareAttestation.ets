@@ -8,6 +8,7 @@
 import { common } from '@kit.AbilityKit';
 import { buffer, util } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
+import { fileIo } from '@kit.CoreFileKit';
 import { cert } from '@kit.DeviceCertificateKit';
 import { huks } from '@kit.UniversalKeystoreKit';
 
@@ -18,11 +19,32 @@ const PREFERENCES_NAME: string = 'expo.app-integrity.certificates';
 const MAX_KEY_ALIAS_BYTES: number = 128;
 const KEY_OPTIONS: huks.HuksOptions = { properties: [] };
 
-// Shared across RN runtimes so a reload cannot overlap replacement and certificate reads.
+interface StoredAttestation {
+  publicKey: string;
+  certificates: string[];
+}
+
+// Limit each ArkTS runtime to one waiting file lock so lock contention does not exhaust the I/O pool.
 let queue: Promise<void> = Promise.resolve();
 
-function serialized<T>(operation: () => Promise<T>): Promise<T> {
-  const result = queue.then(operation);
+function serialized<T>(path: string, code: IntegrityErrorCode, operation: () => Promise<T>): Promise<T> {
+  const result = queue.then(async (): Promise<T> => {
+    try {
+      const lock = await fileIo.open(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE);
+
+      try {
+        await lock.lock(true);
+
+        return await operation();
+      } finally {
+        await fileIo.close(lock);
+      }
+    } catch (error) {
+      if (error instanceof ExpoAppIntegrityError) return Promise.reject(error);
+
+      throw new ExpoAppIntegrityError(code, 'Could not access the attestation store.', error as Object);
+    }
+  });
   queue = result.then(
     (): void => {},
     (): void => {},
@@ -36,6 +58,7 @@ export function isHardwareAttestationSupported(): boolean {
     canIUse('SystemCapability.Security.Huks.Core') &&
     canIUse('SystemCapability.Security.Huks.Extension') &&
     canIUse('SystemCapability.Security.Cert') &&
+    canIUse('SystemCapability.FileManagement.File.FileIO') &&
     canIUse('SystemCapability.DistributedDataManager.Preferences.Core')
   );
 }
@@ -63,18 +86,57 @@ function checkedAlias(name: string): string {
 }
 
 function keyGenerationOptions(): huks.HuksOptions {
-  if (canIUse('SystemCapability.Security.Huks.Core') && canIUse('SystemCapability.Security.Huks.Extension')) {
-    return {
-      properties: [
-        { tag: huks.HuksTag.HUKS_TAG_ALGORITHM, value: huks.HuksKeyAlg.HUKS_ALG_ECC },
-        { tag: huks.HuksTag.HUKS_TAG_KEY_SIZE, value: huks.HuksKeySize.HUKS_ECC_KEY_SIZE_256 },
-        { tag: huks.HuksTag.HUKS_TAG_PURPOSE, value: huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_SIGN },
-        { tag: huks.HuksTag.HUKS_TAG_DIGEST, value: huks.HuksKeyDigest.HUKS_DIGEST_SHA256 },
-      ],
-    };
+  return {
+    properties: [
+      { tag: huks.HuksTag.HUKS_TAG_ALGORITHM, value: huks.HuksKeyAlg.HUKS_ALG_ECC },
+      { tag: huks.HuksTag.HUKS_TAG_KEY_SIZE, value: huks.HuksKeySize.HUKS_ECC_KEY_SIZE_256 },
+      { tag: huks.HuksTag.HUKS_TAG_PURPOSE, value: huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_SIGN },
+      { tag: huks.HuksTag.HUKS_TAG_DIGEST, value: huks.HuksKeyDigest.HUKS_DIGEST_SHA256 },
+    ],
+  };
+}
+
+async function getPublicKey(alias: string): Promise<string> {
+  const bytes = (await huks.exportKeyItem(alias, KEY_OPTIONS)).outData;
+  if (!bytes?.length) {
+    throw new ExpoAppIntegrityError(IntegrityErrorCode.CERTIFICATE_CHAIN_INVALID, 'The attested key has no public key.');
   }
 
-  throw new ExpoAppIntegrityError(IntegrityErrorCode.HARDWARE_NOT_SUPPORTED, 'HUKS key generation is not available.');
+  return buffer.from(bytes).toString('base64');
+}
+
+async function writeAttestation(path: string, record: StoredAttestation | null): Promise<void> {
+  const temp = path + '.tmp';
+  let published = false;
+
+  try {
+    const file = await fileIo.open(temp, fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC | fileIo.OpenMode.WRITE_ONLY);
+    try {
+      const value = JSON.stringify(record);
+      if (await fileIo.write(file.fd, value) !== value.length) {
+        throw new Error('Could not write the complete attestation record.');
+      }
+
+      await fileIo.fsync(file.fd);
+    } finally {
+      await fileIo.close(file);
+    }
+
+    await fileIo.rename(temp, path);
+    published = true;
+  } finally {
+    if (!published) {
+      try {
+        await fileIo.unlink(temp);
+      } catch {}
+    }
+  }
+}
+
+async function readAttestation(path: string): Promise<StoredAttestation | null | undefined> {
+  if (!(await fileIo.access(path))) return undefined;
+
+  return JSON.parse(await fileIo.readText(path)) as StoredAttestation | null;
 }
 
 async function certificatesToBase64(chain: string[] | undefined, encoding: buffer.BufferEncoding): Promise<string[]> {
@@ -103,45 +165,43 @@ async function certificatesToBase64(chain: string[] | undefined, encoding: buffe
 
 export class HardwareAttestation {
   private readonly context: common.Context;
+  private readonly lockPath: string;
 
   constructor(context: common.Context) {
     this.context = context.getApplicationContext();
+    this.lockPath = this.context.filesDir + '/expo.app-integrity.lock';
   }
 
   async generate(name: string, challenge: string): Promise<void> {
     const alias = checkedAlias(name);
-
     const bytes = new util.TextEncoder().encodeInto(challenge);
+    if (bytes.length === 0) {
+      throw new ExpoAppIntegrityError(IntegrityErrorCode.INVALID_INPUT, 'The attestation challenge must be nonempty.');
+    }
+    const path = this.recordPath(alias);
     const options = keyGenerationOptions();
 
-    await serialized(async (): Promise<void> => {
+    await serialized(this.lockPath, IntegrityErrorCode.KEY_GENERATION_FAILED, async (): Promise<void> => {
       let stage = IntegrityErrorCode.KEY_GENERATION_FAILED;
-      let store: preferences.Preferences | undefined;
       let attempted = false;
 
       try {
-        store = await preferences.getPreferences(this.context, { name: PREFERENCES_NAME });
+        const exists = await huks.hasKeyItem(alias, KEY_OPTIONS);
+        // Persist invalidation before replacement so an interrupted write cannot expose the old chain.
+        await writeAttestation(path, null);
 
-        // A failed flush can leave the cached alias absent while its old chain remains on disk.
-        // Put and delete to make every invalidation dirty before changing the key.
-        store.putSync(alias, '');
-        store.deleteSync(alias);
-        await store.flush();
-
-        if (await huks.hasKeyItem(alias, KEY_OPTIONS)) {
+        if (exists) {
           await huks.deleteKeyItem(alias, KEY_OPTIONS);
         }
 
         // IPC can reject after HUKS has created the key; include that case in cleanup.
         attempted = true;
         await huks.generateKeyItem(alias, options);
+        const publicKey = await getPublicKey(alias);
 
         stage = IntegrityErrorCode.ATTESTATION_FAILED;
         const attestation = await huks.anonAttestKeyItem(alias, {
-          properties: [
-            { tag: huks.HuksTag.HUKS_TAG_ATTESTATION_CHALLENGE, value: bytes },
-            { tag: huks.HuksTag.HUKS_TAG_ATTESTATION_ID_ALIAS, value: new util.TextEncoder().encodeInto(alias) },
-          ],
+          properties: [{ tag: huks.HuksTag.HUKS_TAG_ATTESTATION_CHALLENGE, value: bytes }],
         });
 
         stage = IntegrityErrorCode.CERTIFICATE_CHAIN_INVALID;
@@ -149,8 +209,7 @@ export class HardwareAttestation {
         const chain = await certificatesToBase64(attestation.certChains, 'latin1');
 
         stage = IntegrityErrorCode.ATTESTATION_FAILED;
-        await store.put(alias, chain);
-        await store.flush();
+        await writeAttestation(path, { publicKey, certificates: chain });
       } catch (error) {
         let message = 'Failed to generate or attest the key.';
         if (attempted) {
@@ -160,18 +219,6 @@ export class HardwareAttestation {
             }
           } catch (cleanup) {
             message += ` Key cleanup failed: ${(cleanup as Error).message}`;
-          }
-
-          try {
-            store?.deleteSync(alias);
-          } catch (cleanup) {
-            message += ` Certificate cleanup failed: ${(cleanup as Error).message}`;
-          }
-
-          try {
-            await store?.flush();
-          } catch (cleanup) {
-            message += ` Certificate cleanup flush failed: ${(cleanup as Error).message}`;
           }
         }
 
@@ -183,27 +230,28 @@ export class HardwareAttestation {
   async getCertificateChain(name: string): Promise<string[]> {
     const alias = checkedAlias(name);
 
-    return serialized(async (): Promise<string[]> => {
-      try {
-        const store = await preferences.getPreferences(this.context, { name: PREFERENCES_NAME });
-        const value = await store.get(alias, []);
-
-        if (
-          !(await huks.hasKeyItem(alias, KEY_OPTIONS)) ||
-          !Array.isArray(value) ||
-          value.length === 0 ||
-          !value.every((item: Object): boolean => typeof item === 'string' && item.length > 0)
-        ) {
-          throw new ExpoAppIntegrityError(
-            IntegrityErrorCode.CERTIFICATE_CHAIN_INVALID,
-            'No attestation certificate chain exists for this key alias.',
-          );
+    return serialized(this.lockPath, IntegrityErrorCode.CERTIFICATE_CHAIN_INVALID, async (): Promise<string[]> => {
+      const record = await readAttestation(this.recordPath(alias));
+      if (record !== undefined) {
+        if (record === null || record.publicKey !== await getPublicKey(alias)) {
+          throw new ExpoAppIntegrityError(IntegrityErrorCode.CERTIFICATE_CHAIN_INVALID, 'No attestation chain matches this key.');
         }
 
-        return await certificatesToBase64(value as string[], 'base64');
-      } catch (error) {
-        throw new ExpoAppIntegrityError(IntegrityErrorCode.CERTIFICATE_CHAIN_INVALID, 'Failed to read attestation certificates.', error as Object);
+        return await certificatesToBase64(record.certificates, 'base64');
       }
+
+      // Previous releases wrote only the chain to preferences.
+      const store = await preferences.getPreferences(this.context, { name: PREFERENCES_NAME });
+      const legacy = await store.get(alias, []);
+      if (!(await huks.hasKeyItem(alias, KEY_OPTIONS)) || !Array.isArray(legacy)) {
+        throw new ExpoAppIntegrityError(IntegrityErrorCode.CERTIFICATE_CHAIN_INVALID, 'No attestation chain exists for this key.');
+      }
+
+      return await certificatesToBase64(legacy as string[], 'base64');
     });
+  }
+
+  private recordPath(alias: string): string {
+    return this.context.filesDir + '/expo.app-integrity.' + buffer.from(alias).toString('base64url') + '.json';
   }
 }

@@ -22,6 +22,7 @@ export enum IntegrityErrorCode {
 export class ExpoAppIntegrityError extends ExpoModuleError {
   constructor(code: IntegrityErrorCode, message: string, cause?: Object) {
     let resolved: string = code;
+
     if (cause instanceof ExpoModuleError) {
       resolved = cause.code;
       message += ` ${cause.message}`;
@@ -33,7 +34,12 @@ export class ExpoAppIntegrityError extends ExpoModuleError {
       ) {
         resolved = IntegrityErrorCode.HARDWARE_NOT_SUPPORTED;
       }
-      message += ` HarmonyOS error (${error.code}): ${error.message}`;
+
+      if (typeof error.code === 'number') {
+        message += ` HarmonyOS error (${error.code}): ${error.message}`;
+      } else if (cause instanceof Error) {
+        message += ` ${cause.message}`;
+      }
     }
 
     super(resolved, `[ExpoAppIntegrity]: ${message}`, cause);

@@ -21,21 +21,25 @@ class ExpoAppIntegrityError extends Error {
   readonly code = 'ERR_APP_INTEGRITY_INVALID_INPUT';
 }
 
-function validateUnicode(value: string, name: string): void {
+function validateString(value: string, name: string): void {
+  if (typeof value !== 'string') {
+    throw new ExpoAppIntegrityError(`The ${name} must be a string.`);
+  }
+
   // The native bridge encodes strings as UTF-8, which cannot preserve lone UTF-16 surrogates.
-  if (typeof value === 'string' && /[\ud800-\udfff]/u.test(value)) {
+  if (/[\ud800-\udfff]/u.test(value)) {
     throw new ExpoAppIntegrityError(`The ${name} must contain valid Unicode characters.`);
   }
 }
 
 export async function generateHardwareAttestedKeyAsync(keyAlias: string, challenge: string): Promise<void> {
-  validateUnicode(keyAlias, 'key alias');
-  validateUnicode(challenge, 'challenge');
+  validateString(keyAlias, 'key alias');
+  validateString(challenge, 'challenge');
 
   return ExpoAppIntegrity.generateHardwareAttestedKeyAsync(keyAlias, challenge);
 }
 
 export async function getAttestationCertificateChainAsync(keyAlias: string): Promise<string[]> {
-  validateUnicode(keyAlias, 'key alias');
+  validateString(keyAlias, 'key alias');
   return ExpoAppIntegrity.getAttestationCertificateChainAsync(keyAlias);
 }

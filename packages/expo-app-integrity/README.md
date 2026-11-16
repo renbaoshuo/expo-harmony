@@ -31,7 +31,7 @@ npm install @expo-harmony/expo-app-integrity @expo/app-integrity@~57.0.2
 #### `AppIntegrity.generateHardwareAttestedKeyAsync(keyAlias, challenge)`
 
 - `keyAlias: string`：应用指定的密钥别名，不能为空，并需符合 HarmonyOS 的别名字符和长度限制。
-- `challenge: string`：交给系统证明服务的挑战字符串。建议使用服务端生成的一次性值。
+- `challenge: string`：交给系统证明服务的非空挑战字符串。建议使用服务端生成的一次性值。
 
 返回 `Promise<void>`。成功时生成签名密钥并取得匿名证明证书链；密钥内容不会返回。使用相同别名再次调用会替换已有密钥及证书链。证明需要网络连接，且须由系统证明服务受理；证书不包含设备标识。参见[华为匿名密钥证明文档](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/huks-key-anon-attestation-arkts)。
 
@@ -40,6 +40,8 @@ npm install @expo-harmony/expo-app-integrity @expo/app-integrity@~57.0.2
 - `keyAlias: string`：生成密钥时使用的别名。
 
 返回 `Promise<string[]>`。数组中的每项是无换行的 Base64 编码 DER 格式 X.509 证书，顺序从叶证书到根证书。证书链随密钥保存，应用重启后仍可读取；密钥或证书链不存在、无效时以 `ERR_APP_INTEGRITY_HARDWARE_ATTESTATION_CERTIFICATE_CHAIN_INVALID` 拒绝。
+
+将证书链发送给应用服务端，由服务端使用华为发布的可信根 CA 验证证书链、应用身份和本次挑战值。 [华为服务端开发文档](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/device-attestation-servers/)
 
 #### `AppIntegrity.generateKeyAsync()`
 
@@ -78,7 +80,7 @@ npm install @expo-harmony/expo-app-integrity @expo/app-integrity@~57.0.2
 
 #### `ERR_APP_INTEGRITY_INVALID_INPUT`
 
-密钥别名为空、包含不受支持的字符或超出长度限制时抛出；字符串参数含无效 Unicode 字符时也会抛出。
+密钥别名为空、包含不受支持的字符或超出长度限制时抛出。挑战值为空，或字符串参数类型不符、含无效 Unicode 字符时也会抛出。
 
 #### `ERR_APP_INTEGRITY_HARDWARE_ATTESTATION_NOT_SUPPORTED`
 
