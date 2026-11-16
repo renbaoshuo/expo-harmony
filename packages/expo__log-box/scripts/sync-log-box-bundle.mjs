@@ -10,24 +10,29 @@ import { cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import semver from 'semver';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const output = path.join(root, 'harmony/library/src/main/resources/rawfile/expo_log_box');
 const require = createRequire(import.meta.url);
 const manifest = require.resolve('@expo/log-box/package.json');
 const { version } = require(manifest);
-const expectedVersion = require('../package.json').peerDependencies['@expo/log-box'];
-if (version !== expectedVersion) {
-  throw new Error(`Expected @expo/log-box ${expectedVersion}, found ${version} at ${manifest}.`);
+const range = require('../package.json').peerDependencies['@expo/log-box'];
+
+if (!semver.satisfies(version, range)) {
+  throw new Error(`Expected @expo/log-box ${range}, found ${version} at ${manifest}.`);
 }
+
 const official = path.dirname(manifest);
 const source = path.join(official, 'dist/ExpoLogBox.bundle');
 
 await assertOfficialBundle(source);
 const parser = require.resolve('stacktrace-parser');
+
 await rm(output, { recursive: true, force: true });
 await mkdir(path.dirname(output), { recursive: true });
 await cp(source, output, { recursive: true, force: true });
+
 const generated = path.join(root, 'harmony/library/src/main/ets/generated');
 await mkdir(generated, { recursive: true });
 await writeFile(path.join(generated, 'ExpoLogBoxScripts.ets'),

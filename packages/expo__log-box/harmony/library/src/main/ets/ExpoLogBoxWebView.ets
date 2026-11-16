@@ -8,8 +8,6 @@
 import { webview } from '@kit.ArkWeb';
 import { STACK_PARSER_SCRIPT } from './generated/ExpoLogBoxScripts';
 
-import { LOG_BOX_DOM_HOST_OS, LOG_BOX_ERROR_MESSAGE, LOG_BOX_READY_MESSAGE } from './ExpoLogBoxController';
-
 const WEB_BRIDGE_NAME: string = 'ExpoLogBoxNative';
 const WEB_BRIDGE_METHODS: string[] = ['postMessage'];
 const DOCUMENT_START_SCRIPT_RULES: string[] = ['*'];
@@ -17,6 +15,9 @@ const LOG_BOX_READY_SELECTOR: string = '[data-expo-log-backdrop="true"]';
 const DOM_READY: string = '$$dom_ready';
 const DOM_EVENT: string = '$$dom_event';
 const DOM_PROPS: string = '$$props';
+const LOG_BOX_READY_MESSAGE: string = '$$expo_log_box_ready';
+const LOG_BOX_ERROR_MESSAGE: string = '$$expo_log_box_error';
+const LOG_BOX_DOM_HOST_OS: string = 'harmony';
 
 interface LogBoxScriptItem {
   script: string;
@@ -74,17 +75,20 @@ export class ExpoLogBoxWebSession {
     if (this.disposed || this.failed) return;
     try {
       const event = JSON.parse(message) as PageMessage;
-      if (event.type === DOM_READY) {
-        // SDK 57 emits readiness after installing its props listener, including on reload.
+
+      if (event?.type === DOM_READY) {
+        // Expo signals DOM readiness again after each reload.
         this.domReady = true;
         this.updateProps(this.payload);
-      } else if (event.type === LOG_BOX_READY_MESSAGE) {
+      } else if (event?.type === LOG_BOX_READY_MESSAGE) {
+        if (this.ready) return;
+
         this.ready = true;
         this.clearStartupTimeout();
         this.onReady();
-      } else if (event.type === LOG_BOX_ERROR_MESSAGE) {
+      } else if (event?.type === LOG_BOX_ERROR_MESSAGE) {
         this.fail(new Error(event.data?.message ?? 'The Expo LogBox page failed.'));
-      } else {
+      } else if (typeof event?.type === 'string') {
         this.onMessage(message);
       }
     } catch (error) {
@@ -177,20 +181,19 @@ export struct ExpoLogBoxWebView {
         .javaScriptOnDocumentStart(this.session.documentStartScripts)
         .javaScriptAccess(true)
         .fileAccess(false)
-        .onlineImageAccess(false)
+        .blockNetwork(true)
         .zoomAccess(false)
         .onAppear((): void => this.session?.appear())
         .onControllerAttached((): void => this.session?.attached())
         .onErrorReceive((event): void => {
-          this.session?.fail(new Error(event.error.getErrorInfo()));
+          if (event.request.isMainFrame()) this.session?.fail(new Error(event.error.getErrorInfo()));
         })
         .onRenderExited((): void => this.session?.fail(new Error('The ArkWeb renderer exited.')))
         .width('100%')
         .height('100%')
         .backgroundColor('#111113')
         .focusable(true)
-        .hitTestBehavior(HitTestMode.Block)
-        .onDisAppear((): void => this.session?.dispose());
+        .hitTestBehavior(HitTestMode.Block);
     }
   }
 }

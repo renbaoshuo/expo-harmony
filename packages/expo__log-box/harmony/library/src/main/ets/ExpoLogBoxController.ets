@@ -6,11 +6,11 @@
  */
 
 import { http } from '@kit.NetworkKit';
-import { util } from '@kit.ArkTS';
+import { url, util } from '@kit.ArkTS';
 import { pasteboard } from '@kit.BasicServicesKit';
-import url from '@ohos.url';
 import { RNInstanceError, RNOHError, RNOHErrorStack, type StackFrame } from '@rnoh/react-native-openharmony';
 import type { DevToolsController } from '@rnoh/react-native-openharmony/src/main/ets/RNOH/DevToolsController';
+import type { HttpErrorResponse } from '@rnoh/react-native-openharmony/src/main/ets/HttpClient/types';
 import type { ReactRuntimeContext } from '@expo-harmony/expo-modules-core';
 import type { webview } from '@kit.ArkWeb';
 import { RnohLogBoxAdapter } from './RnohLogBoxAdapter';
@@ -23,11 +23,7 @@ const ACTION_DISMISS: string = 'onDismiss';
 const DOM_EVENT: string = '$$dom_event';
 const NATIVE_ACTION: string = '$$native_action';
 const NATIVE_ACTION_RESULT: string = '$$native_action_result';
-export const LOG_BOX_READY_MESSAGE: string = '$$expo_log_box_ready';
-export const LOG_BOX_ERROR_MESSAGE: string = '$$expo_log_box_error';
-export const LOG_BOX_DOM_HOST_OS: string = 'harmony';
 const DEFAULT_ERROR_MESSAGE: string = 'Error without message.';
-const DEFAULT_WEB_ERROR_MESSAGE: string = 'The Expo LogBox page failed to initialize.';
 
 interface NativeStackFrame {
   file?: string;
@@ -81,7 +77,6 @@ interface NativeActionData {
   actionId?: string;
   uid?: string;
   args?: Object[];
-  message?: string;
 }
 
 interface NativeActionMessage {
@@ -186,7 +181,7 @@ class ExpoLogBoxController {
 
     const manager = this.presentedManager;
     const presentedError = this.presentedError;
-    if (manager !== undefined && presentedError !== undefined) {
+    if (this.customDialogReady && manager !== undefined && presentedError !== undefined) {
       // Restore RNOH's dialog before removing the failed custom view. The active presentation
       // makes this controller ignore its own replayed NEW_ERROR event.
       this.customDialogReady = false;
@@ -206,33 +201,25 @@ class ExpoLogBoxController {
       return;
     }
 
-    // A disposed WebView can finish an async postMessage after a newer error is presented.
-    if (this.presentation?.id !== presentationId) return;
-
-    if (message.type === LOG_BOX_READY_MESSAGE) {
-      this.ready(presentationId);
-      return;
-    }
-    if (message.type === LOG_BOX_ERROR_MESSAGE) {
-      const error = message.data?.message;
-      this.fail(presentationId, new Error(typeof error === 'string' && error.length > 0 ? error : DEFAULT_WEB_ERROR_MESSAGE));
-      return;
-    }
-    if (message.type !== NATIVE_ACTION) return;
+    if (this.presentation?.id !== presentationId || message?.type !== NATIVE_ACTION) return;
 
     const actionId = message.data?.actionId;
     const uid = message.data?.uid;
     const args = message.data?.args;
     if (typeof actionId !== 'string' || typeof uid !== 'string' || !Array.isArray(args)) return;
 
+    const respond = (result: string): Promise<void> => {
+      return this.presentation?.id === presentationId ? sendActionResult(web, uid, actionId, result) : Promise.resolve();
+    };
+
     try {
       if (actionId === ACTION_RELOAD) {
         await this.reload(presentationId);
-        await sendActionResult(web, uid, actionId, '');
+        await respond('');
       } else if (actionId === ACTION_MINIMIZE || actionId === ACTION_DISMISS) {
         if (actionId === ACTION_DISMISS && args[0] !== 0) throw new Error('Invalid native LogBox log index.');
 
-        await sendActionResult(web, uid, actionId, '');
+        await respond('');
         if (this.presentation?.id === presentationId) {
           this.presentedManager?.dismissRNOHErrorDialog();
           this.clear();
@@ -240,20 +227,23 @@ class ExpoLogBoxController {
       } else if (actionId === ACTION_COPY_TEXT) {
         const input = args[0];
         if (typeof input !== 'string') throw new Error('onCopyText requires text.');
+
         await pasteboard.getSystemPasteboard().setData(pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, input));
-        await sendActionResult(web, uid, actionId, '');
+        await respond('');
       } else if (actionId === ACTION_FETCH_TEXT) {
         const input = args[0];
         if (typeof input !== 'string') throw new Error('fetchTextAsync requires a URL.');
 
         const options = fetchOptions(args[1]);
         const result = await this.fetchText(input, options);
-        await sendActionResult(web, uid, actionId, result);
+        await respond(result);
       } else {
         throw new Error(`Unsupported LogBox action: ${actionId}`);
       }
     } catch (error) {
-      await sendActionError(web, uid, actionId, errorMessage(error as Object));
+      if (this.presentation?.id === presentationId) {
+        await sendActionError(web, uid, actionId, errorMessage(error as Object));
+      }
     }
   }
 
@@ -330,12 +320,16 @@ class ExpoLogBoxController {
   }
 
   private async fetchText(input: string, options?: FetchOptions): Promise<string> {
+    const origin = this.presentation?.devServerOrigin;
+    if (!origin || devServerOrigin(input) !== origin) {
+      throw new Error('LogBox can only fetch from the active Metro server.');
+    }
+
     const runtime = this.runtimeForPresentation();
     if (runtime === undefined) throw new Error('No active React Native runtime is available.');
 
-    const requestedMethod = typeof options?.method === 'string' ? options.method.toUpperCase() : 'GET';
-    const method = httpMethod(requestedMethod);
-
+    const verb = typeof options?.method === 'string' ? options.method.toUpperCase() : 'GET';
+    const method = httpMethod(verb);
     const body = typeof options?.body === 'string' ? options.body : undefined;
     const hasBody = body !== undefined && method !== http.RequestMethod.GET && method !== http.RequestMethod.HEAD;
     const header: Record<string, string> = {};
@@ -346,7 +340,11 @@ class ExpoLogBoxController {
       header,
       extraData: hasBody ? body : undefined,
     });
-    const response = await request.promise;
+    const response = await request.promise.catch((error: HttpErrorResponse | Error) => {
+      const cause = error instanceof Error ? error : (error?.error ?? error);
+      throw new Error(errorMessage(cause));
+    });
+
     if (typeof response.body === 'string') return response.body;
 
     return util.TextDecoder.create('utf-8').decodeToString(new Uint8Array(response.body));

@@ -16,6 +16,7 @@ type NativeRef = { injectJavaScript(script: string): Promise<void> };
 type NativeProps = ViewProps & {
   payload: string;
   onMessage(event: { nativeEvent: { data: string } }): void;
+  onMinimize(): void;
   ref: React.Ref<NativeRef>;
 };
 
@@ -24,6 +25,7 @@ const NativeView = requireNativeViewManager<NativeProps>('ExpoLogBox');
 export default function LogBoxDOMView({ dom, ...props }: Props) {
   const ref = useRef<NativeRef>(null);
   const native = requireNativeModule<{ enabled: boolean; copyTextAsync(text: string): Promise<void> }>('ExpoLogBox');
+
   if (!native.enabled) {
     throw new Error('Expo LogBox requires EXPO_UNSTABLE_LOG_BOX=1 for both Harmony prebuild and Metro. Rebuild the application after enabling the plugin.');
   }
@@ -68,7 +70,13 @@ export default function LogBoxDOMView({ dom, ...props }: Props) {
 
   return (
     <View style={[{ flex: 1 }, dom?.containerStyle]}>
-      <NativeView ref={ref} payload={payload} onMessage={onMessage} style={[{ flex: 1 }, dom?.style]} />
+      <NativeView
+        ref={ref}
+        payload={payload}
+        onMessage={onMessage}
+        onMinimize={() => props.onMinimize?.()}
+        style={[{ flex: 1 }, dom?.style]}
+      />
     </View>
   );
 }

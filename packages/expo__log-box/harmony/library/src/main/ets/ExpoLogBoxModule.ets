@@ -41,12 +41,16 @@ class LogBoxView extends ExpoView {
       this.session.updateProps(this.payload);
       return;
     }
+
     this.session = new ExpoLogBoxWebSession(
       this.payload,
       '',
       (data: string): void => this.sendEvent<MessageEvent>('onMessage', { data }),
       (): void => {},
       (error: Object): void => {
+        this.session?.dispose();
+        this.session = undefined;
+
         this.error = error instanceof Error ? error.message : String(error);
       },
     );
@@ -60,9 +64,7 @@ class LogBoxView extends ExpoView {
   }
 
   minimize(): void {
-    this.sendEvent<MessageEvent>('onMessage', {
-      data: '{"type":"$$native_action","data":{"uid":"native-fallback-minimize","actionId":"onMinimize","args":[]}}',
-    });
+    this.sendEvent('onMinimize', {});
   }
 
   destroy(): void {
@@ -111,7 +113,7 @@ export class ExpoLogBoxModule extends ExpoModule {
       (context: ExpoViewContext): LogBoxView => new LogBoxView(context),
       wrapBuilder(buildLogBoxView),
     )
-      .events(['onMessage'])
+      .events(['onMessage', 'onMinimize'])
       .prop(
         'payload',
         ExpoValueTypes.string(),
