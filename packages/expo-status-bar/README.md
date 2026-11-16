@@ -14,6 +14,10 @@
 npm install @expo-harmony/expo-status-bar expo-status-bar@~57.0.1
 ```
 
+在 `app.json` 的 `expo.plugins` 中加入 `["@expo-harmony/expo-status-bar", { "style": "dark", "hidden": false }]`，可以在 JavaScript 启动前设置状态栏。`style` 接受 `'light'` 或 `'dark'`。`hidden` 接受布尔值，`false` 显式显示状态栏。省略的属性由窗口默认设置决定。
+
+系统在受支持设备的全屏或最大化主窗口上应用状态栏设置。2in1 设备由系统管理状态栏。
+
 ## API 对照表
 
 ### Components
@@ -28,13 +32,13 @@ npm install @expo-harmony/expo-status-bar expo-status-bar@~57.0.1
 
 设置状态栏文字和图标颜色，`style` 接受 [`StatusBarStyle`](#statusbarstyle)，`animated` 为可选布尔值。返回 `void`。
 
-- HarmonyOS 不提供状态栏样式切换动画，因此 `animated` 不生效。
+- 当前 RNOH 的状态栏样式切换无动画效果。
 
 #### `StatusBar.setHidden(hidden, animation?)`
 
 显示或隐藏状态栏。`hidden` 为布尔值；`animation` 接受 [`StatusBarAnimation`](#statusbaranimation)，省略时默认为 `'none'`。返回 `void`。
 
-- HarmonyOS 不提供状态栏显隐过渡动画，因此 `animation` 不生效。
+- 当前 RNOH 的状态栏显隐使用系统默认行为，`animation` 不生效。
 
 #### `setStatusBarStyle(style, animated?)`
 
@@ -50,7 +54,7 @@ npm install @expo-harmony/expo-status-bar expo-status-bar@~57.0.1
 
 `StatusBar` 的属性：`style` 为可选的 [`StatusBarStyle`](#statusbarstyle)，默认值为 `'auto'`；`hidden` 为可选布尔值，默认显示状态栏；`animated` 为可选布尔值；`hideTransitionAnimation` 为可选的 [`StatusBarAnimation`](#statusbaranimation)，默认值为 `'fade'`。
 
-- HarmonyOS 不提供状态栏样式切换动画，因此 `animated` 不生效。
+- 当前 RNOH 的状态栏样式切换无动画效果。
 
 #### `StatusBarStyle`
 
@@ -60,7 +64,7 @@ npm install @expo-harmony/expo-status-bar expo-status-bar@~57.0.1
 
 可选值为 `'none'`、`'fade'` 和 `'slide'`。
 
-- HarmonyOS 不提供状态栏显隐过渡动画，因此这些值不会产生动画效果。
+- 当前 RNOH 的状态栏显隐使用系统默认行为。
 
 ## Author
 
