@@ -84,10 +84,10 @@ HarmonyOS 上不支持的拍照选项：
 
 `options` 支持：
 
-- `maxDuration`：最长录制时长，单位秒，到达限制后自动停止。
-- `maxFileSize`：最大文件大小，单位字节，到达限制后自动停止。
+- `maxDuration`：最长录制时长，单位秒，到达限制后自动停止。API 18 及以上的整数秒限制由系统录制器管理。
+- `maxFileSize`：录制文件的大小阈值，单位字节。应用检测到达到阈值后自动停止，写入缓冲和 MP4 封装可能使最终大小超过阈值。
 - `mirror`：镜像前摄录像；需要 HarmonyOS SDK API 15 及以上，较低版本不生效。
-- `codec`：`'avc1'` 或 `'hvc1'`。指定的编码不受设备支持时会拒绝；未指定时优先使用 H.264，不支持时使用 H.265。
+- `codec`：`'avc1'` 或 `'hvc1'`。按相机和编码器共同支持的分辨率及帧率选择录像档位；同一档位可用两种编码时默认使用 H.264。
 
 #### `CameraView.stopRecording()`
 
@@ -111,7 +111,7 @@ HarmonyOS 上不支持的拍照选项：
 
 #### `CameraView.dismissScanner()`
 
-HarmonyOS Scan Kit 不提供关闭系统扫码界面的接口。调用此方法会以 `ERR_CAMERA_SCANNER_DISMISS_UNSUPPORTED` 拒绝。
+返回 `Promise<void>`。系统扫码界面由 HarmonyOS Scan Kit 关闭，调用此方法立即完成。
 
 #### `scanFromURLAsync(url, barcodeTypes)` / `Camera.scanFromURLAsync(url, barcodeTypes)`
 
@@ -167,7 +167,7 @@ HarmonyOS Scan Kit 不提供关闭系统扫码界面的接口。调用此方法�
 
 ##### `ratio`
 
-`CameraRatio`，可选 `'4:3'`、`'16:9'`、`'1:1'`。用于选择拍照分辨率和预览比例；没有匹配的拍照分辨率时回退到可用尺寸。`pictureSize` 设置后优先使用该尺寸。
+`CameraRatio`，可选 `'4:3'`、`'16:9'`、`'1:1'`。用于选择拍照分辨率和预览比例；没有匹配的拍照分辨率时回退到可用尺寸。`pictureSize` 设置后优先使用该尺寸。设置 `ratio` 时完整显示预览，未设置时等比填充视图。
 
 ##### `videoQuality`
 
@@ -207,7 +207,7 @@ HarmonyOS Scan Kit 不提供关闭系统扫码界面的接口。调用此方法�
 
 ##### `onBarcodeScanned`
 
-预览中识别到条码时调用，参数为 `BarcodeScanningResult`。仅设备提供实时扫码能力时触发；结果包含 `type`、`data`、`raw`，实时预览结果的 `cornerPoints` 为空、`bounds` 为零。录像开始后暂停扫码，停止录像后恢复。
+预览中识别到条码时调用，参数为 `BarcodeScanningResult`。仅设备提供实时扫码能力时触发。条码位置在可映射时以相机视图的逻辑坐标返回。录像开始后暂停扫码，停止录像后恢复。
 
 ##### `onCameraReady`
 
@@ -261,7 +261,7 @@ HarmonyOS 上不支持的属性：
 
 #### `BarcodeScanningResult`
 
-预览扫码和图片扫码的结果类型，包含条码类型 `type`、内容 `data`、原始内容 `raw`、角点 `cornerPoints` 和外接框 `bounds`。HarmonyOS 不返回 `extra`；实时预览扫码结果的几何字段为空值。
+预览扫码和图片扫码的结果类型，包含条码类型 `type`、内容 `data`、原始内容 `raw`、角点 `cornerPoints` 和外接框 `bounds`。当系统缺少位置数据或预览坐标不可映射时，`cornerPoints` 为空或 `bounds` 为零。
 
 #### `ScanningResult`
 
@@ -403,7 +403,6 @@ HarmonyOS 上支持 `'avc1' | 'hvc1'`。设备不支持指定编码时，录像�
 - `ERR_CAMERA_SCANNER_UNAVAILABLE`：设备没有扫码能力。
 - `ERR_CAMERA_SCANNER_CANCELLED`：用户取消系统扫码。
 - `ERR_CAMERA_SCANNER`：系统扫码未能完成。
-- `ERR_CAMERA_SCANNER_DISMISS_UNSUPPORTED`：HarmonyOS 不支持通过 API 关闭系统扫码界面。
 
 ### Permissions
 
@@ -414,7 +413,7 @@ HarmonyOS 上支持 `'avc1' | 'hvc1'`。设备不支持指定编码时，录像�
 - `Camera.getMicrophonePermissionsAsync()`：返回 `Promise<PermissionResponse>`，查询麦克风权限，不弹出授权请求。
 - `Camera.requestMicrophonePermissionsAsync()`：返回 `Promise<PermissionResponse>`，请求麦克风权限。
 
-相机预览和拍照需要相机权限；录制带声音的视频需要麦克风权限。HarmonyOS SDK API 20 及以上可区分未决定和拒绝；API 13–19 查询时无法区分两者，未决定状态也会返回 `status: 'denied'`。`expires` 始终为 `'never'`。
+相机预览和拍照需要相机权限；录制带声音的视频需要麦克风权限。HarmonyOS SDK API 20 及以上读取系统权限状态，API 13–19 使用 Expo 权限请求历史区分初次请求与拒绝。`expires` 始终为 `'never'`。
 
 ## Author
 

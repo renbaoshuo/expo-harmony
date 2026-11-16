@@ -25,8 +25,7 @@ import { Permissions } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { camera } from '@kit.CameraKit';
 import { media } from '@kit.MediaKit';
-import { detectBarcode, scanBarcode } from '@kit.ScanKit';
-import deviceInfo from '@ohos.deviceInfo';
+import { detectBarcode, scanBarcode, scanCore } from '@kit.ScanKit';
 import fs from '@ohos.file.fs';
 import image from '@ohos.multimedia.image';
 import util from '@ohos.util';
@@ -38,8 +37,6 @@ import { BarcodeScannerSettings, buildExpoCameraView, ExpoCameraViewState, Pictu
 
 const CAMERA_PERMISSION: Permissions = 'ohos.permission.CAMERA';
 const MICROPHONE_PERMISSION: Permissions = 'ohos.permission.MICROPHONE';
-// Scan Kit BusinessError: the user cancelled the system scanner UI.
-const SCANNER_CANCELLED_ERROR_CODE: number = 1000500002;
 
 interface SavePictureOptions {
   quality?: number;
@@ -388,7 +385,7 @@ export class ExpoCameraModule extends ExpoModule {
       )
       .asyncFunction(
         'launchModernScanner',
-        ExpoFunction.ownedTyped0(async (view: ExpoCameraViewState): Promise<ESObject> => await view.launchModernScannerAsync()),
+        ExpoFunction.ownedTyped0(async (_view: ExpoCameraViewState): Promise<void> => await this.launchScanner()),
       )
       .onCreate((view: ExpoCameraViewState): void => {
         this.mountedViews.add(view);
@@ -431,17 +428,10 @@ export class ExpoCameraModule extends ExpoModule {
       )
       .asyncFunction(
         'launchScanner',
-        ExpoFunction.typed1(SCANNER_OPTIONS_TYPE.defaulted({}), async (options: ScannerOptions): Promise<void> => {
-          const result: BarcodeResult = await this.launchScanner(options);
-          this.sendEvent('onModernBarcodeScanned', result);
-        }),
+        ExpoFunction.typed1(SCANNER_OPTIONS_TYPE.defaulted({}), async (options: ScannerOptions): Promise<void> => await this.launchScanner(options)),
       )
-      .asyncFunction('dismissScanner', async (): Promise<null> => {
-        throw new ExpoCameraError(
-          'ERR_CAMERA_SCANNER_DISMISS_UNSUPPORTED',
-          'HarmonyOS Scan Kit does not expose programmatic dismissal for its system scanner UI.',
-        );
-      })
+      // Scan Kit owns dismissal of the system UI.
+      .asyncFunction('dismissScanner', async (): Promise<void> => {})
       .view(cameraView)
       .onBackground((): void => {
         this.mountedViews.forEach((view: ExpoCameraViewState): void => view.onBackground());
@@ -456,11 +446,10 @@ export class ExpoCameraModule extends ExpoModule {
   }
 
   private getPermission(permission: Permissions): PermissionRecord {
-    const status = this.context.permissionStatus(permission);
-    if (status === ExpoPermissionStatus.GRANTED) return new PermissionRecord('granted', true);
-    if (status === ExpoPermissionStatus.NOT_DETERMINED) return new PermissionRecord('undetermined', true);
-    // Older SDKs cannot distinguish a first request from a permanent denial.
-    return new PermissionRecord('denied', deviceInfo.sdkApiVersion < 20);
+    const grant = this.context.getPermissionResponse(permission);
+    if (grant.status === ExpoPermissionStatus.GRANTED) return new PermissionRecord('granted', grant.canAskAgain);
+    if (grant.status === ExpoPermissionStatus.NOT_DETERMINED) return new PermissionRecord('undetermined', grant.canAskAgain);
+    return new PermissionRecord('denied', grant.canAskAgain);
   }
 
   private async requestPermission(permission: Permissions): Promise<PermissionRecord> {
@@ -507,6 +496,7 @@ export class ExpoCameraModule extends ExpoModule {
     try {
       const loader = this.context.services.require(ImageLoaderInterfaceKey);
       const pixel = await loader.loadImageForManipulationFromURL(url);
+
       try {
         this.context.assertActive();
 
@@ -525,11 +515,14 @@ export class ExpoCameraModule extends ExpoModule {
       const results = await detectBarcode.decode({ uri: fileUriFromPath(path) }, { scanTypes: formats });
       this.context.assertActive();
 
-      return results.map((result: scanBarcode.ScanResult): BarcodeResult => barcodeResult(result));
+      return results
+        .filter((result: scanBarcode.ScanResult): boolean => formats.includes(result.scanType))
+        .map((result: scanBarcode.ScanResult): BarcodeResult => barcodeResult(result));
     } catch (error) {
       if (error instanceof ExpoModuleError) throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
 
       console.error(`Expo Camera barcode scan failed: ${String(error)}`);
+
       throw new ExpoCameraError('ERR_CAMERA_BARCODE_SCAN', 'The barcode image could not be scanned.');
     } finally {
       if (path !== undefined) {
@@ -540,26 +533,33 @@ export class ExpoCameraModule extends ExpoModule {
     }
   }
 
-  private async launchScanner(options: ScannerOptions = {}): Promise<BarcodeResult> {
+  private async launchScanner(options: ScannerOptions = {}): Promise<void> {
     if (!canIUse(SCAN_CAPABILITY)) {
       throw new ExpoCameraError('ERR_CAMERA_SCANNER_UNAVAILABLE', 'The modern barcode scanner is not supported on this device.');
     }
 
-    try {
-      const result = await scanBarcode.startScanForResult(this.context.uiAbilityContext, {
-        scanTypes: scanTypes(options.barcodeTypes),
-      });
+    const formats = scanTypes(options.barcodeTypes);
+    if (formats.length === 0) {
+      throw new ExpoCameraError('ERR_CAMERA_INVALID_OPTION', 'The barcode scanner requires at least one supported barcode type.');
+    }
 
-      return barcodeResult(result);
+    let result: scanBarcode.ScanResult;
+    try {
+      result = await scanBarcode.startScanForResult(this.context.uiAbilityContext, { scanTypes: formats });
     } catch (error) {
       console.error(`Expo Camera barcode scanner failed: ${String(error)}`);
+
       const code = (error as BusinessError).code;
-      if (code === SCANNER_CANCELLED_ERROR_CODE) {
+      if (code === scanCore.ScanErrorCode.SCAN_SERVICE_CANCELED) {
         throw new ExpoCameraError('ERR_CAMERA_SCANNER_CANCELLED', 'The barcode scanner was cancelled.');
       }
 
       throw new ExpoCameraError('ERR_CAMERA_SCANNER', 'The barcode scanner could not complete.');
     }
+
+    this.context.assertActive();
+    const barcode = barcodeResult(result, false);
+    this.sendEvent('onModernBarcodeScanned', { type: barcode.type, data: barcode.data, raw: barcode.raw });
   }
 
   private async savePicture(pixel: image.PixelMap, options: SavePictureOptions = {}): Promise<SavedPicture> {

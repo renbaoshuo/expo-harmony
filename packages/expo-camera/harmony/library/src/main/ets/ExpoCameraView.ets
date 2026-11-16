@@ -17,13 +17,13 @@ import { Permissions } from '@kit.AbilityKit';
 import { camera } from '@kit.CameraKit';
 import { media } from '@kit.MediaKit';
 import { sensor } from '@kit.SensorServiceKit';
-import { BusinessError } from '@kit.BasicServicesKit';
+import { BusinessError, systemDateTime } from '@kit.BasicServicesKit';
 import deviceInfo from '@ohos.deviceInfo';
 import display from '@ohos.display';
 import fs from '@ohos.file.fs';
 import image from '@ohos.multimedia.image';
 import util from '@ohos.util';
-import { BarcodeResult, CameraBarcodeAnalyzer } from './ExpoCameraBarcode';
+import { BarcodePreviewGeometry, BarcodeResult, CameraBarcodeAnalyzer } from './ExpoCameraBarcode';
 import { ExpoCameraError } from './ExpoCameraError';
 import { ensureDirectory, packPicture, readBuffer, uniquePath, writeBuffer } from './ExpoCameraFiles';
 import { decodeExifProperties, encodeExifMetadata, writableExifProperties, EXIF_KEYS } from './ExpoCameraExif';
@@ -107,13 +107,24 @@ class PictureResult {
   format: string;
   base64?: string;
   exif?: ESObject;
-  pictureRef?: boolean;
 
   constructor(uri: string, width: number, height: number, format: string) {
     this.uri = uri;
     this.width = width;
     this.height = height;
     this.format = format;
+  }
+}
+
+class CapturedPixelMap {
+  readonly pixel: image.PixelMap;
+  readonly width: number;
+  readonly height: number;
+
+  constructor(pixel: image.PixelMap, width: number, height: number) {
+    this.pixel = pixel;
+    this.width = width;
+    this.height = height;
   }
 }
 
@@ -134,6 +145,7 @@ interface PendingCapture {
   reject?: (error: ExpoCameraError) => void;
   timer?: number;
   processing?: boolean;
+  failure?: ExpoCameraError;
 }
 
 interface ReadyWaiter {
@@ -158,8 +170,10 @@ interface RgbaPhotoData {
 const CAMERA_PERMISSION: Permissions = 'ohos.permission.CAMERA';
 const MICROPHONE_PERMISSION: Permissions = 'ohos.permission.MICROPHONE';
 const CAPTURE_TIMEOUT_MS: number = 15_000;
+const SCREEN_FLASH_SETTLE_MS: number = 120;
+const SHUTTER_ANIMATION_MS: number = 140;
 const GRAVITY_THRESHOLD: number = 9.80665 * 0.75;
-let photoProcessingQueue: Promise<void> = Promise.resolve();
+const MAX_TIMER_DELAY_MS: number = 0x7fffffff;
 let viewCleanup: Promise<void> = Promise.resolve();
 
 function wait(ms: number): Promise<void> {
@@ -373,6 +387,19 @@ function chooseVideoProfile(profiles: camera.VideoProfile[], quality?: string): 
   return pool.slice().sort((left: camera.VideoProfile, right: camera.VideoProfile): number => right.size.height - left.size.height)[0];
 }
 
+function rangeContains(range: media.Range | undefined, value: number): boolean {
+  return range === undefined || (value >= range.min && value <= range.max);
+}
+
+function findVideoEncoder(encoders: media.EncoderInfo[], mime: media.CodecMimeType, profile: camera.VideoProfile): media.EncoderInfo | undefined {
+  return encoders.find((encoder: media.EncoderInfo): boolean => {
+    const fps = encoder.frameRate;
+    return encoder.type === 'video' && encoder.mimeType === mime &&
+      rangeContains(encoder.width, profile.size.width) && rangeContains(encoder.height, profile.size.height) &&
+      (fps === undefined || (fps.min <= profile.frameRateRange.max && fps.max >= profile.frameRateRange.min));
+  });
+}
+
 async function decodePixelMap(source: image.ImageSource, maxDownsampling?: number): Promise<image.PixelMap> {
   const info = await source.getImageInfo();
   const max = Math.min(maxDownsampling ?? 1, Math.max(info.size.width, info.size.height));
@@ -382,6 +409,7 @@ async function decodePixelMap(source: image.ImageSource, maxDownsampling?: numbe
     try {
       // ImageSource.sampleSize only supports 1. desiredSize lets the system decoder downsample.
       return await source.createPixelMap({
+        editable: true,
         desiredSize: {
           width: Math.max(1, Math.floor(info.size.width / sample)),
           height: Math.max(1, Math.floor(info.size.height / sample)),
@@ -409,6 +437,13 @@ export class ExpoCameraViewState extends ExpoView {
   private device?: camera.CameraDevice;
   private input?: camera.CameraInput;
   private previewOutput?: camera.PreviewOutput;
+  private previewProfile?: camera.Profile;
+  private previewRotation: camera.ImageRotation = camera.ImageRotation.ROTATION_0;
+  private previewDisplayDegrees: number = 0;
+  private previewAreaWidth: number = 0;
+  private previewAreaHeight: number = 0;
+  private previewPixelDensity: number = 1;
+  private barcodeGeometry?: BarcodePreviewGeometry;
   private displayChangeListener?: () => void;
   private barcodeAnalyzer?: CameraBarcodeAnalyzer;
   private photoOutput?: camera.PhotoOutput;
@@ -451,7 +486,9 @@ export class ExpoCameraViewState extends ExpoView {
   private skipBarcodeAnalysis: boolean = false;
   private barcodeWarningShown: boolean = false;
   private shutterWarningShown: boolean = false;
-  private flash?: () => void;
+  private torchEnabled: boolean = false;
+  private flash?: (visible: boolean, durationMs?: number) => void;
+  private screenFlashActive: boolean = false;
 
   private readonly onPhoto = (error: BusinessError, photo: camera.Photo): void => {
     const pending = this.pendingCapture;
@@ -459,6 +496,8 @@ export class ExpoCameraViewState extends ExpoView {
       if (photo !== undefined && photo !== null) void photo.release().catch((): void => {});
       return;
     }
+
+    this.endScreenFlash();
     if ((error !== undefined && error !== null) || photo === undefined || photo === null) {
       console.error(`Expo Camera photo capture failed: ${String(error)}`);
       this.reconfigurePending = true;
@@ -472,9 +511,8 @@ export class ExpoCameraViewState extends ExpoView {
       clearTimeout(pending.timer);
       pending.timer = undefined;
     }
-    photoProcessingQueue = photoProcessingQueue.then(async (): Promise<void> => {
-      await this.consumePhoto(photo, pending);
-    }).catch((failure: Object): void => {
+
+    void this.consumePhoto(photo, pending).catch((failure: Object): void => {
       console.error(`Expo Camera photo processing failed: ${String(failure)}`);
     });
   };
@@ -543,14 +581,28 @@ export class ExpoCameraViewState extends ExpoView {
     this.manager.on('cameraStatus', this.onCameraStatus);
   }
 
-  setFlash(handler?: () => void): void {
+  setFlash(handler?: (visible: boolean, durationMs?: number) => void): void {
     this.flash = handler;
+  }
+
+  private endScreenFlash(): void {
+    if (!this.screenFlashActive) return;
+    this.screenFlashActive = false;
+    this.flash?.(false);
   }
 
   attachSurface(surfaceId: string): void {
     if (this.destroyed || surfaceId.length === 0 || surfaceId === this.surfaceId) return;
     this.surfaceId = surfaceId;
     this.scheduleReconfigure();
+  }
+
+  updatePreviewArea(widthVp: number, heightVp: number, pixelDensity: number): void {
+    this.previewAreaWidth = widthVp * pixelDensity;
+    this.previewAreaHeight = heightVp * pixelDensity;
+    this.previewPixelDensity = pixelDensity;
+
+    this.resizePreviewSurface();
   }
 
   detachSurface(): void {
@@ -615,15 +667,21 @@ export class ExpoCameraViewState extends ExpoView {
     if (!['2160p', '1080p', '720p', '480p', '4:3'].includes(value)) {
       throw new ExpoCameraError('ERR_CAMERA_INVALID_OPTION', `Unsupported video quality '${value}'.`);
     }
+
     this.pendingProps.videoQuality = value;
   }
   setVideoStabilizationMode(value: string | null): void {
+    if (value !== null && !['off', 'standard', 'cinematic', 'auto'].includes(value)) {
+      throw new ExpoCameraError('ERR_CAMERA_INVALID_OPTION', `Unsupported video stabilization mode '${value}'.`);
+    }
+
     this.pendingProps.videoStabilizationMode = value ?? undefined;
   }
   setAutoFocus(value: string): void {
     if (value !== 'on' && value !== 'off') {
       throw new ExpoCameraError('ERR_CAMERA_INVALID_OPTION', `Unsupported autofocus mode '${value}'.`);
     }
+
     this.pendingProps.autoFocus = value;
   }
   setResponsiveOrientation(value: boolean): void {
@@ -642,6 +700,10 @@ export class ExpoCameraViewState extends ExpoView {
     this.pendingProps.videoBitrate = value ?? undefined;
   }
   setRatio(value: string | null): void {
+    if (value !== null && targetRatio(value) === undefined) {
+      throw new ExpoCameraError('ERR_CAMERA_INVALID_OPTION', `Unsupported camera aspect ratio '${value}'.`);
+    }
+
     this.pendingProps.ratio = value ?? undefined;
   }
 
@@ -686,7 +748,13 @@ export class ExpoCameraViewState extends ExpoView {
       return;
     }
 
-    if (this.ready) this.applyControls();
+    if (this.ready) {
+      this.applyControls();
+      const session = this.session;
+      if (this.videoOutput !== undefined && session !== undefined && prev.videoStabilizationMode !== this.props.videoStabilizationMode) {
+        this.applyVideoStabilization(session as camera.VideoSession);
+      }
+    }
   }
 
   async takePictureAsync(options: PictureOptions): Promise<ESObject> {
@@ -718,11 +786,6 @@ export class ExpoCameraViewState extends ExpoView {
   }
   async pausePreviewAsync(): Promise<ESObject> {
     return await this.pausePreview();
-  }
-
-  async launchModernScannerAsync(): Promise<ESObject> {
-    this.assertMounted();
-    throw new ExpoCameraError('ERR_CAMERA_SCANNER_UNAVAILABLE', 'The modern barcode scanner is not available on HarmonyOS.');
   }
 
   destroy(): void {
@@ -909,6 +972,8 @@ export class ExpoCameraViewState extends ExpoView {
 
       const previewOut = this.manager.createPreviewOutput(preview, surface);
       this.previewOutput = previewOut;
+      this.previewProfile = preview;
+
       addingPhoto = photo !== undefined;
       const photoOut = photo === undefined ? undefined : this.manager.createPhotoOutput(photo);
       this.photoOutput = photoOut;
@@ -923,6 +988,7 @@ export class ExpoCameraViewState extends ExpoView {
         };
         photoOut.on('photoAvailable', this.photoListener);
       }
+
       let modernSession: ModernSession | undefined;
       let session: ControllableSession;
       if (photoCapability?.useBasicSession === true) {
@@ -943,19 +1009,23 @@ export class ExpoCameraViewState extends ExpoView {
         }
         session.addOutput(photoOut);
       }
+
       if (modernSession !== undefined && this.props.barcodeScannerEnabled === true && !this.skipBarcodeAnalysis) {
         this.barcodeAnalyzer = await CameraBarcodeAnalyzer.attach(
           this.manager,
           modernSession,
           capability.previewProfiles,
+          preview,
           (): boolean => generation === this.pipelineGeneration && this.ready && !this.paused && !this.reconfigurePending &&
             this.props.barcodeScannerEnabled === true,
           (): string[] | undefined => this.props.barcodeScannerSettings?.barcodeTypes,
+          (width: number, height: number): BarcodePreviewGeometry | undefined => this.getBarcodeGeometry(width, height),
           (result: BarcodeResult): void => this.emit('onBarcodeScanned', result),
         );
         this.assertPipelineGeneration(generation);
         if (this.barcodeAnalyzer === undefined) this.warnBarcodeUnavailable();
       }
+
       await session.commitConfig();
       this.assertPipelineGeneration(generation);
       this.listenForSessionErrors(session, generation);
@@ -967,6 +1037,7 @@ export class ExpoCameraViewState extends ExpoView {
 
       if (this.paused) await session.stop();
       this.assertPipelineGeneration(generation);
+
       this.ready = true;
       this.resolveReadyWaiters();
       this.emit('onAvailableLensesChanged', { lenses: this.getAvailableLenses() });
@@ -1005,22 +1076,71 @@ export class ExpoCameraViewState extends ExpoView {
     let displayRotation: number | undefined;
     const update = (): void => {
       if (generation !== this.pipelineGeneration || this.reconfigurePending || !this.canStartPreview()) return;
+
       try {
         const degrees = display.getDefaultDisplaySync().rotation * 90;
         if (displayRotation === degrees) return;
-        output.setPreviewRotation(output.getPreviewRotation(degrees));
+
+        const rotation = output.getPreviewRotation(degrees);
+        output.setPreviewRotation(rotation);
+        this.previewRotation = rotation;
+        this.previewDisplayDegrees = degrees;
+        this.resizePreviewSurface();
         displayRotation = degrees;
       } catch (error) {
         console.warn(`Expo Camera could not configure preview rotation: ${String(error)}`);
       }
     };
     update();
+
     try {
       display.on('change', update);
       this.displayChangeListener = update;
     } catch (error) {
       console.warn(`Expo Camera could not observe display changes: ${String(error)}`);
     }
+  }
+
+  private resizePreviewSurface(): void {
+    this.barcodeGeometry = undefined;
+    const size = this.previewProfile?.size;
+    const width = this.previewAreaWidth;
+    const height = this.previewAreaHeight;
+    if (this.surfaceId === undefined || size === undefined || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+
+    const sideways = this.previewRotation === camera.ImageRotation.ROTATION_90 || this.previewRotation === camera.ImageRotation.ROTATION_270;
+    const sourceWidth = sideways ? size.height : size.width;
+    const sourceHeight = sideways ? size.width : size.height;
+    const scaleX = width / sourceWidth;
+    const scaleY = height / sourceHeight;
+    const scale = this.props.ratio === undefined ? Math.max(scaleX, scaleY) : Math.min(scaleX, scaleY);
+    const surfaceWidth = Math.max(1, Math.round(sourceWidth * scale));
+    const surfaceHeight = Math.max(1, Math.round(sourceHeight * scale));
+    const offsetX = Math.round((width - surfaceWidth) / 2);
+    const offsetY = Math.round((height - surfaceHeight) / 2);
+
+    try {
+      this.controller.setXComponentSurfaceRect({ surfaceWidth, surfaceHeight, offsetX, offsetY });
+
+      const density = this.previewPixelDensity;
+      const mirror = this.props.facing === 'front';
+      const additionalRotation = mirror && this.previewDisplayDegrees % 180 !== 0 ? 180 : 0;
+      this.barcodeGeometry = {
+        width: surfaceWidth / density,
+        height: surfaceHeight / density,
+        offsetX: offsetX / density,
+        offsetY: offsetY / density,
+        rotation: (this.previewRotation + additionalRotation) % 360,
+        mirror,
+      };
+    } catch (error) {
+      console.warn(`Expo Camera could not size the preview surface: ${String(error)}`);
+    }
+  }
+
+  private getBarcodeGeometry(width: number, height: number): BarcodePreviewGeometry | undefined {
+    const preview = this.previewProfile;
+    return preview !== undefined && Math.abs(width / height - aspectRatio(preview)) < 0.03 ? this.barcodeGeometry : undefined;
   }
 
   private listenForSessionErrors(session: ControllableSession, generation: number): void {
@@ -1064,9 +1184,13 @@ export class ExpoCameraViewState extends ExpoView {
   }
 
   private setTorch(enabled: boolean): void {
+    if (enabled === this.torchEnabled) return;
     try {
       const mode = enabled ? camera.TorchMode.ON : camera.TorchMode.OFF;
-      if (this.manager.isTorchModeSupported(mode)) this.manager.setTorchMode(mode);
+      if (this.manager.isTorchModeSupported(mode)) {
+        this.manager.setTorchMode(mode);
+        this.torchEnabled = enabled;
+      }
     } catch (_) {}
   }
 
@@ -1146,6 +1270,10 @@ export class ExpoCameraViewState extends ExpoView {
     if (options.maxDownsampling !== undefined && (!Number.isSafeInteger(options.maxDownsampling) || options.maxDownsampling < 1)) {
       throw new ExpoCameraError('ERR_CAMERA_INVALID_OPTION', 'Maximum downsampling must be a positive integer.');
     }
+    if (options.imageType !== undefined && options.imageType !== 'jpg' && options.imageType !== 'png') {
+      throw new ExpoCameraError('ERR_CAMERA_INVALID_OPTION', `Unsupported image type '${options.imageType}'.`);
+    }
+
     if (this.props.mode === 'video') throw new ExpoCameraError('ERR_CAMERA_WRONG_MODE', 'Cannot take a picture while the camera is in video mode.');
     if (this.recording) throw new ExpoCameraError('ERR_CAMERA_CAPTURE_DURING_RECORDING', 'Cannot take a picture while recording.');
     if (this.paused) throw new ExpoCameraError('ERR_CAMERA_PREVIEW_PAUSED', 'Cannot take a picture while preview is paused.');
@@ -1165,6 +1293,7 @@ export class ExpoCameraViewState extends ExpoView {
     try {
       await this.awaitReady();
       await this.previewTransition;
+
       if (captureGeneration !== this.captureGeneration) {
         throw new ExpoCameraError('ERR_CAMERA_CAPTURE_INTERRUPTED', 'Photo capture was interrupted.');
       }
@@ -1183,10 +1312,11 @@ export class ExpoCameraViewState extends ExpoView {
     }
 
     if (this.props.flashMode === 'screen' && this.props.facing === 'front') {
-      this.flash?.();
-      await wait(120);
+      this.screenFlashActive = true;
+      this.flash?.(true);
+      await wait(SCREEN_FLASH_SETTLE_MS);
     } else if (this.props.animateShutter !== false) {
-      this.flash?.();
+      this.flash?.(true, SHUTTER_ANIMATION_MS);
     }
 
     if (captureGeneration !== this.captureGeneration) {
@@ -1194,6 +1324,7 @@ export class ExpoCameraViewState extends ExpoView {
     }
     if (this.paused) {
       this.captureStarting = false;
+      this.endScreenFlash();
       throw new ExpoCameraError('ERR_CAMERA_PREVIEW_PAUSED', 'Cannot take a picture while preview is paused.');
     }
 
@@ -1212,10 +1343,12 @@ export class ExpoCameraViewState extends ExpoView {
     } catch (error) {
       if (format !== camera.CameraFormat.CAMERA_FORMAT_RGBA_8888) {
         if (captureGeneration === this.captureGeneration) this.captureStarting = false;
+        this.endScreenFlash();
         throw new ExpoCameraError('ERR_CAMERA_CAPTURE_ROTATION', `Could not determine photo rotation: ${String(error)}`);
       }
       console.warn(`Expo Camera could not determine RGBA photo rotation: ${String(error)}`);
     }
+
     const mirror = this.props.facing === 'front' && (options.mirror === true || this.props.mirror === true);
     let softwareMirror = mirror;
 
@@ -1243,6 +1376,7 @@ export class ExpoCameraViewState extends ExpoView {
         throw new ExpoCameraError('ERR_CAMERA_CAPTURE_FAILED', 'Photo capture failed.');
       }
 
+      if (pending.failure !== undefined) throw pending.failure;
       return null;
     }
 
@@ -1289,30 +1423,27 @@ export class ExpoCameraViewState extends ExpoView {
     }
 
     let result: PictureResult | undefined;
-    let pixel: image.PixelMap | undefined;
+    let reference: CapturedPixelMap | undefined;
     let delivered = false;
-    const returnsReference = pending.options.pictureRef === true && pending.options.fastMode !== true;
+
     try {
-      result = await this.processPhoto(photo.main, pending);
+      const capture = await this.processPhoto(photo.main, pending);
+      if (capture instanceof CapturedPixelMap) {
+        reference = capture;
+      } else {
+        result = capture;
+      }
 
       if (this.pendingCapture !== pending) return;
 
-      if (pending.options.fastMode === true) {
-        this.emit('onPictureSaved', { id: pending.options.id ?? 0, data: result });
-      } else {
-        let output: ESObject = result;
-        if (returnsReference) {
-          const source: image.ImageSource = image.createImageSource(filePathFromUri(result.uri));
-          try {
-            pixel = await source.createPixelMap();
-          } finally {
-            await source.release().catch((): void => {});
-          }
-          if (this.pendingCapture !== pending) return;
-          output = this.pictureRefFactory(pixel, result.width, result.height);
-          pixel = undefined;
-        }
+      if (reference !== undefined) {
+        const output: ESObject = this.pictureRefFactory(reference.pixel, reference.width, reference.height);
+        reference = undefined;
         pending.resolve?.(output);
+      } else if (result !== undefined && pending.options.fastMode === true) {
+        this.emit('onPictureSaved', { id: pending.options.id ?? 0, data: result });
+      } else if (result !== undefined) {
+        pending.resolve?.(result);
       }
       delivered = true;
     } catch (error) {
@@ -1321,12 +1452,15 @@ export class ExpoCameraViewState extends ExpoView {
       if (pending.options.fastMode === true) {
         console.error('Expo Camera could not deliver the fast-mode photo result.');
       } else {
-        pending.reject?.(new ExpoCameraError('ERR_CAMERA_CAPTURE_PROCESSING', 'The captured photo could not be saved.'));
+        if (error instanceof ExpoCameraError) {
+          pending.reject?.(new ExpoCameraError(error.code, error.message, error.cause));
+        } else {
+          pending.reject?.(new ExpoCameraError('ERR_CAMERA_CAPTURE_PROCESSING', 'The captured photo could not be saved.'));
+        }
       }
     } finally {
-      if (pixel !== undefined) await pixel.release().catch((): void => {});
-      // Only URI results transfer the cache file to the caller. PictureRef owns its PixelMap instead.
-      if (result !== undefined && (!delivered || returnsReference)) {
+      if (reference !== undefined) await reference.pixel.release().catch((): void => {});
+      if (result !== undefined && !delivered) {
         try {
           fs.unlinkSync(filePathFromUri(result.uri));
         } catch (_) {}
@@ -1341,8 +1475,9 @@ export class ExpoCameraViewState extends ExpoView {
     }
   }
 
-  private async processPhoto(photo: image.Image, pending: PendingCapture): Promise<PictureResult> {
+  private async processPhoto(photo: image.Image, pending: PendingCapture): Promise<PictureResult | CapturedPixelMap> {
     const options = pending.options;
+    const returnsReference = options.pictureRef === true && options.fastMode !== true;
     let jpeg: ArrayBuffer | undefined;
     let source: image.ImageSource | undefined;
     let pixel: image.PixelMap | undefined;
@@ -1353,6 +1488,7 @@ export class ExpoCameraViewState extends ExpoView {
       const raw = pending.format === camera.CameraFormat.CAMERA_FORMAT_RGBA_8888;
       let properties = {} as Record<image.PropertyKey, string | null>;
       let info: image.ImageInfo;
+
       if (raw) {
         const capture = await readRgbaPhoto(photo);
         jpeg = capture.jpeg;
@@ -1366,8 +1502,13 @@ export class ExpoCameraViewState extends ExpoView {
         info = await source.getImageInfo();
         try {
           const keys = options.exif === true ? EXIF_KEYS : [image.PropertyKey.ORIENTATION];
-          properties = await source.getImageProperties(keys);
+          properties = (await source.getImageProperties(keys)) ?? properties;
         } catch (_) {}
+        if (options.skipProcessing !== true && properties[image.PropertyKey.ORIENTATION] == null) {
+          try {
+            properties[image.PropertyKey.ORIENTATION] = await source.getImageProperty(image.PropertyKey.ORIENTATION);
+          } catch (_) {}
+        }
       } else if (pixel !== undefined) {
         info = await pixel.getImageInfo();
       } else {
@@ -1380,13 +1521,7 @@ export class ExpoCameraViewState extends ExpoView {
       let width = info.size.width;
       let height = info.size.height;
 
-      const dir = `${this.context.moduleContext.cachePath}/expo-camera`;
-      await ensureDirectory(dir);
-      path = uniquePath(dir, 'photo', format, this.tag);
-
-      if (skip && jpeg !== undefined) {
-        await writeBuffer(path, jpeg);
-      } else {
+      if (returnsReference || !skip || jpeg === undefined) {
         if (pixel === undefined && source !== undefined) pixel = await decodePixelMap(source, options.maxDownsampling);
         if (pixel === undefined) throw new ExpoCameraError('ERR_CAMERA_CAPTURE_PROCESSING', 'The captured photo could not be decoded.');
 
@@ -1395,11 +1530,26 @@ export class ExpoCameraViewState extends ExpoView {
             await pixel.rotate(pending.rawRotation);
           }
           await transformPixelMap(pixel, orientation, pending.softwareMirror);
-          const size = (await pixel.getImageInfo()).size;
-          width = size.width;
-          height = size.height;
         }
 
+        const size = (await pixel.getImageInfo()).size;
+        width = size.width;
+        height = size.height;
+      }
+
+      if (returnsReference && pixel !== undefined) {
+        const reference = new CapturedPixelMap(pixel, width, height);
+        pixel = undefined;
+        return reference;
+      }
+
+      const dir = `${this.context.moduleContext.cachePath}/expo-camera`;
+      await ensureDirectory(dir);
+      path = uniquePath(dir, 'photo', format, this.tag);
+
+      if (skip && jpeg !== undefined) {
+        await writeBuffer(path, jpeg);
+      } else if (pixel !== undefined) {
         await packPicture(path, pixel, {
           format: format === 'png' ? 'image/png' : 'image/jpeg',
           quality: skip ? 100 : Math.round(clamp(options.quality ?? 1, 0, 1) * 100),
@@ -1452,7 +1602,7 @@ export class ExpoCameraViewState extends ExpoView {
         }
 
         const additional = options.additionalExif;
-        if (additional !== undefined) {
+        if (!skip && additional !== undefined) {
           Object.keys(additional).forEach((key: string): void => {
             exif[key] = additional[key];
           });
@@ -1460,8 +1610,6 @@ export class ExpoCameraViewState extends ExpoView {
 
         result.exif = exif;
       }
-
-      if (options.pictureRef === true) result.pictureRef = true;
 
       saved = true;
       return result;
@@ -1484,6 +1632,7 @@ export class ExpoCameraViewState extends ExpoView {
   }
 
   private rejectCapture(error: ExpoCameraError): void {
+    this.endScreenFlash();
     this.captureGeneration += 1;
     const pending = this.pendingCapture;
     this.pendingCapture = undefined;
@@ -1491,6 +1640,7 @@ export class ExpoCameraViewState extends ExpoView {
 
     if (pending?.timer !== undefined) clearTimeout(pending.timer);
 
+    if (pending !== undefined) pending.failure = error;
     pending?.reject?.(error);
     if (pending?.options.fastMode === true) console.error(`Expo Camera fast-mode capture failed: ${error.message}`);
     if (this.reconfigurePending) void this.reconfigure();
@@ -1579,18 +1729,17 @@ export class ExpoCameraViewState extends ExpoView {
   private async initializeVideoRecording(options: RecordingOptions): Promise<void> {
     const generation = this.pipelineGeneration;
     this.assertRecordingStart(generation);
+
     const surface = this.surfaceId;
     if (surface === undefined) throw new ExpoCameraError('ERR_CAMERA_NOT_READY', 'The camera preview surface is unavailable.');
 
     const device = this.selectedDevice();
     const capability = this.manager.getSupportedOutputCapability(device, camera.SceneMode.NORMAL_VIDEO);
 
-    const video = chooseVideoProfile(capability.videoProfiles, this.props.videoQuality);
-    const preview = choosePreviewProfile(capability.previewProfiles, video);
-
     const dir = `${this.context.moduleContext.cachePath}/expo-camera`;
     await ensureDirectory(dir);
     this.assertRecordingStart(generation);
+
     const path = uniquePath(dir, 'video', 'mp4', this.tag);
     const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
 
@@ -1603,40 +1752,49 @@ export class ExpoCameraViewState extends ExpoView {
 
     const encoders = await recorder.getAvailableEncoder();
     this.assertRecordingStart(generation);
-    const supportsAvc = encoders.some(
-      (encoder: media.EncoderInfo): boolean => encoder.type === 'video' && encoder.mimeType === media.CodecMimeType.VIDEO_AVC,
-    );
-    const supportsHevc = encoders.some(
-      (encoder: media.EncoderInfo): boolean => encoder.type === 'video' && encoder.mimeType === media.CodecMimeType.VIDEO_HEVC,
-    );
-    let codec = media.CodecMimeType.VIDEO_AVC;
 
-    if (options.codec === 'hvc1') {
-      if (!supportsHevc) throw new ExpoCameraError('ERR_CAMERA_CODEC_UNSUPPORTED', "The requested video codec 'hvc1' is not supported.");
-      codec = media.CodecMimeType.VIDEO_HEVC;
-    } else if (options.codec === 'avc1') {
-      if (!supportsAvc) throw new ExpoCameraError('ERR_CAMERA_CODEC_UNSUPPORTED', "The requested video codec 'avc1' is not supported.");
-    } else if (options.codec !== undefined) {
+    if (options.codec !== undefined && options.codec !== 'avc1' && options.codec !== 'hvc1') {
       throw new ExpoCameraError('ERR_CAMERA_CODEC_UNSUPPORTED', `The requested video codec '${options.codec}' is not supported.`);
-    } else if (!supportsAvc && supportsHevc) {
-      codec = media.CodecMimeType.VIDEO_HEVC;
-    } else if (!supportsAvc) {
-      throw new ExpoCameraError('ERR_CAMERA_CODEC_UNSUPPORTED', 'The device exposes no supported video encoder.');
     }
 
+    const avc = media.CodecMimeType.VIDEO_AVC;
+    const hevc = media.CodecMimeType.VIDEO_HEVC;
+    const requestedCodecs = options.codec === 'avc1' ? [avc] : options.codec === 'hvc1' ? [hevc] : [avc, hevc];
+    const profiles = capability.videoProfiles.filter((candidate: camera.VideoProfile): boolean =>
+      requestedCodecs.some((mime: media.CodecMimeType): boolean => findVideoEncoder(encoders, mime, candidate) !== undefined),
+    );
+    if (profiles.length === 0) {
+      throw new ExpoCameraError('ERR_CAMERA_CODEC_UNSUPPORTED', 'No video profile of the selected camera matches an available encoder.');
+    }
+
+    const video = chooseVideoProfile(profiles, this.props.videoQuality);
+    const preview = choosePreviewProfile(capability.previewProfiles, video, this.props.ratio);
+    const encoder = findVideoEncoder(encoders, requestedCodecs[0], video) ??
+      (requestedCodecs.length > 1 ? findVideoEncoder(encoders, requestedCodecs[1], video) : undefined);
+    if (encoder === undefined) {
+      throw new ExpoCameraError('ERR_CAMERA_CODEC_UNSUPPORTED', 'The requested video encoder could not be configured.');
+    }
+
+    const frameRate = Math.min(video.frameRateRange.max, encoder.frameRate?.max ?? video.frameRateRange.max, 60);
+    const bitrate = Math.round(clamp(this.props.videoBitrate ?? 8_000_000, encoder.bitRate?.min ?? 1, encoder.bitRate?.max ?? 0x7fffffff));
     const profile: media.AVRecorderProfile = {
       fileFormat: media.ContainerFormatType.CFT_MPEG_4,
-      videoBitrate: this.props.videoBitrate ?? 8_000_000,
-      videoCodec: codec,
+      videoBitrate: bitrate,
+      videoCodec: encoder.mimeType,
       videoFrameWidth: video.size.width,
       videoFrameHeight: video.size.height,
-      videoFrameRate: clamp(video.frameRateRange.max, 1, 60),
+      videoFrameRate: frameRate,
     };
     const config: media.AVRecorderConfig = {
       videoSourceType: media.VideoSourceType.VIDEO_SOURCE_TYPE_SURFACE_YUV,
       profile,
       url: `fd://${file.fd}`,
     };
+
+    const duration = options.maxDuration ?? 0;
+    const nativeDurationLimit = deviceInfo.sdkApiVersion >= 18 &&
+      Number.isInteger(duration) && duration > 0 && duration <= 0x7fffffff;
+    if (nativeDurationLimit) config.maxDuration = duration;
     if (this.props.mute !== true) {
       config.audioSourceType = media.AudioSourceType.AUDIO_SOURCE_TYPE_CAMCORDER;
       profile.audioBitrate = 128_000;
@@ -1647,6 +1805,7 @@ export class ExpoCameraViewState extends ExpoView {
 
     await recorder.prepare(config);
     this.assertRecordingStart(generation);
+
     const inputSurface = await recorder.getInputSurface();
     this.assertRecordingStart(generation);
     if (this.context.moduleContext.permissionStatus(CAMERA_PERMISSION) !== ExpoPermissionStatus.GRANTED) {
@@ -1661,6 +1820,7 @@ export class ExpoCameraViewState extends ExpoView {
 
     const previewOut = this.manager.createPreviewOutput(preview, surface);
     this.previewOutput = previewOut;
+    this.previewProfile = preview;
     const videoOut = this.manager.createVideoOutput(video, inputSurface);
     this.videoOutput = videoOut;
     const session = this.manager.createSession<camera.VideoSession>(camera.SceneMode.NORMAL_VIDEO);
@@ -1715,14 +1875,19 @@ export class ExpoCameraViewState extends ExpoView {
     this.ready = true;
     this.resolveReadyWaiters();
 
-    if (options.maxDuration !== undefined && Number.isFinite(options.maxDuration) && options.maxDuration > 0) {
-      this.durationLeft = Math.max(1, Math.floor(options.maxDuration * 1000));
+    if (!nativeDurationLimit && Number.isFinite(duration) && duration > 0) {
+      this.durationLeft = Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, Math.round(duration * 1000)));
       this.resumeDurationTimer();
     }
+
     if (options.maxFileSize !== undefined && Number.isFinite(options.maxFileSize) && options.maxFileSize > 0) {
       const limit = Math.floor(options.maxFileSize);
       let statWarningShown = false;
+      let checkingSize = false;
       this.sizeTimer = setInterval((): void => {
+        if (checkingSize || this.finishing) return;
+        checkingSize = true;
+
         void fs
           .stat(path)
           .then((stat: fs.Stat): void => {
@@ -1733,6 +1898,9 @@ export class ExpoCameraViewState extends ExpoView {
               console.warn(`Expo Camera could not inspect the recording file yet: ${String(error)}`);
               statWarningShown = true;
             }
+          })
+          .finally((): void => {
+            checkingSize = false;
           });
       }, 250);
     }
@@ -1835,6 +2003,16 @@ export class ExpoCameraViewState extends ExpoView {
     }
 
     await this.releasePipeline();
+
+    if (failure === undefined && path !== undefined) {
+      try {
+        if ((await fs.stat(path)).size <= 0) {
+          failure = new ExpoCameraError('ERR_CAMERA_RECORDING_FILE', 'The video recorder produced an empty file.');
+        }
+      } catch (_) {
+        failure = new ExpoCameraError('ERR_CAMERA_RECORDING_FILE', 'The video recorder output file is unavailable.');
+      }
+    }
     const resolve = this.resolveRecording;
     const reject = this.rejectRecording;
     this.resolveRecording = undefined;
@@ -1857,6 +2035,7 @@ export class ExpoCameraViewState extends ExpoView {
     } else {
       resolve?.(new VideoResult(fileUriFromPath(path)));
     }
+
     if (!this.destroyed) this.scheduleReconfigure();
   }
 
@@ -1867,12 +2046,13 @@ export class ExpoCameraViewState extends ExpoView {
   private resumeDurationTimer(): void {
     if (this.durationLeft <= 0 || this.durationTimer !== undefined) return;
 
-    this.durationStarted = Date.now();
+    this.durationStarted = systemDateTime.getUptime(systemDateTime.TimeType.STARTUP);
     this.durationTimer = setTimeout((): void => {
       this.durationTimer = undefined;
-      this.durationLeft = 0;
-      void this.finishRecording(true);
-    }, this.durationLeft);
+      this.subtractRecordingTime();
+      if (this.durationLeft <= 0) void this.finishRecording(true);
+      else this.resumeDurationTimer();
+    }, Math.min(this.durationLeft, MAX_TIMER_DELAY_MS));
   }
 
   private pauseDurationTimer(): void {
@@ -1880,7 +2060,13 @@ export class ExpoCameraViewState extends ExpoView {
 
     clearTimeout(this.durationTimer);
     this.durationTimer = undefined;
-    this.durationLeft = Math.max(0, this.durationLeft - (Date.now() - this.durationStarted));
+    this.subtractRecordingTime();
+    if (this.durationLeft <= 0) void this.finishRecording(true);
+  }
+
+  private subtractRecordingTime(): void {
+    const elapsed = systemDateTime.getUptime(systemDateTime.TimeType.STARTUP) - this.durationStarted;
+    this.durationLeft = Math.max(0, this.durationLeft - elapsed);
   }
 
   private clearRecordingLimits(): void {
@@ -1936,16 +2122,19 @@ export class ExpoCameraViewState extends ExpoView {
   }
 
   private async releasePipeline(): Promise<void> {
+    this.endScreenFlash();
     this.pipelineGeneration += 1;
     this.captureGeneration += 1;
     this.captureStarting = false;
     this.ready = false;
+
     if (this.displayChangeListener !== undefined) {
       try {
         display.off('change', this.displayChangeListener);
       } catch (_) {}
       this.displayChangeListener = undefined;
     }
+
     await this.previewTransition;
 
     if (this.pendingCapture !== undefined) {
@@ -2018,6 +2207,8 @@ export class ExpoCameraViewState extends ExpoView {
     this.device = undefined;
     this.input = undefined;
     this.previewOutput = undefined;
+    this.previewProfile = undefined;
+    this.barcodeGeometry = undefined;
     this.photoOutput = undefined;
     this.photoFormat = undefined;
     this.photoListener = undefined;
@@ -2049,13 +2240,16 @@ struct ExpoCameraSurface {
   private flashTimer?: number;
 
   aboutToAppear(): void {
-    this.state.setFlash((): void => {
-      this.flashVisible = true;
+    this.state.setFlash((visible: boolean, durationMs?: number): void => {
       if (this.flashTimer !== undefined) clearTimeout(this.flashTimer);
-      this.flashTimer = setTimeout((): void => {
-        this.flashVisible = false;
-        this.flashTimer = undefined;
-      }, 140);
+      this.flashVisible = visible;
+      this.flashTimer = undefined;
+      if (visible && durationMs !== undefined) {
+        this.flashTimer = setTimeout((): void => {
+          this.flashVisible = false;
+          this.flashTimer = undefined;
+        }, durationMs);
+      }
     });
   }
 
@@ -2063,6 +2257,7 @@ struct ExpoCameraSurface {
     this.state.setFlash(undefined);
     if (this.flashTimer !== undefined) clearTimeout(this.flashTimer);
     this.flashTimer = undefined;
+    this.flashVisible = false;
   }
 
   build(): void {
@@ -2071,6 +2266,11 @@ struct ExpoCameraSurface {
         .width('100%')
         .height('100%')
         .backgroundColor(Color.Black)
+        .clip(true)
+        .onAreaChange((_before: Area, area: Area): void => {
+          const uiContext = this.getUIContext();
+          this.state.updatePreviewArea(Number(area.width), Number(area.height), uiContext.vp2px(1));
+        })
         .onLoad((): void => {
           this.state.attachSurface(this.state.controller.getXComponentSurfaceId());
         })

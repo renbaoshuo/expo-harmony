@@ -58,6 +58,15 @@ export class BarcodeResult {
   }
 }
 
+export interface BarcodePreviewGeometry {
+  rotation: number;
+  mirror: boolean;
+  width: number;
+  height: number;
+  offsetX: number;
+  offsetY: number;
+}
+
 function barcodeType(type: scanCore.ScanType): string {
   if (type === scanCore.ScanType.AZTEC_CODE) return 'aztec';
   if (type === scanCore.ScanType.CODABAR_CODE) return 'codabar';
@@ -93,13 +102,11 @@ function scanType(type: string): scanCore.ScanType | undefined {
 }
 
 export function scanTypes(value?: string[], allWhenEmpty: boolean = true): scanCore.ScanType[] {
-  if (value === undefined) return allWhenEmpty ? [scanCore.ScanType.ALL] : [];
+  if (value === undefined || value.length === 0) return allWhenEmpty ? [scanCore.ScanType.ALL] : [];
 
-  const types = value
+  return value
     .map((type: string): scanCore.ScanType | undefined => scanType(type))
     .filter((type: scanCore.ScanType | undefined): boolean => type !== undefined) as scanCore.ScanType[];
-
-  return types.length === 0 && allWhenEmpty ? [scanCore.ScanType.ALL] : types;
 }
 
 export function barcodeResult(value: scanBarcode.ScanResult, includeGeometry: boolean = true): BarcodeResult {
@@ -117,17 +124,71 @@ export function barcodeResult(value: scanBarcode.ScanResult, includeGeometry: bo
   return new BarcodeResult(barcodeType(value.scanType), value.originalValue, points, bounds);
 }
 
+function projectPoint(x: number, y: number, geometry: BarcodePreviewGeometry): BarcodePoint {
+  let u = x;
+  let v = y;
+  if (geometry.rotation === 90) {
+    u = 1 - y;
+    v = x;
+  } else if (geometry.rotation === 180) {
+    u = 1 - x;
+    v = 1 - y;
+  } else if (geometry.rotation === 270) {
+    u = y;
+    v = 1 - x;
+  }
+  if (geometry.mirror) u = 1 - u;
+
+  return new BarcodePoint(geometry.offsetX + u * geometry.width, geometry.offsetY + v * geometry.height);
+}
+
+function previewBarcodeResult(
+  value: scanBarcode.ScanResult,
+  frame: detectBarcode.ByteImage,
+  geometry?: BarcodePreviewGeometry,
+): BarcodeResult {
+  if (geometry === undefined) return barcodeResult(value, false);
+
+  const points = value.cornerPoints?.map((point: scanBarcode.Point): BarcodePoint =>
+    projectPoint(point.x / frame.width, point.y / frame.height, geometry),
+  ) ?? [];
+  const rect = value.scanCodeRect;
+  const corners = rect === undefined ? points : [
+    projectPoint(rect.left / frame.width, rect.top / frame.height, geometry),
+    projectPoint(rect.right / frame.width, rect.bottom / frame.height, geometry),
+  ];
+  if (corners.length === 0) return barcodeResult(value, false);
+
+  const xs = corners.map((point: BarcodePoint): number => point.x);
+  const ys = corners.map((point: BarcodePoint): number => point.y);
+  const left = Math.min(...xs);
+  const top = Math.min(...ys);
+
+  return new BarcodeResult(
+    barcodeType(value.scanType),
+    value.originalValue,
+    points,
+    new BarcodeBounds(new BarcodePoint(left, top), new BarcodeSize(Math.max(...xs) - left, Math.max(...ys) - top)),
+  );
+}
+
 const SCAN_INTERVAL_MS: number = 200;
 
-function scanProfile(profiles: camera.Profile[]): camera.Profile | undefined {
+function scanProfile(profiles: camera.Profile[], preview: camera.Profile): camera.Profile | undefined {
   const nv21 = profiles.filter((profile: camera.Profile): boolean => {
     return profile.format === camera.CameraFormat.CAMERA_FORMAT_YUV_420_SP &&
       profile.size.width % 2 === 0 && profile.size.height % 2 === 0;
   });
-  const readable = nv21.filter((profile: camera.Profile): boolean => {
+  const ratio = preview.size.width / preview.size.height;
+  const matching = nv21.filter((profile: camera.Profile): boolean => {
+    return Math.abs(profile.size.width / profile.size.height - ratio) < 0.03;
+  });
+  const candidates = matching.length > 0 ? matching : nv21;
+  const readable = candidates.filter((profile: camera.Profile): boolean => {
     return Math.min(profile.size.width, profile.size.height) >= 480;
   });
-  return (readable.length > 0 ? readable : nv21).sort((left: camera.Profile, right: camera.Profile): number => {
+
+  return (readable.length > 0 ? readable : candidates).sort((left: camera.Profile, right: camera.Profile): number => {
     return left.size.width * left.size.height - right.size.width * right.size.height;
   })[0];
 }
@@ -136,6 +197,7 @@ function packNv21(component: image.Component, width: number, height: number): Ar
   const stride = component.rowStride;
   const rows = height * 3 / 2;
   const bytes = component.byteBuffer;
+
   if (width <= 0 || height <= 0 || width % 2 !== 0 || height % 2 !== 0 ||
     stride < width || bytes.byteLength < (rows - 1) * stride + width) {
     throw new Error('Invalid NV21 barcode frame stride.');
@@ -143,7 +205,6 @@ function packNv21(component: image.Component, width: number, height: number): Ar
   if (stride === width) return bytes.slice(0, width * rows);
 
   const packed = new Uint8Array(width * rows);
-
   for (let row = 0; row < rows; row += 1) {
     packed.set(new Uint8Array(bytes, row * stride, width), row * width);
   }
@@ -156,6 +217,7 @@ export class CameraBarcodeAnalyzer {
   private readonly output: camera.PreviewOutput;
   private readonly canScan: () => boolean;
   private readonly getBarcodeTypes: () => string[] | undefined;
+  private readonly getGeometry: (width: number, height: number) => BarcodePreviewGeometry | undefined;
   private readonly onBarcodeScanned: (result: BarcodeResult) => void;
   private reading?: Promise<void>;
   private decoding: boolean = false;
@@ -176,12 +238,14 @@ export class CameraBarcodeAnalyzer {
     output: camera.PreviewOutput,
     canScan: () => boolean,
     getBarcodeTypes: () => string[] | undefined,
+    getGeometry: (width: number, height: number) => BarcodePreviewGeometry | undefined,
     onBarcodeScanned: (result: BarcodeResult) => void,
   ) {
     this.receiver = receiver;
     this.output = output;
     this.canScan = canScan;
     this.getBarcodeTypes = getBarcodeTypes;
+    this.getGeometry = getGeometry;
     this.onBarcodeScanned = onBarcodeScanned;
   }
 
@@ -189,27 +253,31 @@ export class CameraBarcodeAnalyzer {
     manager: camera.CameraManager,
     session: camera.Session,
     profiles: camera.Profile[],
+    preview: camera.Profile,
     canScan: () => boolean,
     getBarcodeTypes: () => string[] | undefined,
+    getGeometry: (width: number, height: number) => BarcodePreviewGeometry | undefined,
     onBarcodeScanned: (result: BarcodeResult) => void,
   ): Promise<CameraBarcodeAnalyzer | undefined> {
-    const profile = scanProfile(profiles);
+    const profile = scanProfile(profiles, preview);
     if (profile === undefined || !canIUse(SCAN_CAPABILITY)) return undefined;
 
     let receiver: image.ImageReceiver | undefined;
     let output: camera.PreviewOutput | undefined;
     let analyzer: CameraBarcodeAnalyzer | undefined;
     let attached = false;
+
     try {
       // CameraKit determines the format. ImageReceiver exposes the whole NV21 buffer as ComponentType.JPEG.
       receiver = image.createImageReceiver(profile.size, image.ImageFormat.JPEG, 3);
       output = manager.createPreviewOutput(profile, await receiver.getReceivingSurfaceId());
       if (!session.canAddOutput(output)) return undefined;
 
-      analyzer = new CameraBarcodeAnalyzer(receiver, output, canScan, getBarcodeTypes, onBarcodeScanned);
+      analyzer = new CameraBarcodeAnalyzer(receiver, output, canScan, getBarcodeTypes, getGeometry, onBarcodeScanned);
       receiver.on('imageArrival', analyzer.onImageArrival);
       session.addOutput(output);
       attached = true;
+
       return analyzer;
     } catch (error) {
       console.warn(`Expo Camera could not add a barcode analysis output: ${String(error)}`);
@@ -229,12 +297,13 @@ export class CameraBarcodeAnalyzer {
     const frame = await this.receiver.readLatestImage();
     let scan: detectBarcode.ByteImage | undefined;
     let types: scanCore.ScanType[] = [];
+
     try {
       const now = Date.now();
       if (!this.released && this.canScan() && !this.decoding && now >= this.nextScan) {
         this.nextScan = now + SCAN_INTERVAL_MS;
         const requested = this.getBarcodeTypes();
-        types = scanTypes(requested, requested === undefined || requested.length === 0);
+        types = scanTypes(requested);
         if (types.length > 0) {
           const size = frame.size;
           const component = await frame.getComponent(image.ComponentType.JPEG);
@@ -249,6 +318,7 @@ export class CameraBarcodeAnalyzer {
     } finally {
       await frame.release();
     }
+
     if (scan !== undefined && !this.released && this.canScan()) {
       this.decoding = true;
       void this.decode(scan, types);
@@ -256,12 +326,15 @@ export class CameraBarcodeAnalyzer {
   }
 
   private async decode(frame: detectBarcode.ByteImage, types: scanCore.ScanType[]): Promise<void> {
+    const geometry = this.getGeometry(frame.width, frame.height);
+
     try {
       const result = await detectBarcode.decodeImage(frame, { scanTypes: types });
+      const liveGeometry = geometry === this.getGeometry(frame.width, frame.height) ? geometry : undefined;
 
       for (const value of result.scanResults) {
         if (this.released || !this.canScan()) return;
-        const barcode = barcodeResult(value, false);
+        const barcode = previewBarcodeResult(value, frame, liveGeometry);
         const requested = this.getBarcodeTypes();
         if (barcode.type !== 'unknown' && (requested === undefined || requested.length === 0 || requested.includes(barcode.type))) {
           this.onBarcodeScanned(barcode);

@@ -13,12 +13,12 @@
     "requestPermissions": [
       {
         "name": "ohos.permission.CAMERA",
-        "reason": "$string:camera_permission_reason",
+        "reason": "$string:expo_camera_camera_permission_reason",
         "usedScene": { "when": "inuse" }
       },
       {
         "name": "ohos.permission.MICROPHONE",
-        "reason": "$string:microphone_permission_reason",
+        "reason": "$string:expo_camera_microphone_permission_reason",
         "usedScene": { "when": "inuse" }
       }
     ]
