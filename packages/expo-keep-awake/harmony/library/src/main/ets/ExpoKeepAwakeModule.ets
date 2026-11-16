@@ -20,6 +20,7 @@ import {
 
 const ERROR_DESTROYED: string = 'ERR_KEEP_AWAKE_DESTROYED';
 const ERROR_WINDOW: string = 'ERR_KEEP_AWAKE_WINDOW';
+const WINDOW_CAPABILITY: string = 'SystemCapability.WindowManager.WindowManager.Core';
 
 class KeepAwakeOwner {
   readonly context: ExpoModuleContext;
@@ -89,6 +90,8 @@ class AbilityKeepAwakeController {
   }
 
   release(owner: KeepAwakeOwner): Promise<void> {
+    if (owner.released) return this.pending;
+
     owner.released = true;
     return this.serialize(async (): Promise<void> => {
       this.owners.delete(owner);
@@ -105,20 +108,13 @@ class AbilityKeepAwakeController {
   }
 
   setStage(stage: window.WindowStage): void {
-    if (this.destroyed) return;
-
-    this.stage = stage;
-    this.generation += 1;
+    if (this.destroyed || this.stage === stage) return;
+    this.replaceStage(stage);
   }
 
   windowWillDestroy(stage?: window.WindowStage): void {
     if (this.stage === undefined || (stage !== undefined && this.stage !== stage)) return;
-
-    this.stage = undefined;
-    this.generation += 1;
-    for (const owner of this.owners) owner.windowId = undefined;
-
-    this.refresh();
+    this.replaceStage(undefined);
   }
 
   destroy(): void {
@@ -218,6 +214,16 @@ class AbilityKeepAwakeController {
     return next;
   }
 
+  private replaceStage(stage: window.WindowStage | undefined): void {
+    this.stage = stage;
+    this.generation += 1;
+
+    for (const owner of this.owners) owner.windowId = undefined;
+
+    // Release the old leases even if resolving the next RN window fails.
+    this.serialize((): Promise<void> => this.releaseUnusedWindows());
+  }
+
   private assertActive(): void {
     if (this.destroyed) {
       throw new ExpoModuleError(ERROR_DESTROYED, 'The Expo KeepAwake Ability has already been destroyed.');
@@ -258,7 +264,7 @@ export class ExpoKeepAwakeLifecycleSubscriber extends ExpoAbilityLifecycleSubscr
     this.controller.setStage(stage);
   }
 
-  override async onWindowStageSetup(): Promise<void> {
+  override async onWindowStageReady(): Promise<void> {
     await this.controller.refresh();
   }
 
@@ -310,7 +316,7 @@ export class ExpoKeepAwakeModule extends ExpoModule {
         }),
       )
       .asyncFunction('isActivated', async (): Promise<boolean> => this.controller?.isActivated(this.owner) ?? false)
-      .asyncFunction('isAvailableAsync', async (): Promise<boolean> => !this.context.isHeadless)
+      .asyncFunction('isAvailableAsync', async (): Promise<boolean> => this.controller !== undefined && canIUse(WINDOW_CAPABILITY))
       .onContentAppeared((): void => {
         this.controller?.refresh();
       })
@@ -322,9 +328,10 @@ export class ExpoKeepAwakeModule extends ExpoModule {
 
   private requireController(): AbilityKeepAwakeController {
     const controller: AbilityKeepAwakeController | undefined = this.controller;
-    if (controller === undefined) {
-      throw new ExpoModuleError(ERROR_WINDOW, 'KeepAwake requires a UIAbility window.');
+    if (controller === undefined || !canIUse(WINDOW_CAPABILITY)) {
+      throw new ExpoModuleError(ERROR_WINDOW, 'KeepAwake requires a supported UIAbility window.');
     }
+
     return controller;
   }
 }

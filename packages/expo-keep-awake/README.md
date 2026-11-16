@@ -40,11 +40,11 @@ npm install @expo-harmony/expo-keep-awake expo-keep-awake@~57.0.2
 
 #### `deactivateKeepAwake(tag?: string)`
 
-返回 `Promise<void>`，释放标签对应的常亮请求；省略 `tag` 时使用 `ExpoKeepAwakeTag`。释放未激活的标签不会报错。释放全部标签后，屏幕恢复系统默认的休眠行为。
+返回 `Promise<void>`，释放标签对应的常亮请求；省略 `tag` 时使用 `ExpoKeepAwakeTag`。释放未激活的标签不会报错。释放全部标签后，本模块不再阻止屏幕休眠，窗口上的其他常亮请求仍然生效。
 
 #### `isAvailableAsync(): Promise<boolean>`
 
-返回 `Promise<boolean>`。有界面的应用返回 `true`，无界面任务返回 `false`。`true` 不表示窗口已就绪；在无界面任务中激活或释放常亮会导致 Promise 拒绝。
+返回 `Promise<boolean>`。设备支持窗口管理、且当前运行时关联有界面的 UIAbility 时返回 `true`。`true` 不表示窗口已就绪；在无界面任务中激活或释放常亮会导致 Promise 拒绝。
 
 ### Event subscriptions
 
