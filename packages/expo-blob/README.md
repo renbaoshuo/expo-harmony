@@ -32,15 +32,13 @@ npm install @expo-harmony/expo-blob expo-blob@~57.0.2
 
 #### `BlobPart`
 
-`string | ArrayBuffer | ArrayBufferView | Blob`，表示构造 Blob 时可传入的单个片段。字符串按 UTF-8 编码，ArrayBuffer 和 TypedArray 使用其字节内容，嵌套 Blob 使用其内容。TypedArray 仅使用其 `byteOffset` 和 `byteLength` 指定的范围。
-
-`DataView` 和 `Uint8ClampedArray` 会先转换为字符串再编码。若要传入这两种视图的字节，可先转换为 `new Uint8Array(view.buffer, view.byteOffset, view.byteLength)`。
+`string | ArrayBuffer | ArrayBufferView | Blob`，表示构造 Blob 时可传入的单个片段。字符串按 UTF-8 编码，ArrayBuffer 和 ArrayBufferView 使用其字节内容，嵌套 Blob 使用其内容。TypedArray 和 DataView 仅使用其 `byteOffset` 和 `byteLength` 指定的范围。
 
 ### Methods
 
 #### `new Blob(blobParts?, options?)`
 
-创建并返回 `Blob`。`blobParts` 可为片段数组或可迭代对象，省略时创建空 Blob；传入 `null` 或非对象值会抛出 `TypeError`。构造时读取 ArrayBuffer 和 TypedArray 的当前字节，之后修改输入不会改变 Blob 内容。
+创建并返回 `Blob`。`blobParts` 可为片段数组或可迭代对象，省略时创建空 Blob；传入 `null` 或非对象值会抛出 `TypeError`。构造时读取 ArrayBuffer 和 ArrayBufferView 的当前字节，之后修改输入不会改变 Blob 内容。
 
 `options.type` 为可选 MIME 类型，默认空字符串，按 `Blob.type` 的规则处理。`options.endings` 可设为 `'transparent'` 或 `'native'`，默认 `'transparent'`；其他值会抛出 `TypeError`。设为 `'native'` 时，字符串片段中的 `\r\n` 和单独的 `\r` 都转换为 `\n`；设为 `'transparent'` 时保留原样。该选项只影响字符串片段。
 
@@ -60,7 +58,7 @@ npm install @expo-harmony/expo-blob expo-blob@~57.0.2
 
 #### `Blob.stream()`
 
-返回可读取 Blob 字节的 `ReadableStream`，支持按块读取和 BYOB 读取。空 Blob 的流会立即结束。
+返回可读取 Blob 字节的 `ReadableStream`，支持按块读取和 BYOB 读取。首次读取时会将完整 Blob 加载到内存。空 Blob 的流会立即结束。
 
 #### `Blob.text()`
 

@@ -21,6 +21,8 @@ import { util } from '@kit.ArkTS';
 
 type BlobPart = ExpoEitherOfThree<string, BlobObject, ExpoNumericTypedArray>;
 
+const UTF8_ENCODER = util.TextEncoder.create('utf-8');
+
 enum EndingType {
   Transparent = 'transparent',
   Native = 'native',
@@ -169,15 +171,17 @@ class BlobObject extends ExpoSharedObject {
       if (part.first !== undefined) {
         const text = options.endings === EndingType.Native ? part.first.replace(/\r\n|\r/g, '\n') : part.first;
 
-        // Harmony's encodeInto('') may return undefined despite its declared type.
-        if (text.length > 0) parts.push(new util.TextEncoder('utf-8').encodeInto(text));
+        // The SDK returns undefined for empty input.
+        if (text.length > 0) parts.push(UTF8_ENCODER.encodeInto(text));
       } else if (part.second !== undefined) {
         if (part.second.size > 0) parts.push(part.second.data);
       } else {
         const view = part.third as ExpoNumericTypedArray;
 
         if (view.byteLength > 0) {
-          parts.push(new Uint8Array(new Uint8Array(view.buffer, view.byteOffset, view.byteLength)));
+          // Copy partial views so a small Blob cannot retain Core's whole snapshot.
+          const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+          parts.push(bytes.byteLength === bytes.buffer.byteLength ? bytes : bytes.slice());
         }
       }
     }

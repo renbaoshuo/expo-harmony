@@ -6,12 +6,26 @@
  */
 
 import { Blob as ExpoBlob } from 'expo-blob/build/ExpoBlob';
+import type { BlobPart } from 'expo-blob/build/ExpoBlob.types';
+import { DEFAULT_CHUNK_SIZE } from 'expo-blob/build/utils';
 
 export * from 'expo-blob/build/ExpoBlob';
 
-const DEFAULT_CHUNK_SIZE = 64 * 1024;
+function* normalizeViews(parts: Iterable<BlobPart>): Iterable<BlobPart> {
+  for (const part of parts) {
+    if (ArrayBuffer.isView(part) && !(part instanceof Uint8Array)) {
+      yield new Uint8Array(part.buffer, part.byteOffset, part.byteLength);
+    } else {
+      yield part;
+    }
+  }
+}
 
 export class Blob extends ExpoBlob {
+  constructor(parts?: Iterable<BlobPart>, options?: BlobPropertyBag) {
+    super(parts !== null && typeof parts === 'object' ? normalizeViews(parts) : parts, options);
+  }
+
   override slice(start?: number, end?: number, contentType?: string): Blob {
     const slice = super.slice(start, end, contentType);
     Object.setPrototypeOf(slice, Blob.prototype);
