@@ -20,7 +20,7 @@ npm install @expo-harmony/expo-device expo-device@~57.0.2
 
 #### `Device.isDevice`
 
-类型为 `boolean`，始终返回 `true`。
+类型为 `boolean`。DevEco 模拟器的产品型号为 `emulator`，此时返回 `false`。
 
 #### `Device.brand`
 
@@ -40,15 +40,11 @@ npm install @expo-harmony/expo-device expo-device@~57.0.2
 
 #### `Device.designName`
 
-类型为 `string | null`，始终返回 `null`。
-
-- HarmonyOS 不提供设备设计名称。
+类型为 `string | null`，返回系统提供的硬件版本标识 `hardwareModel`。系统未提供时返回 `null`。
 
 #### `Device.productName`
 
-类型为 `string | null`，始终返回 `null`。
-
-- HarmonyOS 不提供设备产品名称字段。
+类型为 `string | null`，返回系统提供的内部产品系列标识 `productSeries`。系统未提供时返回 `null`。
 
 #### `Device.deviceYearClass`
 
@@ -62,7 +58,7 @@ npm install @expo-harmony/expo-device expo-device@~57.0.2
 
 #### `Device.deviceType`
 
-类型为 `DeviceType | null`。根据系统报告的设备类型返回 `PHONE`、`TABLET`、`DESKTOP`、`TV` 或 `UNKNOWN`：`default` 和 `phone` 映射为 `PHONE`，`tablet` 映射为 `TABLET`，`2in1` 映射为 `DESKTOP`，`tv` 映射为 `TV`，其他值映射为 `UNKNOWN`。HarmonyOS 上始终返回有效枚举值，不会返回 `null`。
+根据系统报告的设备类型返回枚举值。`phone` 映射为 `PHONE`，`tablet` 映射为 `TABLET`，`2in1` 映射为 `DESKTOP`，`tv` 映射为 `TV`，其余值映射为 `UNKNOWN`。
 
 #### `Device.supportedCpuArchitectures`
 
@@ -82,7 +78,7 @@ npm install @expo-harmony/expo-device expo-device@~57.0.2
 
 #### `Device.osInternalBuildId`
 
-类型为 `string | null`，返回系统内部版本标识；系统未提供时返回 `null`。
+类型为 `string | null`。优先返回系统构建时生成的增量版本号。该值不可用时返回系统完整版本名称，两个字段均缺失时返回 `null`。
 
 #### `Device.osBuildFingerprint`
 
@@ -90,9 +86,7 @@ npm install @expo-harmony/expo-device expo-device@~57.0.2
 
 #### `Device.platformApiLevel`
 
-类型为 `number | null`，始终返回 `null`。
-
-- HarmonyOS 不提供与该字段语义对应的 API 级别值。
+类型为 `number | null`，返回设备的系统软件 API 级别 `sdkApiVersion`。系统未提供有效级别时返回 `null`。 [华为设备信息接口](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-device-info/)
 
 #### `Device.deviceName`
 
@@ -118,13 +112,13 @@ npm install @expo-harmony/expo-device expo-device@~57.0.2
 
 参数 `feature: string`，返回 `Promise<boolean>`。
 
-- HarmonyOS 不提供平台特性列表，因此始终返回 `false`。
+- 传入具体的 HarmonyOS 系统能力名称，如 `SystemCapability.Location.Location.Core`，可查询设备是否支持此能力。 [华为 SysCap API](https://developer.huawei.com/consumer/en/doc/harmonyos-references/js-apis-syscap)
 
 #### `Device.getMaxMemoryAsync()`
 
 无参数，返回 `Promise<number>`。
 
-- HarmonyOS 不提供应用可用内存上限查询；调用时以 `UnavailabilityError` 拒绝。
+- 返回当前 ArkTS VM 的堆内存上限，单位为字节。读取失败或结果无效时以 `ERR_DEVICE_MAX_MEMORY` 拒绝。 [华为 HiDebug 指南](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/hidebug-guidelines/)
 
 #### `Device.isRootedExperimentalAsync()`
 
@@ -153,6 +147,10 @@ npm install @expo-harmony/expo-device expo-device@~57.0.2
 #### `ERR_DEVICE_UPTIME`
 
 `Device.getUptimeAsync()` 读取失败或返回值无效时抛出。
+
+#### `ERR_DEVICE_MAX_MEMORY`
+
+`Device.getMaxMemoryAsync()` 读取失败或返回值无效时抛出。
 
 ## Author
 
