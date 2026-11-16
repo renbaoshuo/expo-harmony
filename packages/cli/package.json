@@ -61,7 +61,7 @@
     "cross-spawn": "^7.0.6",
     "json5": "2.2.3",
     "mime-types": "3.0.2",
-    "minimatch": "^10.2.2"
+    "minimatch": "^11.0.1"
   },
   "peerDependencies": {
     "expo": "~57.0.31"
