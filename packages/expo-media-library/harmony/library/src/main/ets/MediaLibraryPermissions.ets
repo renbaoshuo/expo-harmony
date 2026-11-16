@@ -13,7 +13,6 @@ import { deviceInfo } from '@kit.BasicServicesKit';
 export const READ_PERMISSION: Permissions = 'ohos.permission.READ_IMAGEVIDEO';
 export const WRITE_PERMISSION: Permissions = 'ohos.permission.WRITE_IMAGEVIDEO';
 const LOCATION_PERMISSION: Permissions = 'ohos.permission.MEDIA_LOCATION';
-const REQUEST_REASONS_API: number = 18;
 const SELF_PERMISSION_STATUS_API: number = 20;
 const PREFERENCES_NAME: string = 'ExpoMediaLibraryPermissions';
 const BLOCKED_KEY_PREFIX: string = 'blocked:';
@@ -72,7 +71,8 @@ export class MediaLibraryPermissions {
 
   private declaredPermissions(write: boolean): Permissions[] {
     const bundle = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_REQUESTED_PERMISSION);
-    const names = bundle.reqPermissionDetails.map((detail: bundleManager.ReqPermissionDetail): string => detail.name);
+    const names = bundle.reqPermissionDetails?.map((detail: bundleManager.ReqPermissionDetail): string => detail.name) ?? [];
+
     if (write) return names.includes(WRITE_PERMISSION) ? [WRITE_PERMISSION] : [];
     if (!names.includes(READ_PERMISSION)) return [];
     return names.includes(WRITE_PERMISSION) ? [READ_PERMISSION, WRITE_PERMISSION] : [READ_PERMISSION];
@@ -131,13 +131,13 @@ export class MediaLibraryPermissions {
     }
 
     const request = await this.context.requestPermissions(permissions);
-
     let restricted: boolean = false;
 
     for (const result of request.systemResults) {
       for (const permission of permissions) {
         const index = result.permissions.indexOf(permission);
-        const reason = deviceInfo.sdkApiVersion >= REQUEST_REASONS_API ? result.errorReasons?.[index] : undefined;
+        let reason: number | undefined;
+        if (deviceInfo.sdkApiVersion >= 18) reason = result.errorReasons?.[index];
         const granted = result.authResults[index] === ExpoPermissionStatus.GRANTED;
 
         if (
@@ -178,7 +178,9 @@ export class MediaLibraryPermissions {
 
   private async readFlag(key: string): Promise<boolean> {
     try {
-      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: PREFERENCES_NAME });
+      const name = this.context.preferenceName(PREFERENCES_NAME);
+      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name });
+
       return (await store.get(key, false)) === true;
     } catch (_) {
       return false;
@@ -187,7 +189,8 @@ export class MediaLibraryPermissions {
 
   private async writeFlag(key: string, value: boolean): Promise<void> {
     try {
-      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: PREFERENCES_NAME });
+      const name = this.context.preferenceName(PREFERENCES_NAME);
+      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name });
       if ((await store.get(key, false)) === value) return;
 
       await store.put(key, value);

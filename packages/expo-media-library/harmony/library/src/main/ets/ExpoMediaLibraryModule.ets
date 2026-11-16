@@ -6,7 +6,7 @@
  */
 
 import { ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoModuleError, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
-import { AlbumRecord, AssetRecord, PagedAssetResult } from './MediaLibraryAssets';
+import { AlbumRecord, AssetRecord, MediaLibraryChangeEvent, PagedAssetResult } from './MediaLibraryAssets';
 import { AlbumQueryOptions, AssetQueryOptions, readAlbumQueryOptions, readAssetQueryOptions, requireString, optionalRecord } from './MediaLibraryQuery';
 import { READ_PERMISSION, WRITE_PERMISSION } from './MediaLibraryPermissions';
 import { MediaLibraryRepository } from './MediaLibraryRepository';
@@ -30,7 +30,7 @@ export class ExpoMediaLibraryModule extends ExpoModule {
 
   constructor(context: ExpoModuleContext) {
     super(context);
-    this.repository = new MediaLibraryRepository(context, (event): void => this.sendEvent(CHANGE_EVENT_NAME, event));
+    this.repository = new MediaLibraryRepository(context, (): void => this.sendEvent(CHANGE_EVENT_NAME, new MediaLibraryChangeEvent()));
   }
 
   definition(): ExpoModuleDefinition {
@@ -40,8 +40,8 @@ export class ExpoMediaLibraryModule extends ExpoModule {
         default: 'default', mediaType: 'mediaType', width: 'width', height: 'height',
         creationTime: 'creationTime', modificationTime: 'modificationTime', duration: 'duration',
       })
-      .constant('CHANGE_LISTENER_NAME', CHANGE_EVENT_NAME)
-      .events([CHANGE_EVENT_NAME]);
+      .constant('CHANGE_LISTENER_NAME', CHANGE_EVENT_NAME);
+
     // The upstream availability probe checks whether getAssetsAsync exists.
     if (!canIUse('SystemCapability.FileManagement.PhotoAccessHelper.Core')) return definition;
 
@@ -64,11 +64,7 @@ export class ExpoMediaLibraryModule extends ExpoModule {
           IDENTIFIER,
           INFO_OPTIONS.optional(),
           (id: string, _options?: Record<string, ESObject>): Promise<AssetRecord | null> =>
-            this.repository.run(async (): Promise<AssetRecord | null> => {
-              this.repository.permissions.ensureGranted([READ_PERMISSION]);
-
-              return await this.repository.getAssetInfo(id);
-            }),
+            this.repository.run((): Promise<AssetRecord | null> => this.repository.getAssetInfo(id)),
         ),
       )
       .asyncFunction(
@@ -124,12 +120,8 @@ export class ExpoMediaLibraryModule extends ExpoModule {
           ExpoValueTypes.array(IDENTIFIER),
           IDENTIFIER,
           ExpoValueTypes.boolean().optional(),
-          (ids: string[], album: string, copy?: boolean): Promise<boolean> =>
-            this.repository.run(async (): Promise<boolean> => {
-              this.repository.permissions.ensureGranted([READ_PERMISSION, WRITE_PERMISSION]);
-
-              return await this.repository.addAssetsToAlbum(ids, album, copy ?? true);
-            }),
+          (ids: string[], album: string, _copy?: boolean): Promise<boolean> =>
+            this.repository.write((): Promise<boolean> => this.repository.addAssetsToAlbum(ids, album)),
         ),
       )
       .asyncFunction(

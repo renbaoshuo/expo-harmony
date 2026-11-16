@@ -80,7 +80,7 @@ npm install @expo-harmony/expo-media-library expo-media-library@~57.0.5
 
 #### `Asset.getUri()`
 
-返回 `Promise<string>`，即系统媒体 URI。
+返回 `Promise<string>`，即构造资源对象时使用的系统媒体 URI。此方法无需查询图库。
 
 #### `Asset.getWidth()`
 
@@ -112,7 +112,7 @@ npm install @expo-harmony/expo-media-library expo-media-library@~57.0.5
 
 #### `Asset.setFavorite(isFavorite)`
 
-返回 `Promise<void>`，设置或取消收藏，需要读写图库权限。仅 HarmonyOS SDK API 26 及以上支持；较低版本以 `ERR_MEDIA_LIBRARY_UNAVAILABLE` 拒绝。
+返回 `Promise<void>`，设置或取消收藏。调用需要图库写权限，并且该资源须可读取。仅 HarmonyOS SDK API 26 及以上支持；较低版本以 `ERR_MEDIA_LIBRARY_UNAVAILABLE` 拒绝。
 
 #### `Asset.getAlbums()`
 
@@ -132,19 +132,19 @@ npm install @expo-harmony/expo-media-library expo-media-library@~57.0.5
 
 #### `Asset.getMediaSubtypes()`
 
-- HarmonyOS 不提供媒体子类型信息，此方法不可用。
+- 上游 JavaScript API 仅在 iOS 上开放此方法。
 
 #### `Asset.getLivePhotoVideoUri()`
 
-- HarmonyOS 不提供 Live Photo 配对视频，此方法不可用。
+- 上游 JavaScript API 仅在 iOS 上开放此方法。
 
 #### `Asset.getIsInCloud()`
 
-- HarmonyOS 不提供云端资源状态，此方法不可用。
+- 上游 JavaScript API 仅在 iOS 上开放此方法。
 
 #### `Asset.getOrientation()`
 
-- HarmonyOS 不提供该方向元数据；读取尺寸时已按方向校正，此方法不可用。
+- 上游 JavaScript API 仅在 iOS 上开放此方法。HarmonyOS 返回的尺寸已按方向校正。
 
 #### `Album(id)`
 
@@ -244,11 +244,11 @@ npm install @expo-harmony/expo-media-library expo-media-library@~57.0.5
 
 `mediaType` 默认查询图片；可传 `photo`、`video` 或 `all` 查询图库内容。只传 `audio` 或 `unknown` 时返回空页；与图片或视频一起传入时忽略。其他无效取值以 `ERR_MEDIA_LIBRARY_INVALID_MEDIA_TYPE` 拒绝。显式排序键默认降序；`SortBy.default` 使用系统顺序，忽略方向。
 
-`createdAfter`、`createdBefore` 接受日期或毫秒时间戳。API 13 至 22 上的创建时间范围筛选在大型图库中可能较慢。设为 `resolveWithFullInfo: true` 时会读取图片 EXIF；返回的宽高已按方向校正。
+`createdAfter`、`createdBefore` 接受日期或毫秒时间戳。当资源缺少拍摄时间时，以入库时间筛选和排序。创建时间范围筛选和排序需要读取匹配资源的时间字段，在大型图库中可能较慢。设为 `resolveWithFullInfo: true` 时会读取图片 EXIF；返回的宽高已按方向校正。
 
 #### `getAssetInfoAsync(asset, options?)`（旧版 API）
 
-返回 `Promise<AssetInfo | null>`，读取资源详细信息，需要图库读权限。资源不存在时返回 `null`。`localUri` 为系统媒体 URI；`location` 为 GPS 坐标，需获准 `ohos.permission.MEDIA_LOCATION`，否则为 `null`。`exif` 由 HarmonyOS 图像框架提供，`isFavorite` 表示图库收藏状态。参数 `shouldDownloadFromNetwork` 不生效。
+返回 `Promise<AssetInfo | null>`，读取资源详细信息。调用需要图库读权限或 Picker 对该 URI 的临时读取授权。资源不存在时返回 `null`。`localUri` 为系统媒体 URI，`location` 为 GPS 坐标，需获准 `ohos.permission.MEDIA_LOCATION`，否则为 `null`。`exif` 由 HarmonyOS 图像框架提供，`isFavorite` 表示图库收藏状态。参数 `shouldDownloadFromNetwork` 不生效。
 
 #### `getAlbumsAsync(options?)`（旧版 API）
 
@@ -312,7 +312,7 @@ HarmonyOS 不需要相册迁移；此方法完成时不做更改。
 
 #### `addListener(listener)`
 
-订阅图库变更，返回 `EventSubscription`，调用返回对象的 `remove()` 取消订阅。没有图库读权限时不会订阅系统变更；事件只在应用前台且存在监听器时触发。事件的 `hasIncrementalChanges` 始终为 `false`，不包含新增、删除或修改资源列表；收到事件后应重新查询图库。
+订阅图库变更，返回 `EventSubscription`，调用返回对象的 `remove()` 取消订阅。系统变更只在应用前台、具有图库读权限且存在监听器时转发。已有订阅的应用从后台返回时会收到一次刷新通知，用于处理后台的图库或权限变化。对象 API 在系统提供具体资源 URI 时返回增量事件。收到 `hasIncrementalChanges: false` 时应重新查询图库。旧版 API 通过同一事件提示重新查询。
 
 #### `removeSubscription(subscription)`
 
@@ -362,7 +362,7 @@ HarmonyOS 不需要相册迁移；此方法完成时不做更改。
 - `createdAfter`、`createdBefore`：创建时间范围，接受日期或毫秒时间戳。
 - `resolveWithFullInfo`：是否读取图片 EXIF，默认 `false`。
 
-- HarmonyOS 不提供媒体子类型筛选，`mediaSubtypes` 参数不生效。
+- 上游将 `mediaSubtypes` 筛选限定为 iOS。
 
 #### `AlbumsOptions`
 
@@ -390,7 +390,7 @@ HarmonyOS 不需要相册迁移；此方法完成时不做更改。
 
 #### `MediaLibraryAssetsChangeEvent`
 
-包含 `hasIncrementalChanges`，HarmonyOS 上始终为 `false`；事件不提供增量资源列表。
+包含 `hasIncrementalChanges`。对象 API 在该值为 `true` 时通过 `insertedAssets`、`deletedAssets` 或 `updatedAssets` 返回该次变更的系统媒体 URI。
 
 #### `MediaLibraryAssetInfoQueryOptions`
 
@@ -550,11 +550,11 @@ HarmonyOS 图库操作失败，或资源保存后无法完成后续读取或相�
 
 ### Permissions
 
-查询或读取图库资源需要受限读权限 `ohos.permission.READ_IMAGEVIDEO`。删除、修改资源及在不使用逐次系统确认时保存媒体需要受限写权限 `ohos.permission.WRITE_IMAGEVIDEO`。这两项受限权限须获得华为审批，并使用包含获批权限的应用签名；应用还须声明相应权限。请求未声明的权限会以 `ERR_MEDIA_LIBRARY_PERMISSION_REQUEST` 拒绝，调用未获准的读写操作会以 `ERR_MEDIA_LIBRARY_PERMISSION` 拒绝。
+查询整个图库需要受限读权限 `ohos.permission.READ_IMAGEVIDEO`。对系统 Picker 已临时授权的 URI，应用可直接读取单个资源的元数据。宿主通过 Expo 运行时权限服务管理权限时，图库读权限由该服务控制。删除、修改资源及在不使用逐次系统确认时保存媒体需要受限写权限 `ohos.permission.WRITE_IMAGEVIDEO`。这两项受限权限须获得华为审批，并使用包含获批权限的应用签名。应用须声明其获批权限。请求未声明的权限会以 `ERR_MEDIA_LIBRARY_PERMISSION_REQUEST` 拒绝，调用未获准的读写操作会以 `ERR_MEDIA_LIBRARY_PERMISSION` 拒绝。
 
 未指定相册时，保存单个文件可由系统逐次确认，无需预先获准写权限；此确认需要应用处于前台。
 
-读取图片 GPS 位置还需要开放权限 `ohos.permission.MEDIA_LOCATION`。未获授权时，`Asset.getLocation()` 和旧版 `AssetInfo.location` 返回 `null)，其他 EXIF 字段仍可读取。详情见华为的[受限权限说明](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/restricted-permissions#ohospermissionread_imagevideo)、[ImageSource 权限说明](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/arkts-apis-image-imagesource/)和[开放权限说明](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/permissions-for-all-user/`。
+读取图片 GPS 位置还需要开放权限 `ohos.permission.MEDIA_LOCATION`。未获授权时，`Asset.getLocation()` 和旧版 `AssetInfo.location` 返回 `null`，其他 EXIF 字段仍可读取。[受限权限说明](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/restricted-permissions#ohospermissionread_imagevideo)、[Picker 资源读取](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/photoaccesshelper-photoviewpicker/)、[ImageSource 权限说明](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/arkts-apis-image-imagesource/)、[开放权限说明](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/permissions-for-all-user/)。
 
 HarmonyOS SDK API 20 及以上可区分尚未申请和已拒绝；API 13 至 19 无法直接区分，首次未授权查询返回 `undetermined`，请求被拒绝后返回 `denied`。系统不允许再次询问时 `canAskAgain` 为 `false`。HarmonyOS 不提供部分图库授权，因此不会返回 `limited`。
 

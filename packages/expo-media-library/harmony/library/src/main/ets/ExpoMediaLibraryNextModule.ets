@@ -11,7 +11,7 @@ import {
 } from '@expo-harmony/expo-modules-core';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
-import { ImageMetadata, LocationRecord, readAssetImageMetadata } from './MediaLibraryAssets';
+import { ImageMetadata, LocationRecord, NextMediaLibraryChangeEvent, readAssetImageMetadata } from './MediaLibraryAssets';
 import { CHANGE_EVENT_NAME, mediaLibraryDefinition } from './MediaLibraryModuleDefinition';
 import {
   AssetField, MediaLibraryNativeQuery, QUERY_FIELD, QUERY_PAGE_SIZE, QUERY_SORT, QUERY_VALUE, QueryOperator, QuerySort,
@@ -21,7 +21,7 @@ import { READ_PERMISSION, WRITE_PERMISSION } from './MediaLibraryPermissions';
 import { requireString } from './MediaLibraryQuery';
 import { MediaLibraryRepository } from './MediaLibraryRepository';
 
-// Earlier SDKs expose favorite mutation only to system apps. Do not call that private API.
+// Earlier SDKs restrict favorite mutation to system apps.
 const PUBLIC_SET_FAVORITE_API: number = 26;
 const IDENTIFIER = ExpoValueTypes.custom<string>('non-empty identifier', requireString, (value: string): ESObject => value);
 
@@ -36,38 +36,42 @@ class MediaLibraryAsset extends ExpoSharedObject {
   }
 
   metadata(): Promise<NextAssetMetadata> {
-    return this.repository.read(async (): Promise<NextAssetMetadata> => new NextAssetMetadata(await this.repository.requireAsset(this.id)));
+    return this.repository.run(async (): Promise<NextAssetMetadata> => new NextAssetMetadata(await this.repository.requireAsset(this.id)));
   }
 
   info(): Promise<NextAssetInfo> {
-    return this.repository.read(async (): Promise<NextAssetInfo> => {
+    return this.repository.run(async (): Promise<NextAssetInfo> => {
       const asset = await this.repository.requireAsset(this.id);
       return new NextAssetInfo(new NextAssetMetadata(asset), await requireShape(asset));
     });
   }
 
   shape(required: boolean): Promise<AssetShape | null> {
-    return this.repository.read(async (): Promise<AssetShape | null> => {
+    return this.repository.run(async (): Promise<AssetShape | null> => {
       const asset = await this.repository.requireAsset(this.id);
       return required ? await requireShape(asset) : await resolveShape(asset);
     });
   }
 
   imageMetadata(): Promise<ImageMetadata | undefined> {
-    return this.repository.read(async (): Promise<ImageMetadata | undefined> => await readAssetImageMetadata(
+    return this.repository.run(async (): Promise<ImageMetadata | undefined> => await readAssetImageMetadata(
       await this.repository.requireAsset(this.id), this.repository.permissions.canReadLocation(),
     ));
   }
 
   favorite(value: boolean): Promise<void> {
-    return this.repository.write(async (): Promise<void> => {
-      if (deviceInfo.sdkApiVersion < PUBLIC_SET_FAVORITE_API) {
-        throw new ExpoModuleError('ERR_MEDIA_LIBRARY_UNAVAILABLE', 'Setting favorites requires the public HarmonyOS API 26 or newer.');
+    return this.repository.writeOnly(async (): Promise<void> => {
+      if (deviceInfo.sdkApiVersion >= PUBLIC_SET_FAVORITE_API) {
+        if (deviceInfo.apiAvailable('26.0.0')) {
+          const request = new photoAccessHelper.MediaAssetChangeRequest(await this.repository.requireAsset(this.id));
+          request.setFavorite(value);
+
+          await this.repository.helper.applyChanges(request);
+          return;
+        }
       }
 
-      const request = new photoAccessHelper.MediaAssetChangeRequest(await this.repository.requireAsset(this.id));
-      request.setFavorite(value);
-      await this.repository.helper.applyChanges(request);
+      throw new ExpoModuleError('ERR_MEDIA_LIBRARY_UNAVAILABLE', 'Setting favorites requires the public HarmonyOS API 26 or newer.');
     });
   }
 }
@@ -90,7 +94,9 @@ export class ExpoMediaLibraryNextModule extends ExpoModule {
 
   constructor(context: ExpoModuleContext) {
     super(context);
-    this.repository = new MediaLibraryRepository(context, (event): void => this.sendEvent(CHANGE_EVENT_NAME, event));
+    this.repository = new MediaLibraryRepository(context, (change): void => {
+      this.sendEvent(CHANGE_EVENT_NAME, new NextMediaLibraryChangeEvent(change));
+    });
   }
 
   definition(): ExpoModuleDefinition {
@@ -110,7 +116,7 @@ export class ExpoMediaLibraryNextModule extends ExpoModule {
       .asyncFunction('getFilename', async (object: MediaLibraryAsset): Promise<string> => (await object.metadata()).filename)
       .asyncFunction('getMediaType', async (object: MediaLibraryAsset): Promise<string> => (await object.metadata()).mediaType)
       .asyncFunction('getFavorite', async (object: MediaLibraryAsset): Promise<boolean> => (await object.metadata()).isFavorite)
-      .asyncFunction('getUri', async (object: MediaLibraryAsset): Promise<string> => (await object.metadata()).id)
+      .asyncFunction('getUri', async (object: MediaLibraryAsset): Promise<string> => object.id)
       .asyncFunction('getWidth', async (object: MediaLibraryAsset): Promise<number> => (await object.shape(true))!.width)
       .asyncFunction('getHeight', async (object: MediaLibraryAsset): Promise<number> => (await object.shape(true))!.height)
       .asyncFunction('getShape', (object: MediaLibraryAsset): Promise<AssetShape | null> => object.shape(false))
@@ -155,7 +161,7 @@ export class ExpoMediaLibraryNextModule extends ExpoModule {
       .asyncFunction('add', ExpoFunction.ownedTyped1(asset.valueType().or(ExpoValueTypes.array(asset.valueType())),
         (object: MediaLibraryAlbum, input: MediaLibraryAsset | MediaLibraryAsset[]): Promise<void> => repository.write(async (): Promise<void> => {
           const assets = Array.isArray(input) ? input : [input];
-          await repository.addAssetsToAlbum(assets.map((item: MediaLibraryAsset): string => item.id), object.id, false);
+          await repository.addAssetsToAlbum(assets.map((item: MediaLibraryAsset): string => item.id), object.id);
         })))
       .asyncFunction('removeAssets', ExpoFunction.ownedTyped1(ExpoValueTypes.array(asset.valueType()),
         (object: MediaLibraryAlbum, assets: MediaLibraryAsset[]): Promise<void> => repository.write(async (): Promise<void> => {

@@ -9,6 +9,8 @@ import { fileIo } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 
+export const MEDIA_URI_PREFIX: string = `${photoAccessHelper.DefaultChangeUri.DEFAULT_PHOTO_URI}/`;
+
 export const ASSET_FETCH_COLUMNS: string[] = [
   photoAccessHelper.PhotoKeys.URI,
   photoAccessHelper.PhotoKeys.PHOTO_TYPE,
@@ -100,6 +102,29 @@ export class PagedAssetResult {
 
 export class MediaLibraryChangeEvent {
   hasIncrementalChanges: boolean = false;
+}
+
+export class NextMediaLibraryChangeEvent extends MediaLibraryChangeEvent {
+  insertedAssets?: string[];
+  deletedAssets?: string[];
+  updatedAssets?: string[];
+
+  constructor(change?: photoAccessHelper.ChangeData) {
+    super();
+
+    if (change?.uris === undefined || change.uris.length === 0 ||
+      !change.uris.every((uri: string): boolean => uri.startsWith(MEDIA_URI_PREFIX))) return;
+
+    const ids = Array.from(new Set<string>(change.uris));
+    switch (change.type) {
+      case photoAccessHelper.NotifyType.NOTIFY_ADD: this.insertedAssets = ids; break;
+      case photoAccessHelper.NotifyType.NOTIFY_REMOVE: this.deletedAssets = ids; break;
+      case photoAccessHelper.NotifyType.NOTIFY_UPDATE: this.updatedAssets = ids; break;
+      default: return;
+    }
+
+    this.hasIncrementalChanges = true;
+  }
 }
 
 export async function mapAsset(asset: photoAccessHelper.PhotoAsset, details: boolean, readLocation: boolean = false): Promise<AssetRecord> {

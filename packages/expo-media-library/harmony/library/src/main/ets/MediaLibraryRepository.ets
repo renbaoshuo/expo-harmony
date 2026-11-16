@@ -10,13 +10,14 @@ import {
   ExpoModuleContext,
   ExpoModuleError,
   ExpoPermissionStatus,
+  ExpoRuntimePermissionsKey,
 } from '@expo-harmony/expo-modules-core';
 import { common } from '@kit.AbilityKit';
 import { dataSharePredicates, uniformTypeDescriptor } from '@kit.ArkData';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
-import { AlbumRecord, AssetRecord, ASSET_FETCH_COLUMNS, mapAsset, MediaLibraryChangeEvent, PagedAssetResult } from './MediaLibraryAssets';
+import { AlbumRecord, AssetRecord, ASSET_FETCH_COLUMNS, mapAsset, MEDIA_URI_PREFIX, PagedAssetResult } from './MediaLibraryAssets';
 import {
   AlbumQueryOptions,
   AssetQueryOptions,
@@ -34,6 +35,9 @@ import { queryIdentity, MediaLibraryPaging } from './MediaLibraryPaging';
 // The public deleteAssets API accepts at most 300 URIs per system confirmation.
 const DELETE_BATCH_LIMIT: number = 300;
 const FETCH_RESULT_INDEX_API: number = 23;
+// Media Library Kit changed its permission-denied code in API 14.
+const PERMISSION_DENIED: number = 201;
+const LEGACY_PERMISSION_DENIED: number = 13900012;
 const pendingSaveDialogs: WeakSet<common.UIAbilityContext> = new WeakSet();
 
 export class MediaLibraryRepository {
@@ -44,20 +48,22 @@ export class MediaLibraryRepository {
   private observing: boolean = false;
   private registered: boolean = false;
   private foreground: boolean;
+  private refreshOnForeground: boolean = false;
   private destroyed: boolean = false;
   private pending: number = 0;
   private idle?: () => void;
   private release?: Promise<void>;
-  private readonly changed = (_change: photoAccessHelper.ChangeData): void => {
-    if (!this.destroyed && this.observing && this.foreground && this.context.isValid) {
-      this.emitChange(new MediaLibraryChangeEvent());
+  private readonly changed = (change: photoAccessHelper.ChangeData): void => {
+    if (!this.destroyed && this.observing && this.foreground && this.context.isValid &&
+      this.context.permissionStatus(READ_PERMISSION) === ExpoPermissionStatus.GRANTED) {
+      this.emitChange(change);
     }
   };
 
   readonly context: ExpoModuleContext;
-  private readonly emitChange: (event: MediaLibraryChangeEvent) => void;
+  private readonly emitChange: (change?: photoAccessHelper.ChangeData) => void;
 
-  constructor(context: ExpoModuleContext, emitChange: (event: MediaLibraryChangeEvent) => void) {
+  constructor(context: ExpoModuleContext, emitChange: (change?: photoAccessHelper.ChangeData) => void) {
     this.context = context;
     this.emitChange = emitChange;
     this.permissions = new MediaLibraryPermissions(context);
@@ -71,13 +77,25 @@ export class MediaLibraryRepository {
 
   stopObserving(): void {
     this.observing = false;
+    this.refreshOnForeground = false;
     this.stopSystemObservation();
   }
 
   setForeground(foreground: boolean): void {
+    if (this.foreground === foreground) return;
     this.foreground = foreground;
-    if (foreground) this.startSystemObservation();
-    else this.stopSystemObservation();
+
+    if (!foreground) {
+      this.refreshOnForeground = this.registered;
+      this.stopSystemObservation();
+      return;
+    }
+
+    this.startSystemObservation();
+    if (this.refreshOnForeground && this.observing && this.context.isValid) {
+      this.emitChange();
+    }
+    this.refreshOnForeground = false;
   }
 
   permissionsChanged(): void {
@@ -172,13 +190,13 @@ export class MediaLibraryRepository {
     if (this.destroyed || !this.foreground || !this.observing || this.registered) return;
     if (this.context.permissionStatus(READ_PERMISSION) !== ExpoPermissionStatus.GRANTED) return;
 
-    const logger = this.context.logger;
-    this.warn = (message: string): void => logger.warn(message);
     try {
+      const logger = this.context.logger;
+      this.warn = (message: string): void => logger.warn(message);
       this.helper.registerChange(photoAccessHelper.DefaultChangeUri.DEFAULT_PHOTO_URI, true, this.changed);
       this.registered = true;
     } catch (error) {
-      logger.warn(`Unable to observe media library changes: ${(error as BusinessError).message}`);
+      this.warn?.(`Unable to observe media library changes: ${(error as BusinessError).message}`);
     }
   }
 
@@ -338,36 +356,38 @@ export class MediaLibraryRepository {
     }
 
     pendingSaveDialogs.add(ability);
+
     try {
-      return await this.withImportSource(input, true, async (uri, config): Promise<string> => {
-        this.assertCanShowSaveDialog();
-        const file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
+      return await this.withImportSource(input, async (file, config): Promise<string> => {
+        const dir = await fileIo.mkdtemp(`${this.context.cachePath}/expo-media-import-XXXXXX`);
 
         try {
+          // Keep the content shown in the confirmation stable while it is open.
+          const snapshot = `${dir}/asset.${config.fileNameExtension}`;
+          await fileIo.copyFile(file.fd, snapshot);
           this.assertCanShowSaveDialog();
 
-          const destinations = await this.helper.showAssetsCreationDialog([uri], [config]);
+          const destinations = await this.helper.showAssetsCreationDialog([fileUri.getUriFromPath(snapshot)], [config]);
           if (destinations.length === 0) {
             throw new ExpoModuleError('ERR_MEDIA_LIBRARY_SAVE_CANCELED', 'The user canceled the media library save.');
           }
 
           const destination = destinations[0];
-          if (destinations.length !== 1 || typeof destination !== 'string' || !destination.startsWith('file://media/Photo/')) {
+          if (destinations.length !== 1 || typeof destination !== 'string' || !destination.startsWith(MEDIA_URI_PREFIX)) {
             throw new ExpoModuleError('ERR_MEDIA_LIBRARY_OPERATION', 'HarmonyOS did not return an authorized destination for the media library save.');
           }
-          // The dialog has already created the asset. Finish the approved write even if
-          // the JS runtime is replaced while the dialog is open.
-          const output = await fileIo.open(destination, fileIo.OpenMode.WRITE_ONLY);
 
+          // The dialog already created the asset, so finish the approved write across a JS runtime replacement.
+          const output = await fileIo.open(destination, fileIo.OpenMode.WRITE_ONLY);
           try {
-            await fileIo.copyFile(file.fd, output.fd);
+            await fileIo.copyFile(snapshot, output.fd);
           } finally {
             await fileIo.close(output);
           }
 
           return destination;
         } finally {
-          try { await fileIo.close(file); } catch (_) {}
+          try { await fileIo.rmdir(dir); } catch (_) {}
         }
       });
     } finally {
@@ -376,11 +396,18 @@ export class MediaLibraryRepository {
   }
 
   private importAsset(input: string): Promise<photoAccessHelper.MediaAssetChangeRequest> {
-    return this.withImportSource(input, false, async (uri, config): Promise<photoAccessHelper.MediaAssetChangeRequest> => {
-      const ability = this.context.uiAbilityContext;
-      const request = config.photoType === photoAccessHelper.PhotoType.IMAGE
-        ? photoAccessHelper.MediaAssetChangeRequest.createImageAssetRequest(ability, uri)
-        : photoAccessHelper.MediaAssetChangeRequest.createVideoAssetRequest(ability, uri);
+    return this.withImportSource(input, async (file, config): Promise<photoAccessHelper.MediaAssetChangeRequest> => {
+      const request = photoAccessHelper.MediaAssetChangeRequest.createAssetRequest(
+        this.context.uiAbilityContext, config.photoType, config.fileNameExtension, { title: config.title },
+      );
+
+      const output = await request.getWriteCacheHandler();
+      try {
+        await fileIo.copyFile(file.fd, output);
+      } finally {
+        await fileIo.close(output);
+      }
+
       await this.helper.applyChanges(request);
 
       return request;
@@ -389,15 +416,13 @@ export class MediaLibraryRepository {
 
   private async withImportSource<T>(
     input: string,
-    snapshot: boolean,
-    operation: (uri: string, config: photoAccessHelper.PhotoCreationConfig) => Promise<T>,
+    operation: (file: fileIo.File, config: photoAccessHelper.PhotoCreationConfig) => Promise<T>,
   ): Promise<T> {
     const source = this.context.fileSourceForRead(input);
     const file = await fileIo.open(source, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
-    let stagingDirectory: string | undefined;
 
     try {
-      const path = this.context.readPathForDescriptor(source, file);
+      this.context.readPathForDescriptor(source, file);
       if (!(await fileIo.stat(file.fd)).isFile()) {
         throw new ExpoModuleError('ERR_MEDIA_LIBRARY_INVALID_URI', 'The local media source must be a regular file.');
       }
@@ -413,22 +438,10 @@ export class MediaLibraryRepository {
 
       const extension = name.slice(dot + 1).toLowerCase();
       const id = uniformTypeDescriptor.getUniformDataTypeByFilenameExtension(`.${extension}`);
-      const descriptor = uniformTypeDescriptor.getTypeDescriptor(id);
-      const isImage = descriptor.belongsTo(uniformTypeDescriptor.UniformDataType.IMAGE);
-      if (!isImage && !descriptor.belongsTo(uniformTypeDescriptor.UniformDataType.VIDEO)) {
+      const type = uniformTypeDescriptor.getTypeDescriptor(id);
+      const isImage = type.belongsTo(uniformTypeDescriptor.UniformDataType.IMAGE);
+      if (!isImage && !type.belongsTo(uniformTypeDescriptor.UniformDataType.VIDEO)) {
         throw new ExpoModuleError('ERR_MEDIA_LIBRARY_UNSUPPORTED_MEDIA_TYPE', 'HarmonyOS Media Library Kit imports only images and videos.');
-      }
-
-      const ability = this.context.uiAbilityContext;
-      const authority = new fileUri.FileUri(ability.cacheDir).authority;
-      let uri = path.startsWith('/') ? fileUri.getUriFromPath(path) : '';
-      // The dialog must preview the same bytes that will be written. Media Library
-      // Kit also needs a sandbox URI when the source comes from an external provider.
-      if (snapshot || authority === '' || !uri.startsWith(`file://${authority}/`)) {
-        stagingDirectory = await fileIo.mkdtemp(`${this.context.cachePath}/expo-media-import-XXXXXX`);
-        const destination = `${stagingDirectory}/${name}`;
-        await fileIo.copyFile(file.fd, destination);
-        uri = fileUri.getUriFromPath(destination);
       }
 
       this.assertActive();
@@ -440,12 +453,9 @@ export class MediaLibraryRepository {
       };
       if (title !== '.' && title !== '..' && !/[\\/:*?"'`<>|{}\[\]]/.test(title)) config.title = title;
 
-      return await operation(uri, config);
+      return await operation(file, config);
     } finally {
       try { await fileIo.close(file); } catch (_) {}
-      if (stagingDirectory !== undefined) {
-        try { await fileIo.rmdir(stagingDirectory); } catch (_) {}
-      }
     }
   }
 
@@ -469,7 +479,7 @@ export class MediaLibraryRepository {
     return matches;
   }
 
-  async addAssetsToAlbum(ids: string[], id: string, _copy: boolean): Promise<boolean> {
+  async addAssetsToAlbum(ids: string[], id: string): Promise<boolean> {
     if (ids.length === 0) return true;
 
     const album = await this.requireWritableAlbum(id);
@@ -530,17 +540,38 @@ export class MediaLibraryRepository {
   }
 
   async findAsset(id: string): Promise<photoAccessHelper.PhotoAsset | undefined> {
+    const scoped = this.context.permissionStatus(READ_PERMISSION) !== ExpoPermissionStatus.GRANTED;
+    if (scoped) {
+      // A URI grant must not bypass permissions masked by the runtime.
+      if (this.context.services.get(ExpoRuntimePermissionsKey) !== undefined) {
+        this.permissions.ensureGranted([READ_PERMISSION]);
+      }
+      if (!id.startsWith(MEDIA_URI_PREFIX)) {
+        throw new ExpoModuleError('ERR_MEDIA_LIBRARY_INVALID_URI', 'Expected a HarmonyOS media asset URI.');
+      }
+      this.context.assertFileAccess(id);
+    }
+
     const predicates = new dataSharePredicates.DataSharePredicates();
     predicates.equalTo(photoAccessHelper.PhotoKeys.URI, id);
 
-    const fetch = await this.helper.getAssets({ fetchColumns: ASSET_FETCH_COLUMNS, predicates });
-
     try {
-      if (fetch.getCount() !== 1) return undefined;
+      // PhotoAccessHelper honors the URI-specific grant from PhotoViewPicker.
+      const fetch = await this.helper.getAssets({ fetchColumns: ASSET_FETCH_COLUMNS, predicates });
 
-      return await fetch.getFirstObject();
-    } finally {
-      fetch.close();
+      try {
+        if (fetch.getCount() !== 1) return undefined;
+
+        return await fetch.getFirstObject();
+      } finally {
+        fetch.close();
+      }
+    } catch (error) {
+      const code = (error as BusinessError).code;
+      if (scoped && (code === PERMISSION_DENIED || code === LEGACY_PERMISSION_DENIED)) {
+        this.permissions.ensureGranted([READ_PERMISSION]);
+      }
+      throw error as Error;
     }
   }
 

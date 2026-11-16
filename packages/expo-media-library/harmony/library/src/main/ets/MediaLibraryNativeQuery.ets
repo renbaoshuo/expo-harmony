@@ -98,7 +98,6 @@ class QueryFilter {
 }
 
 const MAX_NATIVE_PAGE_SIZE: number = 2147483647;
-const PUBLIC_RANGE_PREDICATES_API: number = 23;
 
 export class MediaLibraryNativeQuery extends ExpoSharedObject {
   private filters: QueryFilter[] = [];
@@ -181,10 +180,7 @@ export class MediaLibraryNativeQuery extends ExpoSharedObject {
       const localFilters: QueryFilter[] = [];
 
       for (const filter of filters) {
-        // Older Media Library Kit versions rewrite the millisecond column but lose its IN arguments.
-        if ((filter.operator === QueryOperator.WITHIN && isTimestamp(filter.field)) ||
-          (isRange(filter.operator) && deviceInfo.sdkApiVersion < PUBLIC_RANGE_PREDICATES_API)) localFilters.push(filter);
-        else applyFilter(predicates, filter);
+        if (!applyFilter(predicates, filter)) localFilters.push(filter);
       }
 
       for (const sort of sorts) {
@@ -245,10 +241,6 @@ function isTimestamp(field: AssetField): boolean {
   return field === AssetField.CREATION_TIME || field === AssetField.MODIFICATION_TIME;
 }
 
-function isRange(operator: QueryOperator): boolean {
-  return operator !== QueryOperator.EQ && operator !== QueryOperator.WITHIN;
-}
-
 function sortColumn(field: AssetField): photoAccessHelper.PhotoKeys {
   // The public sort keys order the underlying timestamp columns. The _MS aliases are for reads and comparisons.
   if (field === AssetField.CREATION_TIME) return photoAccessHelper.PhotoKeys.DATE_TAKEN;
@@ -268,17 +260,32 @@ function nativeColumn(field: AssetField): photoAccessHelper.PhotoKeys {
   }
 }
 
-function applyFilter(predicates: dataSharePredicates.DataSharePredicates, filter: QueryFilter): void {
+function applyFilter(predicates: dataSharePredicates.DataSharePredicates, filter: QueryFilter): boolean {
   const column = nativeColumn(filter.field);
   const value = filter.values[0];
-  switch (filter.operator) {
-    case QueryOperator.EQ: predicates.equalTo(column, value); break;
-    case QueryOperator.WITHIN: predicates.in(column, filter.values); break;
-    case QueryOperator.GT: predicates.greaterThan(column, value); break;
-    case QueryOperator.GTE: predicates.greaterThanOrEqualTo(column, value); break;
-    case QueryOperator.LT: predicates.lessThan(column, value); break;
-    case QueryOperator.LTE: predicates.lessThanOrEqualTo(column, value); break;
+
+  if (filter.operator === QueryOperator.EQ) {
+    predicates.equalTo(column, value);
+    return true;
   }
+  if (filter.operator === QueryOperator.WITHIN) {
+    // Media Library Kit can lose the IN arguments when rewriting millisecond columns.
+    if (isTimestamp(filter.field)) return false;
+    predicates.in(column, filter.values);
+    return true;
+  }
+
+  if (deviceInfo.sdkApiVersion >= 23) {
+    switch (filter.operator) {
+      case QueryOperator.GT: predicates.greaterThan(column, value); break;
+      case QueryOperator.GTE: predicates.greaterThanOrEqualTo(column, value); break;
+      case QueryOperator.LT: predicates.lessThan(column, value); break;
+      case QueryOperator.LTE: predicates.lessThanOrEqualTo(column, value); break;
+    }
+    return true;
+  }
+
+  return false;
 }
 
 function matches(value: number, filter: QueryFilter): boolean {
