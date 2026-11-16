@@ -11,7 +11,9 @@ import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 
 const RESOURCE_INVALID_ID: number = 9001001;
 const RESOURCE_NOT_FOUND: number = 9001002;
+const RESOURCE_NAME_NOT_FOUND: number = 9001004;
 const MAX_ECMASCRIPT_TIMESTAMP: number = 8_640_000_000_000_000;
+const STRING_RESOURCE_REFERENCE: RegExp = /^\$string:([A-Za-z0-9_]+)$/;
 
 export class ExpoApplicationModule extends ExpoModule {
   private cache?: bundleManager.BundleInfo = undefined;
@@ -32,7 +34,7 @@ export class ExpoApplicationModule extends ExpoModule {
       .constant('nativeApplicationVersion', (): string | null => nonEmptyOrNull(this.readConstantInfo()?.versionName))
       .constant('nativeBuildVersion', (): string | null => {
         const code = this.readConstantInfo()?.versionCode;
-        return code !== undefined && Number.isSafeInteger(code) ? String(code) : null;
+        return code !== undefined && Number.isSafeInteger(code) && code >= 0 ? String(code) : null;
       })
       .asyncFunction('getInstallationTimeAsync', async (): Promise<number> => {
         const info = await this.readBundleInfo('ERR_APPLICATION_INSTALLATION_TIME', 'installation time');
@@ -79,57 +81,63 @@ function nonEmptyOrNull(value: string | undefined): string | null {
 }
 
 function installationTime(info: bundleManager.BundleInfo): number {
-  let time: number = info.installTime;
-
   // Keep the SDK check separate so ArkTS recognizes the API 18 guard.
   if (deviceInfo.sdkApiVersion >= 18) {
-    if (info.firstInstallTime !== undefined) {
-      time = info.firstInstallTime;
-    }
+    const first = info.firstInstallTime;
+    if (first !== undefined && isValidTimestamp(first)) return first;
   }
 
-  return checkedTimestamp(time, 'installation', 'ERR_APPLICATION_INSTALLATION_TIME');
+  return checkedTimestamp(info.installTime, 'installation', 'ERR_APPLICATION_INSTALLATION_TIME');
+}
+
+function isValidTimestamp(time: number): boolean {
+  return Number.isSafeInteger(time) && time >= 0 && time <= MAX_ECMASCRIPT_TIMESTAMP;
 }
 
 function checkedTimestamp(time: number, kind: string, code: string): number {
-  if (!Number.isSafeInteger(time) || time < 0 || time > MAX_ECMASCRIPT_TIMESTAMP) {
+  if (!isValidTimestamp(time)) {
     throw new ExpoModuleError(code, `Harmony returned an invalid ${kind} timestamp.`);
   }
 
   return time;
 }
 
-function literalApplicationLabel(label: string): string | null {
-  return label.length === 0 || /^\$string:[A-Za-z0-9_]+$/.test(label) ? null : label;
-}
-
 function resolveApplicationName(context: ExpoModuleContext, info: bundleManager.BundleInfo): string | null {
-  const resource = info.appInfo.labelResource;
-  const local = (resource.bundleName.length === 0 || resource.bundleName === info.name)
-    && (resource.moduleName.length === 0 || resource.moduleName === context.uiAbilityContext.currentHapModuleInfo.name);
+  const appInfo = info.appInfo;
+  const label: Resource | undefined = appInfo.labelResource;
+  const currentModule = context.uiAbilityContext.currentHapModuleInfo?.name ?? '';
+  const bundleName = label?.bundleName || info.name;
+  const moduleName = label?.moduleName || currentModule;
+  const local = bundleName === info.name && moduleName === currentModule;
 
-  if (Number.isSafeInteger(resource.id) && resource.id > 0) {
-    // A cross-module ID needs its Resource scope for a synchronous lookup.
-    const name = readApplicationNameResource(context, local ? resource.id : resource);
+  const resourceId = label?.id;
+  const labelId = appInfo.labelId;
+  const ids = resourceId === undefined || resourceId === labelId ? [labelId] : [resourceId, labelId];
+
+  for (const id of ids) {
+    if (!Number.isSafeInteger(id) || id <= 0) continue;
+
+    // The numeric overload reads within the current HAP. Other HAPs need a scoped synchronous lookup.
+    const resource: Resource = { bundleName, moduleName, id };
+    const name = local ? readApplicationNameResource(context, id) : readApplicationNameResource(context, resource);
     if (name !== null) return name;
   }
 
-  const id = info.appInfo.labelId;
-  if (local && id !== resource.id && Number.isSafeInteger(id) && id > 0) {
-    const name = readApplicationNameResource(context, id);
-    if (name !== null) return name;
-  }
-
-  return literalApplicationLabel(info.appInfo.label);
+  const reference = STRING_RESOURCE_REFERENCE.exec(appInfo.label);
+  if (reference === null) return nonEmptyOrNull(appInfo.label);
+  return local ? readApplicationNameResource(context, reference[1]) : null;
 }
 
-function readApplicationNameResource(context: ExpoModuleContext, resource: number | Resource): string | null {
+function readApplicationNameResource(context: ExpoModuleContext, resource: number | Resource | string): string | null {
   try {
     const manager = context.uiAbilityContext.resourceManager;
+    if (typeof resource === 'string') return nonEmptyOrNull(manager.getStringByNameSync(resource));
+
+    // ArkTS must resolve the numeric and scoped overloads separately.
     return nonEmptyOrNull(typeof resource === 'number' ? manager.getStringSync(resource) : manager.getStringSync(resource));
   } catch (error) {
     const code = (error as BusinessError).code;
-    if (code !== RESOURCE_INVALID_ID && code !== RESOURCE_NOT_FOUND) {
+    if (code !== RESOURCE_INVALID_ID && code !== RESOURCE_NOT_FOUND && code !== RESOURCE_NAME_NOT_FOUND) {
       context.logger.warn(`Unable to resolve the running Harmony application's name: ${String(error)}`);
     }
 
