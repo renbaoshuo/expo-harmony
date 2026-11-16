@@ -24,6 +24,7 @@ export { applyPatchFile };
 const HARMONY_PROJECT = 'harmony';
 const HARMONY_MODULE = 'library';
 const HARMONY_PRODUCT = 'default';
+const HARMONY_TARGET = 'default';
 const BUNDLED_HAR = 'harmony/library.har';
 const OH_PACKAGE_MANIFEST = 'harmony/library/oh-package.json5';
 
@@ -71,19 +72,6 @@ async function canReuseBuild(project, options) {
 function requiredString(value, field) {
   if (typeof value !== 'string' || value.length === 0) throw new TypeError(`${field} is required.`);
   return value;
-}
-
-function normalizeConfig(raw, pkg) {
-  if (!Array.isArray(raw?.platforms) || !raw.platforms.includes('harmony')) {
-    throw new TypeError('expo-module.config.json#platforms must include harmony.');
-  }
-
-  const config = normalizeHarmonyModuleMetadata(raw.harmony, {
-    packageName: requiredString(pkg.name, 'package.json#name'),
-    packageVersion: typeof pkg.version === 'string' ? pkg.version : undefined,
-  });
-
-  return config;
 }
 
 async function readJson(file) {
@@ -138,11 +126,20 @@ function harmonyModuleName(packageRoot) {
 
 function modulePaths(packageRoot, moduleName = harmonyModuleName(packageRoot)) {
   const projectRoot = inside(packageRoot, HARMONY_PROJECT, 'Harmony project');
+  const moduleRoot = inside(projectRoot, HARMONY_MODULE, 'Harmony module');
+  const file = path.join(moduleRoot, 'build-profile.json5');
+  const profile = fs.existsSync(file) ? JSON5.parse(fs.readFileSync(file, 'utf8')) : undefined;
+
+  const artifactName = profile?.targets?.find(target => target?.name === HARMONY_TARGET)?.output?.artifactName;
+  if (artifactName !== undefined && (typeof artifactName !== 'string' || !/^[A-Za-z0-9_.-]+$/u.test(artifactName))) {
+    throw new TypeError('Harmony target.output.artifactName must contain only letters, digits, periods, hyphens and underscores.');
+  }
+
   return {
     moduleName,
     projectRoot,
-    moduleRoot: inside(projectRoot, HARMONY_MODULE, 'Harmony module'),
-    sourceOutput: inside(projectRoot, `library/build/default/outputs/default/${moduleName}.har`, 'Hvigor HAR output'),
+    moduleRoot,
+    sourceOutput: inside(moduleRoot, `build/${HARMONY_TARGET}/outputs/${HARMONY_TARGET}/${artifactName ?? moduleName}.har`, 'Hvigor HAR output'),
     bundledHar: inside(packageRoot, BUNDLED_HAR, 'Bundled HAR'),
     ohPackageManifest: inside(packageRoot, OH_PACKAGE_MANIFEST, 'OHPM package manifest'),
   };
@@ -150,20 +147,29 @@ function modulePaths(packageRoot, moduleName = harmonyModuleName(packageRoot)) {
 
 async function loadBuildConfig(root, manifest) {
   const file = path.join(root, 'expo-module.config.json');
-  if (await exists(file)) {
-    return normalizeConfig(await readJson(file), manifest);
+  const raw = await exists(file) ? await readJson(file) : undefined;
+
+  if (Array.isArray(raw?.platforms) && raw.platforms.includes('harmony')) {
+    const config = normalizeHarmonyModuleMetadata(raw.harmony, {
+      packageName: requiredString(manifest.name, 'package.json#name'),
+      packageVersion: typeof manifest.version === 'string' ? manifest.version : undefined,
+    });
+
+    return { config, isExpoModule: true };
   }
 
   const linking = manifest.harmony?.autolinking;
-  if (linking?.mainHarPath === 'harmony' && linking.ohPackageName === manifest.name) return { modules: [], services: [] };
+  if (linking?.mainHarPath === 'harmony' && linking.ohPackageName === manifest.name) {
+    return { config: { modules: [], services: [] }, isExpoModule: false };
+  }
 
+  if (raw !== undefined) throw new TypeError('expo-module.config.json#platforms must include harmony.');
   throw new TypeError(`${manifest.name} must declare an Expo Harmony module or a Harmony RNOH package.`);
 }
 
-function projectPaths(root) {
+function projectPaths(root, isExpoModule) {
   const paths = modulePaths(root);
-  paths.isExpoModule = fs.existsSync(path.join(root, 'expo-module.config.json'));
-  if (!paths.isExpoModule) {
+  if (!isExpoModule) {
     paths.bundledHar = inside(root, `harmony/${paths.moduleName}.har`, 'Bundled HAR');
   }
 
@@ -174,8 +180,8 @@ export async function loadModuleProject(root = process.cwd()) {
   const packageRoot = await fs.promises.realpath(path.resolve(root));
   const pkg = await readJson(path.join(packageRoot, 'package.json'));
 
-  const config = await loadBuildConfig(packageRoot, pkg);
-  const paths = projectPaths(packageRoot);
+  const { config, isExpoModule } = await loadBuildConfig(packageRoot, pkg);
+  const paths = projectPaths(packageRoot, isExpoModule);
 
   await assertExistingAncestorInside(packageRoot, paths.projectRoot, 'Harmony project');
 
@@ -201,7 +207,7 @@ export async function loadModuleProject(root = process.cwd()) {
     config,
     projectRoot,
     moduleRoot,
-    isExpoModule: paths.isExpoModule,
+    isExpoModule,
     moduleName: paths.moduleName,
     sourceOutput: paths.sourceOutput,
     bundledHar: paths.bundledHar,
@@ -224,8 +230,8 @@ export async function inspectModule(root = process.cwd()) {
   const packageRoot = await fs.promises.realpath(path.resolve(root));
   const pkg = await readJson(path.join(packageRoot, 'package.json'));
 
-  const config = await loadBuildConfig(packageRoot, pkg);
-  const paths = projectPaths(packageRoot);
+  const { config, isExpoModule } = await loadBuildConfig(packageRoot, pkg);
+  const paths = projectPaths(packageRoot, isExpoModule);
 
   return {
     config,
@@ -271,7 +277,7 @@ export function fixedHvigorArgs(task = 'assembleHar', moduleName = HARMONY_MODUL
 
   return [
     '--mode', 'module',
-    '-p', `module=${moduleName}@default`,
+    '-p', `module=${moduleName}@${HARMONY_TARGET}`,
     '-p', `product=${HARMONY_PRODUCT}`,
     '-p', 'buildMode=release',
     '--no-daemon',
@@ -465,7 +471,6 @@ export async function prepareModule(root = process.cwd(), options = {}) {
     if (!options.dryRun && await canReuseBuild(await loadModuleProject(root), options)) return { reused: true };
 
     const entries = await createWorkspaceBuild(root, options);
-
     if (!options.dryRun) await executeWorkspaceBuild(entries);
 
     return { ...entries.at(-1).plan, workspaceBuilds: entries.map(entry => entry.plan) };
@@ -477,19 +482,20 @@ export async function prepareModule(root = process.cwd(), options = {}) {
 
   if (options.dryRun) return plan;
 
-  await withWorkspaceOverrides(project, {}, signal =>
-    spawnCommand(build.command, build.args, { cwd: build.cwd, signal }));
+  await withWorkspaceOverrides(project, {}, async (signal) => {
+    await spawnCommand(build.command, build.args, { cwd: build.cwd, signal });
+    await fs.promises.rm(project.bundledHar, { force: true });
+  });
 
   return plan;
 }
 
-function allowedPackedFile(name, runtimeFiles, sourceBuild = false) {
+function allowedPackedFile(name, requiredFiles, sourceBuild) {
   if (sourceBuild && (name.startsWith('harmony/') || name.startsWith('scripts/')
     || name.startsWith('licenses/') || ['VALIDATION.md', 'THIRD_PARTY_NOTICES.md'].includes(name))) {
-    return !name.split('/').some(part => ['node_modules', 'oh_modules', 'build', '.hvigor', '.cxx', '.native-build', 'native-deps', '__pycache__', 'local.properties', 'oh-package-lock.json5', 'BuildProfile.ets'].includes(part));
+    return !name.split('/').some(part => ['node_modules', 'oh_modules', 'build', '.hvigor', '.cxx', '.native-build', '.expo-harmony-build.lock', 'native-deps', '__pycache__', 'local.properties', 'oh-package-lock.json5', 'BuildProfile.ets'].includes(part));
   }
-  return runtimeFiles.has(name)
-    || name === 'package.json'
+  return requiredFiles.has(name)
     || name === 'expo-module.config.json'
     || name === 'README.md'
     || name === 'LICENSE'
@@ -502,9 +508,7 @@ function allowedPackedFile(name, runtimeFiles, sourceBuild = false) {
     || name.startsWith('ios/')
     || name.startsWith('android/')
     || name.startsWith('web/')
-    || name.startsWith('plugin/')
-    || name === BUNDLED_HAR
-    || name === OH_PACKAGE_MANIFEST;
+    || name.startsWith('plugin/');
 }
 
 function packageFile(value, field) {
@@ -536,16 +540,19 @@ function exportPaths(target) {
   return target && typeof target === 'object' ? Object.values(target).flatMap(exportPaths) : [];
 }
 
-function findExportFile(target, files) {
-  if (!target.includes('*')) return target;
+function findExportFiles(target, files) {
+  if (!target.includes('*')) return [target];
+
   const parts = target.split('*').map(part => part.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'));
   const pattern = new RegExp(`^${parts[0]}(.+)${parts.slice(1).join('\\1')}$`, 'u');
-  return files.find(file => pattern.test(file)) ?? target;
+  const matches = files.filter(file => pattern.test(file));
+
+  return matches.length > 0 ? matches : [target];
 }
 
-async function existingPackageRuntimeFiles(project, files) {
+async function packedRuntimeFiles(project, files) {
   const { main, types, typings, exports } = project.packageJson;
-  const entries = new Set(exportPaths(exports).map(target => findExportFile(target, files)));
+  const entries = new Set(exportPaths(exports).flatMap(target => findExportFiles(target, files)));
 
   if (main !== undefined) {
     const entry = packageFile(main, 'package.json#main');
@@ -588,30 +595,23 @@ export async function prepackModule(root = process.cwd(), options = {}) {
   if (!reuse) await executeWorkspaceBuild(entries);
 
   const output = await spawnCommand(plan.pack.command, plan.pack.args, { cwd: project.packageRoot, capture: true });
-  const result = JSON.parse(output);
-  const files = npmPackFiles(result);
-  const runtimeFiles = options.existingPackage
-    ? await existingPackageRuntimeFiles(project, files)
-    : new Set([
-        packageFile(project.packageJson.main, 'package.json#main'),
-        packageFile(project.packageJson.types, 'package.json#types'),
-      ]);
+  const files = npmPackFiles(JSON.parse(output));
+  const required = await packedRuntimeFiles(project, files);
+
+  required.add('package.json');
+  required.add(path.relative(project.packageRoot, project.bundledHar).split(path.sep).join('/'));
+  if (project.isExpoModule) {
+    required.add('expo-module.config.json');
+    required.add(OH_PACKAGE_MANIFEST);
+  }
 
   if (!options.existingPackage) {
     const sourceBuild = Boolean(project.config.buildOptionsFile);
-    const unexpected = files.filter(file => !allowedPackedFile(file, runtimeFiles, sourceBuild));
+    const unexpected = files.filter(file => !allowedPackedFile(file, required, sourceBuild));
     if (unexpected.length > 0) throw new Error(`npm pack contains unexpected files: ${unexpected.join(', ')}`);
   }
 
-  const required = [
-    'package.json',
-    'expo-module.config.json',
-    ...runtimeFiles,
-    BUNDLED_HAR,
-    OH_PACKAGE_MANIFEST,
-  ].filter(Boolean);
-  const missing = [...new Set(required)].filter(file => !files.includes(file));
-
+  const missing = [...required].filter(file => !files.includes(file));
   if (missing.length > 0) throw new Error(`npm pack is missing required runtime files: ${missing.join(', ')}`);
 
   return { files };

@@ -144,12 +144,15 @@ async function replaceBuildInput(file, source, mode) {
 
 export async function withWorkspaceOverrides(project, overrides, build) {
   const lock = path.join(project.projectRoot, '.expo-harmony-build.lock');
+  const backups = path.join(lock, 'inputs');
   try {
     await fs.mkdir(lock);
   } catch (cause) {
-    if (cause.code === 'EEXIST') throw new Error(`Harmony build already locked: ${lock}. If a previous process was killed, remove this directory after confirming it has stopped.`);
+    if (cause.code === 'EEXIST') {
+      throw new Error(`Harmony build already locked: ${lock}. If the previous process stopped, restore any OHPM inputs saved in ${backups} before removing the lock.`);
+    }
 
-    throw cause;
+    return Promise.reject(cause);
   }
 
   let snapshots = [];
@@ -160,15 +163,16 @@ export async function withWorkspaceOverrides(project, overrides, build) {
   const { signal } = controller;
   const interrupt = () => controller.abort();
 
-  process.once('SIGINT', interrupt);
-  process.once('SIGTERM', interrupt);
+  process.on('SIGINT', interrupt);
+  process.on('SIGTERM', interrupt);
 
   try {
     if (Object.keys(overrides).length > 0) {
+      const moduleLock = path.join(project.moduleRoot, 'oh-package-lock.json5');
       const files = [
         path.join(project.projectRoot, 'oh-package.json5'),
         path.join(project.projectRoot, 'oh-package-lock.json5'),
-        path.join(project.moduleRoot, 'oh-package-lock.json5'),
+        moduleLock,
       ];
 
       const inputs = await Promise.all(files.map(snapshotBuildInput));
@@ -178,17 +182,28 @@ export async function withWorkspaceOverrides(project, overrides, build) {
       const manifest = JSON5.parse(input.source.toString());
       manifest.overrides = { ...manifest.overrides, ...overrides };
 
+      const staging = `${backups}.tmp`;
+      for (const { file, source, mode } of inputs) {
+        if (source === undefined) continue;
+
+        const directory = file === moduleLock ? path.join(staging, 'library') : staging;
+        const backup = path.join(directory, path.basename(file));
+        await fs.mkdir(path.dirname(backup), { recursive: true });
+        await replaceBuildInput(backup, source, mode);
+      }
+
+      await fs.rename(staging, backups);
       snapshots = inputs;
       await replaceBuildInput(input.file, `${JSON5.stringify(manifest, null, 2)}\n`, input.mode);
 
-      // Local HARs may change without their version or path changing. Force OHPM
-      // to re-resolve them instead of retaining an older lockfile resolution.
+      // A rebuilt HAR can retain its version and path, so invalidate the old resolution.
       for (const target of files.slice(1)) await fs.rm(target, { force: true });
     }
 
     if (signal.aborted) throw new globalThis.DOMException('This operation was aborted', 'AbortError');
 
     result = await build(signal);
+
     if (signal.aborted) throw new globalThis.DOMException('This operation was aborted', 'AbortError');
   } catch (error) {
     failure = error instanceof Error ? error : new Error(String(error), { cause: error });
@@ -196,15 +211,20 @@ export async function withWorkspaceOverrides(project, overrides, build) {
     for (const { file, source, mode } of snapshots) {
       await replaceBuildInput(file, source, mode).catch(error => cleanupErrors.push(error));
     }
-    await fs.rmdir(lock).catch(error => cleanupErrors.push(error));
+
+    if (cleanupErrors.length === 0) {
+      await fs.rm(lock, { recursive: true, force: true }).catch(error => cleanupErrors.push(error));
+    }
+
     process.removeListener('SIGINT', interrupt);
     process.removeListener('SIGTERM', interrupt);
   }
   if (cleanupErrors.length > 0) {
     const errors = failure ? [failure, ...cleanupErrors] : cleanupErrors;
-    throw new AggregateError(errors, `Could not restore OHPM build inputs in ${project.projectRoot}: ${errors.map(error => error.message).join('. ')}`);
+    throw new AggregateError(errors, `Could not clean up Harmony build inputs in ${project.projectRoot}. Recovery files are kept in ${lock}: ${errors.map(error => error.message).join('. ')}`);
   }
-  if (failure) throw failure;
+
+  if (failure) return Promise.reject(failure);
 
   return result;
 }
