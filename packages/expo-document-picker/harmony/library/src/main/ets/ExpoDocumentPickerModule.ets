@@ -11,10 +11,14 @@ import { util } from '@kit.ArkTS';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { DOCUMENT_PICKER_OPTIONS, DocumentPickerOptions } from './DocumentPickerOptions';
-import { filenameExtension, mimeTypeForName, suffixFilters } from './DocumentPickerTypes';
+import { documentSuffixes, filenameExtension, mimeTypeForName, UnsupportedDocumentTypeError } from './DocumentPickerTypes';
 
 const MILLISECONDS_PER_SECOND: number = 1000;
 const NANOSECONDS_PER_MILLISECOND: bigint = 1000000n;
+const NANOSECOND_FILE_TIMESTAMPS_API: number = 15;
+const UNLIMITED_DOCUMENT_SELECTION_API: number = 21;
+const LEGACY_DOCUMENT_SELECTION_LIMIT: number = 500;
+const DOCUMENT_PICKER_CAPABILITY: string = 'SystemCapability.FileManagement.UserFileService';
 // The system picker can outlive a React Native runtime in the same ability.
 const activePickers: WeakSet<common.UIAbilityContext> = new WeakSet();
 
@@ -33,12 +37,13 @@ interface DocumentPickerResult {
 
 function lastModifiedMilliseconds(stat: fileIo.Stat): number {
   let modified = Date.now();
+
   try {
     const time = Math.trunc(stat.mtime * MILLISECONDS_PER_SECOND);
     if (Number.isSafeInteger(time)) modified = time;
   } catch (_) {}
 
-  if (deviceInfo.sdkApiVersion >= 15) {
+  if (deviceInfo.sdkApiVersion >= NANOSECOND_FILE_TIMESTAMPS_API) {
     try {
       const nanoseconds = stat.mtimeNs;
       if (nanoseconds !== undefined) {
@@ -87,6 +92,9 @@ export class ExpoDocumentPickerModule extends ExpoModule {
     if (ability === undefined) {
       throw new ExpoModuleError('ERR_DOCUMENT_PICKER_UNAVAILABLE', 'Document picking requires a UIAbility.');
     }
+    if (!canIUse(DOCUMENT_PICKER_CAPABILITY)) {
+      throw new ExpoModuleError('ERR_DOCUMENT_PICKER_UNAVAILABLE', 'The system document picker is unavailable on this device.');
+    }
 
     activePickers.add(ability);
     let directory: string | undefined;
@@ -94,7 +102,10 @@ export class ExpoDocumentPickerModule extends ExpoModule {
     try {
       const selection = new picker.DocumentSelectOptions();
       if (!options.multiple) selection.maxSelectNumber = 1;
-      selection.fileSuffixFilters = suffixFilters(options.type);
+      else if (deviceInfo.sdkApiVersion < UNLIMITED_DOCUMENT_SELECTION_API) selection.maxSelectNumber = LEGACY_DOCUMENT_SELECTION_LIMIT;
+
+      const suffixes = documentSuffixes(options.type);
+      if (suffixes !== undefined) selection.fileSuffixFilters = [suffixes.join(',')];
 
       let uris: string[];
 
@@ -121,7 +132,7 @@ export class ExpoDocumentPickerModule extends ExpoModule {
         const selected = options.multiple ? uris : uris.slice(0, 1);
 
         for (const uri of selected) {
-          assets.push(await this.readAsset(uri, grants, directory));
+          assets.push(await this.readAsset(uri, grants, suffixes, directory));
           this.assertActive();
         }
 
@@ -143,6 +154,9 @@ export class ExpoDocumentPickerModule extends ExpoModule {
       }
 
       if (error instanceof ExpoModuleError) throw new ExpoModuleError(error.code, error.message, error.cause);
+      if (error instanceof UnsupportedDocumentTypeError) {
+        throw new ExpoModuleError('ERR_DOCUMENT_PICKER_UNSUPPORTED_MIME_TYPE', error.message, error);
+      }
 
       throw new ExpoModuleError('ERR_DOCUMENT_PICKER_FAILED', 'Unable to prepare the HarmonyOS document picker.', error);
     } finally {
@@ -150,7 +164,7 @@ export class ExpoDocumentPickerModule extends ExpoModule {
     }
   }
 
-  private async readAsset(uri: string, grants: Set<string>, directory?: string): Promise<DocumentPickerAsset> {
+  private async readAsset(uri: string, grants: Set<string>, suffixes: string[] | undefined, directory?: string): Promise<DocumentPickerAsset> {
     this.assertActive();
 
     const file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
@@ -165,11 +179,18 @@ export class ExpoDocumentPickerModule extends ExpoModule {
       if (name.length === 0 || /[/\0]/.test(name)) {
         throw new ExpoModuleError('ERR_FAILED_TO_READ_DOCUMENT', 'The selected document has an invalid filename.');
       }
+      if (suffixes !== undefined) {
+        const lower = name.toLowerCase();
+        if (!suffixes.some((suffix: string): boolean => lower.endsWith(suffix))) {
+          throw new ExpoModuleError('ERR_DOCUMENT_PICKER_MIME_TYPE_MISMATCH', 'The selected document does not match the requested MIME types.');
+        }
+      }
 
       this.assertActive();
 
       let target = uri;
       let size = documentSize(stat);
+
       if (directory !== undefined) {
         const path = `${directory}/${util.generateRandomUUID()}${filenameExtension(name)}`;
 
@@ -183,7 +204,6 @@ export class ExpoDocumentPickerModule extends ExpoModule {
 
       const asset: DocumentPickerAsset = { uri: target, name, lastModified: lastModifiedMilliseconds(stat) };
       if (size !== undefined) asset.size = size;
-
       const mime = mimeTypeForName(name);
       if (mime !== undefined) asset.mimeType = mime;
 

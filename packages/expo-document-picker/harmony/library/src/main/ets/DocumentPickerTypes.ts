@@ -6,8 +6,13 @@
  */
 
 import { uniformTypeDescriptor } from '@kit.ArkData';
-import { BusinessError } from '@kit.BasicServicesKit';
-import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
+import type { BusinessError } from '@kit.BasicServicesKit';
+
+export class UnsupportedDocumentTypeError extends Error {
+  constructor(mimeType: string) {
+    super(`HarmonyOS has no filename extensions registered for '${mimeType}'.`);
+  }
+}
 
 export function filenameExtension(name: string): string {
   const dot = name.lastIndexOf('.');
@@ -15,18 +20,18 @@ export function filenameExtension(name: string): string {
 }
 
 export function mimeTypeForName(name: string): string | undefined {
-  const extension = filenameExtension(name).toLowerCase();
-  if (extension.length === 0) return undefined;
+  const suffix = filenameExtension(name).toLowerCase();
+  if (suffix.length === 0) return undefined;
 
   try {
-    const id = uniformTypeDescriptor.getUniformDataTypeByFilenameExtension(extension);
-    return uniformTypeDescriptor.getTypeDescriptor(id).mimeTypes[0];
+    const id = uniformTypeDescriptor.getUniformDataTypeByFilenameExtension(suffix);
+    return uniformTypeDescriptor.getTypeDescriptor(id)?.mimeTypes[0];
   } catch (_) {
     return undefined;
   }
 }
 
-export function suffixFilters(types: string[]): string[] | undefined {
+export function documentSuffixes(types: string[]): string[] | undefined {
   const normalized = types.map((type: string): string => type.trim().toLowerCase());
   if (normalized.includes('*/*')) return undefined;
 
@@ -34,7 +39,7 @@ export function suffixFilters(types: string[]): string[] | undefined {
   for (const mime of normalized) {
     const extensions = extensionsForMimeType(mime);
     if (extensions.length === 0) {
-      throw new ExpoModuleError('ERR_DOCUMENT_PICKER_UNSUPPORTED_MIME_TYPE', `HarmonyOS has no filename extensions registered for '${mime}'.`);
+      throw new UnsupportedDocumentTypeError(mime);
     }
 
     extensions.forEach((extension: string): void => {
@@ -42,7 +47,7 @@ export function suffixFilters(types: string[]): string[] | undefined {
     });
   }
 
-  return [Array.from(suffixes).join(',')];
+  return Array.from(suffixes);
 }
 
 function extensionsForMimeType(mime: string): string[] {
@@ -55,7 +60,7 @@ function extensionsForMimeType(mime: string): string[] {
   } catch (error) {
     if ((error as BusinessError).code === 401) return [];
 
-    throw new ExpoModuleError('ERR_DOCUMENT_PICKER_FAILED', 'Unable to query the HarmonyOS MIME type registry.', error);
+    throw error;
   }
 
   const extensions: string[] = [];
@@ -63,10 +68,10 @@ function extensionsForMimeType(mime: string): string[] {
   for (const id of ids) {
     try {
       const descriptor = uniformTypeDescriptor.getTypeDescriptor(id);
-      if (wildcard && !descriptor.mimeTypes.some((type: string): boolean => type.toLowerCase().startsWith(prefix))) continue;
+      if (!descriptor || (wildcard && !descriptor.mimeTypes.some((type: string): boolean => type.toLowerCase().startsWith(prefix)))) continue;
 
       for (const extension of descriptor.filenameExtensions) {
-        if (extension.startsWith('.') && extension.length > 1 && !/[*,|/\\\s\0]/.test(extension)) extensions.push(extension);
+        if (extension.startsWith('.') && extension.length > 1 && !/[*,|/\\\s\0]/.test(extension)) extensions.push(extension.toLowerCase());
       }
     } catch (_) {
       // An enum value introduced in a newer SDK may not have a descriptor on this device.

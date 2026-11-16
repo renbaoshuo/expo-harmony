@@ -40,12 +40,12 @@ const result = await DocumentPicker.getDocumentAsync({
 | 属性 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `type` | `string \| string[]` | `'*/*'` | 允许选择的 MIME 类型；支持 `image/*` 等通配符。 |
-| `multiple` | `boolean` | `false` | 是否允许一次选择多个文件。为 `false` 时最多选择一个；为 `true` 时选择数量由系统决定。 |
+| `multiple` | `boolean` | `false` | 是否允许一次选择多个文件。为 `false` 时最多选择一个。为 `true` 时，API 13–20 最多选择 500 个，API 21 起使用系统默认上限。 |
 | `copyToCacheDirectory` | `boolean` | `true` | 是否将所选文件复制到应用缓存目录。为 `true` 时 `uri` 指向副本；为 `false` 时 `uri` 是系统返回的原始地址，其可读性和有效期由系统决定。 |
 
 - `base64`：HarmonyOS 不返回 Base64 内容，`uri` 仍为文件地址。
 
-系统按文件后缀过滤选择结果，并根据 HarmonyOS SDK 中注册的 MIME 类型确定后缀；`*/*` 不限制后缀。系统注册表中找不到对应后缀时抛出 `ERR_DOCUMENT_PICKER_UNSUPPORTED_MIME_TYPE`。`type` 为空数组时，在打开选择器前抛出 `ERR_DOCUMENT_PICKER_OPTIONS_EMPTY_LIST`。可用后缀随系统注册表变化。
+系统按文件后缀过滤候选文件，返回结果后模块也会核对所选文件的后缀。后缀来自 HarmonyOS UTD 注册表，`*/*` 允许任意后缀。选择器根据用户选择提供临时访问授权，无需在应用中声明文件访问权限。[鸿蒙文件选择指南](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/select-user-file/)
 
 #### `DocumentPickerAsset`
 
@@ -93,13 +93,17 @@ HarmonyOS SDK API 15 及以上版本可提供更高精度的最后修改时间�
 
 HarmonyOS SDK 的 MIME 类型注册表中没有对应文件后缀时抛出。
 
+#### `ERR_DOCUMENT_PICKER_MIME_TYPE_MISMATCH`
+
+系统返回的文件后缀超出 `type` 对应的范围时抛出。
+
 #### `ERR_PICKING_IN_PROGRESS`
 
 同一 UIAbility 的上一次文件选择尚未结束时再次调用 `getDocumentAsync()`，会抛出此错误。
 
 #### `ERR_DOCUMENT_PICKER_UNAVAILABLE`
 
-没有可用 UIAbility、无法打开系统文件选择器时抛出。
+没有可用 UIAbility 或设备缺少系统文档选择能力时抛出。
 
 #### `ERR_FAILED_TO_READ_DOCUMENT`
 
