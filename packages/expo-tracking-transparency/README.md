@@ -36,7 +36,7 @@ HarmonyOS SDK API 20 及以上可直接查询完整权限状态。API 13–19 �
 
 #### `TrackingTransparency.isAvailable()`
 
-无参数，返回 `boolean`。HarmonyOS 始终返回 `true`，表示接口可用，不代表已经获得授权。
+无参数，返回 `boolean`。HarmonyOS 检查设备是否支持系统 OAID 服务。此查询不会请求权限。设备缺少该服务时，权限查询和请求返回 `denied` 且 `canAskAgain` 为 `false`，异步读取返回 `null`。
 
 #### `TrackingTransparency.getAdvertisingId()`
 
@@ -94,7 +94,7 @@ HarmonyOS 不支持同步的 `getAdvertisingId()`，调用时会以此错误码�
 
 #### `ohos.permission.APP_TRACKING_CONSENT`
 
-宿主应用需声明此权限，才能查询或请求跨应用跟踪权限，以及读取 OAID。未声明或声明无效时，查询和请求会以 `ERR_TRACKING_TRANSPARENCY_PERMISSION` 拒绝；未授权时，`getAdvertisingIdAsync()` 返回 `null`。系统设置中的「要求应用请求关联」开关会影响是否显示授权对话框；关闭时系统可能直接授予权限。
+此权限是普通用户授权权限。使用跟踪功能的宿主应用需在入口模块的 `module.json5` 声明权限，填写授权用途 `reason` 和 `usedScene.abilities`，并将使用时机设为 `inuse`。未声明或声明无效时，支持 OAID 的设备上的权限查询和请求会以 `ERR_TRACKING_TRANSPARENCY_PERMISSION` 拒绝。未授权时，`getAdvertisingIdAsync()` 返回 `null`。系统设置中的「要求应用请求关联」开关会影响授权对话框的显示，关闭时系统可能直接授予权限。 [华为 OAID 接入文档](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/oaid-service/)
 
 ## Author
 

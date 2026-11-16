@@ -7,12 +7,18 @@
 
 import { createPermissionHook, type PermissionResponse } from 'expo';
 import { requireNativeModule } from 'expo-modules-core';
+import { isAvailable as isUpstreamAvailable } from 'expo-tracking-transparency';
 
 const native = requireNativeModule<{
+  isAvailable?(): boolean;
   getAdvertisingIdAsync(): Promise<string | null>;
   getPermissionsAsync(): Promise<PermissionResponse>;
   requestPermissionsAsync(): Promise<PermissionResponse>;
 }>('ExpoTrackingTransparency');
+
+export function isAvailable(): boolean {
+  return native.isAvailable?.() ?? isUpstreamAvailable();
+}
 
 export async function getTrackingPermissionsAsync(): Promise<PermissionResponse> {
   return native.getPermissionsAsync();
@@ -31,5 +37,5 @@ export async function getAdvertisingIdAsync(): Promise<string | null> {
   return native.getAdvertisingIdAsync();
 }
 
-export { getAdvertisingId, isAvailable, PermissionStatus } from 'expo-tracking-transparency';
+export { getAdvertisingId, PermissionStatus } from 'expo-tracking-transparency';
 export type { PermissionResponse, PermissionExpiration, PermissionHookOptions } from 'expo-tracking-transparency';
