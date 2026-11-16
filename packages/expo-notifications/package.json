@@ -57,6 +57,12 @@
         {
           "upstream": "expo-notifications",
           "origin": "build/index.js",
+          "request": "./NotificationsHandler",
+          "target": "src/NotificationsHandler.harmony.ts"
+        },
+        {
+          "upstream": "expo-notifications",
+          "origin": "build/index.js",
           "request": "./getExpoPushTokenAsync",
           "target": "src/getExpoPushTokenAsync.ts"
         },

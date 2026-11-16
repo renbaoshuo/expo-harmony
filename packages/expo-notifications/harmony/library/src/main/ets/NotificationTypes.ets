@@ -79,6 +79,7 @@ export function pushNotification(id: string, title: string | null, body: string 
   content['subtitle'] = null;
   content['body'] = body;
   content['data'] = data;
+  content['categoryIdentifier'] = null;
   content['sound'] = 'default';
 
   const trigger: Record<string, ESObject> = {};
@@ -141,8 +142,14 @@ export function notificationContent(input: ESObject): Record<string, ESObject> {
 
   if (content.data !== undefined && content.data !== null) record(content.data, 'content.data');
   if (content.badge !== undefined) integer(content.badge, 'badge', 0, 2147483647);
-  if (content.sound !== undefined && content.sound !== null && typeof content.sound !== 'boolean' && content.sound !== 'default') {
-    throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Custom local notification sounds are not supported on HarmonyOS.');
+
+  const sound: ESObject = content.sound;
+  if (sound === 'defaultRingtone' || sound === 'defaultCritical') {
+    throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'The requested system sound type is only available on iOS.');
+  }
+  if (sound !== undefined && sound !== null && typeof sound !== 'boolean' && sound !== 'default' &&
+    (typeof sound !== 'string' || !/^[^/\\]+\.(m4a|aac|mp3|ogg|wav|flac|amr)$/i.test(sound))) {
+    throw new ExpoModuleError('ERR_NOTIFICATIONS_INVALID_ARGUMENT', 'sound must be default, a boolean, or a supported sound file name.');
   }
 
   for (const name of ['autoDismiss', 'sticky']) {
@@ -165,9 +172,11 @@ export function notificationContent(input: ESObject): Record<string, ESObject> {
   copy.title = content.title ?? null;
   copy.subtitle = content.subtitle ?? null;
   copy.body = content.body ?? null;
-  copy.data = content.data ?? {};
-  // Match upstream Android: omission means the default notification sound.
-  copy.sound = content.sound === false || content.sound === null ? null : 'default';
+  copy.data = copy.data ?? {};
+  copy.categoryIdentifier = content.categoryIdentifier ?? null;
+  copy.sound = sound === false || sound === null
+    ? null
+    : typeof sound === 'string' && sound !== 'default' ? 'custom' : 'default';
 
   return copy;
 }

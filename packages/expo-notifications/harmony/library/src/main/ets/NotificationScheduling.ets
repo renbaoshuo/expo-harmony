@@ -6,9 +6,11 @@
  */
 
 import { ExpoAppLifecycleState, ExpoModuleContext, ExpoModuleError, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
+import { common } from '@kit.AbilityKit';
 import { reminderAgentManager } from '@kit.BackgroundTasksKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { media } from '@kit.MediaKit';
 import { NotificationsStore } from './NotificationsStore';
 import {
   notificationContent,
@@ -25,6 +27,32 @@ import { publishNotification, responseParameters } from './NotificationPresentat
 
 const REMINDER_NOT_FOUND = 1700003;
 const REMINDER_LIMIT_EXCEEDED = 1700002;
+const MAX_RING_SECONDS = 1800;
+
+async function ringtoneDuration(context: common.UIAbilityContext, file: string): Promise<number> {
+  const resources = context.resourceManager;
+  const source = await resources.getRawFd(file);
+
+  try {
+    const extractor = await media.createAVMetadataExtractor();
+
+    try {
+      extractor.fdSrc = source;
+      const metadata = await extractor.fetchMetadata();
+
+      const seconds = Math.ceil(Number(metadata.duration) / 1000);
+      if (!Number.isSafeInteger(seconds) || seconds <= 0 || seconds > MAX_RING_SECONDS) {
+        throw new ExpoModuleError('ERR_NOTIFICATIONS_INVALID_ARGUMENT', 'An agent reminder ringtone must have a duration of 1 to 1800 seconds.');
+      }
+
+      return seconds;
+    } finally {
+      await extractor.release();
+    }
+  } finally {
+    await resources.closeRawFd(file);
+  }
+}
 
 async function cancelSystemReminder(id: number): Promise<void> {
   try {
@@ -41,6 +69,7 @@ export async function schedule(context: ExpoModuleContext, store: NotificationsS
   identifier(id);
 
   const content = notificationContent(input);
+  const customSound: string | undefined = content.sound === 'custom' ? (input as Record<string, ESObject>)['sound'] : undefined;
   const trigger = validateTrigger(value);
 
   const output = trigger === null ? null : recordTrigger(trigger);
@@ -48,8 +77,8 @@ export async function schedule(context: ExpoModuleContext, store: NotificationsS
   const notification: Notification = { date: Date.now(), request };
 
   if (trigger === null) {
-    if (context.appLifecycleState === ExpoAppLifecycleState.FOREGROUND) store.receive(context.uiAbilityContext, notification);
-    else await publishNotification(context.uiAbilityContext, store, notification);
+    if (context.appLifecycleState === ExpoAppLifecycleState.FOREGROUND) store.receive(context.uiAbilityContext, notification, customSound);
+    else await publishNotification(context.uiAbilityContext, store, notification, customSound);
 
     return id;
   }
@@ -60,19 +89,26 @@ export async function schedule(context: ExpoModuleContext, store: NotificationsS
       'Scheduled notifications require ohos.permission.PUBLISH_AGENT_REMINDER. The app owner must obtain the Agent-Powered Reminder capability where required and declare the permission in the application manifest.',
     );
   }
-  if (content.sound !== 'default') {
-    throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Silent agent reminders are not supported on HarmonyOS; use the default sound.');
+  if (content.sound === null) {
+    throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Agent reminders do not support silent notifications.');
   }
-  if (content.badge !== undefined || content.categoryIdentifier || content.sticky || content.subtitle) {
+  if (content.badge !== undefined || content.categoryIdentifier !== null || content.subtitle !== null) {
     throw new ExpoModuleError(
       'ERR_NOTIFICATIONS_UNSUPPORTED',
-      'Badge, category, sticky, or subtitle fields on agent reminders are not supported on HarmonyOS.',
+      'Badge, category, or subtitle fields on agent reminders are not supported on HarmonyOS.',
     );
   }
 
-  const reminder = reminderTrigger(trigger, notification.date);
-  notification.date = nextTriggerDate(trigger, notification.date) as number;
-  if (trigger.type === 'date' && output !== null) output['value'] = notification.date;
+  const ability = context.uiAbilityContext;
+  const ringSeconds = customSound === undefined ? 0 : await ringtoneDuration(ability, customSound);
+  const next = nextTriggerDate(trigger);
+
+  if (next === null) {
+    throw new ExpoModuleError('ERR_NOTIFICATIONS_INVALID_ARGUMENT', 'Cannot schedule a notification in the past.');
+  }
+
+  const reminder = reminderTrigger(trigger, next);
+  notification.date = next;
 
   const pending = await store.validSchedules();
   const old = pending.find((entry: ScheduledNotification): boolean => entry.request.identifier === id);
@@ -80,43 +116,55 @@ export async function schedule(context: ExpoModuleContext, store: NotificationsS
   const shown = old !== undefined && (await notificationManager.getActiveNotifications()).some(
     (entry: notificationManager.NotificationRequest): boolean => entry.id === old.notificationId,
   );
-  const native = old !== undefined && !shown ? old.notificationId : await store.allocateId();
+  let native = old !== undefined && !shown ? old.notificationId : await store.allocateId();
 
   reminder.notificationId = native;
   reminder.title = content.title ?? '';
   reminder.content = content.body ?? '';
   reminder.expiredContent = content.body ?? '';
-  reminder.ringDuration = 0;
+  reminder.ringDuration = ringSeconds;
+
+  if (customSound !== undefined) {
+    reminder.customRingUri = customSound;
+    reminder.ringChannel = reminderAgentManager.RingChannel.RING_CHANNEL_NOTIFICATION;
+  }
+
   reminder.snoozeTimes = 0;
   reminder.tapDismissed = content.autoDismiss !== false;
-  reminder.slotType = notificationSlot(context.uiAbilityContext);
+  reminder.slotType = notificationSlot(ability);
   reminder.wantAgent = {
-    pkgName: context.uiAbilityContext.abilityInfo.bundleName,
-    abilityName: context.uiAbilityContext.abilityInfo.name,
+    pkgName: ability.abilityInfo.bundleName,
+    abilityName: ability.abilityInfo.name,
     parameters: responseParameters(notification),
   };
 
   if (old !== undefined && !shown) {
-    // The system updates a pending reminder in place, including when its quota is full.
+    // Updating in place also works when the reminder quota is full.
     const replacement: ScheduledNotification = { reminderId: old.reminderId, notificationId: native, request };
+
     await store.write('scheduled', records.map((entry: ScheduledNotification): ScheduledNotification =>
       entry.reminderId === old.reminderId ? replacement : entry,
     ));
 
     try {
       await reminderAgentManager.updateReminder(old.reminderId, reminder);
+
+      return id;
     } catch (error) {
       await store.write('scheduled', records);
 
-      if (error instanceof ExpoModuleError) throw error;
-      throw new ExpoNotificationError('ERR_NOTIFICATIONS_SCHEDULE', error as Object);
+      if ((error as BusinessError).code !== REMINDER_NOT_FOUND) {
+        if (error instanceof ExpoModuleError) throw error;
+        throw new ExpoNotificationError('ERR_NOTIFICATIONS_SCHEDULE', error as Object);
+      }
     }
 
-    return id;
+    // The previous reminder can fire or be removed between querying and updating.
+    native = await store.allocateId();
+    reminder.notificationId = native;
   }
 
-  // A reminder whose card is displayed cannot be updated. Publish first so a
-  // failed replacement leaves the previous reminder in the system.
+  // Displayed reminders cannot be updated. Publish before canceling the old reminder.
   let handle: number;
 
   try {
@@ -167,14 +215,21 @@ export async function cancelScheduled(store: NotificationsStore, id?: string): P
 }
 
 function recordTrigger(trigger: Record<string, ESObject>): Record<string, ESObject> {
+  const result: Record<string, ESObject> = { 'type': trigger.type };
+
   if (trigger.type === 'date') {
-    const result: Record<string, ESObject> = {};
-    result['type'] = 'date';
     result['value'] = trigger.timestamp;
     result['repeats'] = false;
-
-    return result;
+  } else if (trigger.type === 'timeInterval') {
+    result['seconds'] = trigger.seconds;
+    result['repeats'] = trigger.repeats ?? false;
+  } else {
+    result['hour'] = trigger.hour;
+    result['minute'] = trigger.minute;
+    if (trigger.type === 'weekly') result['weekday'] = trigger.weekday;
+    if (trigger.type === 'monthly' || trigger.type === 'yearly') result['day'] = trigger.day;
+    if (trigger.type === 'yearly') result['month'] = trigger.month;
   }
 
-  return JSON.parse(JSON.stringify(trigger)) as Record<string, ESObject>;
+  return result;
 }

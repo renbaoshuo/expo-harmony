@@ -6,6 +6,7 @@
  */
 
 import { ExpoModule, ExpoModuleDefinition, ExpoModuleError, ExpoFunction, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
+import { util } from '@kit.ArkTS';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { pushService } from '@kit.PushKit';
@@ -51,7 +52,6 @@ const NotificationActions = ExpoValueTypes.custom<NotificationAction[]>(
   },
   (value: NotificationAction[]): ESObject => value,
 );
-
 const NOTIFICATIONS_DISABLED = 1600004;
 const CAPABILITY_UNSUPPORTED = 801;
 const PERMISSION_REQUESTED = 'permissionRequested';
@@ -224,7 +224,7 @@ export class ExpoNotificationPermissionsModule extends NotificationsModule {
 
     const store = this.store;
     const settings = await notificationManager.getNotificationSetting();
-    const granted = settings.notificationEnabled ?? await notificationManager.isNotificationEnabled();
+    const granted = await notificationManager.isNotificationEnabled();
     const asked = store.read<boolean>(PERMISSION_REQUESTED, false);
 
     if (granted && !asked) await store.write(PERMISSION_REQUESTED, true);
@@ -347,14 +347,14 @@ export class ExpoNotificationPresenter extends NotificationsModule {
 }
 
 export class ExpoNotificationsEmitter extends NotificationsModule {
-  private observing: boolean = false;
   private delivered?: NotificationResponse;
   private received: NotificationReceiver = (notification: Notification): void => {
     if (!this.canSendEvents()) return;
+
     this.sendEvent('onDidReceiveNotification', notification);
   };
   private response: ResponseReceiver = (response: NotificationResponse): void => {
-    if (!this.observing || !this.canSendEvents()) return;
+    if (!this.canSendEvents()) return;
 
     this.sendEvent('onDidReceiveNotificationResponse', response);
     this.delivered = response;
@@ -364,22 +364,24 @@ export class ExpoNotificationsEmitter extends NotificationsModule {
     return new ExpoModuleDefinition()
       .name('ExpoNotificationsEmitter')
       .events(['onDidReceiveNotification', 'onDidReceiveNotificationResponse', 'onDidClearNotificationResponse', 'onNotificationsDeleted'])
-      .onCreate((): void => {
+      .onStartObserving('onDidReceiveNotification', (): void => {
         this.listen(this.received);
-        this.store.responses.add(this.response);
+      })
+      .onStopObserving('onDidReceiveNotification', (): void => {
+        this.unlisten(this.received);
       })
       .onDestroy((): void => {
-        this.observing = false;
         this.unlisten(this.received);
         this.store.responses.delete(this.response);
       })
       .onStartObserving('onDidReceiveNotificationResponse', (): void => {
-        this.observing = true;
+        this.store.responses.add(this.response);
+
         const response = this.store.lastResponse;
         if (response !== null && response !== this.delivered) this.response(response);
       })
       .onStopObserving('onDidReceiveNotificationResponse', (): void => {
-        this.observing = false;
+        this.store.responses.delete(this.response);
       })
       .syncFunction('getLastNotificationResponse', (): NotificationResponse | null => this.store.lastResponse)
       .syncFunction('clearLastNotificationResponse', (): void => {
@@ -389,31 +391,39 @@ export class ExpoNotificationsEmitter extends NotificationsModule {
 }
 
 class PendingNotification {
+  readonly taskId: string;
   readonly notification: Notification;
   readonly timer: number;
+  readonly customSound?: string;
 
-  constructor(notification: Notification, timer: number) {
+  constructor(taskId: string, notification: Notification, timer: number, customSound?: string) {
+    this.taskId = taskId;
     this.notification = notification;
     this.timer = timer;
+    this.customSound = customSound;
   }
 }
 
 export class ExpoNotificationsHandlerModule extends NotificationsModule {
+  private usesTaskIds: boolean = false;
   private pending: Map<string, PendingNotification> = new Map();
-  private received: NotificationReceiver = (notification: Notification): void => {
+  private received: NotificationReceiver = (notification: Notification, customSound?: string): void => {
     if (!this.canSendEvents()) return;
 
     const id = notification.request.identifier;
     const previous = this.pending.get(id);
     if (previous !== undefined) this.expire(id, previous);
 
+    // Old bundles expect the public notification ID.
+    const taskId = this.usesTaskIds ? `${util.generateRandomUUID()}:${id}` : id;
     const timer = setTimeout((): void => {
       const current = this.pending.get(id);
-      if (current !== undefined) this.expire(id, current);
+      if (current !== undefined && current.taskId === taskId) this.expire(id, current);
     }, HANDLER_TIMEOUT_MS);
 
-    this.pending.set(id, new PendingNotification(notification, timer));
-    const payload: Record<string, ESObject> = { 'id': id, 'notification': notification };
+    this.pending.set(id, new PendingNotification(taskId, notification, timer, customSound));
+
+    const payload: Record<string, ESObject> = { 'id': taskId, 'notification': notification };
     this.sendEvent('onHandleNotification', payload);
   };
 
@@ -424,39 +434,46 @@ export class ExpoNotificationsHandlerModule extends NotificationsModule {
       .onStartObserving('onHandleNotification', (): void => {
         this.listen(this.received);
       })
-      .onStopObserving('onHandleNotification', (): void => {
-        this.unlisten(this.received);
-      })
-      .onDestroy((): void => {
-        this.unlisten(this.received);
-        this.pending.forEach((entry: PendingNotification): void => clearTimeout(entry.timer));
-        this.pending.clear();
+      .onStopObserving('onHandleNotification', (): void => this.stopHandling())
+      .onDestroy((): void => this.stopHandling())
+      .syncFunction('enableHandlerTaskIds', (): void => {
+        this.usesTaskIds = true;
       })
       .asyncFunction(
         'handleNotificationAsync',
-        ExpoFunction.typed2(ExpoValueTypes.string(), NotificationRecord, async (id: string, input: ESObject): Promise<void> => {
+        ExpoFunction.typed2(ExpoValueTypes.string(), NotificationRecord, async (taskId: string, behavior: Record<string, ESObject>): Promise<void> => {
+          const id = this.usesTaskIds ? taskId.slice(taskId.indexOf(':') + 1) : taskId;
           const pending = this.pending.get(id);
-          if (pending === undefined) {
+
+          if (pending === undefined || pending.taskId !== taskId) {
             throw new ExpoModuleError('ERR_NOTIFICATION_HANDLED', 'The notification handler expired or already completed.');
           }
-
-          const behavior = record(input, 'behavior');
-          validateBehavior(behavior);
 
           clearTimeout(pending.timer);
           this.pending.delete(id);
 
-          await this.queue((): Promise<void> => publishNotification(this.context.uiAbilityContext, this.store, pending.notification, behavior));
+          validateBehavior(behavior);
+
+          await this.queue((): Promise<void> =>
+            publishNotification(this.context.uiAbilityContext, this.store, pending.notification, pending.customSound, behavior),
+          );
         }),
       );
+  }
+
+  private stopHandling(): void {
+    this.unlisten(this.received);
+    this.pending.forEach((entry: PendingNotification): void => clearTimeout(entry.timer));
+    this.pending.clear();
   }
 
   private expire(id: string, entry: PendingNotification): void {
     clearTimeout(entry.timer);
     this.pending.delete(id);
+
     if (!this.canSendEvents()) return;
 
-    const payload: Record<string, ESObject> = { 'id': id, 'notification': entry.notification };
+    const payload: Record<string, ESObject> = { 'id': entry.taskId, 'notification': entry.notification };
     this.sendEvent('onHandleNotificationTimeout', payload);
   }
 }
@@ -540,62 +557,6 @@ export class NotificationsServerRegistrationModule extends NotificationsModule {
         'setRegistrationInfoAsync',
         ExpoFunction.typed1(ExpoValueTypes.string().nullable(), async (_info: string | null): Promise<void> => {
           throw new ExpoModuleError(EXPO_SERVICE_ERROR, 'Expo Push Service is not supported on HarmonyOS. Use Huawei Push Kit.');
-        }),
-      );
-  }
-}
-
-export class ExpoNotificationChannelManager extends NotificationsModule {
-  definition(): ExpoModuleDefinition {
-    return new ExpoModuleDefinition()
-      .name('ExpoNotificationChannelManager')
-      .asyncFunction('getNotificationChannelsAsync', async (): Promise<ESObject> => {
-        throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Android notification channels are not supported on HarmonyOS.');
-      })
-      .asyncFunction(
-        'getNotificationChannelAsync',
-        ExpoFunction.typed1(ExpoValueTypes.string(), async (_id: string): Promise<ESObject> => {
-          throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Android notification channels are not supported on HarmonyOS.');
-        }),
-      )
-      .asyncFunction(
-        'setNotificationChannelAsync',
-        ExpoFunction.typed2(ExpoValueTypes.string(), NotificationRecord, async (_id: string, _value: ESObject): Promise<ESObject> => {
-          throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Android notification channels are not supported on HarmonyOS.');
-        }),
-      )
-      .asyncFunction(
-        'deleteNotificationChannelAsync',
-        ExpoFunction.typed1(ExpoValueTypes.string(), async (_id: string): Promise<void> => {
-          throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Android notification channels are not supported on HarmonyOS.');
-        }),
-      );
-  }
-}
-
-export class ExpoNotificationChannelGroupManager extends NotificationsModule {
-  definition(): ExpoModuleDefinition {
-    return new ExpoModuleDefinition()
-      .name('ExpoNotificationChannelGroupManager')
-      .asyncFunction('getNotificationChannelGroupsAsync', async (): Promise<ESObject> => {
-        throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Android notification channel groups are not supported on HarmonyOS.');
-      })
-      .asyncFunction(
-        'getNotificationChannelGroupAsync',
-        ExpoFunction.typed1(ExpoValueTypes.string(), async (_id: string): Promise<ESObject> => {
-          throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Android notification channel groups are not supported on HarmonyOS.');
-        }),
-      )
-      .asyncFunction(
-        'setNotificationChannelGroupAsync',
-        ExpoFunction.typed2(ExpoValueTypes.string(), NotificationRecord, async (_id: string, _value: ESObject): Promise<ESObject> => {
-          throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Android notification channel groups are not supported on HarmonyOS.');
-        }),
-      )
-      .asyncFunction(
-        'deleteNotificationChannelGroupAsync',
-        ExpoFunction.typed1(ExpoValueTypes.string(), async (_id: string): Promise<void> => {
-          throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Android notification channel groups are not supported on HarmonyOS.');
         }),
       );
   }

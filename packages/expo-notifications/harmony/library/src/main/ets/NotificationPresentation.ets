@@ -24,6 +24,7 @@ import {
   pushNotification,
   notificationSlot,
   parseResponse,
+  record,
   ExpoNotificationError,
 } from './NotificationTypes';
 
@@ -37,8 +38,11 @@ const REMINDER_NOT_FOUND = 1700003;
 export async function setNotificationBadge(count: number): Promise<boolean> {
   try {
     if (!(await notificationManager.isNotificationEnabled())) return false;
-    // apiAvailable itself requires API 26; the minimum here is API 23.
-    if (deviceInfo.sdkApiVersion >= 26 && (await notificationManager.getNotificationSetting()).badgeNumberEnabled === false) return false;
+    if (typeof deviceInfo.apiAvailable === 'function') {
+      if (deviceInfo.apiAvailable('26.0.0')) {
+        if ((await notificationManager.getNotificationSetting()).badgeNumberEnabled === false) return false;
+      }
+    }
 
     await notificationManager.setBadgeNumber(count);
 
@@ -101,16 +105,34 @@ export function validateBehavior(value: Record<string, ESObject>): void {
   }
 }
 
+function notificationText(context: common.UIAbilityContext, content: Record<string, ESObject>): notificationManager.NotificationBasicContent {
+  const title: string | null = content.title;
+  const body: string | null = content.body;
+  const subtitle: string | null = content.subtitle;
+
+  if (title && body) return { title, text: body, additionalText: subtitle ?? undefined };
+
+  // Notification Kit requires both a title and text.
+  const text = body || title || subtitle;
+  if (!text) {
+    throw new ExpoModuleError('ERR_NOTIFICATIONS_INVALID_ARGUMENT', 'Displaying a notification requires a title, body, or subtitle.');
+  }
+
+  const app = context.applicationInfo;
+  const label = app.labelId === 0 ? app.name : context.resourceManager.getStringSync(app.labelId);
+
+  return { title: label, text, additionalText: subtitle === text ? undefined : subtitle ?? undefined };
+}
+
 export async function publishNotification(
   context: common.UIAbilityContext,
   store: NotificationsStore,
   notification: Notification,
+  customSound?: string,
   behavior?: Record<string, ESObject>,
 ): Promise<void> {
   const content = notification.request.content;
   if (behavior !== undefined) {
-    validateBehavior(behavior);
-
     if (behavior.shouldSetBadge === true && content.badge !== undefined) {
       await setNotificationBadge(content.badge as number);
     }
@@ -122,6 +144,9 @@ export async function publishNotification(
     await setNotificationBadge(content.badge as number);
   }
 
+  const normal = notificationText(context, content);
+  const muted = content.sound === null || (behavior !== undefined && behavior.shouldPlaySound !== true);
+
   const active = await notificationManager.getActiveNotifications();
   const previous = active.find((entry: notificationManager.NotificationRequest): boolean =>
     entry.label === notification.request.identifier &&
@@ -132,7 +157,6 @@ export async function publishNotification(
   const category = store.categories().find((entry: NotificationCategory): boolean => entry.identifier === content.categoryIdentifier);
 
   const buttons: notificationManager.NotificationActionButton[] = [];
-
   for (const action of category?.actions ?? []) {
     buttons.push({ title: action.buttonTitle, wantAgent: await clickAgent(context, notification, id, action.identifier, buttons.length + 1) });
   }
@@ -143,15 +167,16 @@ export async function publishNotification(
     notificationSlotType: notificationSlot(context),
     content: {
       notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
-      normal: { title: content.title ?? '', text: content.body ?? '', additionalText: content.subtitle ?? '' },
+      normal,
     },
     deliveryTime: notification.date,
     tapDismissed: content.autoDismiss !== false,
     wantAgent: await clickAgent(context, notification, id, DEFAULT_ACTION, 0),
     actionButtons: buttons,
+    sound: muted ? undefined : customSound,
     extraInfo: responseParameters(notification),
     notificationFlags: {
-      soundEnabled: content.sound === null || (behavior !== undefined && behavior.shouldPlaySound !== true) ? FLAG_DISABLED : FLAG_DEFAULT,
+      soundEnabled: muted ? FLAG_DISABLED : FLAG_DEFAULT,
       bannerEnabled: behavior !== undefined && !(behavior.shouldShowBanner ?? behavior.shouldShowAlert ?? false) ? FLAG_DISABLED : FLAG_DEFAULT,
     },
   };
@@ -234,6 +259,15 @@ export function validateActions(actions: NotificationAction[], options?: Record<
     }
     if (action.textInput !== undefined) {
       throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Text input notification actions are not supported on HarmonyOS.');
+    }
+
+    if (action.options !== undefined) {
+      const fields = record(action.options, 'action.options');
+      for (const key of ['opensAppToForeground', 'isAuthenticationRequired', 'isDestructive']) {
+        if (fields[key] !== undefined && typeof fields[key] !== 'boolean') {
+          throw new ExpoModuleError('ERR_NOTIFICATIONS_INVALID_ARGUMENT', `action.options.${key} must be a boolean.`);
+        }
+      }
     }
     if (
       action.options?.opensAppToForeground === false ||

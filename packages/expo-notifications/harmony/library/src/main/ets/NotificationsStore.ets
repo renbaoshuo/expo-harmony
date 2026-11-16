@@ -23,7 +23,7 @@ import {
 
 const PERMISSION_DENIED = 201;
 
-export type NotificationReceiver = (notification: Notification) => void;
+export type NotificationReceiver = (notification: Notification, customSound?: string) => void;
 export type ResponseReceiver = (response: NotificationResponse) => void;
 export type TokenReceiver = (token: string) => void;
 
@@ -225,10 +225,10 @@ export class NotificationsStore {
     return retained.filter((entry: ScheduledNotification): boolean => ids.has(entry.reminderId));
   }
 
-  receive(context: common.UIAbilityContext, notification: Notification): void {
+  receive(context: common.UIAbilityContext, notification: Notification, customSound?: string): void {
     const callbacks = this.received.get(context);
     // Snapshot before callbacks, which can register or remove listeners synchronously.
-    if (callbacks !== undefined) Array.from(callbacks).forEach((callback: NotificationReceiver): void => callback(notification));
+    if (callbacks !== undefined) Array.from(callbacks).forEach((callback: NotificationReceiver): void => callback(notification, customSound));
   }
 
   respond(response: NotificationResponse): void {

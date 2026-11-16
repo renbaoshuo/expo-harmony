@@ -25,6 +25,7 @@ import {
 } from './NotificationTypes';
 
 const NOTIFICATION_LAUNCH_REASON = 'ReasonMessage_Notification';
+const CALLER_PARAMETER_PREFIX = 'ohos.aafwk.param.caller';
 // ArkTS does not support reflecting over SDK enum classes with Object.values.
 const SYSTEM_WANT_KEYS = new Set<string>([
   wantConstant.Params.ABILITY_BACK_TO_OTHER_MISSION_STACK,
@@ -51,6 +52,9 @@ const SYSTEM_WANT_KEYS = new Set<string>([
   wantConstant.Params.ATOMIC_SERVICE_SHARE_ROUTER,
   wantConstant.Params.LAUNCH_REASON_MESSAGE,
   wantConstant.Params.ABILITY_UNIFIED_DATA_KEY,
+  '__proto__',
+  'component.startup.newRules',
+  'moduleName',
 ]);
 
 function report(error: Object): void {
@@ -79,7 +83,7 @@ function captureResponse(want: Want, store: NotificationsStore): void {
   // Push Kit flattens clickAction.data into Want parameters alongside system keys.
   const data: Record<string, ESObject> = {};
   Object.keys(want.parameters ?? {}).forEach((key: string): void => {
-    if (!SYSTEM_WANT_KEYS.has(key)) data[key] = want.parameters?.[key];
+    if (!SYSTEM_WANT_KEYS.has(key) && !key.startsWith(CALLER_PARAMETER_PREFIX)) data[key] = want.parameters?.[key];
   });
 
   const response: NotificationResponse = {
@@ -136,6 +140,7 @@ class PushLifecycle extends AbilityLifecycleCallback {
                 ? util.generateRandomUUID()
                 : String(integer(source.notifyId, 'Push Kit notifyId', 0, 2147483647));
             const notification = pushNotification(id, source.title ?? null, source.body ?? null, data, Date.now());
+            if (notification.request.trigger !== null) notification.request.trigger['payload'] = envelope;
 
             store.receive(current.context, notification);
           } catch (error) {

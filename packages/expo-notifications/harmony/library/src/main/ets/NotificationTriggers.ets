@@ -7,10 +7,12 @@
 
 import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
 import { reminderAgentManager } from '@kit.BackgroundTasksKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { integer, record } from './NotificationTypes';
 
 const MAX_DATE = 8640000000000000;
 const MILLISECONDS_PER_SECOND = 1000;
+const MIN_REPEAT_INTERVAL_SECONDS = 24 * 60 * 60;
 const MONTHS_IN_YEAR = 12;
 const GREGORIAN_CYCLE_YEARS = 400;
 
@@ -18,9 +20,6 @@ export function validateTrigger(value: ESObject): Record<string, ESObject> | nul
   if (value === null) return null;
 
   const trigger = record(value, 'trigger');
-  if (trigger.channelId !== undefined) {
-    throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Android notification channels are not supported on HarmonyOS.');
-  }
 
   switch (trigger.type) {
     case 'date':
@@ -30,9 +29,6 @@ export function validateTrigger(value: ESObject): Record<string, ESObject> | nul
       integer(trigger.seconds, 'seconds', 1, Math.floor(MAX_DATE / MILLISECONDS_PER_SECOND));
       if (trigger.repeats !== undefined && typeof trigger.repeats !== 'boolean') {
         throw new ExpoModuleError('ERR_NOTIFICATIONS_INVALID_ARGUMENT', 'repeats must be a boolean.');
-      }
-      if (trigger.repeats === true) {
-        throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Repeating time interval triggers are not supported on HarmonyOS.');
       }
       break;
     case 'daily':
@@ -61,9 +57,7 @@ export function validateTrigger(value: ESObject): Record<string, ESObject> | nul
 
 export function nextTriggerDate(trigger: Record<string, ESObject> | null, now: number = Date.now()): number | null {
   if (trigger === null) return null;
-
-  if (trigger.type === 'date')
-    return trigger.timestamp >= now ? Math.ceil(trigger.timestamp / MILLISECONDS_PER_SECOND) * MILLISECONDS_PER_SECOND : null;
+  if (trigger.type === 'date') return trigger.timestamp >= now ? trigger.timestamp : null;
 
   if (trigger.type === 'timeInterval') {
     const timestamp = now + trigger.seconds * MILLISECONDS_PER_SECOND;
@@ -105,23 +99,31 @@ export function nextTriggerDate(trigger: Record<string, ESObject> | null, now: n
   return null;
 }
 
-export function reminderTrigger(trigger: Record<string, ESObject>, now: number): reminderAgentManager.ReminderRequest {
-  const next = nextTriggerDate(trigger, now);
-  if (next === null) {
-    throw new ExpoModuleError('ERR_NOTIFICATIONS_INVALID_ARGUMENT', 'Cannot schedule a notification in the past.');
-  }
-
+export function reminderTrigger(trigger: Record<string, ESObject>, timestamp: number): reminderAgentManager.ReminderRequest {
   if (trigger.type === 'timeInterval') {
     const timer: reminderAgentManager.ReminderRequestTimer = {
       reminderType: reminderAgentManager.ReminderType.REMINDER_TYPE_TIMER,
       triggerTimeInSeconds: trigger.seconds as number,
     };
 
-    return timer;
+    if (trigger.repeats !== true) return timer;
+
+    if (timer.triggerTimeInSeconds >= MIN_REPEAT_INTERVAL_SECONDS && typeof deviceInfo.apiAvailable === 'function') {
+      if (deviceInfo.apiAvailable('26.0.0')) {
+        timer.repeatInterval = timer.triggerTimeInSeconds;
+        timer.repeatCount = 0;
+        return timer;
+      }
+    }
+
+    throw new ExpoModuleError(
+      'ERR_NOTIFICATIONS_UNSUPPORTED',
+      'Repeating interval reminders require HarmonyOS API 26 and an interval of at least 24 hours.',
+    );
   }
 
   // Agent reminders have second resolution. Round up, never deliver early.
-  const date = new Date(Math.ceil((next as number) / MILLISECONDS_PER_SECOND) * MILLISECONDS_PER_SECOND);
+  const date = new Date(Math.ceil(timestamp / MILLISECONDS_PER_SECOND) * MILLISECONDS_PER_SECOND);
   const request: reminderAgentManager.ReminderRequestCalendar = {
     reminderType: reminderAgentManager.ReminderType.REMINDER_TYPE_CALENDAR,
     dateTime: {

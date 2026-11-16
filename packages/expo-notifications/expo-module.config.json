@@ -13,9 +13,7 @@
       "ExpoNotificationsHandlerModule",
       "ExpoNotificationCategoriesModule",
       "ExpoBackgroundNotificationTasksModule",
-      "NotificationsServerRegistrationModule",
-      "ExpoNotificationChannelManager",
-      "ExpoNotificationChannelGroupManager"
+      "NotificationsServerRegistrationModule"
     ],
     "appLifecycleSubscribers": [
       "ExpoNotificationsAppLifecycleSubscriber"

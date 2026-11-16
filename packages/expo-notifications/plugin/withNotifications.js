@@ -7,9 +7,10 @@
 
 'use strict';
 
+const path = require('node:path');
 const { createRunOncePlugin } = require('expo/config-plugins');
 const {
-  HarmonyManifest, withModuleJson, parseHarmonySdkVersion, compareHarmonyApiVersions,
+  HarmonyManifest, withModuleJson, withRawfile, parseHarmonySdkVersion, compareHarmonyApiVersions,
 } = require('@expo-harmony/config-plugins');
 const pkg = require('../package.json');
 
@@ -17,7 +18,7 @@ const PUSH_LISTENER_ACTION = 'action.ohos.push.listener';
 const SLOT_METADATA = 'expo.modules.notifications.defaultSlotType';
 const SLOT_TYPES = new Set(['service', 'social', 'content', 'other']);
 
-function withNotifications(config, { defaultSlotType = 'service' } = {}) {
+function withNotifications(config, { defaultSlotType = 'service', sounds = [] } = {}) {
   if (!config.harmony?.bundleName && !config.platforms?.includes('harmony')) return config;
   if (!SLOT_TYPES.has(defaultSlotType)) throw new Error('Invalid expo-notifications defaultSlotType.');
 
@@ -28,6 +29,20 @@ function withNotifications(config, { defaultSlotType = 'service' } = {}) {
   }
 
   config.harmony = { ...config.harmony, compatibleSdkVersion: configured ?? 23 };
+
+  if (!Array.isArray(sounds)) throw new Error('expo-notifications sounds must be an array of file paths.');
+
+  const files = Object.create(null);
+  for (const source of sounds) {
+    if (typeof source !== 'string' || !source || !/\.(m4a|aac|mp3|ogg|wav|flac|amr)$/i.test(source)) {
+      throw new Error(`Unsupported HarmonyOS notification sound: ${String(source)}.`);
+    }
+    const name = path.basename(source);
+    if (Object.hasOwn(files, name)) throw new Error(`Duplicate HarmonyOS notification sound file name: ${name}.`);
+    files[name] = { source };
+  }
+
+  config = withRawfile(config, { owner: pkg.name, files });
 
   return withModuleJson(config, (mod) => {
     const main = HarmonyManifest.getMainAbilityOrThrow(mod.modResults);

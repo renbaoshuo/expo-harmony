@@ -50,21 +50,21 @@ npm install @expo-harmony/expo-notifications expo-notifications@~57.0.23
 
 返回 `Promise<string>`，其值是通知标识符；未传 `identifier` 时会生成标识符。`trigger: null` 表示立即发送。前台收到的即时通知交由 `setNotificationHandler()` 决定是否展示；应用不在前台时由系统直接展示。
 
-即时通知内容支持 `title`、`body`、`subtitle`、`data`、`badge`、`autoDismiss`、`categoryIdentifier` 和默认声音。`subtitle` 显示为通知附加文本；声音支持默认声音或静音（`sound: false` 或 `null`）。
+即时通知内容支持 `title`、`body`、`subtitle`、`data`、`badge`、`autoDismiss`、`categoryIdentifier` 和声音。声音支持默认声音、自定义资源文件名或静音（`sound: false` 或 `null`）。HarmonyOS 要求显示文本时有标题和正文。只提供一项文本时，通知以应用名称为标题并展示该文本。Expo 的事件和响应仍保留原始字段。
 
-日期、间隔、每日、每周、每月和每年触发器可用于定时提醒。定时提醒由系统投递，应用退出后仍可触发；不经过前台 handler，也不会逐次触发 `addNotificationReceivedListener`。提醒支持 `title`、`body`、`autoDismiss` 和默认声音。重复提醒每次触发时，点击响应中的 `date` 仍为初次计划的时间。
+日期、间隔、每日、每周、每月和每年触发器可用于定时提醒。定时提醒由系统投递，应用退出后仍可触发；不经过前台 handler，也不会逐次触发 `addNotificationReceivedListener`。提醒支持 `title`、`body`、`autoDismiss`、默认声音和时长不超过 30 分钟的自定义声音。重复提醒每次触发时，点击响应中的 `date` 仍为初次计划的时间。
 
 重复使用同一标识符调度待触发提醒会更新该提醒；若旧提醒已展示且仍有后续触发，会先发布新提醒再取消旧提醒。通知数量和频率受系统配额限制。
 
 - `calendar` 触发器：HarmonyOS 不支持此触发方式，调用会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
-- `timeInterval` 触发器的 `repeats: true`：HarmonyOS 不支持间隔重复，调用会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
-- 触发器上的 `channelId`：HarmonyOS 不支持通知渠道，调用会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
-- 自定义声音，以及内容中的 `sticky: true`、`launchImageName`、`attachments`、`vibrate`、`color`、`priority`、`interruptionLevel`：HarmonyOS 不支持这些字段，传入后会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
-- 定时提醒中的 `badge`、`subtitle`、`categoryIdentifier`、静音声音和 `sticky: true`：HarmonyOS 的定时提醒不支持这些字段，传入后会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+- `timeInterval` 触发器的 `repeats: true`：需要 API 26 或更高版本，并且间隔至少为 24 小时。其他情况下，调度会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+- 触发器上的 `channelId` 由 Android 使用，HarmonyOS 会忽略。
+- 内容中的 `sticky: true`、`launchImageName`、`attachments`、`vibrate`、`color`、`priority`、`interruptionLevel`：HarmonyOS 不支持这些字段，传入后会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+- 定时提醒中的 `badge`、`subtitle`、`categoryIdentifier` 和静音会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
 
 #### `getNextTriggerDateAsync(trigger)`
 
-返回 `Promise<number | null>`。有下一次触发时间时返回 Unix 毫秒时间戳；一次性日期已过时返回 `null`。该方法只计算时间，不会注册提醒。
+返回 `Promise<number | null>`。有下一次触发时间时返回 Unix 毫秒时间戳；一次性日期已过时返回 `null`。该方法只计算时间，可查询重复间隔的下一次触发时间。
 
 #### `getAllScheduledNotificationsAsync()`
 
@@ -147,49 +147,49 @@ npm install @expo-harmony/expo-notifications expo-notifications@~57.0.23
 
 #### `getNotificationChannelAsync(channelId)`
 
-- HarmonyOS 不提供通知渠道，此方法会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+遵循 Expo 的非 Android 行为，返回 `null`。
 
 #### `getNotificationChannelsAsync()`
 
-- HarmonyOS 不提供通知渠道，此方法会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+遵循 Expo 的非 Android 行为，返回空数组。
 
 #### `setNotificationChannelAsync(channelId, channel)`
 
-- HarmonyOS 使用通知分类控制通知样式，不提供通知渠道；此方法会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+遵循 Expo 的非 Android 行为，返回 `null`。
 
 #### `deleteNotificationChannelAsync(channelId)`
 
-- HarmonyOS 不提供通知渠道，此方法会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+遵循 Expo 的非 Android 行为，调用直接完成。
 
 #### `getNotificationChannelGroupAsync(groupId)`
 
-- HarmonyOS 不提供通知渠道组，此方法会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+遵循 Expo 的非 Android 行为，返回 `null`。
 
 #### `getNotificationChannelGroupsAsync()`
 
-- HarmonyOS 不提供通知渠道组，此方法会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+遵循 Expo 的非 Android 行为，返回空数组。
 
 #### `setNotificationChannelGroupAsync(groupId, group)`
 
-- HarmonyOS 不提供通知渠道组，此方法会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+遵循 Expo 的非 Android 行为，返回 `null`。
 
 #### `deleteNotificationChannelGroupAsync(groupId)`
 
-- HarmonyOS 不提供通知渠道组，此方法会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+遵循 Expo 的非 Android 行为，调用直接完成。
 
 #### `subscribeToTopicAsync(topic)`
 
-- HarmonyOS 不支持推送主题订阅，此方法会因接口不可用而拒绝。
+遵循 Expo 的非 Android 行为，返回 `null`。
 
 #### `unsubscribeFromTopicAsync(topic)`
 
-- HarmonyOS 不支持推送主题订阅，此方法会因接口不可用而拒绝。
+遵循 Expo 的非 Android 行为，返回 `null`。
 
 ### Event subscriptions
 
 #### `addNotificationReceivedListener(listener)`
 
-应用前台运行期间收到即时通知或远程通知时触发，返回可调用 `remove()` 的订阅对象。由 Push Kit 直接展示的远程通知不会进入此监听器；只有送达 JS 的远程通知才会触发。
+应用前台运行期间收到即时通知或远程通知时触发，返回可调用 `remove()` 的订阅对象。Push Kit 远程通知在服务端设置 `foregroundShow: false` 后会进入此前台回调。回调的 `request.trigger.payload` 包含收到的 Push Kit 消息体。
 
 #### `addNotificationResponseReceivedListener(listener)`
 
@@ -223,10 +223,10 @@ HarmonyOS 字段为 `shouldShowBanner`、`shouldShowList`、`shouldPlaySound`、
 
 #### `NotificationContentInput`
 
-HarmonyOS 支持 `title`、`body`、`subtitle`、`data`、`badge`、`sound`、`autoDismiss` 和 `categoryIdentifier`。`data` 须为对象；`badge` 须为 0 到 2147483647 之间的整数；`sound` 支持 `true`、`'default'` 表示默认声音，`false` 或 `null` 表示静音。定时提醒仅支持 `title`、`body`、`autoDismiss` 和默认声音。
+HarmonyOS 支持 `title`、`body`、`subtitle`、`data`、`badge`、`sound`、`autoDismiss` 和 `categoryIdentifier`。`data` 须为对象；`badge` 须为 0 到 2147483647 之间的整数；`sound` 支持 `true` 或 `'default'` 表示默认声音，`false` 或 `null` 表示静音，或者传入自定义资源文件名。
 
-- 自定义声音、`launchImageName`、`vibrate`、`priority`、`color`、`sticky: true`、`attachments` 和 `interruptionLevel`：HarmonyOS 不支持这些字段，调度时会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
-- `subtitle`、`badge`、`categoryIdentifier` 和静音声音：定时提醒不支持这些字段，调度时会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+- `launchImageName`、`vibrate`、`priority`、`color`、`sticky: true`、`attachments` 和 `interruptionLevel`：HarmonyOS 不支持这些字段，调度时会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+- 定时提醒中的 `subtitle`、`badge`、`categoryIdentifier` 和静音会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
 
 #### `NotificationContent`
 
@@ -236,9 +236,9 @@ HarmonyOS 支持 `title`、`body`、`subtitle`、`data`、`badge`、`sound`、`a
 
 支持 `null`、`date`、`timeInterval`、`daily`、`weekly`、`monthly` 和 `yearly`。`date` 使用未来的 Unix 毫秒时间戳；`timeInterval.seconds` 是从调用时起算的正整数秒；`daily` 使用 `hour` 和 `minute`；`weekly` 另需 `weekday`（1 为周日）；`monthly` 另需 `day`；`yearly` 另需 `month`（0 为一月）和 `day`。日期规则按设备本地日历和时区计算，月份中不存在的日期会跳过该月；`yearly` 的月日组合无效时会拒绝。
 
-以日期规则创建的代理提醒按秒触发，触发时间向上取整至整秒，不会提前投递。`date` 触发器取整后的时间会同时用于实际触发、`getAllScheduledNotificationsAsync()` 的返回值和点击响应中的 `date`。
+以日期规则创建的代理提醒按秒触发，实际触发时间向上取整至整秒。对于一次性 `date` 触发器，查询和通知请求保留传入的毫秒值。
 
-- `calendar`、`timeInterval.repeats: true` 和 `channelId`：HarmonyOS 不支持这些触发器选项，调用会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+- `calendar` 触发器会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。API 26 起，`timeInterval.repeats: true` 支持 24 小时或更长的间隔。`channelId` 由 Android 使用。
 
 #### `Notification`
 
@@ -286,7 +286,7 @@ HarmonyOS 支持 `DATE`、`TIME_INTERVAL`、`DAILY`、`WEEKLY`、`MONTHLY` 和 `
 
 #### `ERR_NOTIFICATIONS_UNSUPPORTED`
 
-传入 HarmonyOS 不支持的通知字段或选项，或调用不支持的后台任务、通知渠道接口时返回。
+传入 HarmonyOS 不支持的通知字段或选项，或调用不支持的后台任务接口时返回。
 
 #### `ERR_NOTIFICATIONS_REMINDER_PERMISSION`
 
