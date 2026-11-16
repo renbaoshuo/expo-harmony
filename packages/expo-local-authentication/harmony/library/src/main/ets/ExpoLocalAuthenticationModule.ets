@@ -35,14 +35,33 @@ const MAX_PROMPT_LENGTH: number = 500;
 const MAX_NAVIGATION_LABEL_LENGTH: number = 60;
 const CHALLENGE_BYTES: number = 32;
 const MULTIPLE_BIOMETRICS_API_LEVEL: number = 18;
+const SKIP_LOCKED_BIOMETRICS_API_LEVEL: number = 20;
+const INVALID_PARAMETER_RESULT_API_LEVEL: number = 20;
 const INVALID_NATIVE_PARAMETER: number = 401;
+
+type CancellationReason = 'user_cancel' | 'app_cancel';
 
 function exceedsCharacterLimit(value: string, limit: number): boolean {
   return value.length > limit && (value.length > limit * 2 || Array.from(value).length > limit);
 }
 
+function isInvalidParameter(code: number): boolean {
+  return code === INVALID_NATIVE_PARAMETER ||
+    (deviceInfo.sdkApiVersion >= INVALID_PARAMETER_RESULT_API_LEVEL && code === userAuth.UserAuthResultCode.INVALID_PARAMETERS);
+}
+
+class InvalidAuthenticationParametersError extends ExpoModuleError {
+  constructor(cause: BusinessError) {
+    super(
+      'ERR_LOCAL_AUTHENTICATION_INVALID_ARGUMENT',
+      'The system rejected the authentication widget parameters.',
+      cause,
+    );
+  }
+}
+
 export class ExpoLocalAuthenticationModule extends ExpoModule {
-  private cancel?: (error: string) => void = undefined;
+  private cancel?: (reason: CancellationReason) => void;
   private destroyed: boolean = false;
 
   definition(): ExpoModuleDefinition {
@@ -82,7 +101,7 @@ export class ExpoLocalAuthenticationModule extends ExpoModule {
     }
 
     const release = tryAcquireUserAuthPrompt();
-    if (!release) return { success: false, error: 'app_cancel' };
+    if (release === undefined) return { success: false, error: 'app_cancel' };
 
     try {
       return await this.authenticateWithPrompt(options);
@@ -100,7 +119,7 @@ export class ExpoLocalAuthenticationModule extends ExpoModule {
     const candidates: userAuth.UserAuthType[] = BIOMETRIC_TYPES.slice();
     if (!options.disableDeviceFallback) candidates.push(userAuth.UserAuthType.PIN);
 
-    const types: userAuth.UserAuthType[] = [];
+    let types: userAuth.UserAuthType[] = [];
     let preferred: userAuth.UserAuthType | undefined;
     let missing = false;
     let pinExpired = false;
@@ -116,7 +135,6 @@ export class ExpoLocalAuthenticationModule extends ExpoModule {
       if (status === userAuth.UserAuthResultCode.PIN_EXPIRED) pinExpired = true;
     }
 
-    // An expired PIN is enrolled but unavailable, even when no biometrics are enrolled.
     if (types.length === 0) return { success: false, error: missing && !pinExpired ? 'not_enrolled' : 'not_available' };
 
     const widget: userAuth.WidgetParam = { title: options.promptMessage };
@@ -131,7 +149,7 @@ export class ExpoLocalAuthenticationModule extends ExpoModule {
 
       // Offering both biometrics without a PIN requires API 18 and a custom button.
       if (types.length > 1 && (deviceInfo.sdkApiVersion < MULTIPLE_BIOMETRICS_API_LEVEL || options.cancelLabel.length === 0)) {
-        types.splice(0, types.length, preferred ?? types[0]);
+        types = [preferred ?? types[0]];
       }
 
       if (options.cancelLabel.length > 0) widget.navigationButtonText = options.cancelLabel;
@@ -140,34 +158,33 @@ export class ExpoLocalAuthenticationModule extends ExpoModule {
     let auth: userAuth.UserAuthInstance;
 
     try {
-      auth = userAuth.getUserAuthInstance(
-        {
-          challenge: cryptoFramework.createRandom().generateRandomSync(CHALLENGE_BYTES).data,
-          authType: types,
-          authTrustLevel: level,
-        },
-        widget,
-      );
+      if (!canIUse('SystemCapability.Security.CryptoFramework.Rand')) return { success: false, error: 'not_available' };
+
+      const challenge = cryptoFramework.createRandom().generateRandomSync(CHALLENGE_BYTES).data;
+      const params: userAuth.AuthParam = {
+        challenge,
+        authType: types,
+        authTrustLevel: level,
+      };
+      if (deviceInfo.sdkApiVersion >= SKIP_LOCKED_BIOMETRICS_API_LEVEL && types.length > 1) {
+        params.skipLockedBiometricAuth = true;
+      }
+
+      auth = userAuth.getUserAuthInstance(params, widget);
     } catch (error) {
       const failure = error as BusinessError;
-      if (failure.code === INVALID_NATIVE_PARAMETER) {
-        throw new ExpoModuleError(
-          'ERR_LOCAL_AUTHENTICATION_INVALID_ARGUMENT',
-          'The system rejected the authentication widget parameters.',
-          failure,
-        );
-      }
+      if (isInvalidParameter(failure.code)) throw new InvalidAuthenticationParametersError(failure);
 
       return authenticationResult(failure.code);
     }
 
-    return new Promise<LocalAuthenticationResult>((resolve): void => {
+    return new Promise<LocalAuthenticationResult>((resolve, reject): void => {
       let settled = false;
       let listening = false;
-      let cancellation: string | undefined;
+      let cancellation: CancellationReason | undefined;
 
-      const finish = (result: LocalAuthenticationResult): void => {
-        if (settled) return;
+      const retire = (): boolean => {
+        if (settled) return false;
 
         settled = true;
         if (this.cancel === cancel) this.cancel = undefined;
@@ -182,7 +199,11 @@ export class ExpoLocalAuthenticationModule extends ExpoModule {
           listening = false;
         }
 
-        resolve(result);
+        return true;
+      };
+
+      const finish = (result: LocalAuthenticationResult): void => {
+        if (retire()) resolve(result);
       };
 
       const callback: userAuth.IAuthCallback = {
@@ -191,19 +212,25 @@ export class ExpoLocalAuthenticationModule extends ExpoModule {
           : { success: false, error: cancellation }),
       };
 
-      const cancel = (error: string): void => {
+      const cancel = (reason: CancellationReason): void => {
         if (settled) return;
 
-        // Keep the listener and ownership if the system fails to cancel the widget.
-        cancellation = error;
+        cancellation = reason;
+
         try {
           auth.cancel();
-        } catch (cancelError) {
-          this.warn('cancel authentication', cancelError as BusinessError);
-          return;
+        } catch (error) {
+          const failure = error as BusinessError;
+          if (reason === 'user_cancel' && !settled) {
+            // The system still owns the prompt. Keep listening and allow a retry.
+            cancellation = undefined;
+            throw new ExpoModuleError('ERR_LOCAL_AUTHENTICATION_CANCEL_FAILED', 'Unable to cancel authentication.', failure);
+          }
+
+          this.warn('cancel authentication', failure);
         }
 
-        finish({ success: false, error });
+        finish({ success: false, error: reason });
       };
 
       this.cancel = cancel;
@@ -214,7 +241,11 @@ export class ExpoLocalAuthenticationModule extends ExpoModule {
 
         auth.start();
       } catch (error) {
-        finish(authenticationResult((error as BusinessError).code));
+        if (!retire()) return;
+
+        const failure = error as BusinessError;
+        if (isInvalidParameter(failure.code)) reject(new InvalidAuthenticationParametersError(failure));
+        else resolve(authenticationResult(failure.code));
       }
     });
   }

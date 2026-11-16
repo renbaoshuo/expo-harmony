@@ -46,7 +46,7 @@ HarmonyOS 上的认证界面与生物识别选择方式受 `biometricsSecurityLe
 
 #### `LocalAuthentication.cancelAuthenticate()`
 
-返回 `Promise<void>`，取消正在进行的认证；对应认证请求返回 `user_cancel`。没有进行中的请求时不做任何操作，可以重复调用。
+返回 `Promise<void>`。取消成功时，对应认证请求返回 `user_cancel`。没有进行中的请求时可以重复调用。如果系统拒绝取消，`cancelAuthenticate()` 抛出 `ERR_LOCAL_AUTHENTICATION_CANCEL_FAILED`，原请求仍等待系统结果，也可以再次尝试取消。
 
 ### Types
 
@@ -61,7 +61,7 @@ HarmonyOS 上的认证界面与生物识别选择方式受 `biometricsSecurityLe
 | `disableDeviceFallback` | 默认 `false`，允许使用已配置的锁屏密码；设为 `true` 时只使用生物认证。允许回退且没有已录入的生物凭据时，可直接使用锁屏密码。 |
 | `biometricsSecurityLevel` | 默认 `'weak'`，要求 ATL2；`'strong'` 要求 ATL3。要求 ATL3 时不会降级为 ATL2；允许回退时仍可使用锁屏密码。 |
 
-当锁屏密码不可用或被禁用，并且指纹和人脸均已录入且达到要求的等级时，API 18 及以上可在同一认证界面提供两种方式；API 13–17 一次提供一种，均可用时优先指纹。若 `cancelLabel` 为空，也只提供一种生物认证方式。
+当锁屏密码不可用或被禁用，并且指纹和人脸均已录入且达到要求的等级时，API 18 及以上可在同一认证界面提供两种方式。API 13–17 一次提供一种，默认优先指纹，系统报告指纹已锁定时优先使用可用的人脸认证。API 20 及以上有多种方式可选时，系统可跳过已锁定的生物认证方式。向官方 JS 接口传入空字符串作为 `cancelLabel` 时，官方封装会使用默认的 `Cancel`。 [华为用户认证接口](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-useriam-userauth/)
 
 HarmonyOS 认证界面不支持以下选项：
 
@@ -116,7 +116,7 @@ HarmonyOS 认证界面不支持以下选项：
 | `timeout` | 认证超时。 |
 | `lockout` | 认证方式被系统临时锁定。 |
 | `not_enrolled` | 没有符合请求条件的已录入凭据。 |
-| `not_available` | 请求条件下没有可用的认证方式，例如锁屏密码已过期。 |
+| `not_available` | 请求条件下没有可用的认证方式，例如锁屏密码已过期、设备没有所需系统能力，或系统拒绝启动认证。 |
 | `unable_to_process` | 认证服务繁忙或发生一般错误。 |
 | `invalid_context` | 应用不在前台，或认证上下文不可用。 |
 | `unknown` | 没有对应映射的系统结果；结果同时附带 `warning`，其中包含 HarmonyOS 结果码。 |
@@ -135,6 +135,10 @@ HarmonyOS 不会返回以下错误值：
 #### `ERR_LOCAL_AUTHENTICATION_UNAVAILABLE`
 
 查询或选择认证能力遇到无法识别的 HarmonyOS 系统错误时抛出；此时不会将查询错误当作硬件不支持或凭据未录入返回。
+
+#### `ERR_LOCAL_AUTHENTICATION_CANCEL_FAILED`
+
+系统拒绝 `cancelAuthenticate()` 的取消请求时抛出。原认证仍等待系统结果。
 
 ### Permissions
 

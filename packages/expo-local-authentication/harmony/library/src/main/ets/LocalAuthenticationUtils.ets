@@ -9,6 +9,9 @@ import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { userAuth } from '@kit.UserAuthenticationKit';
 
+const AUTHENTICATION_CAPABILITY: string = 'SystemCapability.UserIAM.UserAuth.Core';
+const PERMISSION_DENIED: number = 201;
+
 export enum AuthenticationType {
   FINGERPRINT = 1,
   FACIAL_RECOGNITION = 2,
@@ -32,12 +35,14 @@ export interface LocalAuthenticationResult {
 }
 
 export function availability(type: userAuth.UserAuthType, level: userAuth.AuthTrustLevel): userAuth.UserAuthResultCode {
+  if (!canIUse(AUTHENTICATION_CAPABILITY)) return userAuth.UserAuthResultCode.TYPE_NOT_SUPPORT;
+
   try {
     userAuth.getAvailableStatus(type, level);
-
     return userAuth.UserAuthResultCode.SUCCESS;
   } catch (error) {
-    const code = (error as BusinessError).code;
+    const failure = error as BusinessError;
+    const code = failure.code;
 
     switch (code) {
       case userAuth.UserAuthResultCode.TYPE_NOT_SUPPORT:
@@ -47,7 +52,7 @@ export function availability(type: userAuth.UserAuthType, level: userAuth.AuthTr
       case userAuth.UserAuthResultCode.PIN_EXPIRED:
         return code;
       default:
-        throw new ExpoModuleError('ERR_LOCAL_AUTHENTICATION_UNAVAILABLE', `Unable to query authentication capability (${code}).`);
+        throw new ExpoModuleError('ERR_LOCAL_AUTHENTICATION_UNAVAILABLE', `Unable to query authentication capability (${code}).`, failure);
     }
   }
 }
@@ -88,6 +93,7 @@ export function authenticationResult(code: number): LocalAuthenticationResult {
     case userAuth.UserAuthResultCode.TYPE_NOT_SUPPORT:
     case userAuth.UserAuthResultCode.TRUST_LEVEL_NOT_SUPPORT:
     case userAuth.UserAuthResultCode.PIN_EXPIRED:
+    case PERMISSION_DENIED:
       return { success: false, error: 'not_available' };
     case userAuth.UserAuthResultCode.LOCKED:
       return { success: false, error: 'lockout' };
