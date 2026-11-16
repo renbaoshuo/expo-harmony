@@ -42,5 +42,15 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "harmony": {
+    "metro": {
+      "entrypoints": [
+        {
+          "upstream": "expo-brightness",
+          "target": "src/Brightness.harmony.ts"
+        }
+      ]
+    }
   }
 }
