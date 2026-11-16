@@ -5,9 +5,9 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ExpoView, ExpoViewContext, filePathFromUri } from '@expo-harmony/expo-modules-core';
+import { ExpoView, ExpoViewContext } from '@expo-harmony/expo-modules-core';
 import type { ExpoViewContentContext } from '@expo-harmony/expo-modules-core';
-import { fileUri } from '@kit.CoreFileKit';
+import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { MovingPhotoView, MovingPhotoViewAttribute, MovingPhotoViewController, photoAccessHelper } from '@kit.MediaLibraryKit';
 
 export enum ContentFit {
@@ -30,42 +30,33 @@ export class LivePhotoAsset {
   }
 }
 
-// MovingPhotoView requires a new node and controller when its attributes change.
 class RenderedPhoto {
   readonly id: number;
   readonly photo: photoAccessHelper.MovingPhoto;
   readonly controller: MovingPhotoViewController = new MovingPhotoViewController();
-  readonly muted: boolean;
   readonly fit: ImageFit;
-  readonly gesture: boolean;
   previewLoaded: boolean = false;
   prepared: boolean = false;
   playing: boolean = false;
 
-  constructor(id: number, photo: photoAccessHelper.MovingPhoto, muted: boolean, fit: ContentFit, gesture: boolean) {
+  constructor(id: number, photo: photoAccessHelper.MovingPhoto, fit: ContentFit) {
     this.id = id;
     this.photo = photo;
-    this.muted = muted;
     this.fit = fit === ContentFit.Cover ? ImageFit.Cover : ImageFit.Contain;
-    this.gesture = gesture;
   }
 }
 
 @Observed
 export class LivePhotoView extends ExpoView {
   items: RenderedPhoto[] = [];
+  muted: boolean = true;
+  gestureEnabled: boolean = true;
   private source: LivePhotoAsset | null = null;
-  private muted: boolean = true;
   private fit: ContentFit = ContentFit.Contain;
-  private gesture: boolean = true;
   private sourceDirty: boolean = false;
-  private renderDirty: boolean = false;
   private loadId: number = 0;
-  private renderId: number = 0;
   private destroyed: boolean = false;
   private loadFailed: boolean = false;
-  private previewSent: boolean = false;
-  private completeSent: boolean = false;
   private hintWarned: boolean = false;
 
   constructor(context: ExpoViewContext) {
@@ -91,36 +82,18 @@ export class LivePhotoView extends ExpoView {
   }
 
   setMuted(muted: boolean): void {
-    if (muted === this.muted) return;
-
     this.muted = muted;
-    this.renderDirty = true;
   }
 
   setGesture(gesture: boolean): void {
-    if (gesture === this.gesture) return;
-
-    this.gesture = gesture;
-    this.renderDirty = true;
+    this.gestureEnabled = gesture;
   }
 
   commitProps(): void {
-    if (this.destroyed) return;
-
-    const reload = this.sourceDirty;
-    const rerender = this.renderDirty;
+    if (this.destroyed || !this.sourceDirty) return;
 
     this.sourceDirty = false;
-    this.renderDirty = false;
-
-    if (reload) {
-      void this.loadSource();
-    } else if (rerender && this.items.length > 0) {
-      const photo = this.items[0].photo;
-
-      this.clearRenderedPhoto();
-      this.renderPhoto(photo);
-    }
+    void this.loadSource();
   }
 
   startPlayback(style: PlaybackStyle): void {
@@ -136,24 +109,20 @@ export class LivePhotoView extends ExpoView {
   }
 
   stopPlayback(): void {
-    if (!this.destroyed) this.items[0]?.controller.stopPlayback();
+    const item = this.items[0];
+    if (!this.destroyed && item !== undefined && (item.prepared || item.playing)) item.controller.stopPlayback();
   }
 
   onPreview(item: RenderedPhoto): void {
-    if (!this.isCurrent(item)) return;
+    if (!this.isCurrent(item) || item.previewLoaded) return;
 
     item.previewLoaded = true;
-
-    if (!this.previewSent) {
-      this.previewSent = true;
-      this.sendEvent('onPreviewPhotoLoad');
-    }
-
+    this.sendEvent('onPreviewPhotoLoad');
     this.completeLoad(item);
   }
 
   onPrepared(item: RenderedPhoto): void {
-    if (!this.isCurrent(item)) return;
+    if (!this.isCurrent(item) || item.prepared) return;
 
     item.prepared = true;
     this.completeLoad(item);
@@ -181,12 +150,10 @@ export class LivePhotoView extends ExpoView {
       return;
     }
 
-    // Expo exposes load errors only. Preserve the loaded preview on playback failure.
-    this.onStop(item);
-    try {
-      item.controller.stopPlayback();
-    } catch (error) {
-      console.warn(`ExpoLivePhoto: failed to stop playback after an error: ${error}`);
+    // Expo has no playback-error event; keep the loaded preview available.
+    if (item.playing) {
+      this.onStop(item);
+      this.stopRenderedPhoto(item);
     }
     console.warn('ExpoLivePhoto: HarmonyOS MovingPhotoView failed to play the loaded live photo.');
   }
@@ -206,8 +173,6 @@ export class LivePhotoView extends ExpoView {
     this.clearRenderedPhoto();
 
     this.loadFailed = false;
-    this.previewSent = false;
-    this.completeSent = false;
 
     const source = this.source;
     if (source === null) return;
@@ -216,20 +181,45 @@ export class LivePhotoView extends ExpoView {
 
     try {
       const context = this.context.rnComponentContext.uiAbilityContext;
-      const bundleName = context.abilityInfo.bundleName;
-      const image = localFileUri(source.photoUri, 'photoUri', bundleName);
-      const video = localFileUri(source.pairedVideoUri, 'pairedVideoUri', bundleName);
+      const uris = await Promise.all([
+        this.localFileUri(source.photoUri, 'photoUri'),
+        this.localFileUri(source.pairedVideoUri, 'pairedVideoUri'),
+      ]);
+      if (!this.isCurrentLoad(id)) return;
 
-      const photo = await photoAccessHelper.MediaAssetManager.loadMovingPhoto(context, image, video);
+      const photo = await photoAccessHelper.MediaAssetManager.loadMovingPhoto(context, uris[0], uris[1]);
 
-      if (!this.destroyed && id === this.loadId) this.renderPhoto(photo);
+      if (this.isCurrentLoad(id)) this.items = [new RenderedPhoto(id, photo, this.fit)];
     } catch (error) {
       this.failLoad(id, error);
     }
   }
 
-  private renderPhoto(photo: photoAccessHelper.MovingPhoto): void {
-    this.items = [new RenderedPhoto(++this.renderId, photo, this.muted, this.fit, this.gesture)];
+  private async localFileUri(value: string | null | undefined, field: string): Promise<string> {
+    if (!value) throw new Error(`Provided source is not a valid LivePhotoAsset: the \`${field}\` has to be provided.`);
+
+    let file: fileIo.File | undefined;
+    try {
+      const context = this.context.moduleContext;
+      const uri = /^file:\/(?!\/)/i.test(value) ? `file://${value.slice('file:'.length)}` : value;
+      const source = context.filePathForRead(uri);
+
+      file = await fileIo.open(source, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
+      if (!(await fileIo.stat(file.fd)).isFile()) throw new Error('Expected a regular file.');
+
+      return fileUri.getUriFromPath(context.readPathForDescriptor(source, file));
+    } catch (error) {
+      const message = (error as Error).message || String(error);
+      throw new Error(`Unable to read \`${field}\`: ${message}`);
+    } finally {
+      if (file !== undefined) {
+        try {
+          await fileIo.close(file);
+        } catch (error) {
+          console.warn(`ExpoLivePhoto: failed to close the source file: ${error}`);
+        }
+      }
+    }
   }
 
   private clearRenderedPhoto(): void {
@@ -239,24 +229,26 @@ export class LivePhotoView extends ExpoView {
     this.items = [];
     if (item === undefined) return;
 
-    try {
-      item.controller.stopPlayback();
-    } catch (error) {
-      console.warn(`ExpoLivePhoto: failed to stop the removed view: ${error}`);
-    }
-
+    this.stopRenderedPhoto(item);
     if (item.playing && !this.destroyed) this.sendEvent('onPlaybackStop');
   }
 
-  private completeLoad(item: RenderedPhoto): void {
-    if (!item.previewLoaded || !item.prepared || this.completeSent) return;
+  private stopRenderedPhoto(item: RenderedPhoto): void {
+    if (!item.prepared && !item.playing) return;
 
-    this.completeSent = true;
-    this.sendEvent('onLoadComplete');
+    try {
+      item.controller.stopPlayback();
+    } catch (error) {
+      console.warn(`ExpoLivePhoto: failed to stop playback: ${error}`);
+    }
+  }
+
+  private completeLoad(item: RenderedPhoto): void {
+    if (item.previewLoaded && item.prepared) this.sendEvent('onLoadComplete');
   }
 
   private failLoad(id: number, error: Object): void {
-    if (this.destroyed || id !== this.loadId) return;
+    if (!this.isCurrentLoad(id)) return;
 
     this.loadFailed = true;
     this.clearRenderedPhoto();
@@ -269,29 +261,10 @@ export class LivePhotoView extends ExpoView {
   private isCurrent(item: RenderedPhoto): boolean {
     return !this.destroyed && this.items[0] === item;
   }
-}
 
-function localFileUri(value: string | null | undefined, field: string, bundleName: string): string {
-  if (!value) throw new Error(`Provided source is not a valid LivePhotoAsset: the \`${field}\` has to be provided.`);
-
-  if (value.includes('\0')) {
-    throw new Error(`Provided source is not a valid LivePhotoAsset: \`${field}\` must not contain a NUL character.`);
+  private isCurrentLoad(id: number): boolean {
+    return !this.destroyed && id === this.loadId;
   }
-  if (value.startsWith('/')) return fileUri.getUriFromPath(value);
-
-  const match = /^file:(?:\/\/([^/?#]*)(\/[^?#]*)|(\/(?!\/)[^?#]*))$/i.exec(value);
-  if (match === null) {
-    throw new Error(`Provided source is not a valid LivePhotoAsset: \`${field}\` must be an application sandbox file URI.`);
-  }
-
-  const authority = (match[1] ?? '').toLowerCase();
-  if (authority && authority !== 'localhost' && authority !== bundleName.toLowerCase()) {
-    throw new Error(`Provided source is not a valid LivePhotoAsset: \`${field}\` must refer to the application sandbox.`);
-  }
-
-  // Expo uses authority-free URIs. Media Library Kit needs a system file URI.
-  const path = filePathFromUri(`file://${match[2] ?? match[3]}`);
-  return fileUri.getUriFromPath(path);
 }
 
 @Component
@@ -303,10 +276,10 @@ struct LivePhotoViewContent {
     MovingPhotoView({ movingPhoto: item.photo, controller: item.controller })
       .width('100%')
       .height('100%')
-      .muted(item.muted)
+      .muted(this.view.muted)
       .objectFit(item.fit)
       .enableAnalyzer(false)
-      .hitTestBehavior(item.gesture ? HitTestMode.Default : HitTestMode.None)
+      .hitTestBehavior(this.view.gestureEnabled ? HitTestMode.Default : HitTestMode.None)
       .onComplete((): void => this.view.onPreview(item))
       .onPrepared((): void => this.view.onPrepared(item))
       .onStart((): void => this.view.onStart(item))

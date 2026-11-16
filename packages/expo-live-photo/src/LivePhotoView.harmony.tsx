@@ -16,8 +16,8 @@ import type {
   PlaybackStyle,
 } from 'expo-live-photo';
 
-const module = requireOptionalNativeModule<{ isAvailable(): boolean }>('ExpoLivePhoto');
-const isAvailable = (): boolean => module?.isAvailable() ?? false;
+const nativeModule = requireOptionalNativeModule<{ isAvailable(): boolean }>('ExpoLivePhoto');
+const isAvailable = (): boolean => nativeModule?.isAvailable() ?? false;
 type NativeProps = Omit<LivePhotoViewProps, 'onLoadError'> & {
   ref: React.Ref<LivePhotoViewType | null>;
   onLoadError: (event: NativeSyntheticEvent<LivePhotoLoadError>) => void;

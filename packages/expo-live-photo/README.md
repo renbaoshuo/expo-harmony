@@ -56,7 +56,7 @@ npm install @expo-harmony/expo-live-photo expo-live-photo@~57.0.2
 
 #### `onPlaybackStop`
 
-视频停止播放时调用，包括播放结束、暂停，以及更换资源或修改播放相关属性导致的停止。
+视频停止播放时调用，包括播放结束、暂停，以及更换资源或缩放方式导致的停止。
 
 ### Types
 
@@ -74,7 +74,7 @@ npm install @expo-harmony/expo-live-photo expo-live-photo@~57.0.2
 
 ##### `isMuted`
 
-类型：`boolean`，默认 `true`。控制播放时是否静音。修改后会停止当前播放。
+类型：`boolean`，默认 `true`。控制播放时是否静音。可在播放期间修改。
 
 ##### `contentFit`
 
@@ -82,7 +82,7 @@ npm install @expo-harmony/expo-live-photo expo-live-photo@~57.0.2
 
 ##### `useDefaultGestureRecognizer`
 
-类型：`boolean`，默认 `true`。启用后，用户长按视图即可开始播放。修改后会停止当前播放。
+类型：`boolean`，默认 `true`。启用后，用户长按视图即可开始播放。可在播放期间修改。
 
 #### `LivePhotoAsset`
 
