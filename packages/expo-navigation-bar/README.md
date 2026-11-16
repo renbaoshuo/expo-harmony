@@ -33,6 +33,10 @@ npm install @expo-harmony/expo-navigation-bar expo-navigation-bar@~57.0.3
 | `style` | `NavigationBarStyle` | `'light'` | 设置导航栏按钮颜色。`'light'` 为浅色按钮，`'dark'` 为深色按钮；`'auto'` 在浅色界面使用深色按钮、在深色界面使用浅色按钮，`'inverted'` 则相反。 |
 | `hidden` | `boolean` | `false` | 为 `true` 时隐藏底部导航栏和手势指示条，为 `false` 时显示。 |
 
+组件只设置显式传入的属性。多个组件同时挂载时，按挂载顺序合并各自设置；一个属性不再由组件控制时，恢复该属性的运行时默认值。
+
+显隐设置作用于主窗口，分屏、自由悬浮窗口等模式下可能要等到窗口进入全屏或最大化才生效。系统可能在设置调用成功后才更新可见状态。按钮着色取决于设备和系统的导航模式，手势指示条由系统绘制。2-in-1 设备不支持这些主窗口导航栏设置。
+
 #### `NavigationBar.setStyle(style)`
 
 同步返回 `void`。运行时设置按钮颜色，接受 `NavigationBarStyle`。`'auto'` 在浅色界面使用深色按钮、在深色界面使用浅色按钮；`'inverted'` 使用相反颜色。
@@ -92,6 +96,10 @@ npm install @expo-harmony/expo-navigation-bar expo-navigation-bar@~57.0.3
 #### `ERR_NAVIGATION_BAR_VISIBILITY`
 
 HarmonyOS 无法读取或更改导航栏显隐状态。
+
+#### `ERR_NAVIGATION_BAR_STYLE`
+
+设备不支持设置导航栏样式，或系统未能完成样式更新。
 
 ## 启动配置
 

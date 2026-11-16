@@ -46,18 +46,19 @@ const defaultProps: Required<NavigationBarProps> = {
 };
 
 function mergeEntriesStack() {
-  return entriesStack.reduce<Required<NavigationBarProps>>(
+  return entriesStack.reduce<NavigationBarProps>(
     (prev, cur) => ({
       style: cur.style ?? prev.style,
       hidden: cur.hidden ?? prev.hidden,
     }),
-    { ...defaultProps }
+    {}
   );
 }
 
 const entriesStack: NavigationBarProps[] = [];
 
 let updateImmediate: ReturnType<typeof setImmediate> | null = null;
+let previous: NavigationBarProps = {};
 
 let currentStyle: { value: ResolvedBarStyle } | undefined;
 let currentHidden: { value: boolean } | undefined;
@@ -116,10 +117,17 @@ function updateEntriesStack() {
 
   updateImmediate = setImmediate(() => {
     updateImmediate = null;
-    const { style, hidden } = mergeEntriesStack();
 
-    void applyStyle(style);
-    void applyHidden(hidden);
+    const next = mergeEntriesStack();
+
+    if (next.style !== undefined || previous.style !== undefined) {
+      void applyStyle(next.style ?? defaultProps.style);
+    }
+    if (next.hidden !== undefined || previous.hidden !== undefined) {
+      void applyHidden(next.hidden ?? defaultProps.hidden);
+    }
+
+    previous = next;
   });
 }
 
@@ -159,6 +167,10 @@ export function addVisibilityListener(
 
 /** @deprecated Use `NavigationBar.setHidden` instead. */
 export async function setVisibilityAsync(visibility: NavigationBarVisibility): Promise<void> {
+  if (visibility !== 'visible' && visibility !== 'hidden') {
+    throw new TypeError('Navigation bar visibility must be "visible" or "hidden".');
+  }
+
   // This direct native request can change the value cached by the component.
   currentHidden = undefined;
   await ExpoNavigationBar.setHidden(visibility === 'hidden');

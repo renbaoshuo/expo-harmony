@@ -7,7 +7,7 @@
 
 import type { bundleManager, common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
-import { BusinessError } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import {
   ExpoAbilityLifecycleSubscriber,
   ExpoFunction,
@@ -22,7 +22,10 @@ const VISIBILITY_EVENT_NAME: string = 'ExpoNavigationBar.didChange';
 const STYLE_METADATA: string = 'expo.harmony.navigationBar.style';
 const HIDDEN_METADATA: string = 'expo.harmony.navigationBar.hidden';
 const ANDROID_HIDE_NAVIGATION_FLAG: number = 2;
-const CAPABILITY_UNSUPPORTED: number = 801;
+const WINDOW_MANAGER_CAPABILITY = 'SystemCapability.WindowManager.WindowManager.Core';
+const WINDOW_SESSION_CAPABILITY = 'SystemCapability.Window.SessionManager';
+const TWO_IN_ONE_DEVICE_TYPE = '2in1';
+const CAPABILITY_UNSUPPORTED = 801;
 const CONFIG_STYLE: string = 'style';
 const CONFIG_HIDDEN: string = 'hidden';
 
@@ -136,8 +139,9 @@ class AbilityNavigationBarState {
 
   async setHidden(hidden: boolean, active: () => boolean): Promise<void> {
     await this.useWindow(async (target: window.Window, check: () => void): Promise<void> => {
-      await setNavigationBarVisibility(target, !hidden, check);
+      await setNavigationBarVisibility(target, !hidden);
       check();
+
       this.settings.hidden = hidden;
       this.applied.add(CONFIG_HIDDEN);
     }, active);
@@ -185,13 +189,16 @@ class AbilityNavigationBarState {
     const style = this.settings.style;
     const hidden = this.settings.hidden;
 
-    if (style !== null) await this.applyOption(CONFIG_STYLE, (): Promise<void> => applyStyle(target, style), check);
-    if (hidden !== null)
-      await this.applyOption(CONFIG_HIDDEN, (): Promise<void> => setNavigationBarVisibility(target, !hidden, check), check);
+    if (style !== null && supportsNavigationWindow(WINDOW_MANAGER_CAPABILITY)) {
+      await this.applyOption(CONFIG_STYLE, (): Promise<void> => applyStyle(target, style), check);
+    }
+    if (hidden !== null && supportsNavigationWindow(WINDOW_SESSION_CAPABILITY)) {
+      await this.applyOption(CONFIG_HIDDEN, (): Promise<void> => setNavigationBarVisibility(target, !hidden), check);
+    }
 
     check();
 
-    if (this.listeners.size === 0 || this.observer !== undefined) return;
+    if (this.listeners.size === 0 || this.observer !== undefined || !supportsNavigationWindow(WINDOW_MANAGER_CAPABILITY)) return;
 
     const observer = (options: window.AvoidAreaOptions): void => {
       if (this.observer !== observer) return;
@@ -203,7 +210,6 @@ class AbilityNavigationBarState {
     try {
       target.on('avoidAreaChange', observer);
       this.observer = observer;
-      this.publishVisibility(target, false, false);
     } catch (error) {
       console.warn(`Unable to initialize Expo NavigationBar visibility observation: ${String(error)}`);
     }
@@ -315,9 +321,10 @@ export class ExpoNavigationBarModule extends ExpoModule {
   constructor(context: ExpoModuleContext) {
     super(context);
 
-    const state = states.get(context.uiAbilityContext);
+    if (context.isHeadless) return;
 
-    if (state === undefined && !context.isHeadless) {
+    const state = states.get(context.uiAbilityContext);
+    if (state === undefined) {
       throw new ExpoNavigationBarError(
         'ERR_NAVIGATION_BAR_ABILITY_NOT_INITIALIZED',
         'Expo NavigationBar requires its autolinked Ability lifecycle subscriber.',
@@ -383,57 +390,69 @@ export class ExpoNavigationBarModule extends ExpoModule {
 }
 
 async function applyStyle(target: window.Window, style: NavigationBarStyle): Promise<void> {
-  await target.setWindowSystemBarProperties({
-    navigationBarContentColor: style === 'light' ? '#FFFFFFFF' : '#FF000000',
-  });
+  if (!supportsNavigationWindow(WINDOW_MANAGER_CAPABILITY)) {
+    throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_STYLE', 'This HarmonyOS device does not support navigation bar styling.');
+  }
+
+  try {
+    await target.setWindowSystemBarProperties({
+      navigationBarContentColor: style === 'light' ? '#FFFFFFFF' : '#FF000000',
+    });
+  } catch (error) {
+    throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_STYLE', `Unable to update the Harmony navigation bar style: ${String(error)}`);
+  }
 }
 
-async function setNavigationBarVisibility(target: window.Window, visible: boolean, check: () => void): Promise<void> {
-  // Harmony's bottom navigation selector covers both gestures and buttons.
-  try {
-    await target.setSpecificSystemBarEnabled('navigationIndicator', visible, false);
-  } catch (error) {
-    if (!isCapabilityUnsupported(error)) {
-      throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_VISIBILITY', `Unable to update the Harmony navigation indicator: ${String(error)}`);
-    }
+async function setNavigationBarVisibility(target: window.Window, visible: boolean): Promise<void> {
+  if (!supportsNavigationWindow(WINDOW_SESSION_CAPABILITY)) {
+    throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_VISIBILITY', 'This HarmonyOS device does not support changing navigation bar visibility.');
+  }
 
-    check();
-    await target.setSpecificSystemBarEnabled('navigation', visible, false);
+  try {
+    await target.setSpecificSystemBarEnabled('navigationIndicator', visible);
+  } catch (error) {
+    throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_VISIBILITY', `Unable to update the Harmony navigation indicator: ${String(error)}`);
   }
 }
 
 function inspectVisibility(target: window.Window): NavigationBarVisibility {
+  if (!supportsNavigationWindow(WINDOW_MANAGER_CAPABILITY)) return 'hidden';
+
   try {
-    const indicator: window.AvoidArea = target.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
-    return hasAnyEdge(indicator) ? 'visible' : 'hidden';
+    const indicator = target.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
+    if (hasNavigationEdge(indicator) || (indicator.visible && hasArea(indicator.topRect))) return 'visible';
   } catch (error) {
-    if (!isCapabilityUnsupported(error)) {
+    if ((error as BusinessError).code !== CAPABILITY_UNSUPPORTED) {
       throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_VISIBILITY', `Unable to inspect the Harmony navigation indicator: ${String(error)}`);
     }
   }
 
-  const system: window.AvoidArea = target.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
-  return hasNavigationEdge(system) ? 'visible' : 'hidden';
+  // Some releases report three-button navigation in the system area.
+  try {
+    const system = target.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+    return hasNavigationEdge(system) ? 'visible' : 'hidden';
+  } catch (error) {
+    throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_VISIBILITY', `Unable to inspect the Harmony system bar area: ${String(error)}`);
+  }
 }
 
 function hasNavigationEdge(area: window.AvoidArea): boolean {
-  return area.visible && (area.leftRect.width > 0 || area.rightRect.width > 0 || area.bottomRect.height > 0);
+  return area.visible && (hasArea(area.leftRect) || hasArea(area.rightRect) || hasArea(area.bottomRect));
 }
 
-function hasAnyEdge(area: window.AvoidArea): boolean {
-  return area.visible && (area.leftRect.width > 0 || area.topRect.height > 0 || area.rightRect.width > 0 || area.bottomRect.height > 0);
+function hasArea(rect: window.Rect): boolean {
+  return rect.width > 0 && rect.height > 0;
 }
 
-function isCapabilityUnsupported(error: Object): boolean {
-  const value = error as BusinessError;
-  return value.code === CAPABILITY_UNSUPPORTED;
+function supportsNavigationWindow(capability: string): boolean {
+  return deviceInfo.deviceType !== TWO_IN_ONE_DEVICE_TYPE && canIUse(capability);
 }
 
 function readConfiguration(context: common.UIAbilityContext): NavigationBarConfiguration {
   const config = new NavigationBarConfiguration();
 
   try {
-    applyMetadata(config, context.currentHapModuleInfo.metadata);
+    applyMetadata(config, context.currentHapModuleInfo.metadata ?? []);
   } catch (error) {
     console.warn(`Unable to read the Expo NavigationBar module metadata: ${String(error)}`);
   }
