@@ -22,6 +22,9 @@ import { request } from '@kit.BasicServicesKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { util } from '@kit.ArkTS';
 
+const DOWNLOAD_CAPABILITY = 'SystemCapability.MiscServices.Download';
+const MESSAGE_DIGEST_CAPABILITY = 'SystemCapability.Security.CryptoFramework.MessageDigest';
+
 type CancelRequest = (error: ExpoAssetError) => void;
 
 class ExpoAssetError extends ExpoModuleError {
@@ -100,6 +103,7 @@ export class ExpoAssetModule extends ExpoModule {
     const scheme = uriScheme(uri);
     if (scheme === 'file') {
       this.context.fileSourceForRead(uri);
+
       return uri;
     }
 
@@ -131,13 +135,11 @@ export class ExpoAssetModule extends ExpoModule {
     this.context.assertFileAccess(file, 'read');
 
     let cached = false;
-
     try {
       cached = (await fs.lstat(file)).isFile() && (await this.matches(file, md5));
     } catch (_) {}
 
     this.assertActive();
-
     if (cached) return fileUriFromPath(file);
 
     const temp = `${file}.expo-${util.generateRandomUUID()}.tmp`;
@@ -151,7 +153,8 @@ export class ExpoAssetModule extends ExpoModule {
       this.assertActive();
       this.context.assertFileAccess(file, 'write');
 
-      await fs.moveFile(temp, file, 0);
+      await fs.rename(temp, file);
+      this.assertActive();
 
       return fileUriFromPath(file);
     } catch (error) {
@@ -163,9 +166,7 @@ export class ExpoAssetModule extends ExpoModule {
         this.context.logger.warn('Retaining an Expo asset temporary file because the native download could not be stopped.');
       }
 
-      if (error instanceof ExpoAssetError) {
-        throw new ExpoAssetError(error.code, error.message);
-      }
+      if (error instanceof ExpoAssetError) throw error;
 
       throw new ExpoAssetError('ERR_ASSET_DOWNLOAD_FAILED', cleanErrorMessage(error as Object));
     }
@@ -185,6 +186,7 @@ export class ExpoAssetModule extends ExpoModule {
 
       try {
         const output = await fs.open(file, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+
         try {
           const buffer = new ArrayBuffer(64 * 1024);
           let written = 0;
@@ -199,7 +201,7 @@ export class ExpoAssetModule extends ExpoModule {
               throw new ExpoAssetError('ERR_ASSET_RESOURCE_UNAVAILABLE', `Cannot read the complete packaged asset '${name}'.`);
             }
 
-            await writeAllAsync(output.fd, count === buffer.byteLength ? buffer : buffer.slice(0, count));
+            await writeAllAsync(output.fd, buffer, count);
             written += count;
           }
         } finally {
@@ -209,9 +211,7 @@ export class ExpoAssetModule extends ExpoModule {
         await fs.close(input.file.fd);
       }
     } catch (error) {
-      if (error instanceof ExpoAssetError) {
-        throw new ExpoAssetError(error.code, error.message);
-      }
+      if (error instanceof ExpoAssetError) throw error;
 
       throw new ExpoAssetError('ERR_ASSET_RESOURCE_UNAVAILABLE', `Cannot read packaged asset '${name}': ${cleanErrorMessage(error as Object)}`);
     }
@@ -219,6 +219,9 @@ export class ExpoAssetModule extends ExpoModule {
 
   private async downloadHttp(uri: string, file: string): Promise<void> {
     this.assertActive();
+    if (!canIUse(DOWNLOAD_CAPABILITY)) {
+      throw new ExpoAssetError('ERR_ASSET_DOWNLOAD_FAILED', 'The system download service is unavailable.');
+    }
 
     let task: request.DownloadTask;
     try {
@@ -245,10 +248,11 @@ export class ExpoAssetModule extends ExpoModule {
 
       const cleanup = (): void => {
         this.requests.delete(task);
-        try {
-          task.off('complete', complete);
-          task.off('fail', fail);
-        } catch (_) {}
+
+        // The service may detach listeners when it removes the task.
+        try { task.off('complete', complete); } catch (_) {}
+        try { task.off('fail', fail); } catch (_) {}
+        try { task.off('remove', remove); } catch (_) {}
       };
 
       const settle = (error?: ExpoAssetError): void => {
@@ -264,14 +268,16 @@ export class ExpoAssetModule extends ExpoModule {
       const complete = (): void => settle();
       const fail = (reason: number): void =>
         settle(new ExpoAssetError('ERR_ASSET_DOWNLOAD_FAILED', `Unable to download asset from '${sanitizedUri(uri)}' (Harmony reason ${reason}).`));
+      const remove = (): void =>
+        settle(new ExpoAssetError('ERR_ASSET_DOWNLOAD_FAILED', `The system removed the asset download from '${sanitizedUri(uri)}'.`));
 
       const cancel = (error: ExpoAssetError): void => {
         if (settled) return;
 
         settled = true;
         cleanup();
-        // Only confirmed deletion permits materialize to remove the temporary file.
-        // Otherwise retain it: the native writer may still be using it.
+
+        // Retain the temporary file unless the native writer is confirmed stopped.
         const cancelled = (deleted: boolean): void => reject(new ExpoAssetError(error.code, error.message, deleted) as Error);
 
         try {
@@ -285,9 +291,11 @@ export class ExpoAssetModule extends ExpoModule {
       };
 
       this.requests.set(task, cancel);
+
       try {
         task.on('complete', complete);
         task.on('fail', fail);
+        task.on('remove', remove);
 
         if (this.destroyed) {
           cancel(new ExpoAssetError('ERR_ASSET_RUNTIME_DESTROYED', 'The Expo asset service was destroyed while a request was in progress.'));
@@ -323,20 +331,18 @@ function rawResourceName(uri: string): string {
   }
 }
 
-async function writeAllAsync(fd: number, data: ArrayBuffer): Promise<number> {
+async function writeAllAsync(fd: number, data: ArrayBuffer, length: number): Promise<void> {
   let written = 0;
 
-  while (written < data.byteLength) {
-    const end = Math.min(written + 64 * 1024, data.byteLength);
-    const count = await fs.write(fd, data.slice(written, end), { length: end - written });
+  while (written < length) {
+    const remaining = written === 0 ? data : data.slice(written, length);
+    const count = await fs.write(fd, remaining, { length: length - written });
     if (count <= 0) {
       throw new ExpoAssetError('ERR_ASSET_WRITE_FAILED', 'Unable to write the complete asset.');
     }
 
     written += count;
   }
-
-  return written;
 }
 
 function safeAssetType(type: string): string {
@@ -380,16 +386,22 @@ function cleanErrorMessage(error: Object): string {
 }
 
 function md5String(text: string): string {
-  const digest = cryptoFramework.createMd('MD5');
-  if (text.length > 0) {
-    digest.updateSync({ data: new util.TextEncoder('utf-8').encodeInto(text) });
+  if (!canIUse(MESSAGE_DIGEST_CAPABILITY)) {
+    throw new ExpoAssetError('ERR_ASSET_DOWNLOAD_FAILED', 'The system message digest service is unavailable.');
   }
 
-  const bytes = digest.digestSync().data;
-  let result = '';
-  for (let i = 0; i < bytes.length; i += 1) {
-    result += bytes[i].toString(16).padStart(2, '0');
-  }
+  try {
+    const digest = cryptoFramework.createMd('MD5');
+    if (text.length > 0) digest.updateSync({ data: util.TextEncoder.create().encodeInto(text) });
 
-  return result;
+    const bytes = digest.digestSync().data;
+    let hex = '';
+    for (let i = 0; i < bytes.length; i += 1) {
+      hex += bytes[i].toString(16).padStart(2, '0');
+    }
+
+    return hex;
+  } catch (error) {
+    throw new ExpoAssetError('ERR_ASSET_DOWNLOAD_FAILED', `Unable to compute the asset cache key: ${cleanErrorMessage(error as Object)}`);
+  }
 }
