@@ -38,23 +38,23 @@ npm install @expo-harmony/expo-battery expo-battery@~57.0.3
 
 #### `Battery.isAvailableAsync()`
 
-无参数，返回 `Promise<boolean>`。始终为 `true`，即使设备没有电池。
+无参数，返回 `Promise<boolean>`。设备支持系统电池信息接口时返回 `true`，即使没有安装电池。设备不支持该接口时返回 `false`。
 
 #### `Battery.getBatteryLevelAsync()`
 
-无参数，返回 `Promise<number>`。电量比例范围为 `0` 到 `1`；设备没有电池或系统电量值无效时返回 `-1`。读取失败时以 `ERR_BATTERY_LEVEL` 拒绝。
+无参数，返回 `Promise<number>`。电量比例范围为 `0` 到 `1`。系统不支持读取电量、设备没有电池或系统电量值无效时返回 `-1`。读取失败时以 `ERR_BATTERY_LEVEL` 拒绝。
 
 #### `Battery.getBatteryStateAsync()`
 
-无参数，返回 `Promise<BatteryState>`。设备没有电池时返回 `BatteryState.UNKNOWN`。未充电且未连接电源时返回 `UNPLUGGED`，充电中返回 `CHARGING`，已充满返回 `FULL`。已连接 AC、USB 或无线充电器但未充电时返回 `NOT_CHARGING`；无法识别的状态返回 `UNKNOWN`。读取失败时以 `ERR_BATTERY_STATE` 拒绝。
+无参数，返回 `Promise<BatteryState>`。系统不支持读取状态、设备没有电池或系统状态无法识别时返回 `UNKNOWN`。放电或未连接电源且未充电时返回 `UNPLUGGED`，充电中返回 `CHARGING`，已充满返回 `FULL`。系统报告暂停充电且已连接 AC、USB 或无线充电器时返回 `NOT_CHARGING`。读取失败时以 `ERR_BATTERY_STATE` 拒绝。
 
 #### `Battery.isLowPowerModeEnabledAsync()`
 
-无参数，返回 `Promise<boolean>`。普通省电模式和超级省电模式返回 `true`；HarmonyOS API 20 及以上的自定义省电模式也返回 `true`，其他电源模式返回 `false`。读取失败时以 `ERR_BATTERY_POWER_MODE` 拒绝。
+无参数，返回 `Promise<boolean>`。普通省电模式和超级省电模式返回 `true`。HarmonyOS API 20 及以上的自定义省电模式也返回 `true`。其他电源模式或系统不支持查询电源模式时返回 `false`。读取失败时以 `ERR_BATTERY_POWER_MODE` 拒绝。
 
 #### `Battery.isBatteryOptimizationEnabledAsync()`
 
-无参数，返回 `Promise<boolean>`，始终为 `false`。HarmonyOS 不提供应用级电池优化状态查询；此值不表示系统不会限制应用在后台运行。
+无参数，返回 `Promise<boolean>`。HarmonyOS 没有公开的应用级电池优化状态查询，调用沿用 Expo 在未实现该接口的平台上的默认值 `false`。应用后台任务仍受系统调度规则约束。
 
 #### `Battery.getPowerStateAsync()`
 
@@ -100,7 +100,7 @@ npm install @expo-harmony/expo-battery expo-battery@~57.0.3
 
 #### `BatteryState`
 
-`UNKNOWN` 为 `0`，表示状态未知或无法判断；`UNPLUGGED` 为 `1`，表示未连接电源且未充电；`CHARGING` 为 `2`，表示正在充电；`FULL` 为 `3`，表示电量已满；`NOT_CHARGING` 为 `4`，表示已连接电源但当前未充电。
+`UNKNOWN` 为 `0`，表示状态未知或无法判断；`UNPLUGGED` 为 `1`，表示正在放电或未连接电源且未充电；`CHARGING` 为 `2`，表示正在充电；`FULL` 为 `3`，表示电量已满；`NOT_CHARGING` 为 `4`，表示已连接电源但当前未充电。
 
 ### Error codes
 
