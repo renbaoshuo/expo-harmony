@@ -116,7 +116,7 @@ npm install @expo-harmony/expo-sensors expo-sensors@~57.0.3
 
 #### `Pedometer.watchStepCount(callback)`
 
-参数 `callback: PedometerUpdateCallback`，返回 `Subscription`；调用 `remove()` 取消订阅。需要运动权限；未授权时不会收到步数事件。事件按默认 100 毫秒间隔节流。每轮订阅首次收到的步数为 `1`；前后台切换会保留本轮计数，移除最后一个订阅后再次订阅会重新计数。应用处于后台时暂停事件；恢复后步数可能包含暂停期间记录的步数。
+参数 `callback: PedometerUpdateCallback`，返回 `Subscription`；调用 `remove()` 取消订阅。需要运动权限；未授权时不会收到步数事件。事件按默认 100 毫秒间隔节流。每轮订阅以系统首次报告的累计步数为基准，此次事件的 `steps` 为 `0`。前后台切换会保留本轮计数，移除最后一个订阅后再次订阅会重新计数。应用处于后台时暂停事件，恢复后步数可能包含暂停期间记录的步数。
 
 ### Types
 

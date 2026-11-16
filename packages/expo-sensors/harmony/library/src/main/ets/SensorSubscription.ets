@@ -11,9 +11,14 @@ import { intervalNanoseconds, timestampSeconds } from './SensorMeasurements';
 const UNSUBSCRIBE_RETRY_MS: number = 1000;
 const MAX_UNSUBSCRIBE_ATTEMPTS: number = 3;
 
+interface SensorSamplingRequest {
+  readonly period: number;
+  readonly apply: (period: number) => void;
+}
+
 // Native listeners for the same sensor share a sampling period. Preserve the
 // fastest request when DeviceMotion and a standalone sensor are both observing.
-const activeSamplePeriods = new Map<sensor.SensorId, Map<SensorObserver, number>>();
+const activeSamplePeriods = new Map<sensor.SensorId, Map<SensorObserver, SensorSamplingRequest>>();
 
 export interface SensorObserver {
   id: sensor.SensorId;
@@ -76,14 +81,19 @@ export class SensorSubscription<T extends sensor.Response> implements SensorObse
     this.active = true;
     this.attempts = 0;
 
-    const periods = activeSamplePeriods.get(this.id) ?? new Map<SensorObserver, number>();
-    let sharedPeriod = period;
-    periods.forEach((current: number): void => {
-      sharedPeriod = Math.min(sharedPeriod, current);
+    const periods = activeSamplePeriods.get(this.id) ?? new Map<SensorObserver, SensorSamplingRequest>();
+    let fastest = period;
+    periods.forEach((current: SensorSamplingRequest): void => {
+      fastest = Math.min(fastest, current.period);
     });
 
+    const request: SensorSamplingRequest = {
+      period,
+      apply: (interval: number): void => this.subscribe(callback, { interval }),
+    };
+
     try {
-      this.subscribe(callback, { interval: sharedPeriod });
+      request.apply(fastest);
     } catch (error) {
       this.active = false;
       this.callback = undefined;
@@ -91,17 +101,14 @@ export class SensorSubscription<T extends sensor.Response> implements SensorObse
       throw new Error(`Unable to subscribe sensor ${this.id}: ${String(error)}`);
     }
 
-    periods.set(this, period);
+    periods.set(this, request);
     activeSamplePeriods.set(this.id, periods);
   }
 
   stop(): void {
     this.active = false;
-    const periods = activeSamplePeriods.get(this.id);
-    if (periods !== undefined) {
-      periods.delete(this);
-      if (periods.size === 0) activeSamplePeriods.delete(this.id);
-    }
+    this.releaseSamplingRequest();
+
     if (this.retry >= 0) clearTimeout(this.retry);
     this.retry = -1;
 
@@ -126,6 +133,32 @@ export class SensorSubscription<T extends sensor.Response> implements SensorObse
           `Sensor ${this.id} cleanup failed after ${this.attempts} attempts. Its callback remains quarantined; a later stop/start will retry removal.`,
         );
       }
+    }
+  }
+
+  private releaseSamplingRequest(): void {
+    const periods = activeSamplePeriods.get(this.id);
+    const released = periods?.get(this);
+    if (periods === undefined || released === undefined) return;
+
+    periods.delete(this);
+    if (periods.size === 0) {
+      activeSamplePeriods.delete(this.id);
+      return;
+    }
+
+    let fastest: SensorSamplingRequest | undefined;
+    for (const request of periods.values()) {
+      if (fastest === undefined || request.period < fastest.period) fastest = request;
+    }
+
+    if (fastest === undefined || released.period >= fastest.period) return;
+
+    try {
+      // sensor.off removes the callback without resetting the shared sampling rate.
+      fastest.apply(fastest.period);
+    } catch (error) {
+      this.warn(`Unable to update sensor ${this.id} sampling interval: ${String(error)}`);
     }
   }
 }

@@ -10,9 +10,8 @@ import { Permissions } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { deviceInfo } from '@kit.BasicServicesKit';
 
-const ACTIVITY_MOTION: Permissions = 'ohos.permission.ACTIVITY_MOTION';
+export const ACTIVITY_MOTION: Permissions = 'ohos.permission.ACTIVITY_MOTION';
 const SELF_PERMISSION_STATUS_API: number = 20;
-const REQUEST_ERROR_REASONS_API: number = 18;
 const PREFERENCES_NAME: string = 'ExpoSensors';
 const DECISION_KEY: string = 'activityMotionDetermined';
 const LEGACY_DENIED_KEY: string = 'activityMotionDenied';
@@ -40,7 +39,7 @@ export class SensorPermissionResponse {
 
 export class PedometerPermissions {
   private readonly context: ExpoModuleContext;
-  private determined: boolean = false;
+  private legacyDecision?: Promise<boolean>;
   private pending?: Promise<SensorPermissionResponse>;
 
   constructor(context: ExpoModuleContext) {
@@ -48,17 +47,8 @@ export class PedometerPermissions {
   }
 
   async get(): Promise<SensorPermissionResponse> {
-    let history: boolean | undefined = undefined;
-
-    if (deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) {
-      if (this.context.systemPermissionStatus(ACTIVITY_MOTION) === ExpoPermissionStatus.GRANTED) {
-        await this.rememberDecision();
-      }
-
-      history = await this.hasDecision();
-    }
-
-    const status = this.context.permissionStatus(ACTIVITY_MOTION, history);
+    const response = this.context.getPermissionResponse(ACTIVITY_MOTION);
+    const status = response.status;
     if (status === ExpoPermissionStatus.INVALID) {
       throw new ExpoModuleError(
         'ERR_SENSOR_PERMISSION',
@@ -67,9 +57,12 @@ export class PedometerPermissions {
     }
     if (status === ExpoPermissionStatus.GRANTED) return new SensorPermissionResponse('granted', true);
 
-    const undetermined = status === ExpoPermissionStatus.NOT_DETERMINED;
+    if (status === ExpoPermissionStatus.NOT_DETERMINED && deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) {
+      this.legacyDecision ??= this.readLegacyDecision();
+      if (await this.legacyDecision) return new SensorPermissionResponse('denied', false);
+    }
 
-    return new SensorPermissionResponse(undetermined ? 'undetermined' : 'denied', undetermined);
+    return new SensorPermissionResponse(status === ExpoPermissionStatus.NOT_DETERMINED ? 'undetermined' : 'denied', response.canAskAgain);
   }
 
   async request(): Promise<SensorPermissionResponse> {
@@ -94,8 +87,10 @@ export class PedometerPermissions {
 
     for (const result of request.systemResults) {
       const index = result.permissions.indexOf(ACTIVITY_MOTION);
-      const reason =
-        deviceInfo.sdkApiVersion >= REQUEST_ERROR_REASONS_API ? (result.errorReasons?.[index] ?? RequestReason.Success) : RequestReason.Success;
+      let reason: number = RequestReason.Success;
+      if (deviceInfo.apiAvailable(18)) {
+        reason = result.errorReasons?.[index] ?? RequestReason.Success;
+      }
 
       if (index < 0 || reason === RequestReason.InvalidPermission || reason === RequestReason.NotDeclared) {
         throw new ExpoModuleError(
@@ -115,10 +110,6 @@ export class PedometerPermissions {
       }
 
       blocked = blocked || cannotRequest;
-
-      if (deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) {
-        await this.rememberDecision();
-      }
     }
 
     const response = await this.get();
@@ -126,32 +117,13 @@ export class PedometerPermissions {
     return blocked && !response.granted ? new SensorPermissionResponse('denied', false) : response;
   }
 
-  private async hasDecision(): Promise<boolean> {
-    if (this.determined) return true;
-
+  private async readLegacyDecision(): Promise<boolean> {
     try {
       const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: PREFERENCES_NAME });
-      if ((await store.get(DECISION_KEY, false)) === true || (await store.get(LEGACY_DENIED_KEY, false)) === true) {
-        this.determined = true;
-      }
+
+      return (await store.get(DECISION_KEY, false)) === true || (await store.get(LEGACY_DENIED_KEY, false)) === true;
     } catch (_) {
-      // The system grant remains authoritative if history is unavailable.
-    }
-
-    return this.determined;
-  }
-
-  private async rememberDecision(): Promise<void> {
-    if (this.determined) return;
-
-    this.determined = true;
-
-    try {
-      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: PREFERENCES_NAME });
-      await store.put(DECISION_KEY, true);
-      await store.flush();
-    } catch (_) {
-      // Permission history is best effort; the OS remains authoritative.
+      return false;
     }
   }
 }

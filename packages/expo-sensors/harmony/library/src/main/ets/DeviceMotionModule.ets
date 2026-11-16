@@ -14,7 +14,6 @@ import {
   DeviceMotionMeasurement,
   finite,
   GRAVITY_EARTH,
-  NANOSECONDS_PER_SECOND,
   RotationMeasurement,
   VectorMeasurement,
 } from './SensorMeasurements';
@@ -22,11 +21,12 @@ import { SensorPermissionResponse } from './SensorPermissions';
 
 export class DeviceMotionModule extends SensorModule {
   private acceleration?: VectorMeasurement;
-  private total?: VectorMeasurement;
+  private total?: sensor.AccelerometerResponse;
   private gravity?: VectorMeasurement;
   private rotation?: RotationMeasurement;
   private rate?: RotationMeasurement;
   private pending: boolean = false;
+  private nextRotation?: sensor.RotationVectorResponse;
   private window?: window.Window;
 
   constructor(context: ExpoModuleContext) {
@@ -42,7 +42,10 @@ export class DeviceMotionModule extends SensorModule {
         sensor.off(sensor.SensorId.ACCELEROMETER, callback);
       },
       (value): void => {
-        this.total = new VectorMeasurement(value.x, value.y, value.z, value.timestamp);
+        finite(value.x);
+        finite(value.y);
+        finite(value.z);
+        this.total = value;
         this.publish();
       },
     );
@@ -141,11 +144,15 @@ export class DeviceMotionModule extends SensorModule {
     this.rotation = undefined;
     this.rate = undefined;
     this.pending = false;
+    this.nextRotation = undefined;
     this.window = undefined;
   }
 
   private async updateRotation(value: sensor.RotationVectorResponse): Promise<void> {
-    if (this.pending) return;
+    if (this.pending) {
+      this.nextRotation = value;
+      return;
+    }
 
     this.pending = true;
     const generation = this.generation;
@@ -171,7 +178,14 @@ export class DeviceMotionModule extends SensorModule {
     } catch (error) {
       if (generation === this.generation) this.warn(`Unable to calculate device rotation: ${String(error)}`);
     } finally {
-      if (generation === this.generation) this.pending = false;
+      if (generation === this.generation) {
+        this.pending = false;
+
+        const next = this.nextRotation;
+        this.nextRotation = undefined;
+
+        if (next !== undefined) this.updateRotation(next);
+      }
     }
   }
 
@@ -187,7 +201,7 @@ export class DeviceMotionModule extends SensorModule {
       total.x - 2 * gravity.x,
       total.y - 2 * gravity.y,
       total.z - 2 * gravity.z,
-      total.timestamp * NANOSECONDS_PER_SECOND,
+      total.timestamp,
     );
 
     this.emitMeasurement(new DeviceMotionMeasurement(this.acceleration ?? null, combined, rotation, this.rate ?? null, this.interval, this.orientation()));

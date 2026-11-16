@@ -25,6 +25,7 @@ import { SensorPermissionResponse } from './SensorPermissions';
 
 const SUBSCRIBE_RETRY_MS: number = 1000;
 const MAX_SUBSCRIBE_RETRIES: number = 3;
+const SENSOR_CAPABILITY: string = 'SystemCapability.Sensors.Sensor';
 
 export class SensorModule extends ExpoModule {
   protected interval: number = 100;
@@ -58,15 +59,7 @@ export class SensorModule extends ExpoModule {
         this.logger = this.context.logger;
       })
       .asyncFunction('isAvailableAsync', async (): Promise<boolean> => {
-        return this.subscriptions.every((subscription: SensorObserver): boolean => {
-          try {
-            sensor.getSingleSensorSync(subscription.id);
-
-            return true;
-          } catch (_) {
-            return false;
-          }
-        });
+        return this.isAvailable();
       })
       .asyncFunction(
         'setUpdateInterval',
@@ -76,6 +69,8 @@ export class SensorModule extends ExpoModule {
           } catch (error) {
             throw new ExpoModuleError('ERR_SENSOR_INTERVAL', String(error));
           }
+
+          if (this.interval === interval) return;
 
           this.interval = interval;
 
@@ -194,6 +189,7 @@ export class SensorModule extends ExpoModule {
 
   private resume(): void {
     if (this.destroyed || !this.foreground || !this.observing || this.running) return;
+    if (!canIUse(SENSOR_CAPABILITY)) return;
     if (!this.hasPermissions()) throw new ExpoModuleError('ERR_SENSOR_PERMISSION_DENIED', `Permission to observe ${this.name} was not granted.`);
 
     this.running = true;
@@ -229,6 +225,19 @@ export class SensorModule extends ExpoModule {
   private hasPermissions(): boolean {
     return this.required.every((permission: Permissions): boolean => {
       return this.context.permissionStatus(permission) === ExpoPermissionStatus.GRANTED;
+    });
+  }
+
+  private isAvailable(): boolean {
+    if (!canIUse(SENSOR_CAPABILITY)) return false;
+
+    return this.subscriptions.every((subscription: SensorObserver): boolean => {
+      try {
+        sensor.getSingleSensorSync(subscription.id);
+        return true;
+      } catch (_) {
+        return false;
+      }
     });
   }
 
