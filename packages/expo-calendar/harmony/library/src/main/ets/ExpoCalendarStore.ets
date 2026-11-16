@@ -6,11 +6,13 @@
  */
 
 import { ExpoModuleContext, ExpoService, ExpoServiceContext, ExpoServiceKey } from '@expo-harmony/expo-modules-core';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { calendarManager } from '@kit.CalendarKit';
 import {
   ExpoCalendarError,
   ExpoCalendarRecord,
   ExpoDialogResult,
+  ExpoOpenDialogResult,
   ExpoEventRecord,
   calendarAccountFromDetails,
   calendarConfigFromDetails,
@@ -23,7 +25,7 @@ import {
   validateCalendarUpdate,
   validateEntityType,
 } from './CalendarRecords';
-import { CalendarPermissions } from './CalendarPermissions';
+import { CalendarPermissionResponse, CalendarPermissions } from './CalendarPermissions';
 
 const EVENT_FIELDS: (keyof calendarManager.Event)[] = [
   'id',
@@ -65,19 +67,33 @@ class SavedEvent {
   }
 }
 
+class PermissionRequest {
+  readonly epoch: string;
+  readonly result: Promise<CalendarPermissionResponse>;
+
+  constructor(epoch: string, result: Promise<CalendarPermissionResponse>) {
+    this.epoch = epoch;
+    this.result = result;
+  }
+}
+
 export class ExpoCalendarStore {
   readonly permissions: CalendarPermissions;
-  private pending: boolean = false;
-  private mutations: Promise<void> = Promise.resolve();
   private readonly context: ExpoModuleContext;
+  private readonly service: ExpoCalendarService;
 
-  constructor(context: ExpoModuleContext) {
+  constructor(context: ExpoModuleContext, service: ExpoCalendarService) {
     this.context = context;
+    this.service = service;
     this.permissions = new CalendarPermissions(context);
   }
 
   assertActive(): void {
     if (!this.context.isValid) throw new ExpoCalendarError('ERR_CALENDAR_DESTROYED', 'The Expo Calendar runtime has been destroyed.');
+  }
+
+  requestPermissions(): Promise<CalendarPermissionResponse> {
+    return this.service.requestPermissions(this.context.runtimeEpoch, (): Promise<CalendarPermissionResponse> => this.permissions.request());
   }
 
   async calendarRecord(id: string): Promise<ExpoCalendarRecord> {
@@ -88,7 +104,8 @@ export class ExpoCalendarStore {
   async calendarRecordFromNative(calendar: calendarManager.Calendar): Promise<ExpoCalendarRecord> {
     const primary = await this.manager().getCalendar();
     this.assertReadable();
-    return new ExpoCalendarRecord(calendar, calendar.getAccount(), calendar.getConfig(), primary.id);
+
+    return this.serializeCalendar(calendar, primary.id, this.permissions.hasWriteAccess());
   }
 
   async eventRecord(id: string, calendar?: calendarManager.Calendar): Promise<ExpoEventRecord> {
@@ -111,21 +128,15 @@ export class ExpoCalendarStore {
   }
 
   mutate<Result>(operation: () => Promise<Result>): Promise<Result> {
-    // Calendar Kit replaces fields on update; serialize partial updates to avoid lost writes.
-    const result = this.mutations.then(async (): Promise<Result> => {
+    return this.service.mutate(async (): Promise<Result> => {
       this.assertActive();
       this.permissions.ensureWritable();
 
-      const value = await operation();
+      const result = await operation();
       this.assertActive();
-      return value;
-    });
-    this.mutations = result.then(
-      (): void => {},
-      (): void => {},
-    );
 
-    return result;
+      return result;
+    });
   }
 
   async getCalendars(entity?: string | null): Promise<ExpoCalendarRecord[]> {
@@ -137,16 +148,22 @@ export class ExpoCalendarStore {
     const calendars = await manager.getAllCalendars();
     this.assertReadable();
 
+    const writable = this.permissions.hasWriteAccess();
     return calendars.map(
       (calendar: calendarManager.Calendar): ExpoCalendarRecord =>
-        new ExpoCalendarRecord(calendar, calendar.getAccount(), calendar.getConfig(), primary.id),
+        this.serializeCalendar(calendar, primary.id, writable),
     );
   }
 
   async getDefaultCalendar(): Promise<ExpoCalendarRecord> {
     const calendar = await this.manager().getCalendar();
     this.assertReadable();
-    return new ExpoCalendarRecord(calendar, calendar.getAccount(), calendar.getConfig(), calendar.id);
+
+    return this.serializeCalendar(calendar, calendar.id, this.permissions.hasWriteAccess());
+  }
+
+  private serializeCalendar(calendar: calendarManager.Calendar, primary: number, writable: boolean): ExpoCalendarRecord {
+    return new ExpoCalendarRecord(calendar, calendar.getAccount(), calendar.getConfig(), primary, writable);
   }
 
   async saveCalendar(data: Record<string, ESObject>): Promise<calendarManager.Calendar> {
@@ -162,6 +179,7 @@ export class ExpoCalendarStore {
       if (!Number.isSafeInteger(calendar.id) || calendar.id <= 0) {
         throw new ExpoCalendarError('ERR_CALENDAR_NOT_SAVED', 'Calendar Kit did not create a valid calendar.');
       }
+      if (config === undefined) return calendar;
 
       try {
         this.assertActive();
@@ -181,7 +199,8 @@ export class ExpoCalendarStore {
     const calendar = await this.requireCalendar(requireCalendarId(data['id'], 'id'));
     validateCalendarUpdate(data, calendar.getAccount());
 
-    const config = calendarConfigFromDetails(data, calendar.getConfig());
+    const config = calendarConfigFromDetails(data);
+    if (config === undefined) return calendar;
 
     this.assertActive();
     this.permissions.ensureWritable();
@@ -274,10 +293,10 @@ export class ExpoCalendarStore {
 
   async createEventInCalendar(data: Record<string, ESObject>): Promise<ExpoDialogResult> {
     this.assertActive();
+    if (this.context.isHeadless) throw new ExpoCalendarError('ERR_UNAVAILABLE', 'A foreground runtime is required to present the calendar.');
     if (!canIUse('SystemCapability.Applications.CalendarData')) {
       throw new ExpoCalendarError('ERR_UNAVAILABLE', 'Calendar Kit is not available on this device.');
     }
-    if (this.pending) throw new ExpoCalendarError('ERR_CALENDAR_DIALOG_PENDING', 'A calendar dialog is already open.');
     if (data['timeZone'] !== undefined && data['timeZone'] !== null) {
       throw new ExpoCalendarError('ERR_CALENDAR_UNSUPPORTED', 'Calendar Kit cannot set timeZone on the system creation page.');
     }
@@ -290,23 +309,51 @@ export class ExpoCalendarStore {
 
     const input: Record<string, ESObject> = {};
     Object.keys(data).forEach((key: string): void => {
-      input[key] = data[key];
+      if (key !== 'timeZone') input[key] = data[key];
     });
     input['startDate'] = start;
     input['endDate'] = end;
+
     const event = eventFromDetails(input);
+    const rule = event.recurrenceRule;
+    if (rule !== undefined && (
+      (rule.interval ?? 1) !== 1 || rule.expire !== undefined || rule.count !== undefined ||
+      rule.daysOfWeek !== undefined || rule.daysOfMonth !== undefined || rule.daysOfYear !== undefined ||
+      rule.weeksOfMonth !== undefined || rule.weeksOfYear !== undefined || rule.monthsOfYear !== undefined
+    )) {
+      throw new ExpoCalendarError('ERR_CALENDAR_UNSUPPORTED', 'The system creation page cannot set a custom recurrence rule.');
+    }
 
-    this.pending = true;
-
-    try {
+    return this.service.present(async (): Promise<ExpoDialogResult> => {
       const manager = calendarManager.getCalendarManager(this.context.uiAbilityContext);
       const id = await manager.editEvent(event);
       this.assertActive();
 
       return new ExpoDialogResult(id);
-    } finally {
-      this.pending = false;
+    });
+  }
+
+  async openEventInCalendar(id: ESObject, options?: Record<string, ESObject> | null): Promise<ExpoOpenDialogResult> {
+    this.assertActive();
+    if (this.context.isHeadless) throw new ExpoCalendarError('ERR_UNAVAILABLE', 'A foreground runtime is required to present the calendar.');
+    if (options?.['instanceStartDate'] != null) {
+      throw new ExpoCalendarError('ERR_CALENDAR_UNSUPPORTED', 'Calendar Kit cannot open individual recurring instances.');
     }
+
+    if (typeof deviceInfo.apiAvailable === 'function') {
+      if (deviceInfo.apiAvailable('26.0.0')) {
+        const eventId = requireEventId(id);
+        return this.service.present(async (): Promise<ExpoOpenDialogResult> => {
+          const event = await this.requireEvent(eventId);
+          await event.calendar.openEventEditPage(eventId);
+          this.assertActive();
+
+          return new ExpoOpenDialogResult();
+        });
+      }
+    }
+
+    throw new ExpoCalendarError('ERR_UNAVAILABLE', 'Opening an existing event requires HarmonyOS API 26.0.0.');
   }
 
   async requireCalendar(id: number): Promise<calendarManager.Calendar> {
@@ -336,14 +383,55 @@ export class ExpoCalendarStore {
 export class ExpoCalendarService extends ExpoService {
   static readonly key = new ExpoServiceKey<ExpoCalendarService>('ExpoCalendarService');
   readonly identity = ExpoCalendarService.key.bind(this);
-  private store?: ExpoCalendarStore;
+  private pendingDialog: boolean = false;
+  private mutations: Promise<void> = Promise.resolve();
+  private permissionRequest?: PermissionRequest;
 
   constructor(context?: ExpoServiceContext) {
     super(context);
   }
 
   get(context: ExpoModuleContext): ExpoCalendarStore {
-    if (this.store === undefined) this.store = new ExpoCalendarStore(context);
-    return this.store;
+    return new ExpoCalendarStore(context, this);
+  }
+
+  async requestPermissions(epoch: string, request: () => Promise<CalendarPermissionResponse>): Promise<CalendarPermissionResponse> {
+    const pending = this.permissionRequest;
+    if (pending !== undefined) {
+      if (pending.epoch === epoch) return pending.result;
+      await pending.result.catch((): void => {});
+      return this.requestPermissions(epoch, request);
+    }
+
+    const next = new PermissionRequest(epoch, request());
+    this.permissionRequest = next;
+
+    try {
+      return await next.result;
+    } finally {
+      this.permissionRequest = undefined;
+    }
+  }
+
+  mutate<Result>(operation: () => Promise<Result>): Promise<Result> {
+    // Calendar Kit replaces fields on update; serialize partial updates to avoid lost writes.
+    const result = this.mutations.then(operation);
+    this.mutations = result.then(
+      (): void => {},
+      (): void => {},
+    );
+
+    return result;
+  }
+
+  async present<Result>(operation: () => Promise<Result>): Promise<Result> {
+    if (this.pendingDialog) throw new ExpoCalendarError('ERR_CALENDAR_DIALOG_PENDING', 'A calendar dialog is already open.');
+
+    this.pendingDialog = true;
+    try {
+      return await operation();
+    } finally {
+      this.pendingDialog = false;
+    }
   }
 }

@@ -74,7 +74,7 @@ if (permission.granted) {
 
 #### `Calendar.updateCalendarAsync(id, details?)`
 
-返回更新后日历的 ID（`Promise<string>`）。仅支持修改 `color`；`title`、`name` 只能保持原值。传入非空 `source` 或 `type`，或传入 `sourceId`、`timeZone`、`isVisible`、`isSynced`，会报 `ERR_CALENDAR_UNSUPPORTED`。
+返回更新后日历的 ID（`Promise<string>`）。传入 `color` 可更换颜色。`title`、`name` 只能保持原值。传入非空 `source` 或 `type`，或传入 `sourceId`、`timeZone`、`isVisible`、`isSynced`，会报 `ERR_CALENDAR_UNSUPPORTED`。
 
 #### `Calendar.deleteCalendarAsync(id)`
 
@@ -114,31 +114,31 @@ if (permission.granted) {
 
 #### `Calendar.createEventInCalendarAsync(eventData?, presentationOptions?)`
 
-返回 `Promise<DialogEventResult>`，打开系统新建日程页面，不要求日历权限。支持 `title`、`location`、`startDate`、`endDate`、`allDay`、`notes`、`alarms` 和 `recurrenceRule`。保存时 `action` 为 `saved` 且 `id` 为新日程 ID；取消时 `action` 为 `canceled` 且 `id` 为 `null`。省略日期时从当前时间开始，默认持续一小时。页面自行选择日历，传入 `calendarId`、非空 `timeZone` 或不支持的日程字段会报错；`presentationOptions` 不生效。保存的日程若不在当前权限范围内，之后可能无法通过日历查询 API 读取。已有页面尚未关闭时再次调用会报 `ERR_CALENDAR_DIALOG_PENDING`。
+返回 `Promise<DialogEventResult>`，打开系统新建日程页面，不要求日历权限。支持 `title`、`location`、`startDate`、`endDate`、`allDay`、`notes`、`alarms`，以及默认间隔的日、周、月、年重复。保存时 `action` 为 `saved` 且 `id` 为新日程 ID；取消时 `action` 为 `canceled` 且 `id` 为 `null`。省略日期时从当前时间开始，默认持续一小时。页面自行选择日历，传入 `calendarId`、非空 `timeZone` 或自定义重复规则会报错；`presentationOptions` 不生效。保存的日程若不在当前权限范围内，之后可能无法通过日历查询 API 读取。已有页面尚未关闭时再次调用会报 `ERR_CALENDAR_DIALOG_PENDING`。
 
 #### `Calendar.openEventInCalendar(id)`
 
-- HarmonyOS 没有打开已有日程的系统查看页面，此方法不执行操作。
+- 已弃用。在 HarmonyOS 26.0.0 及以上使用 `openEventInCalendarAsync()`。
 
 #### `Calendar.openEventInCalendarAsync(params, presentationOptions?)`
 
-- HarmonyOS 没有打开已有日程的系统查看页面；调用不可用。
+HarmonyOS 26.0.0 及以上打开现有日程的系统页面，成功启动后返回 `{ action: 'done' }`，并由系统决定预览或编辑行为。需要读取该日程的权限。更早版本会返回 `ERR_UNAVAILABLE`，传入 `instanceStartDate` 会返回 `ERR_CALENDAR_UNSUPPORTED`。
 
 #### `Calendar.editEventInCalendarAsync(params, presentationOptions?)`
 
-- HarmonyOS 暂不提供打开已有日程的系统编辑页面；调用不可用。
+使用与 `openEventInCalendarAsync()` 相同的系统页面，成功启动后返回 `{ action: 'done', id: null }`。系统只回报页面启动结果。
 
 #### `Calendar.createAttendeeAsync(eventId, details?)`
 
-- HarmonyOS 只提供参与者读取，不支持创建参与者。
+- Calendar Kit 以日程保存参与者列表，缺少此方法返回的独立参与者 ID。
 
 #### `Calendar.updateAttendeeAsync(id, details?)`
 
-- HarmonyOS 只提供参与者读取，不支持更新参与者。
+- Calendar Kit 缺少用于更新单个参与者的稳定 ID。
 
 #### `Calendar.deleteAttendeeAsync(id)`
 
-- HarmonyOS 只提供参与者读取，不支持删除参与者。
+- Calendar Kit 缺少用于删除单个参与者的稳定 ID。
 
 #### `Calendar.getRemindersAsync(calendarIds, status, startDate, endDate)`
 
@@ -272,23 +272,23 @@ if (permission.granted) {
 
 #### `ExpoCalendarEvent.createAttendee(attendee)`
 
-- HarmonyOS 只提供参与者读取，不支持创建参与者。
+- Calendar Kit 以整份日程保存参与者列表。独立参与者写入接口在 HarmonyOS 上不可用。
 
 #### `ExpoCalendarEvent.openInCalendar(params?)`
 
-- HarmonyOS 没有打开已有日程的系统查看页面；调用不可用。
+与 `Calendar.openEventInCalendarAsync()` 使用相同的系统能力和返回值。
 
 #### `ExpoCalendarEvent.editInCalendar(params?)`
 
-- HarmonyOS 暂不提供打开已有日程的系统编辑页面；调用不可用。
+与 `Calendar.editEventInCalendarAsync()` 使用相同的系统能力和返回值。
 
 #### `ExpoCalendarAttendee.update(details)`
 
-- HarmonyOS 只提供参与者读取，不支持更新参与者。
+- Calendar Kit 缺少用于更新单个参与者的稳定 ID。
 
 #### `ExpoCalendarAttendee.delete()`
 
-- HarmonyOS 只提供参与者读取，不支持删除参与者。
+- Calendar Kit 缺少用于删除单个参与者的稳定 ID。
 
 #### `ExpoCalendarReminder.get(reminderId)`
 
@@ -318,11 +318,11 @@ if (permission.granted) {
 
 #### `Calendar`
 
-返回字段包括 `id`、`title`、`name`、`source`、`type`、`color`、`entityType`、`allowsModifications`、`allowedAvailabilities`、`isPrimary` 和 `ownerAccount`。颜色为不含透明度的 `#RRGGBB`。`entityType` 为 `event`，`allowsModifications` 为 `true`，`allowedAvailabilities` 为空数组。`sourceId`、`timeZone`、`isVisible`、`isSynced`、`accessLevel`、`allowedReminders` 和 `allowedAttendeeTypes` 不返回。
+返回字段包括 `id`、`title`、`name`、`source`、`type`、`color`、`entityType`、`allowsModifications`、`allowedAvailabilities`、`isPrimary` 和 `ownerAccount`。颜色为不含透明度的 `#RRGGBB`。`entityType` 为 `event`，`allowsModifications` 反映读取记录时当前应用是否拥有日历写权限，`allowedAvailabilities` 为空数组。`sourceId`、`timeZone`、`isVisible`、`isSynced`、`accessLevel`、`allowedReminders` 和 `allowedAttendeeTypes` 不返回。
 
 #### `CalendarDialogParams`
 
-- HarmonyOS 不提供打开已有日程的系统页面。
+`id` 为已有日程 ID，用于打开系统日程页面。重复日程按系列 ID 打开。
 
 #### `DaysOfTheWeek`
 
@@ -330,7 +330,7 @@ if (permission.granted) {
 
 #### `DialogEventResult`
 
-`action` 为 `saved` 或 `canceled`。保存时 `id` 是新日程 ID，取消时为 `null`。
+新建页面的 `action` 为 `saved` 或 `canceled`。保存时 `id` 是新日程 ID，取消时为 `null`。打开已有日程的编辑页面时，`action` 为 `done`，`id` 为 `null`。
 
 #### `Event`
 
@@ -350,11 +350,11 @@ if (permission.granted) {
 
 #### `OpenEventDialogResult`
 
-- HarmonyOS 不提供打开已有日程的系统页面。
+`action: 'done'` 表示系统页面已成功启动。
 
 #### `OpenEventPresentationOptions`
 
-- HarmonyOS 不提供打开已有日程的系统页面。
+预览与编辑行为由系统日历决定。
 
 #### `Organizer`
 
@@ -570,7 +570,7 @@ API 21 及以上可声明此受限权限以修改其他应用创建的日程；�
 
 普通权限可以读取系统默认日历和当前应用创建的日历账户，但只能读写这些账户中由当前应用创建的日程。访问其他应用创建的日程需要单独申请全量日历权限，具体声明方式见项目配置。
 
-在 [Calendar Kit API 21 及以上](https://developer.huawei.com/consumer/en/doc/harmonyos-references/js-apis-calendarmanager/) 上，调用 `requestCalendarPermissionsAsync()` 时会优先请求宿主应用已声明的全量权限。若用户只授予普通权限，应用仍可访问普通权限范围内的日历和日程。
+在 [Calendar Kit API 21 及以上](https://developer.huawei.com/consumer/en/doc/harmonyos-references/js-apis-calendarmanager/) 上，调用 `requestCalendarPermissionsAsync()` 时会优先请求宿主声明且系统可申请的全量权限。全量读写权限分别回退到普通读写权限。普通权限的可访问范围按系统规则执行。
 
 ### 全量日历权限
 

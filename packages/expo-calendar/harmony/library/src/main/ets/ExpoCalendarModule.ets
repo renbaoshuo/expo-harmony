@@ -6,7 +6,16 @@
  */
 
 import { ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
-import { ExpoCalendarRecord, ExpoEventRecord, ExpoAttendeeRecord, ExpoDialogResult, expoAttendees, requireEventId } from './CalendarRecords';
+import {
+  ExpoCalendarRecord,
+  ExpoEventRecord,
+  ExpoAttendeeRecord,
+  ExpoDialogResult,
+  ExpoEditDialogResult,
+  ExpoOpenDialogResult,
+  expoAttendees,
+  requireEventId,
+} from './CalendarRecords';
 import { CalendarPermissionResponse } from './CalendarPermissions';
 import { ExpoCalendarService, ExpoCalendarStore } from './ExpoCalendarStore';
 import { CALENDAR_RECORD, CALENDAR_DATE } from './CalendarValues';
@@ -23,7 +32,7 @@ export class ExpoCalendarModule extends ExpoModule {
     const definition = new ExpoModuleDefinition()
       .name('ExpoCalendar')
       .asyncFunction('getCalendarPermissionsAsync', async (): Promise<CalendarPermissionResponse> => await this.store.permissions.get())
-      .asyncFunction('requestCalendarPermissionsAsync', async (): Promise<CalendarPermissionResponse> => await this.store.permissions.request());
+      .asyncFunction('requestCalendarPermissionsAsync', (): Promise<CalendarPermissionResponse> => this.store.requestPermissions());
 
     // Upstream isAvailableAsync checks for getCalendarsAsync on the native module.
     if (!canIUse('SystemCapability.Applications.CalendarData')) return definition;
@@ -94,6 +103,23 @@ export class ExpoCalendarModule extends ExpoModule {
         ExpoFunction.typed1(
           CALENDAR_RECORD.defaulted({}),
           async (data: Record<string, ESObject>): Promise<ExpoDialogResult> => await this.store.createEventInCalendar(data),
+        ),
+      )
+      .asyncFunction(
+        'openEventInCalendarAsync',
+        ExpoFunction.typed1(
+          CALENDAR_RECORD,
+          (options: Record<string, ESObject>): Promise<ExpoOpenDialogResult> => this.store.openEventInCalendar(options['id'], options),
+        ),
+      )
+      .asyncFunction(
+        'editEventInCalendarAsync',
+        ExpoFunction.typed1(
+          CALENDAR_RECORD,
+          async (options: Record<string, ESObject>): Promise<ExpoEditDialogResult> => {
+            await this.store.openEventInCalendar(options['id'], options);
+            return new ExpoEditDialogResult();
+          },
         ),
       );
   }

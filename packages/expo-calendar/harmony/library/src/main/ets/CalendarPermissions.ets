@@ -41,8 +41,7 @@ export class CalendarPermissionResponse {
 }
 
 export class CalendarPermissions {
-  private context: ExpoModuleContext;
-  private pending?: Promise<CalendarPermissionResponse>;
+  private readonly context: ExpoModuleContext;
 
   constructor(context: ExpoModuleContext) {
     this.context = context;
@@ -56,9 +55,14 @@ export class CalendarPermissions {
 
   ensureWritable(): void {
     this.ensureReadable();
-    if (!this.hasAccess(WRITE_CALENDAR, WRITE_WHOLE_CALENDAR)) {
+
+    if (!this.hasWriteAccess()) {
       throw new ExpoModuleError('E_MISSING_PERMISSIONS', 'WRITE_CALENDAR permission is required to change calendars.');
     }
+  }
+
+  hasWriteAccess(): boolean {
+    return this.hasAccess(WRITE_CALENDAR, WRITE_WHOLE_CALENDAR);
   }
 
   private hasAccess(ordinary: Permissions, whole: Permissions): boolean {
@@ -73,59 +77,61 @@ export class CalendarPermissions {
     const flags = bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_REQUESTED_PERMISSION;
     const details = bundleManager.getBundleInfoForSelfSync(flags).reqPermissionDetails;
     return [
-      details?.some((permission: bundleManager.ReqPermissionDetail): boolean => permission.name === READ_WHOLE_CALENDAR)
-        ? READ_WHOLE_CALENDAR : READ_CALENDAR,
-      details?.some((permission: bundleManager.ReqPermissionDetail): boolean => permission.name === WRITE_WHOLE_CALENDAR)
-        ? WRITE_WHOLE_CALENDAR : WRITE_CALENDAR,
+      this.permissionToRequest(READ_CALENDAR, READ_WHOLE_CALENDAR, details),
+      this.permissionToRequest(WRITE_CALENDAR, WRITE_WHOLE_CALENDAR, details),
     ];
   }
 
-  async get(): Promise<CalendarPermissionResponse> {
-    let undetermined: boolean = false;
-    let denied: boolean = false;
+  private permissionToRequest(ordinary: Permissions, whole: Permissions, details?: bundleManager.ReqPermissionDetail[]): Permissions {
+    if (details?.some((permission: bundleManager.ReqPermissionDetail): boolean => permission.name === whole)) {
+      const response = this.context.getPermissionResponse(whole);
+      if (response.canAskAgain) return whole;
+    }
+    return ordinary;
+  }
 
-    const permissions = this.requestedPermissions();
-    const baseline = [READ_CALENDAR, WRITE_CALENDAR];
-    for (let index = 0; index < permissions.length; index += 1) {
-      const permission = permissions[index];
-      const ordinary = baseline[index];
-      if (permission !== ordinary && this.context.permissionStatus(ordinary) === ExpoPermissionStatus.GRANTED) continue;
+  private async groupStatus(ordinary: Permissions, whole: Permissions): Promise<ExpoPermissionStatus> {
+    const status = this.context.getPermissionResponse(ordinary).status;
 
-      const system = this.context.systemPermissionStatus(permission) === ExpoPermissionStatus.GRANTED;
-      if (system && deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) await this.rememberDenial(permission, false);
+    if (deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) {
+      if (await this.wasDenied(ordinary)) {
+        if (status === ExpoPermissionStatus.GRANTED) await this.clearLegacyDenial(ordinary);
+        if (status === ExpoPermissionStatus.NOT_DETERMINED) return ExpoPermissionStatus.DENIED;
+      }
+      return status;
+    }
+    if (status === ExpoPermissionStatus.GRANTED || deviceInfo.sdkApiVersion < WHOLE_CALENDAR_API) return status;
 
-      const history = deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API ? await this.wasDenied(permission) : undefined;
-      const status = this.context.permissionStatus(permission, history);
-      if (status === ExpoPermissionStatus.GRANTED) continue;
-
-      const rejected = status !== ExpoPermissionStatus.NOT_DETERMINED;
-      denied = denied || rejected;
-      undetermined = undetermined || !rejected;
+    const alternative = this.context.getPermissionResponse(whole).status;
+    if (alternative === ExpoPermissionStatus.GRANTED || alternative === ExpoPermissionStatus.NOT_DETERMINED) {
+      return alternative;
     }
 
-    return new CalendarPermissionResponse(denied ? 'denied' : undetermined ? 'undetermined' : 'granted', !denied);
+    return status;
+  }
+
+  async get(): Promise<CalendarPermissionResponse> {
+    const read = await this.groupStatus(READ_CALENDAR, READ_WHOLE_CALENDAR);
+    const write = await this.groupStatus(WRITE_CALENDAR, WRITE_WHOLE_CALENDAR);
+
+    if (read === ExpoPermissionStatus.GRANTED && write === ExpoPermissionStatus.GRANTED) {
+      return new CalendarPermissionResponse('granted', true);
+    }
+    const denied = [read, write].some((status: ExpoPermissionStatus): boolean =>
+      status !== ExpoPermissionStatus.GRANTED && status !== ExpoPermissionStatus.NOT_DETERMINED);
+
+    return new CalendarPermissionResponse(denied ? 'denied' : 'undetermined', !denied);
   }
 
   async request(): Promise<CalendarPermissionResponse> {
-    if (this.pending !== undefined) return await this.pending;
+    const permissions = this.requestedPermissions().filter((permission: Permissions): boolean =>
+      this.context.permissionStatus(permission) !== ExpoPermissionStatus.GRANTED);
+    if (permissions.length === 0) return this.get();
 
-    const pending = this.requestOnce();
-    this.pending = pending;
-
-    try {
-      return await pending;
-    } finally {
-      if (this.pending === pending) this.pending = undefined;
-    }
-  }
-
-  private async requestOnce(): Promise<CalendarPermissionResponse> {
-    const permissions = this.requestedPermissions();
-    const request = await this.context.requestPermissions(permissions);
-
+    const results = (await this.context.requestPermissions(permissions)).systemResults;
     let blocked: boolean = false;
 
-    for (const result of request.systemResults) {
+    for (const result of results) {
       for (const permission of permissions) {
         const index = result.permissions.indexOf(permission);
         const reason = result.errorReasons?.[index] ?? RequestReason.Success;
@@ -145,22 +151,14 @@ export class CalendarPermissions {
 
         const restricted = reason === RequestReason.ConditionsNotMet || reason === RequestReason.CannotRequest ||
           reason === RequestReason.ManualSettings;
-        if (
-          deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API &&
-          ((reason === RequestReason.Success && (granted || result.dialogShownResults?.[index] === true)) ||
-            restricted)
-        ) {
-          await this.rememberDenial(permission, !granted);
-        }
-
-        if (!granted && restricted) blocked = true;
+        if (!granted && restricted && (permission === READ_CALENDAR || permission === WRITE_CALENDAR)) blocked = true;
       }
     }
 
     const response = await this.get();
 
-    if (this.context.services.get(ExpoRuntimePermissionsKey) !== undefined)
-      return blocked && !response.granted ? new CalendarPermissionResponse('denied', false) : response;
+    if (this.context.services.get(ExpoRuntimePermissionsKey) !== undefined && results.length === 0) return response;
+
     return response.granted ? response : new CalendarPermissionResponse('denied', response.canAskAgain && !blocked);
   }
 
@@ -173,12 +171,11 @@ export class CalendarPermissions {
     }
   }
 
-  private async rememberDenial(permission: Permissions, denied: boolean): Promise<void> {
+  private async clearLegacyDenial(permission: Permissions): Promise<void> {
     try {
       const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: this.context.preferenceName(PREFERENCES_NAME) });
-      if ((await store.get(permission, false)) === denied) return;
 
-      await store.put(permission, denied);
+      await store.delete(permission);
       await store.flush();
     } catch (_) {
       // API 18–19 have no permission-history query. Persistence is best effort.

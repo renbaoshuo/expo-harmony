@@ -48,7 +48,7 @@ export class ExpoCalendarRecord {
   type: string;
   color: string;
   entityType: string = ENTITY_EVENT;
-  allowsModifications: boolean = true;
+  allowsModifications: boolean;
   allowedAvailabilities: string[] = [];
   isPrimary: boolean;
   name: string;
@@ -58,7 +58,8 @@ export class ExpoCalendarRecord {
     calendar: calendarManager.Calendar,
     account: calendarManager.CalendarAccount,
     config: calendarManager.CalendarConfig,
-    primary?: number,
+    primary: number,
+    allowsModifications: boolean,
   ) {
     this.id = String(calendar.id);
     this.title = account.displayName || account.name;
@@ -66,6 +67,7 @@ export class ExpoCalendarRecord {
     this.type = expoCalendarType(account.type);
     this.color = expoColor(config.color);
     this.isPrimary = calendar.id === primary;
+    this.allowsModifications = allowsModifications;
     this.name = account.name;
     this.ownerAccount = account.name;
   }
@@ -185,6 +187,14 @@ export class ExpoDialogResult {
   }
 }
 
+export class ExpoOpenDialogResult {
+  readonly action: string = 'done';
+}
+
+export class ExpoEditDialogResult extends ExpoOpenDialogResult {
+  readonly id: string | null = null;
+}
+
 function optionalRecord(value: ESObject): Record<string, ESObject> | undefined {
   if (value === undefined || value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
   return value as Record<string, ESObject>;
@@ -234,7 +244,7 @@ export function calendarAccountFromDetails(data: Record<string, ESObject>): cale
   };
 }
 
-export function calendarConfigFromDetails(data: Record<string, ESObject>, current?: calendarManager.CalendarConfig): calendarManager.CalendarConfig {
+export function calendarConfigFromDetails(data: Record<string, ESObject>): calendarManager.CalendarConfig | undefined {
   const unsupported: string[] = ['sourceId', 'timeZone', 'isVisible', 'isSynced'];
   for (const field of unsupported) {
     if (has(data, field)) {
@@ -242,25 +252,18 @@ export function calendarConfigFromDetails(data: Record<string, ESObject>, curren
     }
   }
 
-  const config: calendarManager.CalendarConfig = {
-    enableReminder: current?.enableReminder ?? true,
-    color: current?.color,
-  };
+  if (!has(data, 'color')) return undefined;
 
-  if (has(data, 'color')) {
-    const color: ESObject = data['color'];
-    if (color === null) {
-      config.color = undefined;
-    } else if (typeof color === 'number' && Number.isInteger(color) && color >= MIN_NATIVE_INT && color <= 0xffffffff) {
-      config.color = color;
-    } else if (typeof color === 'string' && NATIVE_COLOR.test(color)) {
-      config.color = color;
-    } else {
-      throw new ExpoCalendarError('ERR_CALENDAR_INVALID_COLOR', "'color' must be a valid processed color value.");
-    }
+  const color: ESObject = data['color'];
+  if (color === null) return { color: 0 };
+
+  if (typeof color === 'number' && Number.isInteger(color) && color >= MIN_NATIVE_INT && color <= 0xffffffff) {
+    // React Native may supply signed ARGB values.
+    return { color: color >>> 0 };
   }
+  if (typeof color === 'string' && NATIVE_COLOR.test(color)) return { color };
 
-  return config;
+  throw new ExpoCalendarError('ERR_CALENDAR_INVALID_COLOR', "'color' must be a valid processed color value.");
 }
 
 export function validateCalendarUpdate(data: Record<string, ESObject>, account: calendarManager.CalendarAccount): void {
@@ -360,7 +363,7 @@ function requireNativeId(value: ESObject, name: string): number {
   }
 
   const id = Number(value);
-  if (!Number.isSafeInteger(id) || id <= 0) {
+  if (!Number.isSafeInteger(id) || id <= 0 || id > MAX_NATIVE_INT) {
     throw new ExpoCalendarError('ERR_CALENDAR_INVALID_ID', `'${name}' is not a valid HarmonyOS calendar ID.`);
   }
 

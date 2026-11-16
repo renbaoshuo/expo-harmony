@@ -18,7 +18,9 @@ import {
   ExpoAttendeeRecord,
   ExpoCalendarError,
   ExpoCalendarRecord,
+  ExpoEditDialogResult,
   ExpoEventRecord,
+  ExpoOpenDialogResult,
   eventInstanceRequested,
   expoAttendees,
   requireDate,
@@ -144,6 +146,10 @@ class CalendarEventObject extends ExpoSharedObject {
       (attendee: ExpoAttendeeRecord): CalendarAttendeeObject => new CalendarAttendeeObject(this.context, attendee),
     );
   }
+
+  openInCalendar(options?: Record<string, ESObject> | null): Promise<ExpoOpenDialogResult> {
+    return this.store.openEventInCalendar(this.id(), options);
+  }
 }
 
 class CalendarAttendeeObject extends ExpoSharedObject {
@@ -241,14 +247,13 @@ export class ExpoCalendarNextModule extends ExpoModule {
       ).returns(eventType))
       .asyncFunction('openInCalendar', ExpoFunction.ownedTyped1(
         CALENDAR_RECORD.nullable().optional(),
-        async (_event: CalendarEventObject, _options?: Record<string, ESObject> | null): Promise<void> => {
-          throw new ExpoCalendarError('ERR_UNAVAILABLE', 'ExpoCalendarEvent.openInCalendar is not available in HarmonyOS Calendar Kit.');
-        },
+        (event: CalendarEventObject, options?: Record<string, ESObject> | null): Promise<ExpoOpenDialogResult> => event.openInCalendar(options),
       ))
       .asyncFunction('editInCalendar', ExpoFunction.ownedTyped1(
         CALENDAR_RECORD.nullable().optional(),
-        async (_event: CalendarEventObject, _options?: Record<string, ESObject> | null): Promise<void> => {
-          throw new ExpoCalendarError('ERR_UNAVAILABLE', 'ExpoCalendarEvent.editInCalendar is not available in HarmonyOS Calendar Kit.');
+        async (event: CalendarEventObject, options?: Record<string, ESObject> | null): Promise<ExpoEditDialogResult> => {
+          await event.openInCalendar(options);
+          return new ExpoEditDialogResult();
         },
       ));
 
@@ -278,7 +283,7 @@ export class ExpoCalendarNextModule extends ExpoModule {
       ))
       .asyncFunction('requestCalendarPermissions', ExpoFunction.typed1(
         ExpoValueTypes.boolean().nullable().optional(),
-        async (_writeOnly?: boolean | null): Promise<CalendarPermissionResponse> => this.store.permissions.request(),
+        (_writeOnly?: boolean | null): Promise<CalendarPermissionResponse> => this.store.requestPermissions(),
       ))
       .asyncFunction('getCalendars', ExpoFunction.typed1(
         ExpoValueTypes.string().nullable().optional(),
