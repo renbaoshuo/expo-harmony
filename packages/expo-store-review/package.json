@@ -26,6 +26,7 @@
   },
   "peerDependencies": {
     "@expo-harmony/expo-modules-core": "workspace:*",
+    "expo-modules-core": "~57.0.24",
     "expo-store-review": "~57.0.3"
   },
   "devDependencies": {
@@ -42,5 +43,15 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "harmony": {
+    "metro": {
+      "entrypoints": [
+        {
+          "upstream": "expo-store-review",
+          "target": "src/StoreReview.harmony.ts"
+        }
+      ]
+    }
   }
 }

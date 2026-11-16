@@ -8,7 +8,7 @@
 
 本包适配 Expo SDK 57。
 
-引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 20（HarmonyOS 6.0.0）。
+最低兼容版本为 API 13（HarmonyOS 5.0.1）。AppGallery 应用内评分弹窗需要 API 20（HarmonyOS 6.0.0）及设备支持。 [华为 AppGallery 评论服务](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/appgallery-comment/)
 
 ```bash
 npm install @expo-harmony/expo-store-review expo-store-review@~57.0.3
@@ -20,35 +20,33 @@ npm install @expo-harmony/expo-store-review expo-store-review@~57.0.3
 
 #### `StoreReview.hasAction()`
 
-返回 `Promise<boolean>`。HarmonyOS 上结果与 `StoreReview.isAvailableAsync()` 相同；`true` 表示设备支持 AppGallery 应用内评论，不保证调用请求时一定会显示弹窗。
+返回 `Promise<boolean>`。应用内评论或评论页链接可用时返回 `true`。应用市场仍会校验该包名的上架情况与用户的评论资格。
 
 #### `StoreReview.isAvailableAsync()`
 
-返回 `Promise<boolean>`。设备支持 AppGallery 评论服务且应用有可用界面时返回 `true`，否则返回 `false`。查询不会显示弹窗。
+返回 `Promise<boolean>`。API 20 及以上、设备支持 AppGallery 评论服务且应用有可用界面时返回 `true`。查询不会显示弹窗。
 
 #### `StoreReview.requestReview()`
 
-无参数，返回 `Promise<void>`，请求显示 AppGallery 应用内评论弹窗。Promise 不返回评分或用户是否提交评价的结果。应用不在前台时以 `ERR_STORE_REVIEW_BACKGROUND` 拒绝；应用无可用界面或 AppGallery 评论服务不可用时以 `ERR_STORE_REVIEW_UNAVAILABLE` 拒绝。AppGallery 也可能因帐号或评论资格问题拒绝请求。
+无参数，返回 `Promise<void>`。应用内评分可用时请求显示 AppGallery 评论弹窗，否则通过系统打开评论页链接。Promise 不返回用户评分或评论结果。AppGallery 拒绝弹窗请求时会返回系统错误。
 
 #### `StoreReview.storeUrl()`
 
-返回 `string | null`。
-
-- HarmonyOS 不提供可由此 API 返回的 AppGallery 评论链接，因此返回 `null`。
+有可用界面时按已安装应用的包名返回 AppGallery 评论页链接。无法取得包名或在无界面运行时调用时返回 `null`。
 
 ### Error codes
 
 #### `ERR_STORE_REVIEW_BACKGROUND`
 
-AppGallery 评论服务可用，但应用不在前台时调用 `StoreReview.requestReview()`，Promise 会以此错误拒绝。
+有界面应用在后台调用 `StoreReview.requestReview()` 时以此错误拒绝。
 
 #### `ERR_STORE_REVIEW_UNAVAILABLE`
 
-应用没有可用界面或 AppGallery 评论服务不可用时，调用 `StoreReview.requestReview()` 会以此错误拒绝。
+应用没有可用界面，或应用内评论不可用且无法取得评论页链接时以此错误拒绝。
 
 #### `ERR_STORE_REVIEW_REQUEST_FAILED`
 
-AppGallery 评论服务请求失败且系统未提供错误码时，Promise 会以此错误拒绝。系统提供错误码时会使用该错误码。
+请求 AppGallery 评论弹窗或打开评论页链接失败时优先返回系统错误码，没有系统错误码时以此错误拒绝。
 
 #### AppGallery 评论服务错误码
 
