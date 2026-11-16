@@ -18,6 +18,10 @@ import {
   ExpoModuleDefinition,
   ExpoModuleError,
   ExpoValueTypes,
+  ReactRuntimeAppearance,
+  ReactRuntimeBinding,
+  ReactRuntimeContext,
+  parseExpoColor,
 } from '@expo-harmony/expo-modules-core';
 
 const ROOT_BACKGROUND_METADATA: string = 'expo.harmony.rootViewBackgroundColor';
@@ -43,22 +47,74 @@ class SystemUIConfiguration {
 }
 
 class ParsedBackgroundColor {
-  argb: string;
-  rgb: string;
+  readonly argb: string;
 
-  constructor(argb: string, rgb: string) {
+  constructor(argb: string) {
     this.argb = argb;
-    this.rgb = rgb;
+  }
+
+  get rgb(): string {
+    return `#${this.argb.slice(3).toLowerCase()}`;
+  }
+}
+
+class RuntimeAppearance {
+  readonly runtimeId: number;
+  readonly style?: InterfaceStyle;
+  background?: ParsedBackgroundColor | null;
+
+  constructor(runtimeId: number, config: ReactRuntimeAppearance) {
+    this.runtimeId = runtimeId;
+    this.style = config.userInterfaceStyle;
+
+    if (config.backgroundColor === undefined) return;
+
+    try {
+      this.background = formatArgb(parseExpoColor(config.backgroundColor));
+    } catch (_) {
+      console.warn('Ignoring an invalid Expo project background color.');
+    }
   }
 }
 
 class WindowBackgroundState {
+  readonly target: window.Window;
   color: ParsedBackgroundColor;
   followsSystem: boolean;
+  private listener?: (event: window.WindowEventType) => void;
 
-  constructor(color: ParsedBackgroundColor, followsSystem: boolean) {
+  constructor(target: window.Window, color: ParsedBackgroundColor, followsSystem: boolean) {
+    this.target = target;
     this.color = color;
     this.followsSystem = followsSystem;
+  }
+
+  observeDestruction(onDestroy: () => void): void {
+    if (!canIUse('SystemCapability.Window.SessionManager')) return;
+
+    const listener = (event: window.WindowEventType): void => {
+      if (event === window.WindowEventType.WINDOW_DESTROYED) onDestroy();
+    };
+
+    try {
+      this.target.on('windowEvent', listener);
+      this.listener = listener;
+    } catch (error) {
+      console.warn(`Unable to observe Expo System UI window destruction: ${String(error)}`);
+    }
+  }
+
+  close(): void {
+    const listener = this.listener;
+    if (listener === undefined) return;
+
+    this.listener = undefined;
+
+    try {
+      this.target.off('windowEvent', listener);
+    } catch (_) {
+      // The native window can be destroyed before cleanup reaches ArkTS.
+    }
   }
 }
 
@@ -66,12 +122,12 @@ class AbilitySystemUIState {
   private readonly context: common.UIAbilityContext;
   private readonly configured: ParsedBackgroundColor | null;
   private readonly style: InterfaceStyle;
+  private appliedStyle?: InterfaceStyle;
+  private appearance?: RuntimeAppearance;
+  private readyStage?: window.WindowStage;
   private mode: ConfigurationConstant.ColorMode;
-  private readonly backgrounds: Map<number, WindowBackgroundState> = new Map<number, WindowBackgroundState>();
-  private readonly windows: Map<number, window.Window> = new Map<number, window.Window>();
+  private readonly windows: Map<number, WindowBackgroundState> = new Map<number, WindowBackgroundState>();
   private readonly store: Promise<preferences.Preferences | null>;
-  private readonly ready: Promise<void>;
-  private persisted: ParsedBackgroundColor | null = null;
   private mutation: Promise<void> = Promise.resolve();
   private generation: number = 0;
   private available: boolean = false;
@@ -100,16 +156,16 @@ class AbilitySystemUIState {
 
         return null;
       });
-    this.ready = this.loadPersistedBackground();
   }
 
-  applyInterfaceStyle(): void {
+  private applyInterfaceStyle(style: InterfaceStyle): void {
     this.assertActive();
+    if (this.appliedStyle === style) return;
 
     let mode: ConfigurationConstant.ColorMode;
-    if (this.style === 'dark') {
+    if (style === 'dark') {
       mode = ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
-    } else if (this.style === 'light') {
+    } else if (style === 'light') {
       mode = ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
     } else {
       mode = ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET;
@@ -122,88 +178,102 @@ class AbilitySystemUIState {
       throw new ExpoSystemUIError('ERR_SYSTEM_UI_STYLE', `Unable to update the application interface style: ${String(error)}`);
     }
 
-    // setColorMode can replace the resource manager; read the current instance.
-    this.mode = resolvedSystemColorMode(this.context);
+    this.appliedStyle = style;
+    // Inherited mode uses the resource manager returned after setColorMode.
+    this.mode = mode === ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET ? resolvedSystemColorMode(this.context) : mode;
   }
 
-  onConfigurationUpdated(mode: ConfigurationConstant.ColorMode | undefined): void {
-    if (this.destroyed || this.style !== 'automatic') return;
+  onConfigurationUpdated(reported?: ConfigurationConstant.ColorMode): void {
+    if (this.destroyed) return;
 
-    this.mode =
-      mode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK || mode === ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT
-        ? mode
-        : resolvedSystemColorMode(this.context);
+    const mode = reported === ConfigurationConstant.ColorMode.COLOR_MODE_DARK ||
+      reported === ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT ? reported : resolvedSystemColorMode(this.context);
+    if (mode === this.mode) return;
 
-    Array.from(this.windows.values()).forEach((target: window.Window): void => {
-      this.initializeWindow(target, true, (): boolean => !this.destroyed).catch((error: Object): void => {
-        if (!this.destroyed) {
+    const generation = this.generation;
+    this.mode = mode;
+
+    this.serialize(async (): Promise<void> => {
+      if (this.destroyed || generation !== this.generation) return;
+
+      const color = this.systemBackgroundColor();
+      this.windows.forEach((background: WindowBackgroundState): void => {
+        if (!background.followsSystem || background.color.argb === color.argb) return;
+
+        try {
+          applyWindowColor(background.target, color.argb);
+          background.color = color;
+        } catch (error) {
           console.warn(`Unable to refresh the Expo System UI window after a configuration change: ${String(error)}`);
         }
       });
+    }).catch((error: Object): void => {
+      if (!this.destroyed) console.warn(`Unable to refresh Expo System UI: ${String(error)}`);
     });
   }
 
-  async initializeWindowFrom(resolve: () => Promise<window.Window>, refresh: boolean, valid: () => boolean): Promise<void> {
-    const generation = this.generation;
+  async initializeWindow(stage: window.WindowStage): Promise<void> {
+    this.readyStage = stage;
+    await this.applyWindowAppearance(stage);
+  }
+
+  async bindRuntimeAppearance(appearance: RuntimeAppearance): Promise<() => void> {
+    this.appearance = appearance;
+    await this.refreshWindowAppearance();
+
+    return (): void => {
+      if (this.destroyed || this.appearance !== appearance) return;
+
+      this.appearance = undefined;
+      this.refreshWindowAppearance();
+    };
+  }
+
+  private async refreshWindowAppearance(): Promise<void> {
+    if (this.readyStage === undefined) return;
+
+    try {
+      await this.applyWindowAppearance(this.readyStage);
+    } catch (error) {
+      if (!this.destroyed) console.warn(`Unable to restore or apply Expo runtime appearance: ${String(error)}`);
+    }
+  }
+
+  private async applyWindowAppearance(stage: window.WindowStage): Promise<void> {
+    const valid = this.captureWindowGuard();
+    const appearance = this.appearance;
 
     await this.serialize(async (): Promise<void> => {
-      if (generation !== this.generation || !valid()) return;
+      if (!valid() || appearance !== this.appearance) return;
 
-      const target: window.Window = await resolve();
+      const target = await stage.getMainWindow();
+      const color = appearance?.background === undefined
+        ? (await this.loadPersistedBackground()) ?? this.configured
+        : appearance.background;
 
-      await this.applyWindowState(target, refresh, (): boolean => generation === this.generation && valid());
-    });
-  }
+      if (!valid() || appearance !== this.appearance) return;
 
-  async initializeWindow(target: window.Window, refresh: boolean, valid: () => boolean): Promise<void> {
-    await this.initializeWindowFrom(async (): Promise<window.Window> => target, refresh, valid);
-  }
-
-  private async applyWindowState(target: window.Window, refresh: boolean, valid: () => boolean): Promise<void> {
-    await this.ready;
-
-    this.assertActive();
-    if (!valid()) return;
-
-    const id: number = inspectWindowId(target);
-    let background: WindowBackgroundState | undefined = this.backgrounds.get(id);
-
-    if (background === undefined) {
-      if (this.persisted !== null) {
-        background = new WindowBackgroundState(this.persisted, false);
-      } else if (this.configured !== null) {
-        background = new WindowBackgroundState(this.configured, false);
-      } else {
-        background = new WindowBackgroundState(this.systemBackgroundColor(), true);
+      const style = deviceInfo.sdkApiVersion >= UI_ABILITY_COLOR_MODE_API ? appearance?.style ?? this.style : this.style;
+      try {
+        this.applyInterfaceStyle(style);
+      } catch (error) {
+        console.warn(`Unable to apply Expo System UI interface style: ${String(error)}`);
       }
-    } else if (refresh && background.followsSystem) {
-      background = new WindowBackgroundState(this.systemBackgroundColor(), true);
-    }
 
-    if (!valid()) return;
-
-    applyWindowColor(target, background.color.argb);
-
-    this.windows.set(id, target);
-    this.backgrounds.set(id, background);
+      this.applyBackground(target, color);
+    });
   }
 
   async setBackgroundColor(target: window.Window, color: ParsedBackgroundColor | null, valid: () => boolean): Promise<void> {
     await this.serialize(async (): Promise<void> => {
-      await this.ready;
-
       this.assertActive();
       requireCurrentWindow(valid);
 
-      const id: number = inspectWindowId(target);
-      const background = new WindowBackgroundState(color ?? this.systemBackgroundColor(), color === null);
+      this.applyBackground(target, color);
 
-      applyWindowColor(target, background.color.argb);
-      this.windows.set(id, target);
-      this.backgrounds.set(id, background);
-
-      if (color === null) await this.removePersistedBackground();
+      if (this.appearance !== undefined) this.appearance.background = color;
       else await this.persistBackground(color);
+
       requireCurrentWindow(valid);
     });
   }
@@ -214,7 +284,7 @@ class AbilitySystemUIState {
     this.assertActive();
     requireCurrentWindow(valid);
 
-    const background: WindowBackgroundState | undefined = this.backgrounds.get(inspectWindowId(target));
+    const background: WindowBackgroundState | undefined = this.windows.get(inspectWindowId(target));
 
     return background === undefined ? null : background.color.rgb;
   }
@@ -241,25 +311,31 @@ class AbilitySystemUIState {
     }
   }
 
-  captureWindowGuard(): () => boolean {
+  captureWindowGuard(runtimeId?: number): () => boolean {
     const generation = this.generation;
-    return (): boolean => !this.destroyed && this.available && generation === this.generation;
+    const appearance = this.appearance;
+
+    return (): boolean => !this.destroyed && this.available && generation === this.generation &&
+      (runtimeId === undefined || (this.appearance === appearance && (appearance === undefined || appearance.runtimeId === runtimeId)));
   }
 
   forgetWindow(): void {
     this.generation += 1;
     this.available = false;
+    this.readyStage = undefined;
+    this.appliedStyle = undefined;
 
     // Release calls waiting on the old stage so they can reject instead of hanging.
     this.markWindowReady();
+    this.windows.forEach((state: WindowBackgroundState): void => state.close());
     this.windows.clear();
-    this.backgrounds.clear();
   }
 
   destroy(): void {
     if (this.destroyed) return;
 
     this.destroyed = true;
+    this.appearance = undefined;
     this.forgetWindow();
   }
 
@@ -272,56 +348,60 @@ class AbilitySystemUIState {
     await next;
   }
 
-  private async loadPersistedBackground(): Promise<void> {
+  private applyBackground(target: window.Window, color: ParsedBackgroundColor | null): void {
+    const id = inspectWindowId(target);
+    const applied = color ?? this.systemBackgroundColor();
+    const current = this.windows.get(id);
+
+    applyWindowColor(target, applied.argb);
+
+    if (current !== undefined) {
+      current.color = applied;
+      current.followsSystem = color === null;
+      return;
+    }
+
+    const background = new WindowBackgroundState(target, applied, color === null);
+    this.windows.set(id, background);
+    background.observeDestruction((): void => {
+      if (this.windows.get(id) !== background) return;
+
+      this.windows.delete(id);
+      background.close();
+    });
+  }
+
+  private async loadPersistedBackground(): Promise<ParsedBackgroundColor | null> {
     const store: preferences.Preferences | null = await this.store;
-    if (store === null || this.destroyed) return;
+    if (store === null || this.destroyed) return null;
 
     try {
-      if (!(await store.has(PREFERENCE_KEY))) return;
-
       const value: preferences.ValueType = await store.get(PREFERENCE_KEY, '');
 
-      if (typeof value === 'string') this.persisted = parseManifestColor(value);
+      return typeof value === 'string' ? parseManifestColor(value) : null;
     } catch (error) {
       console.warn(`Unable to read Expo System UI preferences: ${String(error)}`);
+      return null;
     }
   }
 
-  private async persistBackground(color: ParsedBackgroundColor): Promise<void> {
-    this.persisted = color;
-
+  private async persistBackground(color: ParsedBackgroundColor | null): Promise<void> {
     const store: preferences.Preferences | null = await this.store;
     if (store === null || this.destroyed) return;
 
     try {
-      await store.put(PREFERENCE_KEY, color.argb);
+      if (color === null) await store.delete(PREFERENCE_KEY);
+      else await store.put(PREFERENCE_KEY, color.argb);
       await store.flush();
     } catch (error) {
       console.warn(`Unable to persist the Expo System UI background: ${String(error)}`);
     }
   }
 
-  private async removePersistedBackground(): Promise<void> {
-    this.persisted = null;
-
-    const store: preferences.Preferences | null = await this.store;
-    if (store === null || this.destroyed) return;
-
-    try {
-      await store.delete(PREFERENCE_KEY);
-      await store.flush();
-    } catch (error) {
-      console.warn(`Unable to clear the Expo System UI background preference: ${String(error)}`);
-    }
-  }
-
   private systemBackgroundColor(): ParsedBackgroundColor {
-    if (this.style === 'dark') return parseKnownWindowColor(DARK_WINDOW_BACKGROUND);
-    if (this.style === 'light') return parseKnownWindowColor(LIGHT_WINDOW_BACKGROUND);
-
-    return this.mode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK
-      ? parseKnownWindowColor(DARK_WINDOW_BACKGROUND)
-      : parseKnownWindowColor(LIGHT_WINDOW_BACKGROUND);
+    return new ParsedBackgroundColor(
+      this.mode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK ? DARK_WINDOW_BACKGROUND : LIGHT_WINDOW_BACKGROUND,
+    );
   }
 
   private assertActive(): void {
@@ -368,39 +448,26 @@ export class ExpoSystemUILifecycleSubscriber extends ExpoAbilityLifecycleSubscri
   }
 
   override async onWindowStageReady(stage: window.WindowStage): Promise<void> {
-    if (this.destroyed || this.stage !== stage) return;
+    if (this.destroyed || this.stage !== stage || this.ready) return;
 
     this.ready = true;
 
-    try {
-      this.state.applyInterfaceStyle();
-    } catch (error) {
-      console.warn(`Unable to apply Expo System UI interface style: ${String(error)}`);
-    }
-
-    const initialization = this.state.initializeWindowFrom(
-      (): Promise<window.Window> => stage.getMainWindow(),
-      true,
-      (): boolean => !this.destroyed && this.stage === stage,
-    );
+    const ready = this.state.initializeWindow(stage);
     this.state.markWindowReady();
-    await initialization;
+    await ready;
   }
 
   override onForeground(): void {
-    const stage = this.stage;
-    if (stage === undefined || !this.ready) return;
-
-    this.onWindowStageReady(stage).catch((error: Object): void => {
-      if (!this.destroyed && this.stage === stage) console.warn(`Unable to refresh Expo System UI: ${String(error)}`);
-    });
+    if (this.ready) this.state.onConfigurationUpdated();
   }
 
   override onConfigurationUpdate(configuration: Configuration): void {
     this.state.onConfigurationUpdated(configuration.colorMode);
   }
 
-  override onWindowStageWillDestroy(): void {
+  override onWindowStageWillDestroy(stage?: window.WindowStage): void {
+    if (stage !== undefined && this.stage !== stage) return;
+
     this.stage = undefined;
     this.ready = false;
     this.state.forgetWindow();
@@ -416,6 +483,20 @@ export class ExpoSystemUILifecycleSubscriber extends ExpoAbilityLifecycleSubscri
 
     this.state.destroy();
     states.delete(this.context);
+  }
+}
+
+export class ExpoSystemUIRuntimeBinding implements ReactRuntimeBinding {
+  constructor(_context: common.Context) {}
+
+  async bind(runtime: ReactRuntimeContext): Promise<(() => void) | void> {
+    const config = runtime.appearance;
+    if (runtime.isHeadless || config === undefined) return;
+
+    const state = states.get(runtime.core.uiAbilityContext);
+    if (state === undefined) return;
+
+    return await state.bindRuntimeAppearance(new RuntimeAppearance(runtime.instance.getId(), config));
   }
 }
 
@@ -439,13 +520,11 @@ export class ExpoSystemUIModule extends ExpoModule {
         'setBackgroundColorAsync',
         ExpoFunction.typed1(ExpoValueTypes.number().nullable(), async (color: number | null): Promise<void> => {
           this.assertActive();
-          if (color !== null) requireProcessedColor(color);
+          const parsed = color === null ? null : parseProcessedColor(color);
 
           const state = this.state;
           const valid = this.captureWindowGuard(state);
           const target: window.Window = await this.currentWindow(state, valid);
-
-          const parsed: ParsedBackgroundColor | null = color === null ? null : parseProcessedColor(color);
 
           await state.setBackgroundColor(target, parsed, valid);
 
@@ -472,7 +551,8 @@ export class ExpoSystemUIModule extends ExpoModule {
   }
 
   private captureWindowGuard(state: AbilitySystemUIState): () => boolean {
-    const valid = state.captureWindowGuard();
+    const valid = state.captureWindowGuard(this.context.runtimeId);
+
     return (): boolean => {
       this.assertActive();
       return valid();
@@ -521,21 +601,16 @@ function applyWindowColor(target: window.Window, color: string): void {
   }
 }
 
-function requireProcessedColor(value: number): void {
-  if (!Number.isFinite(value) || !Number.isInteger(value) || value < -2147483648 || value > 4294967295) {
+function parseProcessedColor(value: number): ParsedBackgroundColor {
+  try {
+    return formatArgb(parseExpoColor(value));
+  } catch (_) {
     throw new ExpoSystemUIError('ERR_SYSTEM_UI_COLOR', 'ExpoSystemUI expected a processed 32-bit React Native color or null.');
   }
 }
 
-function parseKnownWindowColor(value: string): ParsedBackgroundColor {
-  return new ParsedBackgroundColor(value, `#${value.slice(3).toLowerCase()}`);
-}
-
-function parseProcessedColor(value: number): ParsedBackgroundColor {
-  const unsigned: number = value < 0 ? value + 4294967296 : value;
-  const argb: string = unsigned.toString(16).padStart(8, '0').toUpperCase();
-
-  return new ParsedBackgroundColor(`#${argb}`, `#${argb.slice(2).toLowerCase()}`);
+function formatArgb(color: number): ParsedBackgroundColor {
+  return new ParsedBackgroundColor(`#${color.toString(16).padStart(8, '0').toUpperCase()}`);
 }
 
 function parseManifestColor(value: string): ParsedBackgroundColor | null {
@@ -544,13 +619,22 @@ function parseManifestColor(value: string): ParsedBackgroundColor | null {
   const hex: string = value.slice(1).toUpperCase();
   const argb: string = hex.length === 6 ? `FF${hex}` : hex;
 
-  return new ParsedBackgroundColor(`#${argb}`, `#${argb.slice(2).toLowerCase()}`);
+  return new ParsedBackgroundColor(`#${argb}`);
 }
 
 function resolvedSystemColorMode(context: common.UIAbilityContext): ConfigurationConstant.ColorMode {
-  const mode: number = context.resourceManager.getConfigurationSync().colorMode;
+  try {
+    const mode = context.resourceManager.getConfigurationSync().colorMode;
 
-  return mode === resourceManager.ColorMode.DARK ? ConfigurationConstant.ColorMode.COLOR_MODE_DARK : ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
+    if (mode === resourceManager.ColorMode.DARK) return ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
+    if (mode === resourceManager.ColorMode.LIGHT) return ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
+  } catch (error) {
+    console.warn(`Unable to read the Expo System UI resource configuration: ${String(error)}`);
+  }
+
+  return context.config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK
+    ? ConfigurationConstant.ColorMode.COLOR_MODE_DARK
+    : ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
 }
 
 function readConfiguration(context: common.UIAbilityContext): SystemUIConfiguration {

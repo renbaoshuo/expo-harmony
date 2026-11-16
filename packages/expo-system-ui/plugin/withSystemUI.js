@@ -28,7 +28,8 @@ function withHarmonySystemUI(config) {
 
   return withModuleJson(config, (mod) => {
     const { harmony, backgroundColor, userInterfaceStyle } = mod.modRawConfig;
-    const background = normalizeHarmonyColor(harmony?.backgroundColor || backgroundColor || null);
+
+    const background = normalizeHarmonyColor(harmony?.backgroundColor ?? backgroundColor);
     const style = harmony?.userInterfaceStyle ?? userInterfaceStyle ?? 'light';
 
     if (!STYLES.has(style)) {

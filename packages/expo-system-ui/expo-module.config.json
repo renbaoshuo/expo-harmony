@@ -8,6 +8,9 @@
     ],
     "abilityLifecycleSubscribers": [
       "ExpoSystemUILifecycleSubscriber"
+    ],
+    "runtimeBindings": [
+      "ExpoSystemUIRuntimeBinding"
     ]
   }
 }

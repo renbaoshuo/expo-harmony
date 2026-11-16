@@ -50,7 +50,7 @@ export default {
 
 `backgroundColor` 接受 React Native 支持的 CSS 颜色。`userInterfaceStyle` 可设为 `light`、`dark` 或 `automatic`，省略时按 `light` 处理。两项优先读取 `harmony` 字段下的值，没有时读取 Expo 顶层的同名配置。
 
-`userInterfaceStyle` 在窗口页面加载完成和回到前台时应用。`light` 和 `dark` 把界面模式固定下来。`automatic` 取消本模块先前设置的模式，恢复系统默认的继承行为。API 18 及以上界面模式设置在当前 UIAbility 上，`automatic` 跟随宿主的应用级设置，没有时跟随系统。API 13–17 设置在整个应用上，多个 Ability 共享这一设置。
+`userInterfaceStyle` 在每次窗口页面首次就绪时应用。`light` 和 `dark` 设置浅色或深色模式。`automatic` 继承应用或系统当前的模式。API 18 及以上界面模式设置在当前 UIAbility 上，`automatic` 跟随宿主的应用级设置，没有时跟随系统。API 13–17 设置在整个应用上，多个 Ability 共享这一设置。
 
 运行时读写背景色直接使用 `SystemUI.getBackgroundColorAsync` 和 `SystemUI.setBackgroundColorAsync`，插件只用于构建期的初始配置。
 
@@ -64,7 +64,7 @@ export default {
 
 在窗口页面就绪前调用会等待页面就绪。如果等待期间窗口销毁或替换，Promise 会以错误拒绝。
 
-设置的颜色会在应用重启后恢复，并覆盖构建期配置的背景色。系统无法保存颜色时，本次调用仍会更新当前窗口，但重启后不保证恢复。
+设置的颜色会在应用重启后恢复，并覆盖构建期配置的背景色。Dev Launcher 中打开的项目仅在当前开发会话中保留设置。系统无法保存颜色时，本次调用仍会更新当前窗口，但重启后不保证恢复。
 
 #### `SystemUI.getBackgroundColorAsync(): Promise<ColorValue | null>`
 
@@ -72,7 +72,7 @@ export default {
 
 - HarmonyOS 不支持直接读取窗口背景色，因此返回本包为当前窗口记录并应用的颜色；如果其他代码修改了窗口背景色，返回值不会反映该修改。
 
-未设置背景色时，默认背景色随界面模式变化：`light` 为白色，`dark` 为黑色，`automatic` 跟随当前有效的深浅色模式。
+未设置背景色时，默认背景色跟随当前有效的界面模式。浅色模式为白色，深色模式为黑色。
 
 ### Error codes
 

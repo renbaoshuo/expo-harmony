@@ -5,4 +5,4 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-export { ExpoSystemUIModule, ExpoSystemUILifecycleSubscriber } from './src/main/ets/ExpoSystemUIModule';
+export { ExpoSystemUIModule, ExpoSystemUILifecycleSubscriber, ExpoSystemUIRuntimeBinding } from './src/main/ets/ExpoSystemUIModule';
