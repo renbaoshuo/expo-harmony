@@ -18,10 +18,13 @@ const MAX_INT64: number = 2 ** 63 - 2 ** (63 - 53);
 
 const EXTRA_VALUE = ExpoValueTypes.custom<Object>(
   'Want parameter',
-  (value: ESObject): Object => {
+  (value: ESObject, path: string): Object => {
+    validateWantParameter(value, path);
+
     if (typeof value === 'number') {
       return toInteger(value, MIN_INT64, MAX_INT64);
     }
+
     return value;
   },
   (value: Object): ESObject => value,
@@ -72,4 +75,16 @@ export function createWant(action: string, params: Record<string, ESObject>, bun
 function toInteger(value: number, min: number, max: number): number {
   if (Number.isNaN(value)) return 0;
   return Math.trunc(Math.max(min, Math.min(max, value))) || 0;
+}
+
+function validateWantParameter(value: ESObject, path: string): void {
+  if (typeof value === 'function' || typeof value === 'bigint') {
+    throw new ExpoModuleError('ERR_INTENT_LAUNCHER_INVALID_ARGUMENT', `${path} cannot be transferred in a HarmonyOS Want.`, undefined, path);
+  }
+  if (value === null || typeof value !== 'object') return;
+
+  const fields = value as Record<string, ESObject>;
+  for (const key of Object.keys(fields)) {
+    validateWantParameter(fields[key], `${path}.${key}`);
+  }
 }
