@@ -29,7 +29,6 @@ import {
 } from '@expo-harmony/expo-modules-core';
 import { fileUri } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import fs from '@ohos.file.fs';
 import fileHash from '@ohos.file.hash';
@@ -51,6 +50,7 @@ const HTTP_RANGE_NOT_SATISFIABLE: number = 416;
 const NETWORK_IDLE_TIMEOUT_MS: number = 60_000;
 const FILE_NOT_FOUND_ERROR: number = 13900002;
 const FILE_EXISTS_ERROR: number = 13900015;
+const CROSS_DEVICE_ERROR: number = 13900016;
 const DOWNLOAD_RESUME_FORMAT_VERSION: number = 1;
 const FILE_SYSTEM_LOG_DOMAIN: number = 0;
 const FILE_SYSTEM_LOG_TAG: string = 'ExpoFileSystem';
@@ -60,6 +60,7 @@ interface NetworkTask {
   request?: rcp.Request;
   transferred: number;
   cancelled: boolean;
+  pauseRequested: boolean;
   committing: boolean;
   done: Promise<void>;
   finish: () => void;
@@ -70,6 +71,7 @@ interface NetworkTask {
   expectedTransfer: number;
   progressCadence: ProgressCadence;
   destination?: string;
+  resumeETag?: string;
 }
 
 interface DownloadRequest {
@@ -77,7 +79,6 @@ interface DownloadRequest {
   destination: string;
   headers?: Object;
   emitProgress?: boolean;
-  resumeFrom?: number;
   md5?: boolean;
   destinationIsDirectory?: boolean;
   validateDestination?: (path: string, mode: ExpoFileAccessMode) => void;
@@ -89,6 +90,7 @@ interface DownloadRequest {
 interface UploadRequest {
   url: string;
   source: string;
+  prepareSource?: (directory: string, check: () => void) => Promise<string>;
   headers?: Object;
   emitProgress?: boolean;
   httpMethod?: string;
@@ -120,6 +122,16 @@ class ResumeRecord {
   constructor(resumeData: string, destination?: string) {
     this.resumeData = resumeData;
     this.destination = destination;
+  }
+}
+
+class DownloadResumeData {
+  readonly offset: number;
+  readonly etag?: string;
+
+  constructor(offset: number, etag?: string) {
+    this.offset = offset;
+    this.etag = etag;
   }
 }
 
@@ -322,6 +334,7 @@ class ExpoFileSystemService {
     const task: NetworkTask = {
       transferred,
       cancelled: false,
+      pauseRequested: false,
       committing: false,
       expectedTransfer: -1,
       progressCadence: new ProgressCadence(),
@@ -332,12 +345,14 @@ class ExpoFileSystemService {
       pendingWrite: Promise.resolve(),
     };
     this.tasks.set(uuid, task);
+
     return task;
   }
 
   private cancelTask(task: NetworkTask): void {
     task.cancelled = true;
     task.rejectCancellation(new ExpoFileSystemError('ERR_FILE_SYSTEM_CANCELLED') as Error);
+
     try {
       task.session?.cancel(task.request);
     } catch (_) {}
@@ -354,26 +369,30 @@ class ExpoFileSystemService {
   async cancel(uuid: string): Promise<null> {
     const task = this.tasks.get(uuid);
     if (task !== undefined) {
+      task.pauseRequested = false;
       this.cancelTask(task);
       await task.done;
     }
+
     return null;
   }
 
   async pause(uuid: string): Promise<ResumeRecord | null> {
     const task = this.tasks.get(uuid);
     if (task === undefined) return null;
-    // Once the final response arrives, pausing must await completion rather than
-    // save a full-length offset that would produce an unsatisfiable HTTP Range.
+
+    // A full-length offset would produce an unsatisfiable HTTP Range.
     if (task.committing) {
       await task.done;
       return null;
     }
 
+    task.pauseRequested = true;
     this.cancelTask(task);
     await task.done;
     if (task.failure !== undefined) throw new ExpoFileSystemError(task.failure.code, task.failure.message, task.failure.cause, task.failure.path);
-    return new ResumeRecord(String(task.transferred), task.destination);
+
+    return new ResumeRecord(JSON.stringify(new DownloadResumeData(task.transferred, task.resumeETag)), task.destination);
   }
 
   private async fetch(task: NetworkTask, request: rcp.Request): Promise<rcp.Response> {
@@ -418,16 +437,18 @@ class ExpoFileSystemService {
   }
 
   async download(input: DownloadRequest): Promise<DownloadResult | RawDownloadResult | null> {
-    return this.downloadTask(util.generateRandomUUID(), input.resumeFrom ?? 0, (): DownloadRequest => input);
+    return this.downloadTask(util.generateRandomUUID(), undefined, (): DownloadRequest => input);
   }
 
   async downloadTask(
     uuid: string,
-    offset: number,
+    resume: DownloadResumeData | undefined,
     prepare: () => DownloadRequest,
     ready?: Promise<void>,
   ): Promise<DownloadResult | RawDownloadResult | null> {
-    const task = this.beginTask(uuid, offset);
+    const task = this.beginTask(uuid, resume?.offset);
+    task.resumeETag = resume?.etag;
+
     try {
       // Register the task before waiting for picker grants so pause or cancel
       // can settle it without opening a file or starting a network request.
@@ -452,35 +473,42 @@ class ExpoFileSystemService {
   }
 
   private async downloadHttp(input: DownloadRequest, uuid: string, task: NetworkTask): Promise<DownloadResult> {
-    let requestUrl = input.url;
-    let requestHeaders = copyHeaders(input.headers);
-    let resumeFrom = input.resumeFrom ?? 0;
-    if (resumeFrom > 0) {
+    let address = input.url;
+    let headers = copyHeaders(input.headers);
+    let resume = task.transferred;
+
+    if (resume > 0) {
       input.validateDestination?.(input.destination, 'read');
-      if (!(await fs.access(input.destination)) || (await fs.stat(input.destination)).size !== resumeFrom) resumeFrom = 0;
+      if (task.resumeETag === undefined || !(await fs.access(input.destination)) || (await fs.stat(input.destination)).size !== resume) {
+        resume = 0;
+        task.resumeETag = undefined;
+      }
     }
-    const callerRange = resumeFrom === 0 && headerValue(requestHeaders, 'range') !== null;
-    task.transferred = resumeFrom;
-    if (resumeFrom > 0) requestHeaders['range'] = `bytes=${resumeFrom}-`;
-    // A byte range must address the bytes written to disk, not a compressed representation.
-    if (resumeFrom > 0) requestHeaders['accept-encoding'] = 'identity';
+
+    const callerRange = resume === 0 && headerValue(headers, 'range') !== null;
+    task.transferred = resume;
+    if (resume > 0) {
+      headers['range'] = `bytes=${resume}-`;
+      headers['if-range'] = task.resumeETag as string;
+    }
+    if (input.resumable && !callerRange) headers['accept-encoding'] = 'identity';
 
     for (let redirects = 0; redirects <= MAX_DOWNLOAD_REDIRECTS;) {
       assertNetworkTask(task);
       let destination = input.destination;
       const parent = input.destinationIsDirectory ? destination : parentPath(destination);
-      const temporaryDirectory = await fs.mkdtemp(joinPath(parent, '.expo-download-XXXXXX'));
-      const temporary = joinPath(temporaryDirectory, 'body');
+      const staging = await fs.mkdtemp(joinPath(parent, '.expo-download-XXXXXX'));
+      const temporary = joinPath(staging, 'body');
       let output: fs.File | undefined;
       let receivedHeaders: Object | null = null;
       let receivedStatus = 0;
-      let receivedBytes = 0;
-      let effectiveResumeFrom = 0;
-      let responseComplete = false;
+      let received = 0;
+      let offset = 0;
+      let complete = false;
       let committed = false;
       let callbackFailure: ExpoModuleError | undefined;
       const resolveDestination = (): string => input.destinationIsDirectory
-        ? joinPath(input.destination, suggestedFilename(requestUrl, receivedHeaders)) : input.destination;
+        ? joinPath(input.destination, suggestedFilename(address, receivedHeaders)) : input.destination;
       const ensureOutput = async (): Promise<fs.File> => {
         if (output !== undefined) return output;
         output = await fs.open(temporary, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
@@ -498,11 +526,11 @@ class ExpoFileSystemService {
       };
 
       try {
-        const request = new rcp.Request(requestUrl, 'GET', requestHeaders);
+        const request = new rcp.Request(address, 'GET', headers);
         request.configuration = networkConfiguration(
           {
-            onHeaderReceive: (headers: rcp.ResponseHeaders): void => {
-              receivedHeaders = headers;
+            onHeaderReceive: (incoming: rcp.ResponseHeaders): void => {
+              receivedHeaders = incoming;
             },
             onStatusCodeReceive: (status: number): void => {
               receivedStatus = status;
@@ -517,10 +545,11 @@ class ExpoFileSystemService {
               const file = await ensureOutput();
               assertNetworkTask(task);
               await writeAllAsync(file.fd, chunk);
-              receivedBytes += chunk.byteLength;
+              received += chunk.byteLength;
+
               const range = parseContentRange(receivedHeaders === null ? null : headerValue(receivedHeaders, 'content-range'));
-              const progressPrefix = receivedStatus !== 200 && range?.start === resumeFrom ? resumeFrom : 0;
-              task.transferred = progressPrefix + receivedBytes;
+              const progressPrefix = receivedStatus !== 200 && range?.start === resume ? resume : 0;
+              task.transferred = progressPrefix + received;
               task.expectedTransfer = expectedDownloadSize(receivedHeaders, progressPrefix, callerRange);
               if (input.emitProgress) this.emitDownloadProgress(task, uuid, false);
             } catch (error) {
@@ -537,13 +566,17 @@ class ExpoFileSystemService {
           task.pendingWrite = write();
           await task.pendingWrite;
         };
+
         const response = await this.fetch(task, request);
-        responseComplete = true;
+        complete = true;
         receivedStatus = response.statusCode;
         receivedHeaders = response.headers;
+
         const location = headerValue(response.headers, 'location');
         const redirect = isRedirectStatus(response.statusCode) && location !== null;
-        const restartRange = resumeFrom > 0 && response.statusCode === HTTP_RANGE_NOT_SATISFIABLE;
+        const etag = headerValue(response.headers, 'etag');
+        const restartRange = resume > 0 && (response.statusCode === HTTP_RANGE_NOT_SATISFIABLE ||
+          (response.statusCode === 206 && etag !== null && etag !== task.resumeETag));
         // The final response is complete even while fs.close/atomic publication
         // is pending. Pause must wait for that result rather than discard it.
         task.committing = !redirect && !restartRange;
@@ -554,95 +587,117 @@ class ExpoFileSystemService {
           // A prefix can already contain the entire body when pause wins the
           // last progress callback, or the remote resource can have shrunk.
           // Retry a full GET instead of trusting length alone as proof of identity.
-          resumeFrom = 0;
+          resume = 0;
           task.transferred = 0;
-          requestHeaders = copyHeaders(requestHeaders, ['range']);
+          task.resumeETag = undefined;
+          headers = copyHeaders(headers, ['range', 'if-range']);
           continue;
         }
+
         if (redirect && location !== null) {
           if (redirects === MAX_DOWNLOAD_REDIRECTS) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_TOO_MANY_REDIRECTS');
 
           redirects += 1;
-          const nextUrl = redirectedDownloadUrl(requestUrl, location);
-          if (new url.URL(requestUrl).origin !== new url.URL(nextUrl).origin) {
-            requestHeaders = copyHeaders(requestHeaders, ['authorization', 'proxy-authorization', 'cookie', 'cookie2']);
+          const nextUrl = redirectedDownloadUrl(address, location);
+          if (new url.URL(address).origin !== new url.URL(nextUrl).origin) {
+            headers = copyHeaders(headers, ['authorization', 'proxy-authorization', 'cookie', 'cookie2']);
           }
-          requestUrl = nextUrl;
-          task.transferred = resumeFrom;
+          if (resume > 0) {
+            // An ETag only identifies a representation of the resource that minted it.
+            resume = 0;
+            task.resumeETag = undefined;
+            headers = copyHeaders(headers, ['range', 'if-range']);
+          }
+          address = nextUrl;
+          task.transferred = resume;
           continue;
         }
+
         if (input.rejectHttpErrors && (response.statusCode < 200 || response.statusCode >= 300)) {
           throw new ExpoFileSystemError('ERR_UNABLE_TO_DOWNLOAD', `response has status: ${response.statusCode}`);
         }
+
         // A caller's Range may select a suffix or several disjoint intervals.
         // Its response body is the requested file, not a prefix to merge.
-        if (!callerRange) validateDownloadRange(resumeFrom, response.statusCode, response.headers, receivedBytes);
-        effectiveResumeFrom = response.statusCode === 206 ? resumeFrom : 0;
+        if (!callerRange) validateDownloadRange(resume, response.statusCode, response.headers, received);
+        offset = response.statusCode === 206 ? resume : 0;
         destination = resolveDestination();
-        if (receivedBytes === 0) {
+        if (received === 0) {
           await ensureOutput();
           await closeOutput();
         }
         assertNetworkTask(task);
 
         input.validateDestination?.(destination, 'write');
-        await publishDownload(temporary, destination, effectiveResumeFrom, input.idempotent === true, task);
+        await publishDownload(temporary, destination, offset, input.idempotent === true, (): void => assertNetworkTask(task));
         committed = true;
         task.destination = destination;
-        task.transferred = effectiveResumeFrom + receivedBytes;
-        task.expectedTransfer = expectedDownloadSize(response.headers, effectiveResumeFrom, callerRange);
+        task.transferred = offset + received;
+        task.expectedTransfer = expectedDownloadSize(response.headers, offset, callerRange);
         if (input.emitProgress) this.emitDownloadProgress(task, uuid, true);
+
         const md5 = input.md5 ? (await fileHash.hash(destination, 'md5')).toLowerCase() : undefined;
         assertNetworkTask(task);
+
         return new DownloadResult(toFileUri(destination), response.statusCode, normalizedResponseHeaders(response.headers), md5);
       } catch (error) {
         await closeOutput();
-        // Only the private staging path is disposable. Preserve a verified prefix on pause,
-        // cancellation or a transport error, while leaving an existing destination untouched
-        // when no response bytes were written or when the response was a redirect/error.
+
         const range = parseContentRange(receivedHeaders === null ? null : headerValue(receivedHeaders, 'content-range'));
         const encoding = receivedHeaders === null ? null : headerValue(receivedHeaders, 'content-encoding');
-        const usableResponse = receivedHeaders !== null && (
+        const responseETag = receivedHeaders === null ? null : headerValue(receivedHeaders, 'etag');
+        const validator = receivedStatus === 206 ? task.resumeETag : strongETag(responseETag);
+        const usableResponse = receivedHeaders !== null && validator !== undefined &&
+          (encoding === null || encoding.toLowerCase() === 'identity') && (
           receivedStatus === 200 ||
           (receivedStatus === 206 &&
             range !== null &&
-            (encoding === null || encoding.toLowerCase() === 'identity') &&
-            range.start === resumeFrom &&
-            receivedBytes <= range.end - range.start + 1));
-        effectiveResumeFrom = receivedStatus === 206 ? resumeFrom : 0;
+            (responseETag === null || responseETag === validator) &&
+            range.start === resume &&
+            received <= range.end - range.start + 1));
+        offset = receivedStatus === 206 ? resume : 0;
+
         // Custom ranges cannot be resumed using a byte offset into the full resource.
         if (
           !callerRange &&
-          !responseComplete &&
+          !complete &&
           !this.destroyed &&
+          task.pauseRequested &&
           input.resumable &&
-          receivedBytes > 0 &&
+          received > 0 &&
           usableResponse &&
           (callbackFailure === undefined || task.cancelled)
         ) {
           try {
             destination = resolveDestination();
             input.validateDestination?.(destination, 'write');
-            await publishDownload(temporary, destination, effectiveResumeFrom, true);
+            await publishDownload(temporary, destination, offset, true, (): void => {
+              if (!task.pauseRequested || this.destroyed) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_CANCELLED');
+            });
             committed = true;
             task.destination = destination;
-            task.transferred = effectiveResumeFrom + receivedBytes;
+            task.resumeETag = validator;
+            task.transferred = offset + received;
           } catch (commitError) {
-            task.failure = new ExpoFileSystemError(
-              commitError instanceof ExpoModuleError ? commitError.code : 'ERR_FILE_SYSTEM_WRITE_FAILED',
-              commitError instanceof Error ? commitError.message : String(commitError),
-              commitError instanceof ExpoModuleError ? commitError.cause : (commitError as Object),
-              commitError instanceof ExpoModuleError ? commitError.path : undefined,
-            );
-            task.transferred = resumeFrom;
+            if (task.pauseRequested && !this.destroyed) {
+              task.failure = new ExpoFileSystemError(
+                commitError instanceof ExpoModuleError ? commitError.code : 'ERR_FILE_SYSTEM_WRITE_FAILED',
+                commitError instanceof Error ? commitError.message : String(commitError),
+                commitError instanceof ExpoModuleError ? commitError.cause : (commitError as Object),
+                commitError instanceof ExpoModuleError ? commitError.path : undefined,
+              );
+            }
+            task.transferred = resume;
           }
         } else if (callerRange) {
           // Even a published range is not a prefix of the full resource (e.g. pause during hashing).
           task.transferred = 0;
-        } else if (!committed) task.transferred = resumeFrom;
+        } else if (!committed) task.transferred = resume;
+
         if (callbackFailure !== undefined && !task.cancelled) {
           throw new ExpoFileSystemError(callbackFailure.code, callbackFailure.message, callbackFailure.cause, callbackFailure.path);
         }
+
         throw new ExpoFileSystemError(
           error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
           error instanceof Error ? error.message : String(error),
@@ -652,10 +707,7 @@ class ExpoFileSystemService {
       } finally {
         await closeOutput();
         try {
-          await fs.unlink(temporary);
-        } catch (_) {}
-        try {
-          await fs.rmdir(temporaryDirectory);
+          await fs.rmdir(staging);
         } catch (_) {}
       }
     }
@@ -670,58 +722,30 @@ class ExpoFileSystemService {
     const temporaryDirectory = await fs.mkdtemp(joinPath(parent, '.expo-download-XXXXXX'));
     const temporary = joinPath(temporaryDirectory, 'body');
     const resources = this.context.uiAbilityContext.resourceManager;
-    let descriptor: ExpoRawResourceFile | undefined;
 
     try {
       assertNetworkTask(task);
-
-      descriptor = openRawResourceFile(resources, resourceName);
-      assertNetworkTask(task);
-      const output = await fs.open(temporary, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-
-      try {
-        const buffer = new ArrayBuffer(NETWORK_FILE_BUFFER_BYTES);
-        let copied = 0;
-        task.expectedTransfer = descriptor.length;
-        while (copied < descriptor.length) {
+      await copyFileRegionAsync(openRawResourceFile(resources, resourceName), temporary,
+        (copied: number, size: number): void => {
           assertNetworkTask(task);
-
-          const count = await fs.read(descriptor.file.fd, buffer, {
-            offset: descriptor.offset + copied,
-            length: Math.min(buffer.byteLength, descriptor.length - copied),
-          });
-          if (count <= 0) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_RAW_RESOURCE', 'Unable to read the complete bundled resource');
-          assertNetworkTask(task);
-          await writeAllAsync(output.fd, count === buffer.byteLength ? buffer : buffer.slice(0, count));
-          copied += count;
+          task.expectedTransfer = size;
           task.transferred = copied;
-          if (input.emitProgress) this.emitDownloadProgress(task, uuid, false);
-        }
-      } finally {
-        await fs.close(output.fd);
-      }
+          if (copied > 0 && input.emitProgress) this.emitDownloadProgress(task, uuid, false);
+        });
       assertNetworkTask(task);
 
       task.committing = true;
       input.validateDestination?.(destination, 'write');
-      if (input.idempotent) await fs.moveFile(temporary, destination, 0);
-      else atomicFileOperations.publishNoReplace(temporary, destination);
+      await publishDownload(temporary, destination, 0, input.idempotent === true, (): void => assertNetworkTask(task));
       if (input.emitProgress) this.emitDownloadProgress(task, uuid, true);
+
       const md5 = input.md5 ? (await fileHash.hash(destination, 'md5')).toLowerCase() : undefined;
       assertNetworkTask(task);
+
       return new RawDownloadResult(toFileUri(destination), md5);
     } finally {
       if (task.cancelled) task.transferred = 0;
-      try {
-        if (descriptor !== undefined) await fs.close(descriptor.file.fd);
-      } finally {
-        try {
-          await fs.unlink(temporary);
-        } catch (_) {}
-        try {
-          await fs.rmdir(temporaryDirectory);
-        } catch (_) {}
-      }
+      try { await fs.rmdir(temporaryDirectory); } catch (_) {}
     }
   }
 
@@ -731,6 +755,8 @@ class ExpoFileSystemService {
 
   async uploadTask(uuid: string, prepare: () => UploadRequest, ready?: Promise<void>): Promise<UploadResult | null> {
     const task = this.beginTask(uuid);
+    let staging: string | undefined;
+
     try {
       if (ready !== undefined) await Promise.race([ready, task.cancellation]);
       assertNetworkTask(task);
@@ -738,6 +764,13 @@ class ExpoFileSystemService {
       const input = prepare();
       const headers = copyHeaders(input.headers, input.uploadType === 1 ? ['content-type'] : []);
       const method = normalizeUploadMethod(input.httpMethod);
+
+      if (input.prepareSource !== undefined) {
+        staging = await fs.mkdtemp(joinPath(decodeFileUri(this.context.cacheDirectory), '.expo-upload-XXXXXX'));
+        input.source = await input.prepareSource(staging, (): void => assertNetworkTask(task));
+        assertNetworkTask(task);
+      }
+
       let body: rcp.RequestContent;
       if (input.uploadType === 1) {
         // MultipartForm supplies the boundary and includes zero-length string fields.
@@ -748,6 +781,7 @@ class ExpoFileSystemService {
         if (input.mimeType) headers['content-type'] = input.mimeType;
       }
       assertNetworkTask(task);
+
       const request = new rcp.Request(input.url, method, headers, body);
       request.configuration = networkConfiguration({
         onUploadProgress: (total: number, transferred: number): void => {
@@ -761,14 +795,15 @@ class ExpoFileSystemService {
       // Upload responses are strings in Expo's public API; native response streaming avoids
       // RCP's buffered-response size cap without buffering the uploaded file in ArkTS.
       const responseParts: string[] = [];
-      const decoder = new util.TextDecoder('utf-8');
+      const decoder = util.TextDecoder.create('utf-8');
       request.destination = (chunk: ArrayBuffer): void => {
         assertNetworkTask(task);
-        responseParts.push(decoder.decodeWithStream(new Uint8Array(chunk), { stream: true }));
+        responseParts.push(decoder.decodeToString(new Uint8Array(chunk), { stream: true }));
       };
+
       const response = await this.fetch(task, request);
       assertNetworkTask(task);
-      responseParts.push(decoder.decodeWithStream(new Uint8Array(0), { stream: false }));
+      responseParts.push(decoder.decodeToString(new Uint8Array(0)));
       if (input.emitProgress) this.emitUploadProgress(task, uuid, true);
       return new UploadResult(responseParts.join(''), response.statusCode, normalizedResponseHeaders(response.headers));
     } catch (error) {
@@ -780,6 +815,11 @@ class ExpoFileSystemService {
         error instanceof ExpoModuleError ? error.path : undefined,
       );
     } finally {
+      if (staging !== undefined) {
+        try { await fs.rmdir(staging); } catch (error) {
+          if (this.context.isValid) this.context.logger.warn(`Could not remove Expo upload staging files: ${cleanErrorMessage(error as Object)}`);
+        }
+      }
       this.finishTask(uuid, task);
     }
   }
@@ -949,6 +989,10 @@ function headerValue(headers: Object, expectedName: string): string | null {
   return name === undefined ? null : String(Reflect.get(headers, name));
 }
 
+function strongETag(value?: string | null): string | undefined {
+  return value !== undefined && value !== null && /^"[\x21\x23-\x7e\x80-\xff]*"$/.test(value) ? value : undefined;
+}
+
 function safeLeafName(value: string): string {
   const normalized = value.replace(/\\/g, '/');
   const leaf = normalized.slice(normalized.lastIndexOf('/') + 1);
@@ -1045,13 +1089,16 @@ function expectedDownloadSize(headers: Object | null, prefix: number, callerRang
 
 function validateDownloadRange(requestedOffset: number, status: number, headers: Object, received: number): void {
   if (status === 200 || (requestedOffset === 0 && status !== 206)) return;
+
   const range = parseContentRange(headerValue(headers, 'content-range'));
   const encoding = headerValue(headers, 'content-encoding');
+
   if (
     status !== 206 ||
     range === null ||
     (encoding !== null && encoding.toLowerCase() !== 'identity') ||
     range.start !== requestedOffset ||
+    (range.total !== -1 && range.end !== range.total - 1) ||
     range.end - range.start + 1 !== received
   ) {
     throw new ExpoFileSystemError('ERR_FILE_SYSTEM_INVALID_RESUME_RESPONSE', 'The response does not match the requested byte range');
@@ -1060,18 +1107,34 @@ function validateDownloadRange(requestedOffset: number, status: number, headers:
 
 // Keep the response body isolated until its status and byte range are final. Header/status
 // notifications may arrive after the first body chunk, so they cannot select append mode.
-async function publishDownload(body: string, destination: string, prefix: number, overwrite: boolean, task?: NetworkTask): Promise<void> {
-  if (task !== undefined) assertNetworkTask(task);
-  if (prefix === 0) {
-    if (overwrite) await fs.moveFile(body, destination, 0);
-    else atomicFileOperations.publishNoReplace(body, destination);
+async function publishDownload(body: string, destination: string, prefix: number, overwrite: boolean, check: () => void): Promise<void> {
+  check();
+
+  if (!overwrite) {
+    try {
+      atomicFileOperations.publishNoReplace(body, destination);
+    } catch (error) {
+      if (Reflect.get(error as Object, 'code') === 'ERR_FILE_SYSTEM_DESTINATION_EXISTS') {
+        throw new ExpoFileSystemError('ERR_DESTINATION_ALREADY_EXISTS', 'Download destination already exists', error as Object);
+      }
+
+      return Promise.reject(error as Error);
+    }
+
     return;
   }
+
+  if (prefix === 0) {
+    await fs.rename(body, destination);
+    return;
+  }
+
   const combined = `${body}.combined`;
   try {
     if ((await fs.stat(destination)).size !== prefix) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_INVALID_RESUME_DATA');
     await fs.copyFile(destination, combined);
-    if (task !== undefined) assertNetworkTask(task);
+    check();
+
     const input = await fs.open(body, fs.OpenMode.READ_ONLY);
     try {
       const output = await fs.open(combined, fs.OpenMode.READ_WRITE);
@@ -1079,7 +1142,7 @@ async function publishDownload(body: string, destination: string, prefix: number
         fs.lseek(output.fd, prefix, fs.WhenceType.SEEK_SET);
         const buffer = new ArrayBuffer(NETWORK_FILE_BUFFER_BYTES);
         while (true) {
-          if (task !== undefined) assertNetworkTask(task);
+          check();
           const count = await fs.read(input.fd, buffer, { length: buffer.byteLength });
           if (count === 0) break;
           if (count < 0) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_READ_FAILED');
@@ -1091,9 +1154,9 @@ async function publishDownload(body: string, destination: string, prefix: number
     } finally {
       await fs.close(input.fd);
     }
-    if (task !== undefined) assertNetworkTask(task);
-    if (overwrite) await fs.moveFile(combined, destination, 0);
-    else atomicFileOperations.publishNoReplace(combined, destination);
+
+    check();
+    await fs.rename(combined, destination);
   } finally {
     try {
       await fs.unlink(combined);
@@ -1305,6 +1368,10 @@ class FileSystemState {
 
   async rawBytesAsync(uri: string, allowSchemeLess: boolean = false): Promise<Uint8Array> {
     return this.context.uiAbilityContext.resourceManager.getRawFileContent(rawPathFromUri(uri, allowSchemeLess));
+  }
+
+  openRawFile(uri: string): ExpoRawResourceFile {
+    return openRawResourceFile(this.context.uiAbilityContext.resourceManager, rawPathFromUri(uri));
   }
 
   async rawInfoAsync(uri: string, includeMd5: boolean): Promise<FileSystemInfo> {
@@ -1655,11 +1722,14 @@ class FileSystemFileHandle extends ExpoSharedRef<fs.File> {
   private file: fs.File | null;
   private offsetValue: number = 0;
   private readonly mode: FileMode;
+  private readonly resource?: ExpoRawResourceFile;
 
-  constructor(context: ExpoModuleContext, owner: FileSystemFile, mode: FileMode = FileMode.ReadWrite) {
-    super(context, 'expo-file-system.file-handle', openFileHandle(owner, mode));
+  constructor(context: ExpoModuleContext, owner: FileSystemFile, mode: FileMode, resource?: ExpoRawResourceFile) {
+    super(context, 'expo-file-system.file-handle', resource?.file ?? openFileHandle(owner, mode));
     this.file = this.value;
     this.mode = mode;
+    this.resource = resource;
+
     if (mode === FileMode.Append) {
       try {
         this.offsetValue = fs.statSync(this.file.fd).size;
@@ -1677,21 +1747,25 @@ class FileSystemFileHandle extends ExpoSharedRef<fs.File> {
       throw new ExpoFileSystemError('ERR_FILE_SYSTEM_HANDLE_WRITE_ONLY', 'File opened write-only');
     }
 
-    const size = fs.statSync(file.fd).size;
+    const size = this.resource?.length ?? fs.statSync(file.fd).size;
     const length = Math.min(count, Math.max(0, size - this.offsetValue));
     const buffer = new ArrayBuffer(length);
     if (length === 0) return new Uint8Array(buffer);
     const output = new Uint8Array(buffer);
     const chunk = new ArrayBuffer(Math.min(length, 64 * 1024));
-    fs.lseek(file.fd, this.offsetValue, fs.WhenceType.SEEK_SET);
     let total: number = 0;
+
     while (total < length) {
-      const read: number = fs.readSync(file.fd, chunk, { length: Math.min(chunk.byteLength, length - total) });
+      const read: number = fs.readSync(file.fd, chunk, {
+        offset: (this.resource?.offset ?? 0) + this.offsetValue,
+        length: Math.min(chunk.byteLength, length - total),
+      });
       if (read <= 0) break;
       output.set(new Uint8Array(chunk, 0, read), total);
       total += read;
       this.offsetValue += read;
     }
+
     return new Uint8Array(total === length ? buffer : buffer.slice(0, total));
   }
 
@@ -1701,10 +1775,8 @@ class FileSystemFileHandle extends ExpoSharedRef<fs.File> {
     if (bytes.byteLength === 0) return;
 
     const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-    let offset = Math.min(this.offsetValue, fs.statSync(file.fd).size);
-    writeAll(file.fd, buffer, offset, (count: number): void => {
-      offset += count;
-      this.offsetValue = offset;
+    writeAll(file.fd, buffer, this.offsetValue, (count: number): void => {
+      this.offsetValue += count;
     });
   }
 
@@ -1726,7 +1798,7 @@ class FileSystemFileHandle extends ExpoSharedRef<fs.File> {
   }
 
   size(): number | null {
-    return this.file === null ? null : fs.statSync(this.file.fd).size;
+    return this.file === null ? null : this.resource?.length ?? fs.statSync(this.file.fd).size;
   }
 
   override sharedObjectWillRelease(): void {
@@ -1817,17 +1889,24 @@ class FileSystemUploadTask extends FileSystemNetworkTask {
 
     this.started = true;
     const result = await this.service.uploadTask(this.uuid, (): UploadRequest => {
-      const request = legacyUploadRequest(file.state, url, file.uri(), options);
+      const request = uploadRequest(url, file.uri(), options);
+      if (file.bundled || file.provider !== null) {
+        request.prepareSource = (directory: string, check: () => void): Promise<string> => prepareUploadSource(file, directory, check);
+      } else {
+        request.source = requireFile(file.path());
+      }
       request.emitProgress = true;
+
       return request;
     }, file.state.ready());
+
     this.assertNotCancelled();
     if (result === null) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_CANCELLED');
+
     return result;
   }
 }
 
-// Resume data belongs to this platform and binds the partial file to its source and destination.
 class SavedDownload {
   version: number = DOWNLOAD_RESUME_FORMAT_VERSION;
   url: string;
@@ -1835,6 +1914,7 @@ class SavedDownload {
   isDirectory: boolean;
   offset: number = 0;
   fileUri?: string;
+  etag?: string;
 
   constructor(url: string, destination: FileSystemDestination) {
     this.url = url;
@@ -1870,6 +1950,7 @@ class FileSystemDownloadTask extends FileSystemNetworkTask {
 
     saved.offset = recordNumber(record, 'offset') ?? -1;
     requireSafeInteger(saved.offset, 'ERR_FILE_SYSTEM_INVALID_RESUME_DATA', 'Resume offset');
+    saved.etag = strongETag(recordString(record, 'etag'));
 
     saved.fileUri = recordString(record, 'fileUri');
     if (saved.fileUri !== undefined) {
@@ -1901,7 +1982,8 @@ class FileSystemDownloadTask extends FileSystemNetworkTask {
   }
 
   private async run(url: string, destination: FileSystemDestination, saved: SavedDownload, options?: FileSystemRecord): Promise<string | null> {
-    const result = await this.service.downloadTask(this.uuid, saved.offset, (): DownloadRequest => {
+    const resume = new DownloadResumeData(saved.offset, saved.etag);
+    const result = await this.service.downloadTask(this.uuid, resume, (): DownloadRequest => {
       const request = modernDownloadRequest(url, destination, options, true);
       if (saved.fileUri !== undefined) {
         request.destination = this.state.resolve(saved.fileUri, false, 'write');
@@ -1909,15 +1991,16 @@ class FileSystemDownloadTask extends FileSystemNetworkTask {
       }
       request.emitProgress = true;
       request.resumable = true;
-      request.resumeFrom = saved.offset;
 
       return request;
     }, destination.state.ready());
+
     this.assertNotCancelled();
     if (result === null) {
       if (this.pausing) return null;
       throw new ExpoFileSystemError('ERR_FILE_SYSTEM_CANCELLED');
     }
+
     return result.uri;
   }
 
@@ -1927,7 +2010,9 @@ class FileSystemDownloadTask extends FileSystemNetworkTask {
     this.pausing = true;
     const record = await this.service.pause(this.uuid);
     if (record !== null) {
-      this.saved.offset = parseResumeOffset(record.resumeData);
+      const resume = parseResumeData(record.resumeData);
+      this.saved.offset = resume.offset;
+      this.saved.etag = resume.etag;
       if (this.saved.offset === 0) this.saved.fileUri = undefined;
       else if (record.destination !== undefined) this.saved.fileUri = toFileUri(record.destination);
     }
@@ -1981,7 +2066,7 @@ export class ExpoFileSystemModule extends ExpoModule {
           FILE_TYPE,
           ExpoValueTypes.string().optional(),
           (context: ExpoModuleContext, owner: FileSystemFile, mode?: string): FileSystemFileHandle =>
-            new FileSystemFileHandle(context, owner, parseFileMode(owner, mode)),
+            makeFileHandle(context, owner, mode),
         ),
       )
       .syncFunction(
@@ -2026,7 +2111,7 @@ export class ExpoFileSystemModule extends ExpoModule {
           writeFileContent(owner, content, options),
         ),
       )
-      .asyncFunction('text', async (owner: FileSystemFile): Promise<string> => new util.TextDecoder('utf-8').decode(await readOwnerBytesAsync(owner)))
+      .asyncFunction('text', async (owner: FileSystemFile): Promise<string> => decodeUtf8(await readOwnerBytesAsync(owner)))
       .syncFunction('textSync', (owner: FileSystemFile): string => readFileText(owner))
       .asyncFunction('base64', async (owner: FileSystemFile): Promise<string> => base64Encode(await readOwnerBytesAsync(owner)))
       .syncFunction('base64Sync', (owner: FileSystemFile): string => base64Encode(readOwnerBytes(owner)))
@@ -2083,7 +2168,7 @@ export class ExpoFileSystemModule extends ExpoModule {
         ExpoFunction.ownedTyped1(
           ExpoValueTypes.string().optional(),
           (owner: FileSystemFile, mode?: string): FileSystemFileHandle =>
-            handleClass.instance(new FileSystemFileHandle(this.context, owner, parseFileMode(owner, mode))),
+            handleClass.instance(makeFileHandle(this.context, owner, mode)),
         ).returns(handleClass.valueType()),
       )
       .property('exists', ExpoValueTypes.boolean(), (owner: FileSystemFile): boolean => fileExists(owner))
@@ -2237,7 +2322,7 @@ export class ExpoFileSystemModule extends ExpoModule {
           ExpoValueTypes.string(), DESTINATION_TYPE, RECORD_TYPE.optional(), ExpoValueTypes.string().optional(),
           async (url: string, destination: FileSystemDestination, options?: FileSystemRecord, uuid?: string): Promise<string> => {
             const taskUuid = uuid ?? util.generateRandomUUID();
-            const result = await this.service.downloadTask(taskUuid, 0, (): DownloadRequest => {
+            const result = await this.service.downloadTask(taskUuid, undefined, (): DownloadRequest => {
               const request = modernDownloadRequest(url, destination, options);
               request.emitProgress = uuid !== undefined;
               return request;
@@ -2462,11 +2547,11 @@ export class ExponentFileSystemModule extends ExpoModule {
             resumeData?: string,
           ): Promise<DownloadResult | RawDownloadResult | null> => {
             const state = this.fileState();
-            const offset = parseResumeOffset(resumeData);
-            return this.service.downloadTask(uuid, offset, (): DownloadRequest => {
+            const resume = parseResumeData(resumeData);
+
+            return this.service.downloadTask(uuid, resume, (): DownloadRequest => {
               const request = legacyDownloadRequest(state, url, destinationUri, options);
               request.emitProgress = true;
-              request.resumeFrom = offset;
               request.resumable = true;
 
               return request;
@@ -2784,7 +2869,11 @@ function readOwnerBytes(owner: FileSystemFile): Uint8Array {
 }
 
 function readFileText(owner: FileSystemFile): string {
-  return new util.TextDecoder('utf-8').decode(readOwnerBytes(owner));
+  return decodeUtf8(readOwnerBytes(owner));
+}
+
+function decodeUtf8(bytes: Uint8Array): string {
+  return util.TextDecoder.create('utf-8').decodeToString(bytes);
 }
 
 function base64Encode(bytes: Uint8Array): string {
@@ -2857,12 +2946,8 @@ function pathSize(path: string): number {
 function removePath(path: string): void {
   const stat = fs.lstatSync(path);
   if (stat.isSymbolicLink()) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_SYMLINK', 'Symbolic link encountered');
-  if (stat.isDirectory()) {
-    fs.listFileSync(path).forEach((name: string): void => removePath(joinPath(path, name)));
-    fs.rmdirSync(path);
-  } else {
-    fs.unlinkSync(path);
-  }
+  if (stat.isDirectory()) fs.rmdirSync(path);
+  else fs.unlinkSync(path);
 }
 
 function reportCommittedCleanupFailure(staging: string, error: Object): void {
@@ -2898,8 +2983,18 @@ function copyPath(source: string, target: string): void {
   fs.listFileSync(source).forEach((name: string): void => copyPath(joinPath(source, name), joinPath(target, name)));
 }
 
-function copyPathOverwrite(source: string | number, target: string): void {
+function stageLocalCopySync(source: string | number, target: string, overwrite: boolean): void {
   if (typeof source === 'string') assertSeparatePaths(source, target);
+
+  copyStagedSync(target, overwrite, (path: string): void => {
+    if (typeof source === 'number') fs.copyFileSync(source, path);
+    else copyPath(source, path);
+  });
+}
+
+function copyStagedSync(target: string, overwrite: boolean, prepare: (path: string) => void): void {
+  if (!overwrite && fs.accessSync(target)) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_DESTINATION_EXISTS', 'Copy destination exists');
+
   // The staging directory is on the destination volume so both commit and
   // rollback can use rename without copying or truncating the previous target.
   const staging = fs.mkdtempSync(joinPath(parentPath(target), '.expo-copy-XXXXXX'));
@@ -2909,10 +3004,15 @@ function copyPathOverwrite(source: string | number, target: string): void {
   let committed = false;
 
   try {
-    if (typeof source === 'number') fs.copyFileSync(source, replacement);
-    else copyPath(source, replacement);
+    prepare(replacement);
 
-    const hadTarget = fs.accessSync(target);
+    if (overwrite && fs.lstatSync(replacement).isFile() && (!fs.accessSync(target) || fs.lstatSync(target).isFile())) {
+      fs.renameSync(replacement, target);
+      committed = true;
+      return;
+    }
+
+    const hadTarget = overwrite && fs.accessSync(target);
     if (hadTarget) fs.renameSync(target, previous);
 
     try {
@@ -2943,25 +3043,6 @@ function copyPathOverwrite(source: string | number, target: string): void {
   }
 }
 
-function copyPathNoReplace(source: string | number, target: string): void {
-  if (typeof source === 'string') assertSeparatePaths(source, target);
-  if (fs.accessSync(target)) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_DESTINATION_EXISTS', 'Copy destination exists');
-
-  const staging = fs.mkdtempSync(joinPath(parentPath(target), '.expo-copy-XXXXXX'));
-  let committed = false;
-
-  try {
-    const replacement = joinPath(staging, 'replacement');
-    if (typeof source === 'number') fs.copyFileSync(source, replacement);
-    else copyPath(source, replacement);
-
-    atomicFileOperations.publishNoReplace(replacement, target);
-    committed = true;
-  } finally {
-    cleanupStaging(staging, committed);
-  }
-}
-
 function movePathNoReplace(source: string, target: string): void {
   assertSeparatePaths(source, target);
   try {
@@ -2978,7 +3059,7 @@ function movePathNoReplace(source: string, target: string): void {
     }
   }
   // Stage on the destination volume and retain the same no-replace contract.
-  copyPathNoReplace(source, target);
+  stageLocalCopySync(source, target, false);
   try {
     removePath(source);
   } catch (error) {
@@ -3024,37 +3105,6 @@ function movePathReplacing(source: string, target: string): void {
   }
 }
 
-function movePath(source: string, target: string): void {
-  assertSeparatePaths(source, target);
-  try {
-    fs.renameSync(source, target);
-    return;
-  } catch (error) {
-    const code = Number(Reflect.get(error as Object, 'code'));
-    if (code !== 13900016) {
-      throw new ExpoFileSystemError('ERR_FILE_SYSTEM_MOVE_FAILED', cleanErrorMessage(error as Object), error as Object);
-    }
-  }
-  try {
-    copyPathOverwrite(source, target);
-  } catch (error) {
-    throw new ExpoFileSystemError(
-      'ERR_FILE_SYSTEM_MOVE_FAILED',
-      `Unable to copy a cross-volume move target: ${cleanErrorMessage(error as Object)}`,
-      error as Object,
-    );
-  }
-  try {
-    removePath(source);
-  } catch (error) {
-    throw new ExpoFileSystemError(
-      'ERR_FILE_SYSTEM_MOVE_SOURCE_RETAINED',
-      `The destination was created, but the source could not be removed: ${cleanErrorMessage(error as Object)}`,
-      error as Object,
-    );
-  }
-}
-
 function assertSeparatePaths(source: string, target: string): void {
   const from = normalizeAbsolutePath(source);
   const to = normalizeAbsolutePath(target);
@@ -3078,7 +3128,7 @@ function requireRecord(value: ESObject, path: string): FileSystemRecord {
 
 function parseFileMode(owner: FileSystemFile, mode?: string): FileMode {
   switch (mode) {
-    case undefined: return owner.provider === null ? FileMode.ReadWrite : FileMode.ReadOnly;
+    case undefined: return owner.provider !== null || owner.bundled ? FileMode.ReadOnly : FileMode.ReadWrite;
     case FileMode.ReadOnly: return FileMode.ReadOnly;
     case FileMode.ReadWrite: return FileMode.ReadWrite;
     case FileMode.WriteOnly: return FileMode.WriteOnly;
@@ -3086,6 +3136,18 @@ function parseFileMode(owner: FileSystemFile, mode?: string): FileMode {
     case FileMode.Truncate: return FileMode.Truncate;
     default: throw new ExpoFileSystemError('ERR_INVALID_ARGUMENT_TYPE', `Unknown file mode '${mode}'`);
   }
+}
+
+function makeFileHandle(context: ExpoModuleContext, owner: FileSystemFile, value?: string): FileSystemFileHandle {
+  const mode = parseFileMode(owner, value);
+  let resource: ExpoRawResourceFile | undefined;
+
+  if (owner.bundled) {
+    if (mode !== FileMode.ReadOnly) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_HANDLE_READ_ONLY', 'Bundled resources are read-only');
+    resource = owner.state.openRawFile(owner.rawUri());
+  }
+
+  return new FileSystemFileHandle(context, owner, mode, resource);
 }
 
 function openFileHandle(owner: FileSystemFile, mode: FileMode): fs.File {
@@ -3236,12 +3298,10 @@ function fileExists(owner: FileSystemFile): boolean {
 }
 
 function modifiedMilliseconds(stat: fs.Stat): number {
-  if (deviceInfo.sdkApiVersion >= 15) {
-    try {
-      const nanoseconds = stat.mtimeNs;
-      if (typeof nanoseconds === 'bigint') return Number(nanoseconds / BigInt(1000000));
-    } catch (_) {}
-  }
+  try {
+    const nanoseconds = stat.mtimeNs;
+    if (typeof nanoseconds === 'bigint') return Number(nanoseconds / BigInt(1000000));
+  } catch (_) {}
   return stat.mtime * 1000;
 }
 
@@ -3340,27 +3400,62 @@ function deleteFile(owner: FileSystemFile): void {
 
 function fileTarget(owner: FileSystemFile, destination: FileSystemDestination): string {
   if (destination instanceof FileSystemDirectory) {
-    const name = owner.provider === null ? leafName(decodeFileUri(owner.uri())) :
+    const name = owner.bundled ? leafName(rawPathFromUri(owner.rawUri())) : owner.provider === null ? leafName(decodeFileUri(owner.uri())) :
       withFileRead(owner.state.readSource(owner.provider), (file: fs.File): string => safeName(file.name));
     const target = joinPath(requireDirectory(destination.path('write')), name);
+
     return destination.state.resolve(toFileUri(target), false, 'write');
   }
-  requireDirectory(parentPath(destination.path('write')));
-  return destination.path('write');
+  const target = destination.path('write');
+  if (fs.accessSync(target)) requireFile(target);
+  requireDirectory(parentPath(target));
+  return target;
+}
+
+async function prepareUploadSource(owner: FileSystemFile, directory: string, check: () => void): Promise<string> {
+  if (owner.bundled) {
+    const uri = owner.rawUri();
+    const path = joinPath(directory, safeName(leafName(rawPathFromUri(uri))));
+    await copyFileRegionAsync(owner.state.openRawFile(uri), path, check);
+
+    return path;
+  }
+
+  const source = owner.state.readSource(owner.uri());
+  const file = await fs.open(source, fileReadFlags(source));
+  let resource: ExpoRawResourceFile | undefined;
+  let path: string;
+  try {
+    const stat = requireRegularFile(await fs.stat(file.fd));
+    path = joinPath(directory, safeName(file.name));
+    resource = new ExpoRawResourceFile(file, 0, stat.size);
+  } finally {
+    if (resource === undefined) await fs.close(file.fd);
+  }
+
+  await copyFileRegionAsync(resource, path, check);
+
+  return path;
 }
 
 function copyFile(owner: FileSystemFile, destination: FileSystemDestination, options?: FileSystemRecord): void {
   const target = fileTarget(owner, destination);
   const overwrite = recordBoolean(options, 'overwrite');
+
+  if (owner.bundled) {
+    copyStagedSync(target, overwrite, (path: string): void => copyRawPathSync(owner.state, owner.rawUri(), path, false));
+    return;
+  }
+
   const source = owner.state.readSource(owner.uri());
   if (owner.provider !== null) {
     withFileRead(source, (file: fs.File): void => {
       requireRegularFile(fs.statSync(file.fd));
-      if (overwrite) copyPathOverwrite(file.fd, target);
-      else copyPathNoReplace(file.fd, target);
+      stageLocalCopySync(file.fd, target, overwrite);
     });
-  } else if (overwrite) copyPathOverwrite(requireFile(source), target);
-  else copyPathNoReplace(requireFile(source), target);
+  } else {
+    stageLocalCopySync(requireFile(source), target, overwrite);
+  }
 }
 
 function moveFile(owner: FileSystemFile, destination: FileSystemDestination, options?: FileSystemRecord): void {
@@ -3413,20 +3508,27 @@ function directoryTarget(owner: FileSystemDirectory, destination: FileSystemDest
   }
 
   const path = destination.path('write');
-  if (fs.accessSync(path) && fs.statSync(path).isDirectory()) {
-    return destination.state.resolve(toFileUri(joinPath(path, leafName(decodeFileUri(owner.uri())))), false, 'write');
+  if (fs.accessSync(path)) {
+    requireDirectory(path);
+    const name = safeName(leafName(owner.bundled ? owner.rawPath() : decodeFileUri(owner.uri())));
+    return destination.state.resolve(toFileUri(joinPath(path, name)), false, 'write');
   }
   requireDirectory(parentPath(path));
   return path;
 }
 
 function copyDirectory(owner: FileSystemDirectory, destination: FileSystemDestination, options?: FileSystemRecord): void {
-  const source = requireDirectory(owner.path());
   const target = directoryTarget(owner, destination);
+
+  if (owner.bundled) {
+    copyStagedSync(target, recordBoolean(options, 'overwrite'), (path: string): void => copyRawPathSync(owner.state, owner.uri(), path, true));
+    return;
+  }
+
+  const source = requireDirectory(owner.path());
   assertOutsideDirectory(source, target);
 
-  if (recordBoolean(options, 'overwrite')) copyPathOverwrite(source, target);
-  else copyPathNoReplace(source, target);
+  stageLocalCopySync(source, target, recordBoolean(options, 'overwrite'));
 }
 
 function moveDirectory(owner: FileSystemDirectory, destination: FileSystemDestination, options?: FileSystemRecord): void {
@@ -3460,11 +3562,91 @@ function directoryExists(owner: FileSystemDirectory): boolean {
 function rawDirectorySize(state: FileSystemState, uri: string): number {
   let size = 0;
   state.rawList(uri).forEach((name: string): void => {
-    const child = `${uri.replace(/\/$/, '')}/${encodeURIComponent(name)}`;
+    const child = rawChildUri(uri, name);
     if (state.rawDirectoryExists(child)) size += rawDirectorySize(state, child);
     else size += state.rawSize(child);
   });
   return size;
+}
+
+function rawChildUri(uri: string, name: string): string {
+  return joinPath(uri, encodeURIComponent(safeName(name)));
+}
+
+function copyRawPathSync(state: FileSystemState, uri: string, target: string, directory: boolean): void {
+  if (directory) {
+    const children = state.rawList(uri);
+    fs.mkdirSync(target, false);
+
+    for (const name of children) {
+      const child = rawChildUri(uri, name);
+      copyRawPathSync(state, child, joinPath(target, name), state.rawDirectoryExists(child));
+    }
+
+    return;
+  }
+
+  const resource = state.openRawFile(uri);
+
+  try {
+    const output = fs.openSync(target, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.NOFOLLOW);
+    try {
+      const buffer = new ArrayBuffer(NETWORK_FILE_BUFFER_BYTES);
+      let copied = 0;
+
+      while (copied < resource.length) {
+        const count = fs.readSync(resource.file.fd, buffer, {
+          offset: resource.offset + copied,
+          length: Math.min(buffer.byteLength, resource.length - copied),
+        });
+        if (count <= 0) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_RAW_RESOURCE', 'Unable to read the complete bundled resource');
+        writeAll(output.fd, count === buffer.byteLength ? buffer : buffer.slice(0, count), copied);
+        copied += count;
+      }
+    } finally {
+      fs.closeSync(output.fd);
+    }
+  } finally {
+    fs.closeSync(resource.file.fd);
+  }
+}
+
+async function copyFileRegionAsync(resource: ExpoRawResourceFile, target: string, onProgress?: (copied: number, size: number) => void): Promise<void> {
+  try {
+    const output = await fs.open(target, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.NOFOLLOW);
+    try {
+      const buffer = new ArrayBuffer(NETWORK_FILE_BUFFER_BYTES);
+      let copied = 0;
+      onProgress?.(0, resource.length);
+
+      while (copied < resource.length) {
+        const count = await fs.read(resource.file.fd, buffer, {
+          offset: resource.offset + copied,
+          length: Math.min(buffer.byteLength, resource.length - copied),
+        });
+        if (count <= 0) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_READ_FAILED', 'File ended before the requested region could be read');
+        await writeAllAsync(output.fd, count === buffer.byteLength ? buffer : buffer.slice(0, count));
+        copied += count;
+        onProgress?.(copied, resource.length);
+      }
+    } finally {
+      await fs.close(output.fd);
+    }
+  } finally {
+    await fs.close(resource.file.fd);
+  }
+}
+
+async function copyRawPathAsync(state: FileSystemState, uri: string, target: string, directory: boolean): Promise<void> {
+  if (!directory) return copyFileRegionAsync(state.openRawFile(uri), target);
+
+  const children = state.rawList(uri);
+  await fs.mkdir(target, false);
+
+  for (const name of children) {
+    const child = rawChildUri(uri, name);
+    await copyRawPathAsync(state, child, joinPath(target, name), state.rawDirectoryExists(child));
+  }
 }
 
 function directorySizeOrNull(owner: FileSystemDirectory): number | null {
@@ -3551,17 +3733,26 @@ function pathInfo(state: FileSystemState, uri: string): FileSystemInfo {
 function modernDownloadRequest(url: string, destination: FileSystemDestination, options?: FileSystemRecord, overwrite: boolean = false): DownloadRequest {
   const directory = destination instanceof FileSystemDirectory;
   const path = directory ? requireDirectory(destination.path('write')) : destination.path('write');
-  if (!directory && fs.accessSync(path) && !overwrite && !recordBoolean(options, 'idempotent')) {
-    throw new ExpoFileSystemError('ERR_DESTINATION_ALREADY_EXISTS', 'Download destination already exists');
+  const idempotent = overwrite || recordBoolean(options, 'idempotent');
+
+  if (!directory && fs.accessSync(path)) {
+    requireFile(path);
+    if (!idempotent) throw new ExpoFileSystemError('ERR_DESTINATION_ALREADY_EXISTS', 'Download destination already exists');
   }
 
   return {
     url,
     destination: path,
     destinationIsDirectory: directory,
-    validateDestination: (target: string, mode: ExpoFileAccessMode): void => { destination.state.resolve(toFileUri(target), false, mode); },
+    validateDestination: (target: string, mode: ExpoFileAccessMode): void => {
+      destination.state.resolve(toFileUri(target), false, mode);
+      if (fs.accessSync(target)) {
+        if (!idempotent) throw new ExpoFileSystemError('ERR_DESTINATION_ALREADY_EXISTS', 'Download destination already exists');
+        requireFile(target);
+      }
+    },
     rejectHttpErrors: true,
-    idempotent: overwrite || recordBoolean(options, 'idempotent'),
+    idempotent,
     headers: recordObject(options, 'headers'),
   };
 }
@@ -3577,11 +3768,22 @@ function legacyDownloadRequest(state: FileSystemState, url: string, destinationU
   };
 }
 
-function parseResumeOffset(value?: string): number {
-  if (value === undefined || value.length === 0) return 0;
-  const offset = Number(value);
-  requireSafeInteger(offset, 'ERR_FILE_SYSTEM_INVALID_RESUME_DATA', 'Resume offset');
-  return offset;
+function parseResumeData(value?: string): DownloadResumeData {
+  if (value === undefined || value.length === 0) return new DownloadResumeData(0);
+  if (/^\d+$/.test(value)) {
+    // Older builds saved just the byte offset, which cannot identify the response.
+    requireSafeInteger(Number(value), 'ERR_FILE_SYSTEM_INVALID_RESUME_DATA', 'Resume offset');
+    return new DownloadResumeData(0);
+  }
+
+  try {
+    const record = requireRecord(JSON.parse(value), 'resumeData');
+    const offset = recordNumber(record, 'offset') ?? -1;
+    requireSafeInteger(offset, 'ERR_FILE_SYSTEM_INVALID_RESUME_DATA', 'Resume offset');
+    return new DownloadResumeData(offset, strongETag(recordString(record, 'etag')));
+  } catch (_) {
+    throw new ExpoFileSystemError('ERR_FILE_SYSTEM_INVALID_RESUME_DATA');
+  }
 }
 
 async function readFileRangeAsync(path: string, position: number = 0, requestedLength?: number): Promise<Uint8Array> {
@@ -3633,12 +3835,8 @@ async function writeBytesFileAsync(path: string, bytes: Uint8Array, append: bool
 async function removePathAsync(path: string): Promise<void> {
   const stat = await fs.lstat(path);
   if (stat.isSymbolicLink()) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_SYMLINK', 'Symbolic link encountered');
-  if (stat.isDirectory()) {
-    for (const name of await fs.listFile(path)) await removePathAsync(joinPath(path, name));
-    await fs.rmdir(path);
-  } else {
-    await fs.unlink(path);
-  }
+  if (stat.isDirectory()) await fs.rmdir(path);
+  else await fs.unlink(path);
 }
 
 async function copyPathAsync(source: string, target: string): Promise<void> {
@@ -3654,8 +3852,17 @@ async function copyPathAsync(source: string, target: string): Promise<void> {
   for (const name of await fs.listFile(source)) await copyPathAsync(joinPath(source, name), joinPath(target, name));
 }
 
-async function copyPathOverwriteAsync(source: string | number, target: string): Promise<void> {
+async function stageLocalCopyAsync(source: string | number, target: string, overwrite: boolean): Promise<void> {
   if (typeof source === 'string') assertSeparatePaths(source, target);
+
+  await copyStagedAsync(target, overwrite, async (path: string): Promise<void> => {
+    if (typeof source === 'number') await fs.copyFile(source, path);
+    else await copyPathAsync(source, path);
+  });
+}
+
+async function copyStagedAsync(target: string, overwrite: boolean, prepare: (path: string) => Promise<void>): Promise<void> {
+  if (!overwrite && await fs.access(target)) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_DESTINATION_EXISTS', 'Copy destination exists');
 
   const staging = await fs.mkdtemp(joinPath(parentPath(target), '.expo-copy-XXXXXX'));
   const replacement = joinPath(staging, 'replacement');
@@ -3664,10 +3871,15 @@ async function copyPathOverwriteAsync(source: string | number, target: string): 
   let committed = false;
 
   try {
-    if (typeof source === 'number') await fs.copyFile(source, replacement);
-    else await copyPathAsync(source, replacement);
+    await prepare(replacement);
 
-    const exists = await fs.access(target);
+    if (overwrite && (await fs.lstat(replacement)).isFile() && (!(await fs.access(target)) || (await fs.lstat(target)).isFile())) {
+      await fs.rename(replacement, target);
+      committed = true;
+      return;
+    }
+
+    const exists = overwrite && await fs.access(target);
     if (exists) await fs.rename(target, previous);
 
     try {
@@ -3700,28 +3912,9 @@ async function copyPathOverwriteAsync(source: string | number, target: string): 
   }
 }
 
-async function copyPathNoReplaceAsync(source: string | number, target: string): Promise<void> {
-  if (typeof source === 'string') assertSeparatePaths(source, target);
-  if (await fs.access(target)) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_DESTINATION_EXISTS', 'Copy destination exists');
-
-  const staging = await fs.mkdtemp(joinPath(parentPath(target), '.expo-copy-XXXXXX'));
-  let committed = false;
-
-  try {
-    const replacement = joinPath(staging, 'replacement');
-    if (typeof source === 'number') await fs.copyFile(source, replacement);
-    else await copyPathAsync(source, replacement);
-    atomicFileOperations.publishNoReplace(replacement, target);
-    committed = true;
-  } finally {
-    await cleanupStagingAsync(staging, committed);
-  }
-}
-
 async function copyFileSourceAsync(source: string, target: string, overwrite: boolean): Promise<void> {
   if (source.startsWith('/')) {
-    if (overwrite) await copyPathOverwriteAsync(source, target);
-    else await copyPathNoReplaceAsync(source, target);
+    await stageLocalCopyAsync(source, target, overwrite);
     return;
   }
 
@@ -3729,8 +3922,7 @@ async function copyFileSourceAsync(source: string, target: string, overwrite: bo
 
   try {
     requireRegularFile(await fs.stat(file.fd));
-    if (overwrite) await copyPathOverwriteAsync(file.fd, target);
-    else await copyPathNoReplaceAsync(file.fd, target);
+    await stageLocalCopyAsync(file.fd, target, overwrite);
   } finally {
     await fs.close(file);
   }
@@ -3747,7 +3939,8 @@ async function movePathNoReplaceAsync(source: string, target: string): Promise<v
     }
   }
 
-  await copyPathNoReplaceAsync(source, target);
+  await stageLocalCopyAsync(source, target, false);
+
   try {
     await removePathAsync(source);
   } catch (error) {
@@ -3793,6 +3986,14 @@ async function relocateAsync(owner: FileSystemDestination, destination: FileSyst
   await owner.state.ready();
   await destination.state.ready();
   const overwrite = recordBoolean(options, 'overwrite');
+
+  if (!move && owner.bundled) {
+    const directory = owner instanceof FileSystemDirectory;
+    const target = directory ? directoryTarget(owner, destination) : fileTarget(owner, destination);
+    await copyStagedAsync(target, overwrite, (path: string): Promise<void> => copyRawPathAsync(owner.state, owner.uri(), path, directory));
+    return;
+  }
+
   if (!move && owner instanceof FileSystemFile && owner.provider !== null) {
     await copyFileSourceAsync(owner.state.readSource(owner.provider), fileTarget(owner, destination), overwrite);
     return;
@@ -3805,8 +4006,9 @@ async function relocateAsync(owner: FileSystemDestination, destination: FileSyst
     if (overwrite) await movePathReplacingAsync(source, target);
     else await movePathNoReplaceAsync(source, target);
     owner.setPath(target);
-  } else if (overwrite) await copyPathOverwriteAsync(source, target);
-  else await copyPathNoReplaceAsync(source, target);
+  } else {
+    await stageLocalCopyAsync(source, target, overwrite);
+  }
 }
 
 async function movePathAsync(source: string, target: string): Promise<void> {
@@ -3816,7 +4018,7 @@ async function movePathAsync(source: string, target: string): Promise<void> {
     return;
   } catch (error) {
     // The platform documents this code as EXDEV: the source is on another volume.
-    if (Number(Reflect.get(error as Object, 'code')) !== 13900016) {
+    if (Number(Reflect.get(error as Object, 'code')) !== CROSS_DEVICE_ERROR) {
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
         error instanceof Error ? error.message : String(error),
@@ -3825,7 +4027,8 @@ async function movePathAsync(source: string, target: string): Promise<void> {
       );
     }
   }
-  await copyPathOverwriteAsync(source, target);
+  await stageLocalCopyAsync(source, target, true);
+
   try {
     await removePathAsync(source);
   } catch (error) {
@@ -3853,7 +4056,8 @@ async function legacyInfoAsync(state: FileSystemState, uri: string, includeMd5: 
     try {
       file = await fs.open(state.readSource(provider), fileReadFlags(provider));
     } catch (error) {
-      if (Number(Reflect.get(error as Object, 'code')) !== FILE_NOT_FOUND_ERROR) throw error as Error;
+      if (Number(Reflect.get(error as Object, 'code')) !== FILE_NOT_FOUND_ERROR) return Promise.reject(error as Error);
+
       const missing = new FileSystemInfo(false);
       missing.isDirectory = false;
 
@@ -3890,7 +4094,7 @@ async function legacyInfoAsync(state: FileSystemState, uri: string, includeMd5: 
   try {
     stat = await fs.stat(path);
   } catch (error) {
-    if (Number(Reflect.get(error as Object, 'code')) !== 13900002) {
+    if (Number(Reflect.get(error as Object, 'code')) !== FILE_NOT_FOUND_ERROR) {
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : String(Reflect.get(error as Object, 'code') ?? 'ERR_FILE_SYSTEM'),
         error instanceof Error ? error.message : String(error),
@@ -3926,13 +4130,17 @@ async function legacyReadAsync(state: FileSystemState, uri: string, options?: Fi
     bytes = await readFileRangeAsync(state.readSource(uri), position, length);
   }
 
-  return encoding === 'base64' ? base64Encode(bytes) : new util.TextDecoder('utf-8').decode(bytes);
+  return encoding === 'base64' ? base64Encode(bytes) : decodeUtf8(bytes);
 }
 
 function legacyUploadRequest(state: FileSystemState, url: string, sourceUri: string, options: FileSystemRecord): UploadRequest {
+  return uploadRequest(url, requireFile(state.resolve(sourceUri, true)), options);
+}
+
+function uploadRequest(url: string, source: string, options: FileSystemRecord): UploadRequest {
   return {
     url,
-    source: requireFile(state.resolve(sourceUri, true)),
+    source,
     headers: recordObject(options, 'headers'),
     httpMethod: recordString(options, 'httpMethod'),
     uploadType: recordUploadType(options),

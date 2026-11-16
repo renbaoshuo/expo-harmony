@@ -166,7 +166,7 @@ Legacy 常量，类型为 `string`，返回 `rawfile:///` 打包资源目录地�
 
 #### `File.open(mode?)`
 
-打开已存在的文件并返回 `FileHandle`。本地文件默认 `FileMode.ReadWrite`；系统选择器返回的文件地址默认 `FileMode.ReadOnly`。
+打开已存在的文件并返回 `FileHandle`。应用沙箱文件默认使用 `FileMode.ReadWrite`。打包资源和无法映射为本地路径的选择器 URI 默认使用 `FileMode.ReadOnly`。
 
 #### `File.readableStream()`
 
@@ -242,7 +242,7 @@ Legacy 常量，类型为 `string`，返回 `rawfile:///` 打包资源目录地�
 
 #### `DownloadTask.resumeAsync()`
 
-从暂停位置继续下载，返回 `Promise<File | null>`；再次暂停时返回 `null`。
+从暂停位置继续下载，返回 `Promise<File | null>`；再次暂停时返回 `null`。服务器提供强 `ETag` 时使用 `If-Range` 校验已下载的数据。无法验证已下载数据仍对应当前资源时，会重新下载完整文件。
 
 #### `DownloadTask.cancel()`
 
@@ -334,7 +334,7 @@ Legacy 方法，复制文件或目录；目标存在时覆盖。可将打包资�
 
 #### `makeDirectoryAsync(fileUri, options?)`
 
-Legacy 方法，新建目录。`intermediates: true` 时创建缺失的父目录；目标已存在且为目录时不报错。
+Legacy 方法，新建目录。`intermediates: true` 时创建缺失的父目录，目标已存在且为目录时也可成功返回。
 
 #### `readDirectoryAsync(fileUri)`
 

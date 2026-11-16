@@ -220,8 +220,10 @@ export class FileSystemWatcher extends ExpoSharedObject {
     this.movedTo.clear();
     const events = Array.from(this.pending.values());
     this.pending.clear();
+    const generation = this.generation;
+
     events.forEach((event: WatchEventPayload): void => {
-      if (this.watcher !== undefined) this.emit(event);
+      if (this.generation === generation) this.emit(event);
     });
   }
 
