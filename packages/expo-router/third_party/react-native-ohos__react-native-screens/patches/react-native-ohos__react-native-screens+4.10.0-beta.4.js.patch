@@ -363,7 +363,7 @@
 +});
 --- /dev/null
 +++ b/src/components/gamma/scroll-view-marker/index.tsx
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,12 @@
 +'use client';
 +
 +import React from 'react';
@@ -372,14 +372,9 @@
 +
 +export type * from 'react-native-screens/src/components/gamma/scroll-view-marker';
 +
-+export function ScrollViewMarker({children, style}: ScrollViewMarkerProps) {
-+  // UIScrollEdgeEffect is iOS 26-only. Keep the marker's layout and its direct
-+  // scroll child on Harmony, without registering an unavailable UIKit view.
-+  return (
-+    <View collapsable={false} style={style}>
-+      {children}
-+    </View>
-+  );
++export function ScrollViewMarker({scrollEdgeEffects: _effects, ...props}: ScrollViewMarkerProps) {
++  // Scroll edge effects require iOS 26.
++  return <View {...props} collapsable={false} />;
 +}
 --- /dev/null
 +++ b/src/components/gamma/split/index.tsx

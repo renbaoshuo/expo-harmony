@@ -13,12 +13,40 @@ import { applyPatchFile } from '@expo-harmony/expo-module-scripts/patch';
 const root = path.resolve(import.meta.dirname, '..');
 const routerRoot = path.resolve(root, '../..');
 const output = path.join(root, 'build');
+const publishLock = path.join(root, '.build-publish');
 
 async function exists(file) {
   return fs.access(file).then(() => true, (error) => {
     if (error.code === 'ENOENT') return false;
     throw error;
   });
+}
+
+async function publishScreens(prepared, backup) {
+  try {
+    await fs.mkdir(publishLock);
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+
+    throw new Error('Another process is publishing the patched Screens package. Retry the build.', {
+      cause: error,
+    });
+  }
+
+  try {
+    const hadOutput = await exists(output);
+    if (hadOutput) await fs.rename(output, backup);
+
+    try {
+      await fs.rename(prepared, output);
+    } catch (error) {
+      if (hadOutput) await fs.rename(backup, output);
+
+      throw error;
+    }
+  } finally {
+    await fs.rmdir(publishLock);
+  }
 }
 
 async function buildScreens() {
@@ -56,14 +84,7 @@ async function buildScreens() {
       name, version, harmony: { alias: 'react-native-screens' },
     }, null, 2) + '\n');
 
-    const hadOutput = await exists(output);
-    if (hadOutput) await fs.rename(output, backup);
-    try {
-      await fs.rename(prepared, output);
-    } catch (error) {
-      if (hadOutput) await fs.rename(backup, output);
-      throw error;
-    }
+    await publishScreens(prepared, backup);
   } finally {
     await fs.rm(stage, { recursive: true, force: true });
   }

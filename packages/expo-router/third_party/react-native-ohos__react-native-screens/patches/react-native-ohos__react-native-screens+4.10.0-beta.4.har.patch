@@ -313,8 +313,8 @@
  }
 --- /dev/null
 +++ b/src/main/ets/components/RNSSafeAreaView.ets
-@@ -0,0 +1,90 @@
-+import window from '@ohos.window';
+@@ -0,0 +1,107 @@
++import { window } from '@kit.ArkUI';
 +import { RNComponentContext } from '@rnoh/react-native-openharmony';
 +import { RNC } from '../generated/ts';
 +import { EdgeInsets } from '../utils/SafeAreaInsets';
@@ -325,35 +325,46 @@
 +  public ctx!: RNComponentContext;
 +  public tag: number = 0;
 +  private windowInstance: window.Window | undefined = undefined;
-+  private appearance: number = 0;
 +  private frame: Area | undefined = undefined;
-+  private previous: string = '';
++  private previous: EdgeInsets | undefined;
 +  private onAvoidAreaChange = (_event: window.AvoidAreaOptions): void => this.refresh();
 +  private onWindowSizeChange = (_size: window.Size): void => this.refresh();
 +  private onWindowStatusChange = (_status: window.WindowStatusType): void => this.refresh();
 +
 +  aboutToAppear(): void {
-+    const appearance = ++this.appearance;
-+    window.getLastWindow(this.ctx.uiAbilityContext).then((instance: window.Window) => {
-+      if (this.appearance !== appearance) return;
-+      this.windowInstance = instance;
-+      instance.on('avoidAreaChange', this.onAvoidAreaChange);
-+      instance.on('windowSizeChange', this.onWindowSizeChange);
-+      instance.on('windowStatusChange', this.onWindowStatusChange);
++    const name = this.getUIContext().getWindowName();
++    if (name === undefined) return;
++
++    try {
++      const win = window.findWindow(name);
++      this.windowInstance = win;
++
++      win.on('avoidAreaChange', this.onAvoidAreaChange);
++      win.on('windowSizeChange', this.onWindowSizeChange);
++      win.on('windowStatusChange', this.onWindowStatusChange);
++
 +      this.refresh();
-+    }).catch((error: Error) => {
-+      if (this.appearance === appearance) this.ctx.logger.error('RNSSafeAreaView: ' + error);
-+    });
++    } catch (error) {
++      this.ctx.logger.error('RNSSafeAreaView: failed to observe insets: ' + error);
++    }
 +  }
 +
 +  aboutToDisappear(): void {
-+    this.appearance++;
-+    this.frame = undefined;
-+    this.previous = '';
-+    this.windowInstance?.off('avoidAreaChange', this.onAvoidAreaChange);
-+    this.windowInstance?.off('windowSizeChange', this.onWindowSizeChange);
-+    this.windowInstance?.off('windowStatusChange', this.onWindowStatusChange);
++    const win = this.windowInstance;
++
 +    this.windowInstance = undefined;
++    this.frame = undefined;
++    this.previous = undefined;
++
++    if (win === undefined) return;
++
++    try {
++      win.off('avoidAreaChange', this.onAvoidAreaChange);
++      win.off('windowSizeChange', this.onWindowSizeChange);
++      win.off('windowStatusChange', this.onWindowStatusChange);
++    } catch (error) {
++      this.ctx.logger.error('RNSSafeAreaView: failed to remove window listeners: ' + error);
++    }
 +  }
 +
 +  private refresh(): void {
@@ -365,30 +376,36 @@
 +  }
 +
 +  private readInsets(): void {
-+    if (!this.windowInstance || !this.frame) return;
-+    const properties = this.windowInstance.getWindowProperties();
-+    const system = this.windowInstance.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
-+    const cutout = this.windowInstance.getWindowAvoidArea(window.AvoidAreaType.TYPE_CUTOUT);
-+    const indicator = this.windowInstance.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
-+    const x = Number(this.frame.globalPosition.x);
-+    const y = Number(this.frame.globalPosition.y);
-+    const width = Number(this.frame.width);
-+    const height = Number(this.frame.height);
-+    // ArkUI can place a view under system bars even in a non-fullscreen window.
-+    // Its actual frame determines which edges have already been consumed.
++    const win = this.windowInstance;
++    const frame = this.frame;
++    if (!win || !frame) return;
++
++    const ui = this.getUIContext();
++    const rect = win.getWindowProperties().windowRect;
++    const system = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
++    const cutout = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_CUTOUT);
++    const indicator = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
++
++    // ArkUI can lay content under system bars even in a non-fullscreen window.
++    const x = Number(frame.globalPosition.x);
++    const y = Number(frame.globalPosition.y);
++    const width = Number(frame.width);
++    const height = Number(frame.height);
 +    const insets: EdgeInsets = {
 +      top: Math.min(height, Math.max(0,
-+        px2vp(Math.max(system.topRect.height, cutout.topRect.height, indicator.topRect.height)) - y)),
++        ui.px2vp(Math.max(system.topRect.height, cutout.topRect.height, indicator.topRect.height)) - y)),
 +      left: Math.min(width, Math.max(0,
-+        px2vp(Math.max(system.leftRect.width, cutout.leftRect.width, indicator.leftRect.width)) - x)),
-+      right: Math.min(width, Math.max(0, x + width - px2vp(properties.windowRect.width -
++        ui.px2vp(Math.max(system.leftRect.width, cutout.leftRect.width, indicator.leftRect.width)) - x)),
++      right: Math.min(width, Math.max(0, x + width - ui.px2vp(rect.width -
 +        Math.max(system.rightRect.width, cutout.rightRect.width, indicator.rightRect.width)))),
-+      bottom: Math.min(height, Math.max(0, y + height - px2vp(properties.windowRect.height -
++      bottom: Math.min(height, Math.max(0, y + height - ui.px2vp(rect.height -
 +        Math.max(system.bottomRect.height, cutout.bottomRect.height, indicator.bottomRect.height)))),
 +    };
-+    const serialized = JSON.stringify(insets);
-+    if (this.previous !== serialized) {
-+      this.previous = serialized;
++
++    const prev = this.previous;
++    if (!prev || prev.top !== insets.top || prev.left !== insets.left ||
++      prev.right !== insets.right || prev.bottom !== insets.bottom) {
++      this.previous = insets;
 +      new RNC.RNSSafeAreaView.EventEmitter(this.ctx.rnInstance, this.tag).emit('insetsChange', insets);
 +    }
 +  }
@@ -827,3 +844,121 @@
 +export * from "./RNSSafeAreaView"
  export * from "./RNSScreenContainer"
  export * from "./RNSScreenContentWrapper"
+--- a/src/main/ets/components/RNSSearchBar.ets
++++ b/src/main/ets/components/RNSSearchBar.ets
+@@ -24,0 +25 @@
++import { deviceInfo } from '@kit.BasicServicesKit';
+@@ -30,0 +32,26 @@
++
++class SearchAutoCapitalization implements AttributeModifier<SearchAttribute> {
++  private mode: string;
++
++  constructor(mode: string) {
++    this.mode = mode;
++  }
++
++  applyNormalAttribute(search: SearchAttribute): void {
++    if (deviceInfo.sdkApiVersion >= 20) {
++      switch (this.mode) {
++        case 'words':
++          search.autoCapitalizationMode(AutoCapitalizationMode.WORDS);
++          break;
++        case 'sentences':
++          search.autoCapitalizationMode(AutoCapitalizationMode.SENTENCES);
++          break;
++        case 'characters':
++          search.autoCapitalizationMode(AutoCapitalizationMode.ALL_CHARACTERS);
++          break;
++        default:
++          search.autoCapitalizationMode(AutoCapitalizationMode.NONE);
++      }
++    }
++  }
++}
+@@ -56 +83,5 @@
+-  private cleanupCommandCallback?: () => void = undefined;
++  private focusTimer: number | undefined = undefined;
++
++  private get searchInputId(): string {
++    return RNSSearchBar.NAME + this.tag;
++  }
+@@ -68 +99,2 @@
+-    this.cleanupCommandCallback = this.ctx.componentCommandReceiver.registerCommandCallback(
++
++    this.cleanUpCallbacks.push(this.ctx.componentCommandReceiver.registerCommandCallback(
+@@ -74,0 +107 @@
++            this.eventEmitter!.emit("open", {});
+@@ -80,0 +114 @@
++            this.eventEmitter!.emit("close", {});
+@@ -89 +123 @@
+-          this.text = args.toString();
++          this.text = typeof args[0] === 'string' ? args[0] : '';
+@@ -93 +127 @@
+-          if (args.toString() == 'true') {
++          if (args[0] === true) {
+@@ -101 +135 @@
+-      });
++      }));
+@@ -120,3 +154 @@
+-    if (this.hintTextColor !== this.descriptor.rawProps["hintTextColor"] || '#333333') {
+-      this.hintTextColor = this.descriptor.rawProps["hintTextColor"] || '#333333';
+-    }
++    this.hintTextColor = this.descriptor.rawProps["hintTextColor"] ?? '#333333';
+@@ -134,15 +165,0 @@
+-  getAutoCapitalizationMode(): AutoCapitalizationMode | undefined {
+-    switch (this.autoCapitalize) {
+-      case 'words':
+-        return AutoCapitalizationMode.WORDS;
+-      case 'sentences':
+-        return AutoCapitalizationMode.SENTENCES;
+-      case 'characters':
+-        return AutoCapitalizationMode.ALL_CHARACTERS;
+-      case 'none':
+-        return AutoCapitalizationMode.NONE;
+-      default:
+-        return undefined; // 表示不设置参数
+-    }
+-  }
+-
+@@ -150 +167,7 @@
+-    this.cleanUpCallbacks.forEach(cb => cb())
++    if (this.focusTimer !== undefined) {
++      clearTimeout(this.focusTimer);
++      this.focusTimer = undefined;
++    }
++
++    this.cleanUpCallbacks.forEach(off => off());
++    this.cleanUpCallbacks = [];
+@@ -175,13 +198,14 @@
+-  private safeRequestSearchFocus(initialDelay: number) {
+-    const tryFocus = (delay: number) => {
+-      setTimeout(() => {
+-        try {
+-          this.getUIContext().getFocusController().requestFocus("search");
+-        } catch (e) {
+-          if (delay < 300) {
+-            tryFocus(300);
+-          }
+-        }
+-      }, delay);
+-    };
+-    tryFocus(initialDelay);
++  private safeRequestSearchFocus(delay: number) {
++    if (this.focusTimer !== undefined) clearTimeout(this.focusTimer);
++
++    this.focusTimer = setTimeout(() => {
++      this.focusTimer = undefined;
++      if (!this.showTextInput) return;
++
++      try {
++        this.getUIContext().getFocusController().requestFocus(this.searchInputId);
++      } catch {
++        // Focus registration may finish after the native header's first layout.
++        if (delay < 300) this.safeRequestSearchFocus(300);
++      }
++    }, delay);
+@@ -203,0 +228 @@
++              .attributeModifier(new SearchAutoCapitalization(this.autoCapitalize))
+@@ -222 +247 @@
+-              .id("search")
++              .id(this.searchInputId)

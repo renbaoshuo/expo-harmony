@@ -32,6 +32,7 @@ HarmonyOS 上的堆栈路由用于按页面顺序呈现路由。
 
 - HarmonyOS 不支持配置表单弹窗的 detent 高度；`sheetAllowedDetents`、`sheetLargestUndimmedDetentIndex` 和 `sheetInitialDetentIndex` 不控制对话框高度或背景遮罩。
 - `sheetGrabberVisible`、`sheetCornerRadius`、`sheetElevation`、`sheetExpandsWhenScrolledToEdge`、`sheetShouldOverflowTopInset` 和 `sheetResizeAnimationEnabled` 不会改变 HarmonyOS 对话框外观或滚动行为；系统没有对应的表单弹窗配置能力。
+- `headerSearchBarOptions.autoCapitalize` 在 API 20 及以上传递给 ArkUI Search，实际行为取决于当前输入法。
 
 #### `ExperimentalStack`
 
