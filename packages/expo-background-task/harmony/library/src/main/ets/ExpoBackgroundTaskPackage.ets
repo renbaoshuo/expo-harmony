@@ -46,7 +46,12 @@ import {
   WORK_SCHEDULER_MAXIMUM_INTERVAL_MS,
   WORK_SCHEDULER_MINIMUM_INTERVAL_MS,
 } from './BackgroundTaskConstants';
-import { BackgroundTaskRuntime } from './BackgroundTaskRuntime';
+import {
+  BackgroundTaskRuntime,
+  isBackgroundTaskWork,
+  schedulerGenerationFromWork,
+  stopBackgroundTaskWork,
+} from './BackgroundTaskRuntime';
 
 interface BackgroundTaskOptionsInput {
   minimumInterval?: ESObject;
@@ -87,37 +92,22 @@ class ExpoBackgroundTaskConsumer implements ExpoTaskConsumer {
   }
 
   private async reconcile(context: ExpoModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
-    if (!canIUse(WORK_SCHEDULER_CAPABILITY)) {
-      if (tasks.length === 0) return;
+    if (tasks.length > 0) requireConfigured();
+    else if (!canIUse(WORK_SCHEDULER_CAPABILITY)) return;
 
-      throw new ExpoBackgroundTaskError(
-        'ERR_BACKGROUND_TASK_NOT_CONFIGURED',
-        `HarmonyOS WorkScheduler or extension '${WORK_SCHEDULER_EXTENSION_NAME}' is unavailable. ` +
-          'Run Expo prebuild with the @expo-harmony/expo-background-task config plugin.',
-      );
-    }
-
+    const owner = ExpoTaskManagerRegistry.ownerKey(context);
     const works = await readAllWorks();
-    const owned = works.filter((work: workScheduler.WorkInfo): boolean => isOwnedWork(context, work));
+    const owned = works.filter((work: workScheduler.WorkInfo): boolean => isBackgroundTaskWork(work, owner, WORK_SCHEDULER_EXTENSION_NAME, true));
 
     if (tasks.length === 0) {
       owned.forEach((work: workScheduler.WorkInfo): void => cancelWork(work));
       return;
     }
 
-    if (!hasWorkSchedulerExtension()) {
-      throw new ExpoBackgroundTaskError(
-        'ERR_BACKGROUND_TASK_NOT_CONFIGURED',
-        `HarmonyOS WorkScheduler or extension '${WORK_SCHEDULER_EXTENSION_NAME}' is unavailable. ` +
-          'Run Expo prebuild with the @expo-harmony/expo-background-task config plugin.',
-      );
-    }
-
     const interval = intervalForTasks(tasks);
-    const ownerKey = ExpoTaskManagerRegistry.ownerKey(context);
-    const matching = owned.find((work: workScheduler.WorkInfo): boolean => workMatchesInterval(work, interval, ownerKey));
-    if (matching !== undefined) {
-      owned.filter((work: workScheduler.WorkInfo): boolean => work.workId !== matching.workId)
+    const match = owned.find((work: workScheduler.WorkInfo): boolean => workMatchesInterval(work, interval, owner));
+    if (match !== undefined) {
+      owned.filter((work: workScheduler.WorkInfo): boolean => work.workId !== match.workId)
         .forEach((work: workScheduler.WorkInfo): void => cancelWorkBestEffort(work, context));
       return;
     }
@@ -147,16 +137,16 @@ class ExpoBackgroundTaskConsumer implements ExpoTaskConsumer {
   }
 }
 
-class BackgroundTaskOptions {
-  minimumInterval?: number = undefined;
-}
-
 class EmptyEventPayload {}
 
-const BACKGROUND_TASK_OPTIONS_TYPE: ExpoValueType<BackgroundTaskOptions> = new ExpoValueType<BackgroundTaskOptions>(
+const BACKGROUND_TASK_OPTIONS_TYPE: ExpoValueType<ESObject> = new ExpoValueType<ESObject>(
   'BackgroundTask options object',
-  (value: ESObject): BackgroundTaskOptions => decodeOptions(value),
-  (value: BackgroundTaskOptions): ESObject => value,
+  (value: ESObject): ESObject => {
+    const options: ESObject = requireOptions(value);
+    minimumIntervalMilliseconds(options);
+    return options;
+  },
+  (value: ESObject): ESObject => value,
 );
 
 class WorkCallback {
@@ -170,22 +160,25 @@ export class ExpoBackgroundTaskWorkSchedulerExtension extends WorkSchedulerExten
   override onWorkStart(work: workScheduler.WorkInfo): void {
     const startedAt = Date.now();
     console.info(`Expo BackgroundTask received WorkScheduler start for work ${work.workId}.`);
+
     try {
-      work.parameters = ExpoTaskManagerWorkMetadata.parameters(work.parameters);
       ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
+      const ability = this.context.extensionAbilityInfo;
+      if (!isBackgroundTaskWork(work, ability.bundleName, ability.name)) {
+        console.warn(`Expo BackgroundTask ignored WorkScheduler work ${work.workId} with invalid ownership metadata.`);
+        return;
+      }
 
       const callback = new WorkCallback();
       callback.request = BackgroundTaskRuntime.start(
         this.context,
         work,
-        this.context.extensionAbilityInfo.bundleName,
-        this.context.extensionAbilityInfo.name,
         startedAt,
         (): boolean => callback.stopped,
       );
-      const key = `${work.workId}:${work.parameters?.[SCHEDULER_GENERATION_PARAMETER] ?? ''}`;
-      const requests = this.requests.get(key) ?? [];
 
+      const key = `${work.workId}:${schedulerGenerationFromWork(work)}`;
+      const requests = this.requests.get(key) ?? [];
       requests.push(callback);
       this.requests.set(key, requests);
     } catch (error) {
@@ -194,17 +187,21 @@ export class ExpoBackgroundTaskWorkSchedulerExtension extends WorkSchedulerExten
   }
 
   override onWorkStop(work: workScheduler.WorkInfo): void {
-    work.parameters = ExpoTaskManagerWorkMetadata.parameters(work.parameters);
-    ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
+    try {
+      ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
+      const ability = this.context.extensionAbilityInfo;
+      if (!isBackgroundTaskWork(work, ability.bundleName, ability.name)) return;
 
-    const key = `${work.workId}:${work.parameters?.[SCHEDULER_GENERATION_PARAMETER] ?? ''}`;
-    const requests = this.requests.get(key);
-    const callback = requests?.shift();
-    if (callback !== undefined) callback.stopped = true;
+      const key = `${work.workId}:${schedulerGenerationFromWork(work)}`;
+      const requests = this.requests.get(key);
+      const callback = requests?.shift();
+      if (callback !== undefined) callback.stopped = true;
+      if (requests !== undefined && requests.length === 0) this.requests.delete(key);
 
-    if (requests !== undefined && requests.length === 0) this.requests.delete(key);
-
-    BackgroundTaskRuntime.stop(this.context, work, this.context.extensionAbilityInfo.bundleName, this.context.extensionAbilityInfo.name, callback?.request);
+      BackgroundTaskRuntime.stop(this.context, work, callback?.request);
+    } catch (error) {
+      console.error(`Unable to stop Expo BackgroundTask WorkScheduler callback: ${String(error)}`);
+    }
   }
 }
 
@@ -238,7 +235,7 @@ export class ExpoBackgroundTaskModule extends ExpoModule {
         ExpoFunction.typed2(
           ExpoValueTypes.string(),
           BACKGROUND_TASK_OPTIONS_TYPE,
-          async (taskName: string, options: BackgroundTaskOptions): Promise<void> => {
+          async (taskName: string, options: ESObject): Promise<void> => {
             requireConfigured();
             requireAvailable(this.context);
 
@@ -286,7 +283,7 @@ function hasWorkSchedulerExtension(): boolean {
 }
 
 function requireAvailable(context: ExpoModuleContext): void {
-  if (status(context) !== BACKGROUND_TASK_STATUS_AVAILABLE) {
+  if (!ExpoTaskManagerRegistry.hasRuntimeLoader(ExpoTaskManagerRegistry.ownerKey(context))) {
     throw new ExpoBackgroundTaskError(
       'ERR_BACKGROUND_TASK_UNAVAILABLE',
       'HarmonyOS WorkScheduler or the TaskManager cold-start runtime loader is unavailable.',
@@ -315,24 +312,8 @@ function requireOptions(value: ESObject): ESObject {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new ExpoBackgroundTaskError('ERR_BACKGROUND_TASK_INVALID_OPTIONS', 'BackgroundTask expected options to be an object.');
   }
+
   return value;
-}
-
-function decodeOptions(value: ESObject): BackgroundTaskOptions {
-  const raw: ESObject = requireOptions(value);
-  const unknown = Object.keys(raw as Record<string, ESObject>).filter((key: string): boolean => key !== 'minimumInterval');
-  if (unknown.length > 0) {
-    throw new ExpoBackgroundTaskError('ERR_BACKGROUND_TASK_INVALID_OPTIONS', `Unsupported BackgroundTask option '${unknown[0]}'.`);
-  }
-
-  const result = new BackgroundTaskOptions();
-  const interval: ESObject = (raw as BackgroundTaskOptionsInput).minimumInterval;
-  if (interval !== undefined && interval !== null) {
-    minimumIntervalMilliseconds(raw);
-    result.minimumInterval = interval as number;
-  }
-
-  return result;
 }
 
 function minimumIntervalMilliseconds(options: ESObject, persisted: boolean = false): number {
@@ -388,19 +369,8 @@ function workMatchesInterval(work: workScheduler.WorkInfo, interval: number, own
     work.networkType === workScheduler.NetworkType.NETWORK_TYPE_ANY &&
     work.isRepeat === true &&
     work.repeatCycleTime === interval &&
-    work.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE &&
-    typeof work.parameters?.[SCHEDULER_GENERATION_PARAMETER] === 'string' &&
-    String(work.parameters?.[SCHEDULER_GENERATION_PARAMETER]).length > 0 &&
-    ExpoTaskManagerWorkMetadata.owner(work.parameters) === ownerKey
-  );
-}
-
-function isOwnedWork(context: ExpoModuleContext, work: workScheduler.WorkInfo): boolean {
-  return (
-    work.bundleName === context.uiAbilityContext.abilityInfo.bundleName &&
-    work.abilityName === WORK_SCHEDULER_EXTENSION_NAME &&
-    work.parameters?.[OWNER_PARAMETER] === OWNER_PARAMETER_VALUE &&
-    ExpoTaskManagerWorkMetadata.owner(work.parameters, true) === ExpoTaskManagerRegistry.ownerKey(context)
+    isBackgroundTaskWork(work, ownerKey, WORK_SCHEDULER_EXTENSION_NAME) &&
+    ExpoTaskManagerWorkMetadata.owner(ExpoTaskManagerWorkMetadata.parameters(work.parameters)) === ownerKey
   );
 }
 
@@ -442,7 +412,7 @@ function stableWorkId(value: string): number {
 
 function cancelWork(work: workScheduler.WorkInfo): void {
   try {
-    workScheduler.stopWork(work, true);
+    stopBackgroundTaskWork(work, true);
   } catch (error) {
     throw new ExpoBackgroundTaskError('ERR_BACKGROUND_TASK_SCHEDULER', `Unable to cancel with HarmonyOS WorkScheduler: ${String(error)}`);
   }

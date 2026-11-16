@@ -99,7 +99,7 @@ WorkScheduler 或应用的后台启动能力不可用时，注册任务会失败
 
 #### `ERR_BACKGROUND_TASK_INVALID_OPTIONS`
 
-`options` 不是对象，或包含 `minimumInterval` 以外的字段时抛出。
+`options` 不是对象时抛出。
 
 #### `ERR_BACKGROUND_TASK_INVALID_INTERVAL`
 

@@ -9,6 +9,7 @@ const PENDING_WORK_SCHEMA_VERSION: number = 2;
 export const WORK_SCHEDULER_EXECUTION_WINDOW_MS: number = 2 * 60 * 1000;
 const WORK_SCHEDULER_CLEANUP_MARGIN_MS: number = 10 * 1000;
 export const PENDING_WORK_MAXIMUM_AGE_MS: number = WORK_SCHEDULER_EXECUTION_WINDOW_MS - WORK_SCHEDULER_CLEANUP_MARGIN_MS;
+export const MAXIMUM_SCHEDULER_GENERATION_LENGTH: number = 128;
 
 const PENDING_PHASE_ENQUEUING: string = 'enqueuing';
 const PENDING_PHASE_QUEUED: string = 'queued';
@@ -123,8 +124,9 @@ export class BackgroundTaskRuntimeState {
     );
 
     if (current === undefined) await this.driver.save(pending);
+
     if (wasStopped()) {
-      await this.requestExpirationBestEffort(pending);
+      await this.requestExpirationBestEffort(pending, true);
       return undefined;
     }
 
@@ -156,38 +158,30 @@ export class BackgroundTaskRuntimeState {
         return pending.requestId === id && sameWork(pending, work);
       });
 
-      if (current !== undefined) await this.requestExpiration(current);
-
+      if (current !== undefined) await this.requestExpiration(current, true);
       return;
     }
 
     for (const pending of works) {
       if (sameWork(pending, work) && isPendingWorkExpired(pending, now)) {
-        await this.requestExpirationBestEffort(pending);
+        await this.requestExpirationBestEffort(pending, true);
       }
     }
   }
 
-  async complete(id: string | undefined): Promise<void> {
-    if (id === undefined) return;
-
+  async complete(id: string): Promise<void> {
     const works = await this.driver.read();
-
     const pending = works.find((work: StoredPendingWork): boolean => work.requestId === id);
     if (pending === undefined) return;
 
     pending.phase = PENDING_PHASE_COMPLETING;
-
     await this.driver.save(pending);
 
     await this.stopAndRemove(pending);
   }
 
-  async expire(id: string | undefined): Promise<void> {
-    if (id === undefined) return;
-
+  async expire(id: string): Promise<void> {
     const works = await this.driver.read();
-
     const pending = works.find((work: StoredPendingWork): boolean => work.requestId === id);
     if (pending === undefined) return;
 
@@ -202,8 +196,10 @@ export class BackgroundTaskRuntimeState {
     }
   }
 
-  private async requestExpiration(pending: StoredPendingWork): Promise<void> {
-    if (pending.phase !== PENDING_PHASE_EXPIRING) {
+  private async requestExpiration(pending: StoredPendingWork, alreadyStopped: boolean = false): Promise<void> {
+    if (alreadyStopped || pending.phase !== PENDING_PHASE_EXPIRING) {
+      // Detach an invocation WorkScheduler already stopped so cleanup cannot stop a later run.
+      if (alreadyStopped) pending.schedulerGeneration = '';
       pending.phase = PENDING_PHASE_EXPIRING;
 
       await this.driver.save(pending);
@@ -213,9 +209,9 @@ export class BackgroundTaskRuntimeState {
     if (!found) await this.stopAndRemove(pending);
   }
 
-  private async requestExpirationBestEffort(pending: StoredPendingWork): Promise<void> {
+  private async requestExpirationBestEffort(pending: StoredPendingWork, alreadyStopped: boolean = false): Promise<void> {
     try {
-      await this.requestExpiration(pending);
+      await this.requestExpiration(pending, alreadyStopped);
     } catch (error) {
       this.driver.report(`Unable to expire Expo BackgroundTask request '${pending.requestId}': ${String(error)}`);
     }
@@ -242,7 +238,8 @@ export function decodePendingWork(raw: ESObject): StoredPendingWork | undefined 
 }
 
 function isPendingWorkExpired(pending: StoredPendingWork, now: number): boolean {
-  return now - pending.startedAt >= PENDING_WORK_MAXIMUM_AGE_MS;
+  const elapsed = now - pending.startedAt;
+  return elapsed < 0 || elapsed >= PENDING_WORK_MAXIMUM_AGE_MS;
 }
 
 function pendingWorkFromValue(value: ESObject): StoredPendingWork | undefined {
@@ -269,10 +266,11 @@ function pendingWorkFromValue(value: ESObject): StoredPendingWork | undefined {
     || typeof ability !== 'string'
     || ability.length === 0
     || typeof started !== 'number'
-    || !Number.isFinite(started)
+    || !Number.isSafeInteger(started)
+    || started <= 0
     || !isPendingPhase(phase)
     || typeof generation !== 'string'
-    || generation.length > 128
+    || generation.length > MAXIMUM_SCHEDULER_GENERATION_LENGTH
   ) {
     return undefined;
   }
