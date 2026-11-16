@@ -13,6 +13,7 @@ import {
   ExpoModuleContext,
   ExpoModuleDefinition,
   ExpoModuleError,
+  ExpoRecordShape,
   ExpoValueTypes,
   ExpoView,
   ExpoViewContext,
@@ -35,6 +36,57 @@ const SYMBOL_TYPE_VALUES: Record<string, SymbolType> = {
 };
 const SYMBOL_TYPE = ExpoValueTypes.enumerable<SymbolType>('SymbolType', SYMBOL_TYPE_VALUES);
 
+enum AnimationType {
+  Bounce = 'bounce',
+  Pulse = 'pulse',
+  Scale = 'scale',
+  Hierarchical = 'hierarchical',
+}
+
+enum AnimationDirection {
+  Up = 'up',
+  Down = 'down',
+}
+
+interface SymbolAnimation {
+  type: AnimationType;
+  wholeSymbol?: boolean;
+  direction?: AnimationDirection;
+  iterative?: boolean;
+}
+
+const ANIMATION = ExpoValueTypes.shapedRecord<SymbolAnimation>(
+  'SymbolAnimation',
+  new ExpoRecordShape()
+    .field('type', ExpoValueTypes.enumerable<AnimationType>('AnimationType', {
+      'bounce': AnimationType.Bounce,
+      'pulse': AnimationType.Pulse,
+      'scale': AnimationType.Scale,
+      'hierarchical': AnimationType.Hierarchical,
+    }))
+    .field('wholeSymbol', ExpoValueTypes.boolean().optional())
+    .field('direction', ExpoValueTypes.enumerable<AnimationDirection>('AnimationDirection', {
+      'up': AnimationDirection.Up,
+      'down': AnimationDirection.Down,
+    }).optional())
+    .field('iterative', ExpoValueTypes.boolean().optional()),
+  (fields: Record<string, ESObject>): SymbolAnimation => fields as SymbolAnimation,
+  (value: SymbolAnimation): Record<string, ESObject> => value as Record<string, ESObject>,
+).nullable();
+
+const ALIGNMENTS: Record<string, Alignment> = {
+  'top': Alignment.Top,
+  'bottom': Alignment.Bottom,
+  'left': Alignment.Start,
+  'right': Alignment.End,
+  'topLeft': Alignment.TopStart,
+  'topRight': Alignment.TopEnd,
+  'bottomLeft': Alignment.BottomStart,
+  'bottomRight': Alignment.BottomEnd,
+};
+
+const SYMBOL_GLYPH_CAPABILITY = 'SystemCapability.ArkUI.ArkUI.Full';
+const RESOURCE_MANAGER_CAPABILITY = 'SystemCapability.Global.ResourceManager';
 const INVALID_RESOURCE_NAME = 9001003;
 const RESOURCE_NOT_FOUND = 9001004;
 
@@ -52,7 +104,9 @@ const WEIGHTS: Record<string, number> = {
 };
 
 function isSymbolAvailable(name: string): boolean {
-  if (!/^[a-zA-Z0-9_]+$/.test(name)) return false;
+  if (!/^[a-zA-Z0-9_]+$/.test(name) || !canIUse(SYMBOL_GLYPH_CAPABILITY) || !canIUse(RESOURCE_MANAGER_CAPABILITY)) {
+    return false;
+  }
 
   try {
     return resourceManager.getSysResourceManager().getSymbolByName(name) > 0;
@@ -75,17 +129,63 @@ function argbColor(color: number): string {
   return `#${(color >>> 0).toString(16).padStart(8, '0')}`;
 }
 
+function symbolEffect(animation: SymbolAnimation | null): SymbolEffect {
+  if (animation === null) return new SymbolEffect();
+
+  const scope = animation.wholeSymbol === true ? EffectScope.WHOLE : EffectScope.LAYER;
+  const direction = animation.direction === AnimationDirection.Up ? EffectDirection.UP : EffectDirection.DOWN;
+
+  switch (animation.type) {
+    case AnimationType.Bounce:
+      return new BounceSymbolEffect(scope, direction);
+    case AnimationType.Pulse:
+      return new PulseSymbolEffect();
+    case AnimationType.Scale:
+      return new ScaleSymbolEffect(scope, direction);
+    case AnimationType.Hierarchical:
+      return new HierarchicalSymbolEffect(animation.iterative ? EffectFillStyle.ITERATIVE : EffectFillStyle.CUMULATIVE);
+  }
+}
+
 @Observed
 class SymbolView extends ExpoView {
+  private name = '';
+  private animation: SymbolAnimation | null = null;
   resource: Resource | undefined = undefined;
   size: number = 24;
   type: SymbolType = SymbolType.Monochrome;
   weight: number = 400;
+  alignment: Alignment = Alignment.Center;
+  effect: SymbolEffect = new SymbolEffect();
+  effectTrigger: number = -1;
+  private revision: number = 0;
   tint: number | null = null;
   colors: number[] = [];
 
   constructor(context: ExpoViewContext) {
     super(context);
+  }
+
+  updateName(name: string): void {
+    if (this.name === name) return;
+
+    this.resource = symbolResource(name);
+    this.name = name;
+    this.refreshEffect();
+  }
+
+  updateAnimation(animation: SymbolAnimation | null): void {
+    const previous = this.animation;
+    if (previous?.type === animation?.type && previous?.wholeSymbol === animation?.wholeSymbol
+      && previous?.direction === animation?.direction && previous?.iterative === animation?.iterative) return;
+
+    this.animation = animation;
+    this.effect = symbolEffect(animation);
+    this.refreshEffect();
+  }
+
+  private refreshEffect(): void {
+    this.effectTrigger = this.animation === null ? -1 : ++this.revision;
   }
 
   renderingStrategy(): SymbolRenderingStrategy {
@@ -119,7 +219,7 @@ struct SymbolViewContent {
   @ObjectLink view: SymbolView;
 
   build(): void {
-    Stack({ alignContent: Alignment.Center }) {
+    Stack({ alignContent: this.view.alignment }) {
       if (this.view.resource !== undefined && this.view.size > 0) {
         // API 24 retains old colors for fontColor(undefined); recreate the glyph to restore system defaults.
         if (this.view.fontColors() !== undefined) {
@@ -128,18 +228,21 @@ struct SymbolViewContent {
             .fontWeight(this.view.weight)
             .renderingStrategy(this.view.renderingStrategy())
             .fontColor(this.view.fontColors()!)
+            .symbolEffect(this.view.effect, this.view.effectTrigger)
             .hitTestBehavior(HitTestMode.None);
         } else {
           SymbolGlyph(this.view.resource)
             .fontSize(`${this.view.size}vp`)
             .fontWeight(this.view.weight)
             .renderingStrategy(this.view.renderingStrategy())
+            .symbolEffect(this.view.effect, this.view.effectTrigger)
             .hitTestBehavior(HitTestMode.None);
         }
       }
     }
     .width('100%')
     .height('100%')
+    .direction(Direction.Ltr)
     .hitTestBehavior(HitTestMode.None);
   }
 }
@@ -164,10 +267,19 @@ export class ExpoSymbolsModule extends ExpoModule {
         'name',
         ExpoValueTypes.string(),
         (view: SymbolView, name: string): void => {
-          view.resource = symbolResource(name);
+          view.updateName(name);
         },
         '',
       )
+      .prop(
+        'resizeMode',
+        ExpoValueTypes.string(),
+        (view: SymbolView, value: string): void => {
+          view.alignment = ALIGNMENTS[value] ?? Alignment.Center;
+        },
+        'scaleAspectFit',
+      )
+      .prop('animation', ANIMATION, (view: SymbolView, animation: SymbolAnimation | null): void => view.updateAnimation(animation), null)
       .prop(
         'size',
         ExpoValueTypes.number(),

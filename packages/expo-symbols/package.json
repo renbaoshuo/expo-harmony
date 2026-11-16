@@ -36,12 +36,19 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "peerDependencies": {
+    "@expo-harmony/expo-font": "workspace:*",
     "@expo-harmony/expo-modules-core": "workspace:*",
     "expo": "~57.0.31",
+    "expo-font": "~57.0.4",
     "expo-modules-core": "~57.0.24",
     "expo-symbols": "~57.0.3",
     "react": "^19.2.0",
     "react-native": "0.86.3"
+  },
+  "peerDependenciesMeta": {
+    "@expo-harmony/expo-font": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@expo-harmony/expo-module-scripts": "workspace:*",
@@ -72,9 +79,9 @@
         },
         {
           "upstream": "expo-symbols",
-          "origin": "build/index.js",
-          "request": "./materialImageSource",
-          "upstreamTarget": "build/materialImageSource.ios.js"
+          "origin": "build/materialImageSource.js",
+          "request": "expo-font",
+          "target": "src/materialFont.harmony.ts"
         }
       ]
     }

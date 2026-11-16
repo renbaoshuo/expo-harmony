@@ -40,7 +40,7 @@ npm install @expo-harmony/expo-symbols expo-symbols@~57.0.3
 
 图标字号，单位 vp，不随系统字体大小变化。接受非负有限数值；`0` 隐藏图形，负数或非有限数值抛出 `RangeError`。名称无效或图标不可用时会先显示 `fallback`，此时不校验字号。
 
-默认容器尺寸为 `size × size`，`style` 中的宽高可覆盖容器尺寸。图形保持 `size` 指定的字号，并在容器中居中。
+默认容器尺寸为 `size × size`，`style` 中的宽高可覆盖容器尺寸。图形保持 `size` 指定的字号，位置由 `resizeMode` 决定。
 
 ##### `weight`
 
@@ -69,7 +69,7 @@ npm install @expo-harmony/expo-symbols expo-symbols@~57.0.3
 
 类型：`ColorValue | ColorValue[]`
 
-仅当 `type` 为 `palette` 且未设置 `tintColor` 时，颜色数组才生效。数组至少包含两个颜色，最多使用前三个；单个颜色或少于两个颜色时不应用调色板。要使用系统多色样式，请设置 `type="multicolor"`。可通过 `style.opacity` 调整整个图标的透明度。
+仅当 `type` 为 `palette` 且未设置 `tintColor` 时，颜色数组才生效。数组至少包含两个颜色，最多使用前三个；单个颜色或少于两个颜色时不应用调色板。ArkUI 会忽略多色调色板的透明度，可通过 `style.opacity` 调整整个图标的透明度。要使用系统多色样式，请设置 `type="multicolor"`。
 
 ##### `scale`
 
@@ -77,17 +77,17 @@ npm install @expo-harmony/expo-symbols expo-symbols@~57.0.3
 
 ##### `resizeMode`
 
-- HarmonyOS 按指定字号在容器中居中显示图形，不应用此属性的缩放模式。
+- 可以将图形对齐到容器的边缘、角落或中心。缩放模式下图形居中，字号仍由 `size` 决定。
 
 ##### `animationSpec`
 
-- HarmonyOS 上图标静态显示，此属性不触发动画。
+- 使用 ArkUI 的弹跳、脉冲、缩放和分层动效。图标或动效改变时触发系统动效，播放次数、速度和循环行为由系统实现决定。
 
 ### Methods
 
 #### `unstable_getMaterialSymbolSourceAsync(symbol, size, color)`
 
-接收图标标识、字号和颜色，返回 `Promise<ImageSourcePropType | null>`。HarmonyOS 不提供 Material 图标资源，因此始终返回 `null`。
+接收 Material 图标标识、字号和颜色，返回 `Promise<ImageSourcePropType | null>`。安装 `expo-font@~57.0.4` 和 `@expo-harmony/expo-font` 后，复用 Expo 的 Material 字体和图片渲染流程。缺少字体模块时返回 `null`，仍可使用 `SymbolView`。
 
 ### Types
 
@@ -117,13 +117,13 @@ npm install @expo-harmony/expo-symbols expo-symbols@~57.0.3
 
 容器内容显示方式类型，包含 `'scaleToFill'`、`'scaleAspectFit'`、`'scaleAspectFill'`、`'redraw'`、`'center'`、`'top'`、`'bottom'`、`'left'`、`'right'`、`'topLeft'`、`'topRight'`、`'bottomLeft'` 和 `'bottomRight'`。
 
-- HarmonyOS 不应用这些显示方式，图形按 `size` 指定的字号在容器中居中显示。
+- HarmonyOS 支持位置对齐，字号由 `size` 指定。
 
 #### `AnimationSpec`
 
 `animationSpec` 属性的类型，包含 `effect`、`repeating`、`repeatCount`、`speed` 和 `variableAnimationSpec` 等动画配置字段。
 
-- HarmonyOS 上图标静态显示，这些配置不触发动画。
+- HarmonyOS 读取 `effect` 或 `variableAnimationSpec`，使用系统的动画节奏。
 
 #### `AnimationEffect`
 
@@ -135,7 +135,7 @@ npm install @expo-harmony/expo-symbols expo-symbols@~57.0.3
 
 #### `VariableAnimationSpec`
 
-图标图层动画的配置类型，包含 `reversing`、`nonReversing`、`cumulative`、`iterative`、`hideInactiveLayers` 和 `dimInactiveLayers` 字段。HarmonyOS 上这些配置不产生动画效果。
+图标图层动画的配置类型。HarmonyOS 的分层动效支持 `cumulative` 和 `iterative`。图层数量和动效支持取决于系统图标资源。
 
 ### Error codes
 

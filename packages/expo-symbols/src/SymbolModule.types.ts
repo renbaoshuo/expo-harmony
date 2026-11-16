@@ -18,11 +18,20 @@ export type SymbolViewProps = Omit<UpstreamSymbolViewProps, 'name'> & {
   name: Extract<UpstreamSymbolViewProps['name'], string> | HarmonySymbolName;
 };
 
+export type NativeSymbolAnimation = {
+  type: 'bounce' | 'pulse' | 'scale' | 'hierarchical';
+  wholeSymbol?: boolean;
+  direction?: 'up' | 'down';
+  iterative?: boolean;
+};
+
 export type NativeSymbolViewProps = ViewProps & {
   name: string;
   size: number;
   type: NonNullable<UpstreamSymbolViewProps['type']>;
   weight: NonNullable<Exclude<UpstreamSymbolViewProps['weight'], object>>;
+  resizeMode?: UpstreamSymbolViewProps['resizeMode'];
+  animation: NativeSymbolAnimation | null;
   tint: number | null;
   colors: number[];
 };

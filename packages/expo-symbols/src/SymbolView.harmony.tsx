@@ -11,7 +11,7 @@ import type { ComponentType, JSX } from 'react';
 import { processColor } from 'react-native';
 import type { ColorValue } from 'react-native';
 
-import type { NativeSymbolViewProps, SymbolViewProps } from './SymbolModule.types';
+import type { NativeSymbolAnimation, NativeSymbolViewProps, SymbolViewProps } from './SymbolModule.types';
 
 const native = requireNativeModule<{ isSymbolAvailable(name: string): boolean }>('SymbolModule');
 const NativeView: ComponentType<NativeSymbolViewProps> = requireNativeViewManager('SymbolModule');
@@ -35,8 +35,8 @@ export function SymbolView({
   tintColor,
   colors,
   scale: _scale,
-  resizeMode: _resizeMode,
-  animationSpec: _animationSpec,
+  resizeMode,
+  animationSpec,
   ...props
 }: SymbolViewProps): JSX.Element {
   const symbol = typeof name === 'object' && name !== null && typeof name.harmony === 'string'
@@ -53,6 +53,11 @@ export function SymbolView({
     ? colors.slice(0, 3).map(colorValue).filter((color): color is number => color !== null)
     : [];
 
+  const variable = animationSpec?.variableAnimationSpec;
+  const animation: NativeSymbolAnimation | null = variable
+    ? { type: 'hierarchical', iterative: variable.iterative === true && variable.cumulative !== true }
+    : animationSpec?.effect ?? null;
+
   return (
     <NativeView
       {...props}
@@ -61,6 +66,8 @@ export function SymbolView({
       style={[{ width: size, height: size }, style]}
       type={type}
       weight={typeof weight === 'string' ? weight : 'unspecified'}
+      resizeMode={resizeMode}
+      animation={animation}
       tint={tint}
       colors={palette}
     />
