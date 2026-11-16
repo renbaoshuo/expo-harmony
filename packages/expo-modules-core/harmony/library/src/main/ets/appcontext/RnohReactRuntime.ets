@@ -10,7 +10,7 @@ import { ExpoModuleError } from '../modules/ExpoModuleError';
 import { ReactNativeRuntime, ReactRuntimeListener } from '../interfaces/ReactNativeRuntime';
 import { ExpoReloadRegistry } from './ExpoReloadRegistry';
 import { RnohContextLifecycle } from './RnohContextLifecycle';
-import { hasLoadedRnohBundle, installRnohBundleBarrier, waitForRnohBundle } from './RnohBundle';
+import { hasFailedRnohBundle, hasLoadedRnohBundle, installRnohBundleBarrier, waitForRnohBundle } from './RnohBundle';
 
 export interface RnohReactRuntimeOptions {
   options?: RNInstanceOptions | (() => RNInstanceOptions);
@@ -102,17 +102,19 @@ export class RnohReactRuntime implements ReactNativeRuntime {
   subscribe(observer: ReactRuntimeListener): () => void {
     const listener: Listener = { observer };
     this.listeners.add(listener);
+
     if (this.loaded && this.current !== undefined) {
       const instance = this.current;
       this.prepare(listener, instance).then(
         (): void => {
-          if (this.listeners.has(listener) && this.loaded && this.current === instance) observer.changed(instance);
+          if (this.loaded && this.current === instance) this.notify(listener, (): void => observer.changed(instance));
         },
         (error: Error): void => {
-          if (this.listeners.has(listener)) observer.failed(error);
+          if (this.current === instance) this.notify(listener, (): void => observer.failed(error));
         },
       );
     }
+
     return (): void => {
       this.listeners.delete(listener);
     };
@@ -246,8 +248,18 @@ export class RnohReactRuntime implements ReactNativeRuntime {
     if (this.loaded) return;
 
     this.sourceProvider = undefined;
+
+    if (this.current !== undefined && this.options.options !== undefined && hasFailedRnohBundle(this.current)) {
+      // A failed bundle can leave partially executed JavaScript in the old runtime.
+      this.unbind();
+      await this.lifetime.destroyInstance(this.current);
+      this.current = undefined;
+      this.provider = undefined;
+    }
+
     if (this.current === undefined) {
       if (this.options.options === undefined) throw new ExpoModuleError('ERR_REACT_HOST_OWNER', 'The external runtime is no longer available.');
+
       // A launcher may select a different runtime between instance creations.
       const options = typeof this.options.options === 'function' ? this.options.options() : this.options.options;
       this.current = await this.core.createAndRegisterRNInstance(options);
@@ -256,6 +268,7 @@ export class RnohReactRuntime implements ReactNativeRuntime {
     const instance = this.current;
     installRnohBundleBarrier(instance);
     if (this.detach === undefined) this.bind(instance);
+
     await this.options.prepare(instance);
     for (const listener of this.listeners) await this.prepare(listener, instance);
 
@@ -266,6 +279,7 @@ export class RnohReactRuntime implements ReactNativeRuntime {
       this.sourceProvider = this.provider;
       if (this.provider !== undefined) await instance.runJSBundle(this.provider);
     }
+
     await waitForRnohBundle(instance);
 
     // Roots can join while the bundle is running; prepare them before publishing this instance.
@@ -309,32 +323,39 @@ export class RnohReactRuntime implements ReactNativeRuntime {
 
   private prepare(listener: Listener, instance: RNInstance): Promise<void> {
     if (!this.listeners.has(listener)) return Promise.resolve();
-    if (listener.instance !== instance) {
+
+    if (listener.instance !== instance || listener.preparation === undefined) {
       listener.instance = instance;
-      listener.preparation = Promise.resolve().then(() => listener.observer.prepare(instance));
+      const pending = Promise.resolve().then(() => listener.observer.prepare(instance));
+      listener.preparation = pending;
+
+      pending.catch((): void => {
+        if (listener.preparation === pending) listener.preparation = undefined;
+      });
     }
-    return listener.preparation!;
+
+    return listener.preparation;
   }
 
   private changed(instance: RNInstance | undefined): void {
     for (const listener of Array.from(this.listeners)) {
-      if (!this.listeners.has(listener)) continue;
-      try {
-        listener.observer.changed(instance);
-      } catch (error) {
-        console.error(`React root notification failed: ${String(error)}`);
-      }
+      this.notify(listener, (): void => listener.observer.changed(instance));
     }
   }
 
   private failed(error: Error): void {
     for (const listener of Array.from(this.listeners)) {
-      if (!this.listeners.has(listener)) continue;
-      try {
-        listener.observer.failed(error);
-      } catch (failure) {
-        console.error(`React root error notification failed: ${String(failure)}`);
-      }
+      this.notify(listener, (): void => listener.observer.failed(error));
+    }
+  }
+
+  private notify(listener: Listener, callback: () => void): void {
+    if (!this.listeners.has(listener)) return;
+
+    try {
+      callback();
+    } catch (error) {
+      console.error(`React root notification failed: ${String(error)}`);
     }
   }
 }

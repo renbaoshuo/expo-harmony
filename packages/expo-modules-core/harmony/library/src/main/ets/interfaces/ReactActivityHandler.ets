@@ -10,6 +10,9 @@ import type { UIContext } from '@kit.ArkUI';
 import type { ReactRootViewBuilder, ReactRootViewContext } from './ReactRootView';
 
 export interface ReactActivityHandler {
+  /** Higher priorities run first. Unspecified priority is zero. */
+  readonly priority?: number;
+
   createReactRootViewContainer?(context: ReactRootViewContext): ReactRootViewBuilder | undefined;
   getDelayLoadAppHandler?(context: ReactRootViewContext): Promise<void> | undefined;
   /** Adds native gestures without replacing another package's root container. */

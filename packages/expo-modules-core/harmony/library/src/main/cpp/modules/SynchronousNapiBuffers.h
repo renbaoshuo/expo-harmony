@@ -18,6 +18,24 @@
 
 namespace expo::harmony {
 
+class NapiHandleScope final {
+public:
+  explicit NapiHandleScope(napi_env env) : env_(env) {
+    if (napi_open_handle_scope(env_, &scope_) != napi_ok) {
+      throw std::runtime_error("Could not open the Expo ArkTS handle scope.");
+    }
+  }
+
+  ~NapiHandleScope() { napi_close_handle_scope(env_, scope_); }
+
+  NapiHandleScope(const NapiHandleScope &) = delete;
+  NapiHandleScope &operator=(const NapiHandleScope &) = delete;
+
+private:
+  napi_env env_;
+  napi_handle_scope scope_ = nullptr;
+};
+
 // Contains no runtime handles. Storage stays fixed once exposed to ArkTS.
 struct SynchronousBinarySnapshot final {
   std::vector<uint8_t> bytes;
@@ -30,16 +48,9 @@ struct SynchronousBinarySnapshot final {
 // detach them before native code reads the snapshots on the JS thread.
 class SynchronousNapiBuffers final {
 public:
-  explicit SynchronousNapiBuffers(napi_env env) : env_(env) {
-    if (napi_open_handle_scope(env_, &scope_) != napi_ok) {
-      throw std::runtime_error("Could not open the synchronous binary handle scope.");
-    }
-  }
+  explicit SynchronousNapiBuffers(napi_env env) : env_(env), scope_(env) {}
 
-  ~SynchronousNapiBuffers() {
-    detach();
-    napi_close_handle_scope(env_, scope_);
-  }
+  ~SynchronousNapiBuffers() { detach(); }
 
   SynchronousNapiBuffers(const SynchronousNapiBuffers &) = delete;
   SynchronousNapiBuffers &operator=(const SynchronousNapiBuffers &) = delete;
@@ -136,7 +147,7 @@ private:
   };
 
   napi_env env_;
-  napi_handle_scope scope_ = nullptr;
+  NapiHandleScope scope_;
   std::unordered_map<const SynchronousBinarySnapshot *, Entry> buffers_;
 };
 

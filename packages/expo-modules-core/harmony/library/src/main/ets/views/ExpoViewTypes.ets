@@ -10,15 +10,15 @@ import { ExpoModuleError } from '../modules/ExpoModuleError';
 import { EXPO_MODULES_CORE_VIEW_COMPONENT_NAME, EXPO_MODULE_NAME_PROP, EXPO_VIEW_REVISION_PROP, EXPO_VIEW_NAME_PROP } from '../protocol/Protocol';
 export { EXPO_MODULES_CORE_VIEW_COMPONENT_NAME, EXPO_MODULE_NAME_PROP, EXPO_VIEW_REVISION_PROP, EXPO_VIEW_NAME_PROP } from '../protocol/Protocol';
 
-const VIEW_MOUNT_TIMEOUT_MS: number = 30000;
+const VIEW_READINESS_TIMEOUT_MS: number = 30000;
 
 export interface ExpoViewContentDelegate {
   readonly rnComponentContext: RNComponentContext;
   readonly tag: number;
   readonly componentName: string;
   emit(eventName: string, payload?: ESObject): void;
-  setShadowNodeSize(width: number, height: number): void;
-  setStyleSize(width: number, height: number): void;
+  setShadowNodeSize(width: number | null, height: number | null): void;
+  setStyleSize(width: number | null, height: number | null): void;
 }
 
 export class ExpoViewContentContext {
@@ -40,11 +40,11 @@ export class ExpoViewContentContext {
     this.delegate.emit(eventName, payload);
   }
 
-  setShadowNodeSize(width: number, height: number): void {
+  setShadowNodeSize(width: number | null, height: number | null): void {
     this.delegate.setShadowNodeSize(width, height);
   }
 
-  setStyleSize(width: number, height: number): void {
+  setStyleSize(width: number | null, height: number | null): void {
     this.delegate.setStyleSize(width, height);
   }
 }
@@ -436,7 +436,7 @@ export class ExpoViewAdapterRegistry {
         waiter.reject(
           new ExpoModuleError('ERR_VIEW_NOT_MOUNTED', `Timed out waiting for Expo view tag ${tag} to mount in RN instance ${instanceId}.`) as Error,
         );
-      }, VIEW_MOUNT_TIMEOUT_MS);
+      }, VIEW_READINESS_TIMEOUT_MS);
     });
 
     return ExpoViewAdapterRegistry.requireBoundView(instanceId, tag, componentName);
@@ -468,7 +468,25 @@ export class ExpoViewAdapterRegistry {
     }
 
     await new Promise<void>((resolve: () => void, reject: (error: Error) => void): void => {
-      bound.propsWaiters.add(new ExpoViewPropsWaiter(revision, resolve, reject));
+      let timer: number = -1;
+      const waiter = new ExpoViewPropsWaiter(
+        revision,
+        (): void => {
+          clearTimeout(timer);
+          resolve();
+        },
+        (error: Error): void => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+
+      bound.propsWaiters.add(waiter);
+      timer = setTimeout((): void => {
+        if (bound.propsWaiters.delete(waiter)) {
+          waiter.reject(new ExpoModuleError('ERR_VIEW_PROPS_TIMEOUT', `Timed out waiting for Expo view tag ${tag} to commit props.`) as Error);
+        }
+      }, VIEW_READINESS_TIMEOUT_MS);
     });
   }
 
@@ -481,9 +499,9 @@ export class ExpoViewAdapterRegistry {
   }
 }
 
-export function requireExpoViewSize(width: number, height: number, operation: string): void {
-  if (typeof width !== 'number' || typeof height !== 'number' || !Number.isFinite(width) || !Number.isFinite(height) || width < 0 || height < 0) {
-    throw new Error(`${operation} requires finite, non-negative dimensions; received ${width} x ${height}.`);
+export function requireExpoViewSize(width: number | null, height: number | null, operation: string): void {
+  if ((width !== null && (!Number.isFinite(width) || width < 0)) || (height !== null && (!Number.isFinite(height) || height < 0))) {
+    throw new Error(`${operation} requires finite, non-negative dimensions or null to clear an axis. Received ${width} x ${height}.`);
   }
 }
 

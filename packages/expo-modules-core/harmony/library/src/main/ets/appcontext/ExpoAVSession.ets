@@ -87,6 +87,7 @@ class ExpoAVSessionCoordinator {
   private controlRevision: number = 0;
   private tail: Promise<void> = Promise.resolve();
   private session?: avSession.AVSession;
+  private sessionContext?: common.UIAbilityContext;
   private sessionOptions?: ExpoAVSessionOptions;
   private active: boolean = false;
   private retiring: boolean = false;
@@ -166,12 +167,17 @@ class ExpoAVSessionCoordinator {
     }
 
     const options = owner.options;
-    if (this.sessionOptions !== undefined && (this.sessionOptions.name !== options.name || this.sessionOptions.type !== options.type)) {
+    if (
+      this.sessionOptions !== undefined &&
+      (this.sessionContext !== owner.context || this.sessionOptions.name !== options.name || this.sessionOptions.type !== options.type)
+    ) {
       await this.destroySession();
       if (owner !== this.owner()) return;
     }
+
     const session = this.session ?? await avSession.createAVSession(owner.context, options.name, options.type);
     this.session = session;
+    this.sessionContext = owner.context;
     this.sessionOptions = options;
     if (owner !== this.owner()) return;
 
@@ -235,7 +241,9 @@ class ExpoAVSessionCoordinator {
 
   private clearSession(): void {
     this.session = undefined;
+    this.sessionContext = undefined;
     this.sessionOptions = undefined;
+
     this.active = false;
     this.retiring = false;
     this.publication = undefined;

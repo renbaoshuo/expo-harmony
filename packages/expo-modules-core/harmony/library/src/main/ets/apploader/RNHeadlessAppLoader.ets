@@ -99,10 +99,15 @@ export class RNHeadlessAppLoader implements HeadlessAppLoader {
 
   waitForApp(scope: string): Promise<void> {
     const record = RNHeadlessAppLoader.records.get(scope);
-    if (record === undefined || record.closing !== undefined || (record.destroyed && !record.owner.restarting)) {
-      return Promise.reject(new ExpoModuleError('ERR_REACT_HOST_SCOPE', 'The requested app scope is not available.'));
+    if (record !== undefined && record.closing === undefined) {
+      if (record.failure !== undefined) return Promise.reject(record.failure);
+
+      // Rollback can replace the runtime's startup promise with its destruction promise.
+      if (record.owner.loading === record.ready) return record.ready;
+      if (!record.destroyed || record.owner.restarting) return record.owner.runtime?.ready ?? record.ready;
     }
-    return record.owner.runtime?.ready ?? record.ready;
+
+    return Promise.reject(new ExpoModuleError('ERR_REACT_HOST_SCOPE', 'The requested app scope is not available.'));
   }
 
   invalidateApp(scope: string): boolean {

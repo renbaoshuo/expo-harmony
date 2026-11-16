@@ -51,7 +51,7 @@ export { ExpoSharedObject, ExpoSharedObjectTypes, ExpoSharedRef, ExpoSharedObjec
 
 export { ExpoRuntimeConfig, ExpoRuntimeOptions } from './appcontext/ExpoRuntimeConfig';
 
-export { ExpoRuntimePermissions, ExpoRuntimePermissionsKey, ExpoPermissionRequestResult } from './appcontext/ExpoRuntimePermissions';
+export { ExpoRuntimePermissions, ExpoRuntimePermissionsKey, ExpoPermissionRequestResult, ExpoPermissionResponse } from './appcontext/ExpoRuntimePermissions';
 export { ExpoRuntimeDirectories, ExpoRuntimeDirectoriesKey, ExpoAppDirectories } from './appcontext/ExpoRuntimeDirectories';
 export { ExpoRuntimeSession } from './appcontext/ExpoRuntimeSession';
 export { copyWant } from './appcontext/ExpoWant';
@@ -93,7 +93,6 @@ export {
 } from './protocol/Protocol';
 
 export { ReactRootViewBuilder, ReactRootViewContext } from './interfaces/ReactRootView';
-export { ModulePriorities } from './ModulePriorities';
 export { ReactActivityHandler, ReactActivityHandlerRegistration } from './interfaces/ReactActivityHandler';
 
 export { Logger, LoggerTimer, LogHandler, LogType } from './logging/Logger';

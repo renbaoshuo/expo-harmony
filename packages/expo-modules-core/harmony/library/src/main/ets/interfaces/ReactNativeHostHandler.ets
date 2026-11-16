@@ -11,6 +11,7 @@ import type { JSBundleProvider, RNInstance, RNOHCoreContext } from '@rnoh/react-
 
 import type { RNInstanceConfig } from '@rnoh/react-native-openharmony/src/main/ets/RNApp';
 import type { ReactNativeRuntime } from './ReactNativeRuntime';
+import type { ReactRuntimeAppearance } from './ReactRuntimeBinding';
 
 export interface ReactNativeHost {
   createRuntime(
@@ -29,13 +30,17 @@ export interface ReactNativeHost {
 }
 
 export interface ReactNativeHostHandler {
+  /** Higher priorities run first. Unspecified priority is zero. */
+  readonly priority?: number;
+
   getUseDeveloperSupport?(): boolean | undefined;
-  // A handler may select a provider when a development client needs an exact
-  // Metro URL (including query parameters) instead of only a file or asset.
-  getJSBundleProvider?(debug: boolean): JSBundleProvider | undefined | Promise<JSBundleProvider | undefined>;
-  // ArkTS must await bundle selection instead of blocking its UI thread.
+
+  /** A headless bundle provider must resolve without a UI runtime. */
+  getJSBundleProvider?(debug: boolean, headless?: boolean): JSBundleProvider | undefined | Promise<JSBundleProvider | undefined>;
+  getRuntimeAppearance?(): ReactRuntimeAppearance | undefined;
   getJSBundleFile?(debug: boolean): string | undefined | Promise<string | undefined>;
   getBundleAssetName?(debug: boolean): string | undefined | Promise<string | undefined>;
+
   onWillCreateReactInstance?(debug: boolean): void;
   onDidCreateReactHost?(context: common.Context, host: ReactNativeHost): void;
   onDidCreateDevSupportManager?(manager: DevToolsController): void;

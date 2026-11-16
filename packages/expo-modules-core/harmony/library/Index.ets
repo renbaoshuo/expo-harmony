@@ -16,7 +16,12 @@ export {
 } from './src/main/ets/appcontext/ExpoNetworkObservation';
 
 export { ExpoModulesCorePackage as default, ExpoModulesCorePackage } from './src/main/ets/ExpoModulesCorePackage';
-export { ReactRuntimeBinding, ReactRuntimeContext, ReactRuntimeBindingRegistration } from './src/main/ets/interfaces/ReactRuntimeBinding';
+export {
+  ReactRuntimeAppearance,
+  ReactRuntimeBinding,
+  ReactRuntimeContext,
+  ReactRuntimeBindingRegistration,
+} from './src/main/ets/interfaces/ReactRuntimeBinding';
 export { HeadlessAppLoaderDelegate } from './src/main/ets/apploader/HeadlessAppLoader';
 export { RNHeadlessAppLoader } from './src/main/ets/apploader/RNHeadlessAppLoader';
 export { RnohReactRuntime, RnohReactRuntimeOptions } from './src/main/ets/appcontext/RnohReactRuntime';

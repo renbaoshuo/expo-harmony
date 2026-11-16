@@ -82,11 +82,14 @@ std::string requireString(
 
 std::optional<uint64_t> readTransportInteger(const folly::dynamic &value) {
   if (value.isInt()) {
-    if (value.asInt() < 0) {
+    const auto number = value.asInt();
+    if (number < 0 || number > static_cast<int64_t>(kMaxSafeTransportInteger)) {
       return std::nullopt;
     }
-    return static_cast<uint64_t>(value.asInt());
+
+    return static_cast<uint64_t>(number);
   }
+
   if (!value.isDouble()) {
     return std::nullopt;
   }

@@ -1634,27 +1634,6 @@ void RuntimeContext::finalizeSharedObjectRelease(long objectId) {
     }
   }
 
-  try {
-    // Retire ArkTS state before erasing native identity.
-    callPlatformSync(
-        "releaseExpoSharedObject", {runtimeEpochString(), objectId});
-  } catch (const CodedError &error) {
-    if (!releaseError) {
-      releaseError.emplace(error);
-    }
-  } catch (const std::exception &error) {
-    if (!releaseError) {
-      releaseError.emplace(
-          "ERR_SHARED_OBJECT_RELEASE_FAILED", error.what());
-    }
-  } catch (...) {
-    if (!releaseError) {
-      releaseError.emplace(
-          "ERR_SHARED_OBJECT_RELEASE_FAILED",
-          "Unable to retire the ArkTS SharedObject during release.");
-    }
-  }
-
   {
     std::scoped_lock lock(mutex_);
     sharedObjects_.erase(objectId);

@@ -820,6 +820,12 @@ TypedPlatformValue fromNapi(napi_env env, ArkJS &arkJS, napi_value value, size_t
             std::move(copiedBytes)});
       }
 
+      bool isDataView = false;
+      requireNapiStatus(napi_is_dataview(env, value, &isDataView), "inspect an ArrayBuffer view");
+      if (isDataView) {
+        throw std::runtime_error("Expo Modules cannot transport a DataView result.");
+      }
+
       bool isArrayBuffer = false;
       requireNapiStatus(
           napi_is_arraybuffer(env, value, &isArrayBuffer),
@@ -965,15 +971,22 @@ class AsyncSettlementState final {
 public:
   AsyncSettlementState(
       const std::shared_ptr<react::Promise> &promise,
-      const std::shared_ptr<react::CallInvoker> &invoker)
+      const std::shared_ptr<RuntimeContext> &context)
       : promise_(promise),
-        invoker_(invoker),
+        context_(context),
         retention_(
-            [weak = std::weak_ptr<react::Promise>(promise)]() {
-              if (auto promise = weak.lock()) {
-                // allowRelease is synchronized and does not touch JSI.
-                promise->allowRelease();
-              }
+            [weak = promise_, weakContext = context_]() {
+              auto context = weakContext.lock();
+              if (!context || !context->isAcceptingTasks()) return;
+
+              // The collection is synchronized, but removing its last root can
+              // destroy Hermes functions and must run on their owning thread.
+              auto release = [weak] {
+                if (auto promise = weak.lock()) promise->allowRelease();
+              };
+
+              if (context->isRuntimeThread()) release();
+              else context->dispatchToJavaScript(std::move(release));
             }) {}
 
   void resolve(TypedPlatformValue value) noexcept {
@@ -996,8 +1009,8 @@ private:
 
     auto release = retention_.transferToDelivery();
     try {
-      auto invoker = invoker_.lock();
-      if (!invoker) {
+      auto context = context_.lock();
+      if (!context || !context->isAcceptingTasks()) {
         release->release();
         return;
       }
@@ -1006,17 +1019,21 @@ private:
       auto weak = promise_;
       auto delivery = std::make_shared<ScheduledCallbackGuard>(release);
 
-      invoker->invokeAsync(
+      context->dispatchToJavaScript(
           [weak,
+           weakContext = context_,
            release,
            delivery = std::move(delivery),
            payload = std::move(payload),
-           rejected](jsi::Runtime &runtime) mutable {
+           rejected]() mutable {
             delivery->markDelivered();
 
+            auto context = weakContext.lock();
             auto promise = weak.lock();
-            if (promise) {
+
+            if (context && promise) {
               try {
+                auto &runtime = context->runtime();
                 auto result = toJSI(runtime, std::move(*payload));
                 if (rejected) {
                   promise->reject_.call(runtime, result);
@@ -1047,28 +1064,37 @@ private:
   }
 
   std::weak_ptr<react::Promise> promise_;
-  std::weak_ptr<react::CallInvoker> invoker_;
+  std::weak_ptr<RuntimeContext> context_;
   AsyncSettlementLifetime retention_;
   PromiseSettlementState settlement_;
 };
 
-// napi_delete_reference must run on the creation thread; discarded tasks have
-// no cleanup hook, so the reference is intentionally leaked in that case.
-class DeferredNapiRefRelease final {
-public:
-  explicit DeferredNapiRefRelease(NapiRef ref)
-      : reference_(new NapiRef(std::move(ref))) {}
-
-  ~DeferredNapiRefRelease() noexcept = default;
-
-  void releaseOnOwnerThread() noexcept {
-    auto *reference = reference_.exchange(nullptr, std::memory_order_acq_rel);
-    delete reference;
+std::shared_ptr<NapiRef> retainArkTSInstance(
+    const NapiRef &reference,
+    rnoh::TaskExecutor::Weak executor,
+    rnoh::TaskThread ownerThread) {
+  if (!reference) {
+    return nullptr;
   }
 
-private:
-  std::atomic<NapiRef *> reference_;
-};
+  // Queued invocations may be discarded on any thread. Route the final copy
+  // through the owner even when it outlives the bridge itself.
+  return std::shared_ptr<NapiRef>(
+      new NapiRef(reference),
+      [executor = std::move(executor), ownerThread](NapiRef *retained) noexcept {
+        try {
+          if (auto owner = executor.lock()) {
+            if (owner->isOnTaskThread(ownerThread)) {
+              delete retained;
+            } else {
+              owner->runTask(ownerThread, [retained]() noexcept { delete retained; });
+            }
+          }
+        } catch (...) {
+          // Leave the reference for environment teardown if the owner is gone.
+        }
+      });
+}
 
 struct NapiSettlementCallbackData final {
   std::shared_ptr<AsyncSettlementState> state;
@@ -1266,35 +1292,12 @@ class ArkTSTypedBridge::Impl final {
 public:
   explicit Impl(const rnoh::ArkTSTurboModule::Context &context)
       : env_(context.env),
-        instanceRef_(context.arkTSTurboModuleInstanceRef),
         turboModuleThread_(context.turboModuleThread),
         taskExecutor_(context.taskExecutor),
-        jsInvoker_(context.jsInvoker) {}
-
-  ~Impl() noexcept {
-    if (!instanceRef_) {
-      return;
-    }
-
-    try {
-      auto deferred = std::make_shared<DeferredNapiRefRelease>(std::move(instanceRef_));
-      if (!taskExecutor_) {
-        return;
-      }
-      if (taskExecutor_->isOnTaskThread(turboModuleThread_)) {
-        deferred->releaseOnOwnerThread();
-        return;
-      }
-
-      taskExecutor_->runTask(
-          turboModuleThread_,
-          [deferred = std::move(deferred)]() noexcept {
-            deferred->releaseOnOwnerThread();
-          });
-    } catch (...) {
-      // Failed admission leaves the reference allocated for thread safety.
-    }
-  }
+        instanceRef_(retainArkTSInstance(
+            context.arkTSTurboModuleInstanceRef,
+            context.taskExecutor,
+            context.turboModuleThread)) {}
 
   jsi::Value call(
       jsi::Runtime &runtime,
@@ -1304,6 +1307,10 @@ public:
       SynchronousBinaryWriteBack::Impl *writeBack) {
     if (!instanceRef_) {
       throw std::runtime_error("Expo Modules Core has no ArkTS TurboModule instance.");
+    }
+
+    if (!taskExecutor_) {
+      throw std::runtime_error("Expo Modules Core cannot call an ArkTS method without its executor.");
     }
 
     SynchronousBinarySnapshots snapshots;
@@ -1331,7 +1338,7 @@ public:
             napiArguments.push_back(toNapi(env_, arkJS, std::move(argument), &buffers));
           }
 
-          auto instance = arkJS.getReferenceValue(instanceRef_);
+          auto instance = arkJS.getReferenceValue(*instanceRef_);
           auto napiResult = callNapiMethod(
               env_, instance, methodName, napiArguments);
           result = fromNapi(env_, arkJS, napiResult, 0);
@@ -1355,9 +1362,10 @@ public:
     if (!instanceRef_) {
       throw std::runtime_error("Expo Modules Core has no ArkTS TurboModule instance.");
     }
-    if (!taskExecutor_ || !jsInvoker_) {
+
+    if (!taskExecutor_) {
       throw std::runtime_error(
-          "Expo Modules Core cannot schedule an ArkTS Promise without its runtime executors.");
+          "Expo Modules Core cannot schedule a Promise without its ArkTS executor.");
     }
 
     std::vector<TypedPlatformValue> typedArguments;
@@ -1382,8 +1390,9 @@ public:
           std::shared_ptr<AsyncSettlementState> settlement;
           try {
             settlement = std::make_shared<AsyncSettlementState>(
-                promise, jsInvoker_);
-            auto instanceRef = instanceRef_;
+                promise, context);
+
+            auto instance = instanceRef_;
             auto droppedInvocation = std::make_shared<OneShotReleaseState>(
                 [settlement]() noexcept {
                   settlement->reject(
@@ -1393,13 +1402,14 @@ public:
             taskExecutor_->runTask(
                 turboModuleThread_,
                 [env = env_,
-                 instanceRef = std::move(instanceRef),
+                 instance = std::move(instance),
                  methodName = std::move(methodName),
                  typedArguments = std::move(typedArguments),
                  settlement,
                  delivery = std::move(delivery)]() mutable {
                   delivery->markDelivered();
                   try {
+                    const NapiHandleScope scope(env);
                     ArkJS arkJS(env);
                     std::vector<napi_value> napiArguments;
                     napiArguments.reserve(typedArguments.size());
@@ -1407,9 +1417,10 @@ public:
                       napiArguments.push_back(
                           toNapi(env, arkJS, std::move(argument)));
                     }
-                    auto instance = arkJS.getReferenceValue(instanceRef);
+
+                    auto target = arkJS.getReferenceValue(*instance);
                     auto result = callNapiMethod(
-                        env, instance, methodName, napiArguments);
+                        env, target, methodName, napiArguments);
                     attachNapiPromise(env, arkJS, result, settlement);
                   } catch (const CodedError &error) {
                     settlement->reject(TypedPlatformValue(
@@ -1452,10 +1463,9 @@ public:
 
 private:
   napi_env env_;
-  NapiRef instanceRef_;
   rnoh::TaskThread turboModuleThread_;
   rnoh::TaskExecutor::Shared taskExecutor_;
-  std::shared_ptr<react::CallInvoker> jsInvoker_;
+  std::shared_ptr<NapiRef> instanceRef_;
 };
 
 ArkTSTypedBridge::ArkTSTypedBridge(

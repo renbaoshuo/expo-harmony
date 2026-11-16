@@ -255,6 +255,17 @@ void callStopObservingFunctions(
 
 }  // namespace
 
+void removeListener(jsi::Runtime &runtime, const jsi::Object &emitter, const std::string &eventName, const jsi::Function &listener) {
+  if (NativeState::Shared state = NativeState::get(runtime, emitter, false)) {
+    const auto count = state->listeners.listenersCount(eventName);
+    state->listeners.remove(runtime, eventName, listener);
+
+    if (count >= 1 && state->listeners.listenersCount(eventName) == 0) {
+      callStopObservingFunctions(runtime, emitter, eventName, true, true);
+    }
+  }
+}
+
 void addListener(jsi::Runtime &runtime, const jsi::Object &emitter, const std::string &eventName, const jsi::Function &listener) {
   if (NativeState::Shared state = NativeState::get(runtime, emitter, true)) {
     if (!state->acceptsListeners()) {
@@ -270,26 +281,26 @@ void addListener(jsi::Runtime &runtime, const jsi::Object &emitter, const std::s
       try {
         callObservingFunction(
             runtime, emitter, "__expo_onStartListeningToEvent", eventName);
+
         // A native start hook may synchronously remove or release the emitter.
         if (state->acceptsListeners() &&
             state->listeners.listenersCount(eventName) > 0) {
           callObservingFunction(runtime, emitter, "startObserving", eventName);
         }
-      } catch (const expo::common::CodedError &error) {
-        throw expo::common::CodedJSError(runtime, error);
+      } catch (...) {
+        // A failed start never returns a subscription the caller can remove.
+        // Preserve the startup error even if rolling back observation fails.
+        try {
+          removeListener(runtime, emitter, eventName, listener);
+        } catch (...) {
+        }
+
+        try {
+          throw;
+        } catch (const expo::common::CodedError &error) {
+          throw expo::common::CodedJSError(runtime, error);
+        }
       }
-    }
-  }
-}
-
-void removeListener(jsi::Runtime &runtime, const jsi::Object &emitter, const std::string &eventName, const jsi::Function &listener) {
-  if (NativeState::Shared state = NativeState::get(runtime, emitter, false)) {
-    size_t listenersCountBefore = state->listeners.listenersCount(eventName);
-
-    state->listeners.remove(runtime, eventName, listener);
-
-    if (listenersCountBefore >= 1 && state->listeners.listenersCount(eventName) == 0) {
-      callStopObservingFunctions(runtime, emitter, eventName, true, true);
     }
   }
 }

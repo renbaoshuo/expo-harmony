@@ -16,6 +16,7 @@
 namespace expo::harmony {
 
 class RuntimeContext;
+struct ClassDefinition;
 struct ModuleDefinition;
 
 class ModulesHostObject final : public facebook::jsi::HostObject {
@@ -33,6 +34,11 @@ public:
       facebook::jsi::Runtime &runtime) override;
 
 private:
+  facebook::jsi::Function getOrCreateClass(
+      facebook::jsi::Runtime &runtime,
+      const ModuleDefinition &module,
+      const ClassDefinition &spec);
+
   facebook::jsi::Object createModule(
       facebook::jsi::Runtime &runtime,
       const ModuleDefinition &definition);

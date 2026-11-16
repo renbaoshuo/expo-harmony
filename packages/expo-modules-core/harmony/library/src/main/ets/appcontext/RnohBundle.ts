@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { RNInstance } from '@rnoh/react-native-openharmony/ts';
+import type { RNInstance, RNOHError } from '@rnoh/react-native-openharmony/ts';
 import { observeRnohDestroy } from './RnohDestroyAdapter';
 
 type BundleProvider = { getURL(): string; };
@@ -32,6 +32,15 @@ interface BundleCompletion {
 
 const bundles = new WeakMap<RNInstance, BundleCompletion>();
 
+class RnohBundleError extends Error {
+  constructor(error: RNOHError) {
+    super(error.getMessage());
+
+    const stack = error.getStack()?.toString();
+    if (stack) this.stack = `${this.message}\n${stack}`;
+  }
+}
+
 export function waitForRnohBundle(instance: RNInstance): Promise<void> {
   return bundles.get(instance)?.completion ?? Promise.reject(new Error('Install the React bundle lifecycle before loading the runtime.'));
 }
@@ -42,6 +51,10 @@ export function waitForRnohInitialization(instance: RNInstance): Promise<void> {
 
 export function hasLoadedRnohBundle(instance: RNInstance): boolean {
   return bundles.get(instance)?.loaded === true;
+}
+
+export function hasFailedRnohBundle(instance: RNInstance): boolean {
+  return bundles.get(instance)?.failed === true;
 }
 
 export function reportRnohBundleError(instance: RNInstance, error: Error): void {
@@ -75,13 +88,9 @@ export function installRnohBundleBarrier(instance: RNInstance): void {
   };
   // RNOH 0.86 emits this after the app bundle, separately from its resource bootstrap.
   const unsubscribeLoaded = instance.subscribeToLifecycleEvents('JS_BUNDLE_EXECUTION_FINISH', loaded);
-  const unsubscribeError = instance.subscribeToRNOHErrors(error => {
-    const failure = new Error(error.getMessage());
-    const stack = error.getStack()?.toString();
-    if (stack) failure.stack = `${failure.message}\n${stack}`;
-    fail(failure);
-  });
+  const unsubscribeError = instance.subscribeToRNOHErrors(error => fail(new RnohBundleError(error)));
   const unsubscribeDestroy = observeRnohDestroy(instance, () => fail(new Error('The React runtime was destroyed before its first bundle completed.')));
+
   const cleanup = (): void => {
     unsubscribeLoaded();
     unsubscribeError();
@@ -102,7 +111,25 @@ export function installRnohBundleBarrier(instance: RNInstance): void {
 
     const pending = tail.then(async () => {
       if (bundle.failed) return completion;
-      if (bundle.loaded) return run(provider);
+
+      if (bundle.loaded) {
+        let executed = false;
+        let failure: RNOHError | undefined;
+        const unsubscribeExecution = instance.subscribeToLifecycleEvents('JS_BUNDLE_EXECUTION_FINISH', () => { executed = true; });
+        const unsubscribeFailure = instance.subscribeToRNOHErrors(error => { failure = error; });
+
+        try {
+          // RNOH reports load failures to its error emitter and resolves runJSBundle.
+          await run(provider);
+          if (executed) return;
+          if (failure !== undefined) throw new RnohBundleError(failure);
+
+          throw new Error('RNOH finished loading without executing the JavaScript bundle.');
+        } finally {
+          unsubscribeExecution();
+          unsubscribeFailure();
+        }
+      }
 
       try {
         await Promise.all([run(provider), completion]);

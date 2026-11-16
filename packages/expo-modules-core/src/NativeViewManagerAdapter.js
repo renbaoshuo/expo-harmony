@@ -5,6 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+'use client';
 'use strict';
 
 /* global __DEV__: readonly */
@@ -31,7 +32,8 @@ function processPropValue(value) {
 }
 
 function addAttributeProcessing(attributes) {
-  return Object.fromEntries(Object.keys(attributes).map(name => [name, { process: processPropValue }]));
+  const descriptor = { process: processPropValue };
+  return Object.fromEntries(Object.keys(attributes).map(name => [name, descriptor]));
 }
 
 function expoLogicalComponentName(moduleName, viewName) {

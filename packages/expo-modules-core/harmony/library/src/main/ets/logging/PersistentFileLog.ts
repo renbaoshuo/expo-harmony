@@ -11,14 +11,19 @@ import util from '@ohos.util';
 export class PersistentFileLog {
   private static tail: Promise<unknown> = Promise.resolve();
   private readonly path: string;
+  private readonly lockPath: string;
+  private readonly temp: string;
 
   constructor(category: string, filesDirectory: string) {
     if (!category || /[/\\\0]/.test(category)) throw new Error('A log category must be a nonempty file name.');
+
     this.path = `${filesDirectory}/dev.expo.modules.core.logging.${category}`;
+    this.lockPath = `${filesDirectory}/dev.expo.modules.core.logging-lock.${category}`;
+    this.temp = `${filesDirectory}/dev.expo.modules.core.logging-temp.${category}`;
   }
 
   readEntries(): string[] {
-    const lock = fs.openSync(`${this.path}.lock`, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
+    const lock = fs.openSync(this.lockPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
     try {
       lock.tryLock(false);
       try { return this.read(); }
@@ -53,22 +58,7 @@ export class PersistentFileLog {
 
   private read(): string[] {
     if (!fs.accessSync(this.path)) return [];
-    const file = fs.openSync(this.path, fs.OpenMode.READ_ONLY);
-    try {
-      const size = fs.statSync(file.fd).size;
-      const bytes = new Uint8Array(size);
-      let offset = 0;
-      while (offset < size) {
-        const buffer = new ArrayBuffer(size - offset);
-        const count = fs.readSync(file.fd, buffer);
-        if (count <= 0) throw new Error('Log read ended before the expected size.');
-
-        bytes.set(new Uint8Array(buffer, 0, count), offset);
-        offset += count;
-      }
-
-      return new util.TextDecoder('utf-8', { fatal: true }).decodeToString(bytes).split('\n').filter(line => line.length > 0);
-    } finally { fs.closeSync(file); }
+    return fs.readTextSync(this.path).split('\n').filter(line => line.length > 0);
   }
 
   private write(file: fs.File, value: string): void {
@@ -83,21 +73,21 @@ export class PersistentFileLog {
   }
 
   private replace(entries: string[]): void {
-    const temporary = `${this.path}.tmp`;
     try {
-      const file = fs.openSync(temporary, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+      const file = fs.openSync(this.temp, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
       try { this.write(file, entries.join('\n')); }
       finally { fs.closeSync(file); }
-      fs.renameSync(temporary, this.path);
+
+      fs.renameSync(this.temp, this.path);
     } finally {
-      if (fs.accessSync(temporary)) fs.unlinkSync(temporary);
+      if (fs.accessSync(this.temp)) fs.unlinkSync(this.temp);
     }
   }
 
   private enqueue<T>(body: () => T): Promise<T> {
     const run = PersistentFileLog.tail.then(async () => {
       // A stable sidecar lock also serializes ExtensionAbility processes across atomic file replacement.
-      const lock = fs.openSync(`${this.path}.lock`, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
+      const lock = fs.openSync(this.lockPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
       try {
         await lock.lock(true);
         try { return body(); }

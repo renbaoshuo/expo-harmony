@@ -29,7 +29,7 @@ inline constexpr const char kViewPhaseDestroy[] = "DESTROY";
 inline constexpr const char kLifecycleContentAppeared[] = "CONTENT_APPEARED";
 inline constexpr const char kLifecycleDestroy[] = "DESTROY";
 
-inline constexpr unsigned int kLogDomain = 0xD003900;
+inline constexpr unsigned int kLogDomain = 0;
 inline constexpr const char kLogTag[] = "ExpoModulesCore";
 
 }  // namespace expo::harmony::protocol

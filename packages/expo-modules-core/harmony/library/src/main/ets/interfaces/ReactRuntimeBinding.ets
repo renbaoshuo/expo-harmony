@@ -9,6 +9,11 @@ import type { common } from '@kit.AbilityKit';
 import type { JSBundleProvider, RNInstance, RNOHCoreContext } from '@rnoh/react-native-openharmony';
 import type { ReactNativeHost } from './ReactNativeHostHandler';
 
+export interface ReactRuntimeAppearance {
+  readonly userInterfaceStyle?: 'light' | 'dark' | 'automatic';
+  readonly backgroundColor?: string;
+}
+
 export interface ReactRuntimeContext {
   readonly instance: RNInstance;
   readonly host: ReactNativeHost;
@@ -16,6 +21,8 @@ export interface ReactRuntimeContext {
   readonly owner: Object;
   readonly isHeadless: boolean;
   readonly core: RNOHCoreContext;
+  readonly appearance?: ReactRuntimeAppearance;
+
   /** Returns the actual bundle provider, or undefined for an externally loaded instance. */
   readonly getJSBundleProvider?: () => JSBundleProvider | undefined;
   /** Reloads the owning runtime, including while it is replacing this instance. */
@@ -25,6 +32,9 @@ export interface ReactRuntimeContext {
 }
 
 export interface ReactRuntimeBinding {
+  /** Higher priorities bind first. Unspecified priority is zero. */
+  readonly priority?: number;
+
   bind(context: ReactRuntimeContext): Promise<(() => void) | void> | (() => void) | void;
 }
 

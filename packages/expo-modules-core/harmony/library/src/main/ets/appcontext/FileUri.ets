@@ -5,10 +5,9 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-/** Encodes an absolute local path as an authority-free file URI for use between Expo modules. */
 export function fileUriFromPath(path: string): string {
-  if (!path.startsWith('/')) {
-    throw new Error('A file path must be absolute.');
+  if (!path.startsWith('/') || path.includes('\0')) {
+    throw new Error('A file path must be absolute and cannot contain a NUL character.');
   }
 
   // Harmony's getUriFromPath can add a bundle/provider authority; reserve it for system APIs.
@@ -32,19 +31,20 @@ export function filePathFromUri(uri: string): string {
   return path;
 }
 
-/** Converts a platform path to a correctly escaped directory file URI. */
 export function ensureDirectoryUri(path: string): string {
   if (path.length === 0) {
     throw new Error('A directory path cannot be empty.');
   }
 
-  if (path.startsWith('file:')) {
+  if (/^file:/i.test(path)) {
+    filePathFromUri(path);
     return path.endsWith('/') ? path : `${path}/`;
   }
+
   if (!path.startsWith('/')) {
     throw new Error('A directory path must be absolute.');
   }
 
-  const value = fileUriFromPath(path);
-  return value.endsWith('/') ? value : `${value}/`;
+  const uri = fileUriFromPath(path);
+  return uri.endsWith('/') ? uri : `${uri}/`;
 }

@@ -40,8 +40,15 @@ constexpr double kMaxSafeTransportInteger = 9007199254740991.0;
 
 std::optional<long> readPositiveTransportLong(const folly::dynamic &value) {
   if (value.isInt()) {
-    return value.asInt() > 0 ? std::optional<long>(value.asInt()) : std::nullopt;
+    const auto number = value.asInt();
+    if (number <= 0 || number > static_cast<int64_t>(kMaxSafeTransportInteger) ||
+        number > std::numeric_limits<long>::max()) {
+      return std::nullopt;
+    }
+
+    return static_cast<long>(number);
   }
+
   if (!value.isDouble()) {
     return std::nullopt;
   }
@@ -216,6 +223,10 @@ void ExpoModulesCoreTurboModule::activateRuntimeContext(
   }
 
   std::scoped_lock lock(contextsMutex_);
+  if (isDestroyScheduled()) {
+    throw CodedError("ERR_RUNTIME_DESTROYED", "Expo Modules Core is being destroyed.");
+  }
+
   contexts_[&runtime] = context;
   activeRuntimeContext_ = context;
 }
@@ -341,27 +352,25 @@ void ExpoModulesCoreTurboModule::postMessageToArkTS(
 }
 
 void ExpoModulesCoreTurboModule::beginDestroy(std::string destroyRequestId) {
-  bool expected = false;
-  if (!destroyScheduled_.compare_exchange_strong(
-          expected,
-          true,
-          std::memory_order_acq_rel,
-          std::memory_order_acquire)) {
-    return;
-  }
+  // Every request ID needs its own acknowledgement. The context invalidation
+  // itself is idempotent and joins requests already waiting on its teardown.
+  destroyScheduled_.store(true, std::memory_order_release);
+
   std::vector<std::shared_ptr<RuntimeContext>> contexts;
   {
     std::scoped_lock lock(contextsMutex_);
-    for (auto iterator = contexts_.begin(); iterator != contexts_.end();) {
-      auto context = iterator->second.lock();
+    for (auto it = contexts_.begin(); it != contexts_.end();) {
+      auto context = it->second.lock();
       if (!context || !context->isAlive()) {
-        iterator = contexts_.erase(iterator);
+        it = contexts_.erase(it);
         continue;
       }
+
       contexts.push_back(context);
-      ++iterator;
+      ++it;
     }
   }
+
   auto acknowledgeDestroy =
       [mainJSInvoker = jsInvoker_,
        safeInstance = safeInstance_,
@@ -407,6 +416,7 @@ void ExpoModulesCoreTurboModule::beginDestroy(std::string destroyRequestId) {
               "Unable to schedule Expo runtime destruction acknowledgement");
         }
       };
+
   if (contexts.empty()) {
     acknowledgeDestroy();
     return;
@@ -414,7 +424,6 @@ void ExpoModulesCoreTurboModule::beginDestroy(std::string destroyRequestId) {
 
   auto barrier = InvalidationBarrier::create(
       contexts.size(), std::move(acknowledgeDestroy));
-  // Close the View gate before asynchronous teardown.
   for (const auto &context : contexts) {
     context->invalidate([barrier] { barrier->arrive(); });
   }

@@ -149,18 +149,20 @@ export class ExpoViewContext implements ExpoViewContentDelegate {
     this.rnComponentContext.rnInstance.emitComponentEvent(this.tag, eventName, normalizeViewEventPayload(value));
   }
 
-  setShadowNodeSize(width: number, height: number): void {
+  setShadowNodeSize(width: number | null, height: number | null): void {
     this.assertValid();
     requireExpoViewSize(width, height, `Expo view '${this.componentName}' setShadowNodeSize`);
+
     this.sizeState.width = width;
     this.sizeState.height = height;
 
     this.rnComponentContext.descriptorRegistry.setState(this.tag, this.sizeState);
   }
 
-  setStyleSize(width: number, height: number): void {
+  setStyleSize(width: number | null, height: number | null): void {
     this.assertValid();
     requireExpoViewSize(width, height, `Expo view '${this.componentName}' setStyleSize`);
+
     this.sizeState.styleWidth = width;
     this.sizeState.styleHeight = height;
 
@@ -239,10 +241,10 @@ export abstract class ExpoView {
 }
 
 interface ExpoViewSizeState {
-  width?: number;
-  height?: number;
-  styleWidth?: number;
-  styleHeight?: number;
+  width?: number | null;
+  height?: number | null;
+  styleWidth?: number | null;
+  styleHeight?: number | null;
 }
 
 class MountedExpoView {

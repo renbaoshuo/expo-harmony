@@ -118,6 +118,7 @@ export interface ExpoSharedObjectClassRuntime {
   invokeStaticAsync(name: string, args: ESObject[]): Promise<ESObject | void>;
   invokeStaticSync(name: string, args: ESObject[]): ESObject | void;
   invokeSync(object: ExpoSharedObject, name: string, args: ESObject[]): ESObject | void;
+  isAssignableTo(moduleName: string, className: string): boolean;
   moduleNameValue(): string;
   name(): string;
   notifyObserving(object: ExpoSharedObject, eventName: string, observing: boolean): void;
@@ -504,15 +505,15 @@ export class ExpoSharedObjectClassDefinition<ObjectType extends ExpoSharedObject
       },
       (value: ObjectType, path: string): ESObject => {
         const object: ExpoSharedObject = requireSharedObjectValue(value as ESObject, path, expected);
-        const binding = object.currentBinding();
-        if (binding !== undefined) {
+        if (object.currentBinding() !== undefined) {
           object.assertValueContract(path, this.moduleNameValue(), this.className, this.refType());
           return object as ESObject;
         }
-        if (object.context !== this.requireContext()) {
+
+        if (object.context.runtimeEpochValue() !== this.requireContext().runtimeEpochValue()) {
           throw new ExpoModuleError('ERR_SHARED_OBJECT_RUNTIME', `${path} returned ${expected} from another AppContext/runtime.`);
         }
-        if (object.requireClassDefinition() !== this) {
+        if (!object.requireClassDefinition().isAssignableTo(this.moduleNameValue(), this.className)) {
           throw new ExpoModuleError('ERR_INVALID_SHARED_OBJECT_CLASS', `${path} expected ${expected}, received another Expo SharedObject class.`);
         }
 
@@ -537,9 +538,7 @@ export class ExpoSharedObjectClassDefinition<ObjectType extends ExpoSharedObject
   constant(name: string, value: ESObject): ExpoSharedObjectClassDefinition<ObjectType>;
   constant<Value>(name: string, valueOrGetter: ESObject | ExpoFunction0<Value>): ExpoSharedObjectClassDefinition<ObjectType> {
     requireSharedMemberName(name, 'constant');
-    if (this.constantValues.has(name) || this.staticFunctionValues.has(name)) {
-      throw new Error(`Expo SharedObject static member '${this.className}.${name}' was defined more than once.`);
-    }
+    this.requireAvailableInstanceMember(name);
 
     const getter: ExpoSharedObjectConstantGetter =
       typeof valueOrGetter === 'function'
@@ -559,9 +558,7 @@ export class ExpoSharedObjectClassDefinition<ObjectType extends ExpoSharedObject
 
   typedConstant<Value>(name: string, type: ExpoValueType<Value>, getter: ExpoFunction0<Value>): ExpoSharedObjectClassDefinition<ObjectType> {
     requireSharedMemberName(name, 'constant');
-    if (this.constantValues.has(name) || this.staticFunctionValues.has(name)) {
-      throw new Error(`Expo SharedObject static member '${this.className}.${name}' was defined more than once.`);
-    }
+    this.requireAvailableInstanceMember(name);
 
     this.constantValues.set(name, {
       name,
@@ -678,9 +675,7 @@ export class ExpoSharedObjectClassDefinition<ObjectType extends ExpoSharedObject
     maybeSetter?: ExpoFunction2<ObjectType, Value, void>,
   ): ExpoSharedObjectClassDefinition<ObjectType> {
     requireSharedMemberName(name, 'property');
-    if (this.propertyValues.has(name) || this.functionValues.has(name)) {
-      throw new Error(`Expo SharedObject member '${this.className}.${name}' was defined more than once.`);
-    }
+    this.requireAvailableInstanceMember(name);
 
     let type: ExpoValueType<Value> | undefined = undefined;
     let getter: ExpoFunction1<ObjectType, Value>;
@@ -693,13 +688,15 @@ export class ExpoSharedObjectClassDefinition<ObjectType extends ExpoSharedObject
       getter = typeOrGetter;
       setter = getterOrSetter as ExpoFunction2<ObjectType, Value, void> | undefined;
     }
+
     let bridgeSetter: ExpoSharedObjectPropertySetter<ObjectType> | undefined = undefined;
     if (setter !== undefined) {
-      const propertySetter: ExpoFunction2<ObjectType, Value, void> = setter;
+      const write: ExpoFunction2<ObjectType, Value, void> = setter;
       bridgeSetter = (object: ObjectType, value: ESObject): void => {
-        propertySetter(object, ExpoValueConverter.fromBridge<Value>(value, type, `Expo SharedObject property '${this.qualifiedName()}.${name}'`));
+        write(object, ExpoValueConverter.fromBridge<Value>(value, type, `Expo SharedObject property '${this.qualifiedName()}.${name}'`));
       };
     }
+
     this.propertyValues.set(name, {
       descriptor: { name, writable: setter !== undefined },
       getter: (object: ObjectType): ESObject | void =>
@@ -956,6 +953,15 @@ export class ExpoSharedObjectClassDefinition<ObjectType extends ExpoSharedObject
   }
 
   /** @internal */
+  isAssignableTo(moduleName: string, className: string): boolean {
+    if (this.moduleName === moduleName && this.className === className) return true;
+
+    return this.registry?.classLineage(this.moduleNameValue(), this.className).some(
+      (identity: ExpoSharedObjectClassIdentity): boolean => identity.moduleName === moduleName && identity.className === className,
+    ) ?? false;
+  }
+
+  /** @internal */
   moduleNameValue(): string {
     if (this.moduleName === undefined) {
       throw new Error(`Expo SharedObject class '${this.className}' is not attached to a module.`);
@@ -984,9 +990,8 @@ export class ExpoSharedObjectClassDefinition<ObjectType extends ExpoSharedObject
     asyncBody?: ExpoOwnedAsyncFunction<ObjectType>,
   ): void {
     requireSharedMemberName(name, 'function');
-    if (this.functionValues.has(name) || this.propertyValues.has(name)) {
-      throw new Error(`Expo SharedObject member '${this.className}.${name}' was defined more than once.`);
-    }
+    this.requireAvailableInstanceMember(name);
+
     this.functionValues.set(name, {
       descriptor: { name, arity: arity.maximum, requiredArity: arity.required, async },
       syncBody,
@@ -1002,14 +1007,21 @@ export class ExpoSharedObjectClassDefinition<ObjectType extends ExpoSharedObject
     asyncBody?: ExpoOwnedAsyncFunction<ExpoModuleContext>,
   ): void {
     requireSharedMemberName(name, 'static function');
-    if (this.staticFunctionValues.has(name) || this.constantValues.has(name)) {
+    if (this.staticFunctionValues.has(name)) {
       throw new Error(`Expo SharedObject static member '${this.className}.${name}' was defined more than once.`);
     }
+
     this.staticFunctionValues.set(name, {
       descriptor: { name, arity: arity.maximum, requiredArity: arity.required, async },
       syncBody,
       asyncBody,
     });
+  }
+
+  private requireAvailableInstanceMember(name: string): void {
+    if (this.constantValues.has(name) || this.functionValues.has(name) || this.propertyValues.has(name)) {
+      throw new Error(`Expo SharedObject member '${this.className}.${name}' was defined more than once.`);
+    }
   }
 
   private requireFunction(name: string, async: boolean, receivedArity: number): ExpoSharedObjectFunctionRegistration<ObjectType> {
@@ -1388,11 +1400,12 @@ export class ExpoSharedObjectRegistry {
     if (value instanceof Date) return value.toISOString();
     if (value instanceof url.URL) return value.toString();
 
-    // Preserve TypedArrays across the private JSI/NAPI bridge.
+    if (value instanceof DataView) {
+      throw new ExpoModuleError('ERR_INVALID_RETURN_VALUE', 'Expo Modules cannot return DataView values.');
+    }
     if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return value;
 
     const kind = typeof value;
-
     if (kind === 'string' || kind === 'number' || kind === 'boolean' || kind === 'bigint') return value;
 
     if (Array.isArray(value)) {
@@ -1698,7 +1711,8 @@ export class ExpoSharedObjectRegistry {
     );
   }
 
-  private classLineage(actualModule: string, actualClass: string): ExpoSharedObjectClassIdentity[] {
+  /** @internal */
+  classLineage(actualModule: string, actualClass: string): ExpoSharedObjectClassIdentity[] {
     const lineage: ExpoSharedObjectClassIdentity[] = [];
     let moduleName = actualModule;
     let className = actualClass;
@@ -1706,17 +1720,16 @@ export class ExpoSharedObjectRegistry {
     for (let depth = 0; depth < MAX_COPY_VALUE_DEPTH; depth += 1) {
       lineage.push(new ExpoSharedObjectClassIdentity(moduleName, className));
 
-      const baseClassName: string = this.requireClass(moduleName, className).baseClassNameValue();
-      if (baseClassName === 'SharedObject' || baseClassName === 'SharedRef') {
+      const base: string = this.requireClass(moduleName, className).baseClassNameValue();
+      if (base === 'SharedObject' || base === 'SharedRef') {
         return lineage;
       }
 
-      const separator = baseClassName.indexOf('.');
-
-      if (separator < 0) className = baseClassName;
+      const dot = base.indexOf('.');
+      if (dot < 0) className = base;
       else {
-        moduleName = baseClassName.slice(0, separator);
-        className = baseClassName.slice(separator + 1);
+        moduleName = base.slice(0, dot);
+        className = base.slice(dot + 1);
       }
     }
 
@@ -1816,7 +1829,7 @@ function sharedObjectValueType<ObjectType extends ExpoSharedObject>(
       if (
         expectedModule !== undefined &&
         expectedClass !== undefined &&
-        (definition.moduleNameValue() !== expectedModule || definition.name() !== expectedClass)
+        !definition.isAssignableTo(expectedModule, expectedClass)
       ) {
         throw new ExpoModuleError(
           'ERR_INVALID_SHARED_OBJECT_CLASS',

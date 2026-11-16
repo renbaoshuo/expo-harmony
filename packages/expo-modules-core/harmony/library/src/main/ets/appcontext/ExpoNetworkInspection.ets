@@ -142,6 +142,7 @@ export class ExpoNetworkInspection {
 
   finish(complete: boolean = true): void {
     if (this.ended) return;
+
     this.ended = true;
     if (complete && this.responded && this.previewAllowed) {
       const body = this.preview.subarray(0, this.bytes);
@@ -149,11 +150,15 @@ export class ExpoNetworkInspection {
       if (ExpoNetworkInspection.textType(this.responseType)) {
         try {
           text = ExpoNetworkInspection.decode(body);
-        } catch (_) {
-          /* Preserve invalid UTF-8 as binary. */
-        }
+        } catch (_) {}
       }
-      InspectorNetworkReporter.maybeStoreResponseBody(this.id, text ?? new util.Base64Helper().encodeToStringSync(body), text === undefined);
+
+      try {
+        const content = text ?? new util.Base64Helper().encodeToStringSync(body);
+        InspectorNetworkReporter.maybeStoreResponseBody(this.id, content, text === undefined);
+      } catch (_) {
+        // A failed preview must still emit request completion.
+      }
     }
 
     this.discardPreview();

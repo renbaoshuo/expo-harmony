@@ -12,7 +12,16 @@ import { lang } from '@kit.ArkTS';
 import deviceInfo from '@ohos.deviceInfo';
 import { ExpoRuntimeConfig } from '../appcontext/ExpoRuntimeConfig';
 import type { ExpoRuntimeSession } from '../appcontext/ExpoRuntimeSession';
-import { ExpoPermissionStatus, ExpoPermissionRequestResult, ExpoRuntimePermissionsKey } from '../appcontext/ExpoRuntimePermissions';
+import {
+  EXPO_PERMISSION_HISTORY,
+  ExpoPermissionRequestResult,
+  ExpoPermissionResponse,
+  ExpoPermissionStatus,
+  ExpoRuntimePermissionsKey,
+  PERMISSION_STATUS_API,
+  getLegacyDeniedPermissionStatus,
+  recordLegacyPermissionDenials,
+} from '../appcontext/ExpoRuntimePermissions';
 import { ExpoAppDirectories, ExpoRuntimeDirectoriesKey } from '../appcontext/ExpoRuntimeDirectories';
 import { ExpoServiceClass, ExpoServiceContext, ExpoServicesRegistry } from '../appcontext/ExpoServicesRegistry';
 import { ExpoFileAccessMode, ExpoFileAccessKey, ExpoFileAccessRegistry } from '../appcontext/ExpoFileAccess';
@@ -569,16 +578,32 @@ export class ExpoModuleContext {
 
   /** Optional OS history is only used to recover API <20's missing undetermined state. */
   permissionStatus(permission: Permissions, denied?: boolean): ExpoPermissionStatus {
-    this.assertValid();
-
     let system = this.systemPermissionStatus(permission);
-    if (deviceInfo.sdkApiVersion < 20 && system === ExpoPermissionStatus.DENIED && denied === false) {
+    if (deviceInfo.sdkApiVersion < PERMISSION_STATUS_API && system === ExpoPermissionStatus.DENIED && denied === false) {
       system = ExpoPermissionStatus.NOT_DETERMINED;
     }
 
+    return this.effectivePermissionStatus(permission, system);
+  }
+
+  getPermissionResponse(permission: Permissions): ExpoPermissionResponse {
+    let system = this.systemPermissionStatus(permission);
+    if (deviceInfo.sdkApiVersion < PERMISSION_STATUS_API && system === ExpoPermissionStatus.DENIED) {
+      try {
+        system = getLegacyDeniedPermissionStatus(this.uiAbilityContext, this.preferenceName(EXPO_PERMISSION_HISTORY), permission);
+      } catch (error) {
+        console.warn(`Unable to read Expo permission history: ${String(error)}`);
+      }
+    }
+
+    return new ExpoPermissionResponse(this.effectivePermissionStatus(permission, system));
+  }
+
+  private effectivePermissionStatus(permission: Permissions, system: ExpoPermissionStatus): ExpoPermissionStatus {
     const project = this.services.get(ExpoRuntimePermissionsKey)?.getPermissionStatus(permission, system) ?? system;
     if (system === ExpoPermissionStatus.INVALID || system === ExpoPermissionStatus.RESTRICTED) return system;
     if (project === ExpoPermissionStatus.INVALID || project === ExpoPermissionStatus.RESTRICTED) return project;
+
     if (system === ExpoPermissionStatus.DENIED || project === ExpoPermissionStatus.DENIED) return ExpoPermissionStatus.DENIED;
     if (system === ExpoPermissionStatus.GRANTED && project === ExpoPermissionStatus.GRANTED) return ExpoPermissionStatus.GRANTED;
     return ExpoPermissionStatus.NOT_DETERMINED;
@@ -588,7 +613,7 @@ export class ExpoModuleContext {
     this.assertValid();
 
     const manager = abilityAccessCtrl.createAtManager();
-    if (deviceInfo.sdkApiVersion >= 20) return manager.getSelfPermissionStatus(permission) as number as ExpoPermissionStatus;
+    if (deviceInfo.sdkApiVersion >= PERMISSION_STATUS_API) return manager.getSelfPermissionStatus(permission) as number as ExpoPermissionStatus;
 
     const token = this.uiAbilityContext.applicationInfo.accessTokenId;
     return manager.checkAccessTokenSync(token, permission) === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED
@@ -601,14 +626,24 @@ export class ExpoModuleContext {
 
     const requested = permissions.slice();
     const results: PermissionRequestResult[] = [];
+
     const request = async (): Promise<PermissionRequestResult> => {
       this.assertValid();
 
       const result = await abilityAccessCtrl.createAtManager().requestPermissionsFromUser(this.uiAbilityContext, requested.slice());
       this.assertValid();
-      // Snapshot before handing the OS result to the host. It cannot forge or
-      // mutate the metadata used by module-owned system permission history.
+
+      // The host may mutate the returned OS result, so keep a private snapshot.
       results.push(JSON.parse(JSON.stringify(result)) as PermissionRequestResult);
+
+      const api = deviceInfo.sdkApiVersion;
+      if (api < PERMISSION_STATUS_API) {
+        try {
+          await recordLegacyPermissionDenials(this.uiAbilityContext, this.preferenceName(EXPO_PERMISSION_HISTORY), result, api);
+        } catch (error) {
+          console.warn(`Unable to save Expo permission history: ${String(error)}`);
+        }
+      }
 
       return result;
     };
