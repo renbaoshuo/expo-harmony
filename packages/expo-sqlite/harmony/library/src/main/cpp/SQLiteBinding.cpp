@@ -13,8 +13,8 @@
 #endif
 
 #include <algorithm>
-#include <atomic>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -103,6 +103,25 @@ struct NativeError : std::runtime_error {
   NativeError(std::string code, std::string message) : std::runtime_error(std::move(message)), code(std::move(code)) {}
 };
 
+template <typename ReadRow> Value::Array readAllRows(ReadRow readRow) {
+  Value::Array rows;
+  for (auto row = readRow(); !row.isNull(); row = readRow())
+    rows.push_back(std::move(row));
+  return rows;
+}
+
+int positionalParameterIndex(const std::string &key) {
+  int index;
+  const auto end = key.data() + key.size();
+  const auto result = std::from_chars(key.data(), end, index);
+
+  if (result.ec != std::errc{} || result.ptr != end || index < 0 || index == std::numeric_limits<int>::max()) {
+    throw NativeError("ERR_INVALID_BIND_PARAMETER", "Invalid positional bind parameter index");
+  }
+
+  return index + 1;
+}
+
 bool isInt64(double value) {
   // INT64_MAX rounds up to 2^63 as a double. Use an exclusive upper bound.
   constexpr double limit = -static_cast<double>(std::numeric_limits<int64_t>::min());
@@ -123,7 +142,6 @@ struct EventSink {
   napi_env env = nullptr;
   bool registered = false;
   std::mutex mutex;
-  std::atomic<bool> listening{false};
   ~EventSink() {
     if (registered) napi_remove_env_cleanup_hook(env, cleanup, this);
     stop(napi_tsfn_abort);
@@ -131,7 +149,6 @@ struct EventSink {
 
   void stop(napi_threadsafe_function_release_mode mode) {
     std::lock_guard<std::mutex> lock(mutex);
-    listening.store(false);
 
     if (function) {
       napi_release_threadsafe_function(function, mode);
@@ -170,21 +187,7 @@ void perform(Task &task) noexcept {
     for (auto &connection : connections)
       locks.emplace_back(connection->mutex);
 
-    if (task.spec->op == Op::GetAll) {
-      const Spec spec{"step", Op::Step, 2, false};
-      Task step;
-      step.spec = &spec;
-      step.args = task.args;
-      Value::Array rows;
-      for (;;) {
-        auto row = execute(step);
-        if (row.isNull()) break;
-
-        rows.push_back(std::move(row));
-      }
-
-      task.value = std::move(rows);
-    } else task.value = execute(task);
+    task.value = execute(task);
   } catch (const NativeError &error) {
     task.error = error.what();
     task.errorCode = error.code;
@@ -332,7 +335,7 @@ napi_value toNapi(napi_env env, const Value &value, bool bytesAsArrayBuffer = tr
 void EventSink::emit(Value event) noexcept {
   try {
     std::lock_guard<std::mutex> lock(mutex);
-    if (!function || !listening.load()) return;
+    if (!function) return;
 
     auto payload = std::make_unique<Value>(std::move(event));
     // Nonblocking dispatch: a synchronous caller can be waiting on this connection.
@@ -362,7 +365,8 @@ napi_value observe(napi_env env, napi_callback_info info) {
     std::lock_guard<std::recursive_mutex> lock(db->mutex);
     if (!db->db) return result;
 
-    if (!db->eventSink && listening) {
+    if (!listening) db->eventSink.reset();
+    else if (!db->eventSink) {
       auto sink = std::make_shared<EventSink>();
       checkNapi(napi_create_threadsafe_function(
           env, args[1], nullptr, toNapi(env, std::string("ExpoSQLite.onDatabaseChange")), 0, 1, nullptr, nullptr,
@@ -385,8 +389,6 @@ napi_value observe(napi_env env, napi_callback_info info) {
       sink->registered = true;
       db->eventSink = std::move(sink);
     }
-
-    if (db->eventSink) db->eventSink->listening.store(listening);
 
     return result;
   } catch (const std::exception &error) {

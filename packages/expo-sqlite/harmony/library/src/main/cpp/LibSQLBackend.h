@@ -19,11 +19,13 @@ struct LibSQLCall {
   }
 };
 
+struct StatementState;
+
 struct Connection : Resource, std::enable_shared_from_this<Connection> {
   libsql_database_t db = nullptr;
   libsql_connection_t conn = nullptr;
   std::recursive_mutex mutex;
-  std::vector<std::weak_ptr<Statement>> statements;
+  std::unordered_set<std::shared_ptr<StatementState>> statements;
   std::shared_ptr<EventSink> eventSink;
   bool listen = false;
   ~Connection() override {
@@ -36,28 +38,21 @@ struct Connection : Resource, std::enable_shared_from_this<Connection> {
   }
 };
 
-struct Statement : Resource {
-  std::shared_ptr<Connection> owner;
+struct StatementState {
   libsql_stmt_t stmt = nullptr;
   libsql_rows_t rows = nullptr;
   bool finished = false;
   std::optional<Value::Array> columnNames;
   Value::Array bindings;
-  explicit Statement(std::shared_ptr<Connection> owner) : owner(std::move(owner)) {}
-  ~Statement() override {
-    std::lock_guard<std::recursive_mutex> lock(owner->mutex);
-    finalize();
-  }
+
   void finalize() {
     if (rows) libsql_free_rows(rows);
     rows = nullptr;
     if (stmt) libsql_free_stmt(stmt);
     stmt = nullptr;
-  }
-  std::shared_ptr<Connection> connection() override { return owner; }
-  void requireOpen() const {
-    owner->requireOpen();
-    if (!stmt) throw NativeError("ERR_ACCESS_CLOSED_RESOURCE", "Access to closed resource");
+
+    bindings.clear();
+    columnNames.reset();
   }
   void reset() {
     if (rows) libsql_free_rows(rows);
@@ -78,6 +73,24 @@ struct Statement : Resource {
   }
 };
 
+struct Statement : Resource {
+  std::shared_ptr<Connection> owner;
+  std::shared_ptr<StatementState> state = std::make_shared<StatementState>();
+
+  explicit Statement(std::shared_ptr<Connection> owner) : owner(std::move(owner)) {}
+
+  ~Statement() override {
+    std::lock_guard<std::recursive_mutex> lock(owner->mutex);
+    state->finalize();
+    owner->statements.erase(state);
+  }
+  std::shared_ptr<Connection> connection() override { return owner; }
+  void requireOpen() const {
+    owner->requireOpen();
+    if (!state->stmt) throw NativeError("ERR_ACCESS_CLOSED_RESOURCE", "Access to closed resource");
+  }
+};
+
 template <typename T> std::shared_ptr<T> resource(const Value &value) {
   auto result = std::dynamic_pointer_cast<T>(value.get<Handle>());
   if (!result) throw std::invalid_argument("Incorrect libSQL resource");
@@ -86,9 +99,14 @@ template <typename T> std::shared_ptr<T> resource(const Value &value) {
   return result;
 }
 
-void close(Connection &db) {
-  for (auto &weak : db.statements)
-    if (auto stmt = weak.lock()) stmt->finalize();
+void close(Connection &db, bool finalize) {
+  if (!finalize && !db.statements.empty()) {
+    throw NativeError("ERR_INTERNAL_SQLITE_ERROR", "Unable to close due to unfinalized statements");
+  }
+
+  for (const auto &statement : db.statements)
+    statement->finalize();
+  db.statements.clear();
 
   if (db.conn) libsql_disconnect(db.conn);
   db.conn = nullptr;
@@ -104,20 +122,19 @@ void collectBindings(Value::Array &bindings, const Value::Record &params, bool a
   }
 
   for (const auto &[key, value] : params) {
-    size_t end = 0;
-    const auto index = std::stoll(key, &end);
+    const int index = positionalParameterIndex(key);
     // The pinned libSQL build uses SQLite's default variable limit. The C
     // binding allocates up to the requested index before validating the query.
-    if (end != key.size() || index < 0 || index >= 32766) {
+    if (index > 32766) {
       throw NativeError("ERR_INVALID_BIND_PARAMETER", "Invalid bind parameter");
     }
 
-    if (bindings.size() <= static_cast<size_t>(index)) bindings.resize(index + 1);
-    bindings[index] = value;
+    if (bindings.size() < static_cast<size_t>(index)) bindings.resize(index);
+    bindings[index - 1] = value;
   }
 }
 
-void bind(Statement &statement, const Value::Array &bindings) {
+void bind(StatementState &statement, const Value::Array &bindings) {
   for (size_t i = 0; i < bindings.size(); ++i) {
     const auto &value = bindings[i];
     const int index = static_cast<int>(i) + 1;
@@ -147,7 +164,7 @@ void bind(Statement &statement, const Value::Array &bindings) {
   }
 }
 
-Value step(Statement &statement) {
+Value step(StatementState &statement) {
   if (statement.finished) return {};
 
   // A failed or exhausted cursor must not implicitly replay the statement.
@@ -158,8 +175,6 @@ Value step(Statement &statement) {
   call.check(libsql_next_row(rows, &raw, &call.error));
   std::unique_ptr<const libsql_row, decltype(&libsql_free_row)> row(raw, libsql_free_row);
   if (!raw) return {};
-  statement.finished = false;
-
   Value::Array result;
   for (int i = 0; i < libsql_column_count(rows); ++i) {
     int type;
@@ -181,9 +196,11 @@ Value step(Statement &statement) {
     case LIBSQL_TEXT: {
       const char *value = nullptr;
       field.check(libsql_get_string(raw, i, &value, &field.error));
+      if (!value) throw NativeError("ERR_INVALID_CONVERTIBLE", "libSQL TEXT output cannot contain a NUL byte");
+
       std::unique_ptr<const char, decltype(&libsql_free_string)> text(value, libsql_free_string);
 
-      result.emplace_back(std::string(value ? value : ""));
+      result.emplace_back(std::string(value));
       break;
     }
     case LIBSQL_BLOB: {
@@ -207,6 +224,7 @@ Value step(Statement &statement) {
     }
   }
 
+  statement.finished = false;
   return result;
 }
 
@@ -269,7 +287,7 @@ Value execute(Task &task) {
     auto db = std::dynamic_pointer_cast<Connection>(args[0].get<Handle>());
     if (!db) throw std::invalid_argument("Expected database");
 
-    close(*db);
+    close(*db, true);
 
     return {};
   }
@@ -311,47 +329,55 @@ Value execute(Task &task) {
     if (op != Op::Columns && resource<Connection>(args[1]) != db)
       throw std::invalid_argument("Statement belongs to a different database");
 
+    auto &state = *stmt->state;
     switch (op) {
     case Op::Run: {
-      stmt->reset();
-      stmt->columnNames.reset();
-      stmt->finished = true;
+      state.reset();
+      state.columnNames.reset();
+      state.finished = true;
+
       // Clear previously bound slots omitted on this run. Reset clears
       // libSQL's parameter vector, but the local SQLite bindings can persist.
-      Value::Array bindings(stmt->bindings.size());
+      Value::Array bindings(state.bindings.size());
       const bool array = args[4].get<bool>();
       collectBindings(bindings, args[2].get<Value::Record>(), array);
       collectBindings(bindings, args[3].get<Value::Record>(), array);
 
-      bind(*stmt, bindings);
-      stmt->bindings = std::move(bindings);
+      bind(state, bindings);
+      state.bindings = std::move(bindings);
 
-      stmt->finished = false;
-      auto row = step(*stmt);
+      state.finished = false;
+      auto row = step(state);
 
       return Value::Record{{"lastInsertRowId", static_cast<double>(libsql_last_insert_rowid(db->conn))},
                            {"changes", static_cast<double>(libsql_changes(db->conn))},
                            {"firstRowValues", row.isNull() ? Value(Value::Array{}) : std::move(row)}};
     }
     case Op::Step:
-      return step(*stmt);
+      return step(state);
+    case Op::GetAll:
+      return readAllRows([&]() { return step(state); });
     case Op::Reset:
-      if (stmt->rows && !stmt->columnNames) stmt->columnNames = getColumnNames(stmt->rows);
-      stmt->reset();
-      stmt->finished = true;
-      bind(*stmt, stmt->bindings);
-      stmt->finished = false;
+      if (state.rows && !state.columnNames) state.columnNames = getColumnNames(state.rows);
+
+      state.reset();
+      state.finished = true;
+      bind(state, state.bindings);
+      state.finished = false;
+
       return {};
     case Op::Finalize:
-      stmt->finalize();
+      state.finalize();
+      db->statements.erase(stmt->state);
       return {};
     case Op::Columns: {
       // libsql_query_stmt executes SQL. Metadata lookup must never execute a
       // write, even on a statement that has not run or has been reset.
-      if (!stmt->columnNames && stmt->rows) stmt->columnNames = getColumnNames(stmt->rows);
-      if (!stmt->columnNames)
+      if (!state.columnNames && state.rows) state.columnNames = getColumnNames(state.rows);
+      if (!state.columnNames)
         throw NativeError("ERR_UNSUPPORTED_OPERATION", "libSQL column names are only available after execution");
-      return *stmt->columnNames;
+
+      return *state.columnNames;
     }
     default:
       break;
@@ -366,7 +392,7 @@ Value execute(Task &task) {
   case Op::Init:
     return {};
   case Op::Close:
-    close(*db);
+    close(*db, args[1].get<bool>());
     return {};
   case Op::SyncLibSQL:
     call.check(libsql_sync(db->db, &call.error));
@@ -376,12 +402,8 @@ Value execute(Task &task) {
     return {};
   case Op::Prepare: {
     auto stmt = std::make_shared<Statement>(db);
-    call.check(libsql_prepare(db->conn, cstring(args[1]).c_str(), &stmt->stmt, &call.error));
-
-    db->statements.erase(
-        std::remove_if(db->statements.begin(), db->statements.end(), [](auto &s) { return s.expired(); }),
-        db->statements.end());
-    db->statements.emplace_back(stmt);
+    call.check(libsql_prepare(db->conn, cstring(args[1]).c_str(), &stmt->state->stmt, &call.error));
+    db->statements.insert(stmt->state);
 
     return Handle(stmt);
   }

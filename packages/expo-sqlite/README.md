@@ -348,7 +348,7 @@ AsyncStorage 风格的异步方法，分别对应 `getItemAsync()`、`setItemAsy
 
 绑定值为 `string`、`number`、`boolean`、`null`、`Uint8Array` 或 `ArrayBuffer`。参数可按位置数组、命名参数对象或位置参数传入。读取的 SQLite 数值以 JavaScript `number` 返回，超过安全整数范围的整数可能失去精度。
 
-- libSQL 模式不支持命名参数绑定，只接受位置参数。
+- libSQL 模式只接受位置参数。绑定或读取的 `TEXT` 值含有 NUL 字符时会抛出错误。
 
 #### `SQLiteRunResult`
 

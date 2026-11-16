@@ -89,7 +89,7 @@ int byteCount(size_t size) {
 
 void updateHook(void *context, int action, const char *schema, const char *table, sqlite3_int64 row) noexcept {
   auto *db = static_cast<Connection *>(context);
-  if (!db->eventSink || !db->eventSink->listening.load()) return;
+  if (!db->eventSink) return;
 
   try {
     const char *file = exsqlite3_db_filename(db->db, schema);
@@ -146,13 +146,7 @@ void bind(Connection &db, exsqlite3_stmt *statement, const Value::Record &params
   for (const auto &[key, value] : params) {
     int index = 0;
     if (array) {
-      size_t end = 0;
-      const auto number = std::stoll(key, &end);
-      if (end != key.size() || number < 0 || number >= std::numeric_limits<int>::max()) {
-        throw std::invalid_argument("Invalid positional bind parameter index");
-      }
-
-      index = static_cast<int>(number) + 1;
+      index = positionalParameterIndex(key);
     } else {
       if (key.find('\0') != std::string::npos) continue;
       index = exsqlite3_bind_parameter_index(statement, key.c_str());
@@ -185,6 +179,18 @@ void bind(Connection &db, exsqlite3_stmt *statement, const Value::Record &params
     // parameter (e.g. SQLITE_TOOBIG) must never execute with a different value.
     if (status != SQLITE_RANGE) db.check(status);
   }
+}
+
+Value step(Connection &db, StatementState &state) {
+  // SQLite may implicitly reset and re-execute a finished statement.
+  if (state.finished) return {};
+
+  const int status = exsqlite3_step(state.stmt);
+  state.finished = status != SQLITE_ROW;
+  if (status == SQLITE_ROW) return columnValues(state.stmt);
+  if (status != SQLITE_DONE) db.check(status);
+
+  return {};
 }
 
 Bytes copySQLiteBuffer(void *data, int size) {
@@ -294,7 +300,7 @@ Value execute(Task &task) {
     }
 
     // Empty SQL has no statement: step(NULL) fails, but clear_bindings(NULL) can crash.
-    if (!stmt && (op == Op::Run || op == Op::Step)) {
+    if (!stmt && (op == Op::Run || op == Op::Step || op == Op::GetAll)) {
       throw std::runtime_error("Error code " + std::to_string(SQLITE_MISUSE) + ": " + exsqlite3_errstr(SQLITE_MISUSE));
     }
 
@@ -319,16 +325,10 @@ Value execute(Task &task) {
                            {"changes", static_cast<double>(exsqlite3_changes(db.db))},
                            {"firstRowValues", status == SQLITE_ROW ? columnValues(stmt) : Value::Array{}}};
     }
-    case Op::Step: {
-      // SQLite may implicitly reset and re-execute a finished statement.
-      if (state.finished) return {};
-      const int status = exsqlite3_step(stmt);
-      state.finished = status != SQLITE_ROW;
-      if (status == SQLITE_ROW) return columnValues(stmt);
-      if (status != SQLITE_DONE) db.check(status);
-
-      return {};
-    }
+    case Op::Step:
+      return step(db, state);
+    case Op::GetAll:
+      return readAllRows([&]() { return step(db, state); });
     case Op::Reset:
       state.finished = false;
       db.check(exsqlite3_reset(stmt));

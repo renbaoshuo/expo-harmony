@@ -11,33 +11,25 @@ import { OpenOptions } from './SQLiteOptions';
 
 export interface SQLiteHost {
   complete(result: NativeResult): ESObject;
-  removeDatabase(db: NativeDatabase): void;
+  removeConnection(connection: SQLiteConnection): void;
 }
 
-export class NativeDatabase extends ExpoSharedObject {
-  readonly path: string;
+export class SQLiteConnection {
+  private readonly cachePath: string | null;
   readonly localFile: string | null;
-  readonly options: OpenOptions;
+  private readonly options: OpenOptions;
   readonly host: SQLiteHost;
-  private readonly native: Object;
-  private refs: number = 1;
+  readonly handle: Object;
+  private refs: number = 0;
   private closed: boolean = false;
 
-  constructor(context: ExpoModuleContext, host: SQLiteHost, path: string, file: string, localFile: string | null, options: OpenOptions, data?: Uint8Array | null) {
-    super(context);
-
+  constructor(host: SQLiteHost, path: string, file: string, localFile: string | null, options: OpenOptions, data?: Uint8Array | null) {
     this.host = host;
-    this.path = path;
+    this.cachePath = data == null ? path : null;
     this.localFile = localFile;
     this.options = options;
 
-    this.native = host.complete(sqlite.open(file, options, data ?? null)) as Object;
-  }
-
-  get handle(): Object {
-    if (this.closed) throw new ExpoModuleError('ERR_ACCESS_CLOSED_RESOURCE', 'Access to closed resource');
-
-    return this.native;
+    this.handle = host.complete(sqlite.open(file, options, data ?? null)) as Object;
   }
 
   matches(path: string, options: OpenOptions): boolean {
@@ -46,7 +38,7 @@ export class NativeDatabase extends ExpoSharedObject {
       this.refs > 0 &&
       !options.useNewConnection &&
       !this.options.useNewConnection &&
-      this.path === path &&
+      this.cachePath === path &&
       this.options.enableChangeListener === options.enableChangeListener &&
       this.options.finalizeUnusedStatementsBeforeClosing === options.finalizeUnusedStatementsBeforeClosing &&
       this.options.libSQLUrl === options.libSQLUrl &&
@@ -60,40 +52,109 @@ export class NativeDatabase extends ExpoSharedObject {
   }
 
   observe(listening: boolean, callback: (event: DatabaseChangeEvent) => void): void {
-    if (!this.closed) sqlite.observe(this.native, callback, listening);
+    if (!this.closed) sqlite.observe(this.handle, callback, listening);
   }
 
   closeSync(): void {
-    const handle = this.handle;
-    if (this.refs === 0 || --this.refs > 0) return;
+    if (this.closed) return;
 
-    // A failed close must still consume the final cache reference, as on Android.
-    this.host.complete(sqlite.closeSync(handle, this.options.finalizeUnusedStatementsBeforeClosing));
+    if (this.refs > 1) {
+      this.refs--;
+      return;
+    }
+
+    this.host.complete(sqlite.closeSync(this.handle, this.options.finalizeUnusedStatementsBeforeClosing));
     this.didClose();
   }
 
   async closeAsync(): Promise<void> {
-    const handle = this.handle;
-    if (this.refs === 0 || --this.refs > 0) return;
-
-    const result = await sqlite.closeAsync(handle, this.options.finalizeUnusedStatementsBeforeClosing);
     if (this.closed) return;
 
-    this.host.complete(result);
-    this.didClose();
+    if (this.refs > 1) {
+      this.refs--;
+      return;
+    }
+
+    // A new open must not borrow a connection whose last close is in flight.
+    this.refs = 0;
+
+    try {
+      const result = await sqlite.closeAsync(this.handle, this.options.finalizeUnusedStatementsBeforeClosing);
+      if (this.closed) return;
+
+      this.host.complete(result);
+      this.didClose();
+    } finally {
+      if (!this.closed) this.refs = 1;
+    }
+  }
+
+  release(): void {
+    if (!this.closed && --this.refs === 0) this.destroy();
   }
 
   destroy(): void {
     if (this.closed) return;
 
-    this.host.complete(sqlite.dispose(this.native));
-    this.didClose();
+    try {
+      this.host.complete(sqlite.dispose(this.handle));
+    } finally {
+      this.didClose();
+    }
   }
 
   private didClose(): void {
     this.closed = true;
     this.refs = 0;
-    this.host.removeDatabase(this);
+    this.host.removeConnection(this);
+  }
+}
+
+// Core requires each JS construction to have its own SharedObject identity.
+export class NativeDatabase extends ExpoSharedObject {
+  readonly host: SQLiteHost;
+  private connection: SQLiteConnection | null;
+
+  constructor(context: ExpoModuleContext, connection: SQLiteConnection) {
+    super(context);
+    this.connection = connection;
+    this.host = connection.host;
+    connection.retain();
+  }
+
+  get handle(): Object {
+    return this.requireConnection().handle;
+  }
+
+  closeSync(): void {
+    const connection = this.requireConnection();
+    connection.closeSync();
+    this.connection = null;
+  }
+
+  async closeAsync(): Promise<void> {
+    const connection = this.requireConnection();
+    this.connection = null;
+    let closed = false;
+
+    try {
+      await connection.closeAsync();
+      closed = true;
+    } finally {
+      if (!closed) this.connection = connection;
+    }
+  }
+
+  override sharedObjectWillRelease(): void {
+    const connection = this.connection;
+    this.connection = null;
+    connection?.release();
+  }
+
+  private requireConnection(): SQLiteConnection {
+    if (this.connection === null) throw new ExpoModuleError('ERR_ACCESS_CLOSED_RESOURCE', 'Access to closed resource');
+
+    return this.connection;
   }
 }
 
