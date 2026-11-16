@@ -178,7 +178,7 @@ npm install @expo-harmony/expo-audio expo-audio@~57.0.5
 
 #### `AudioPlayer.seekTo(seconds, toleranceMillisBefore?, toleranceMillisAfter?)`
 
-返回 `Promise<void>`，在系统完成跳转后兑现。跳转位置以秒为单位，超出音源范围时会钳制到开头或结尾；两个容差参数不生效。
+返回 `Promise<void>`，在系统完成跳转后兑现。跳转位置以秒为单位，超出音源范围时会钳制到开头或结尾；两个容差参数不生效。直播音源无法跳转。
 
 #### `AudioPlayer.setPlaybackRate(rate, pitchCorrectionQuality?)`
 
@@ -196,7 +196,7 @@ npm install @expo-harmony/expo-audio expo-audio@~57.0.5
 
 #### `AudioPlayer.setActiveForLockScreen(active, metadata?, options?)`
 
-接管或取消锁屏播放控制。同一时间只有一个播放器可以接管。`metadata` 可设置标题、艺术家、专辑和封面；`showSeekForward`、`showSeekBackward` 可显示快进和快退按钮，步进为 10 秒。`isLiveStream: true` 会隐藏时长和跳转控制，实际布局由系统决定。
+接管或取消锁屏播放控制。同一时间只有一个播放器可以接管。`metadata` 可设置标题、艺术家、专辑和封面；`showSeekForward`、`showSeekBackward` 可显示快进和快退按钮，步进为 10 秒。直播音源或 `isLiveStream: true` 会隐藏时长和跳转控制，实际布局由系统决定。
 
 #### `AudioPlayer.updateLockScreenMetadata(metadata)`
 
@@ -292,7 +292,7 @@ npm install @expo-harmony/expo-audio expo-audio@~57.0.5
 
 #### `AudioPlaylist.add(source)`
 
-将音源追加到列表末尾；空音源不加入。
+将音源追加到列表末尾。支持与初始播放列表相同的音源格式，包括 `require()` 返回的打包资源；空音源不加入。
 
 #### `AudioPlaylist.insert(source, index)`
 
@@ -332,7 +332,7 @@ npm install @expo-harmony/expo-audio expo-audio@~57.0.5
 
 #### `AudioRecorder.prepareToRecordAsync(options?)`
 
-返回 `Promise<void>`，准备录音并应用参数。`options` 会覆盖同名默认项。`directory` 支持 `'cache'`（默认，系统可回收）和 `'document'`（应用持久目录），两者都位于应用私有目录。
+返回 `Promise<void>`，准备录音并应用参数。`options` 会覆盖本次准备使用的同名默认项。`directory` 支持 `'cache'`（默认，系统可回收）和 `'document'`（应用持久目录），两者都位于应用私有目录。
 
 #### `AudioRecorder.record(options?)`
 
@@ -396,7 +396,7 @@ npm install @expo-harmony/expo-audio expo-audio@~57.0.5
 
 #### `AudioStream.stop()`
 
-停止采集并释放流资源。应用进入后台时，实时流会停止；回到前台后不会自动重新开始。
+停止采集并释放流资源。未启用后台录音时，应用进入后台会停止实时流；回到前台后需主动调用 `start()`。
 
 ### Event subscriptions
 
@@ -510,6 +510,8 @@ HarmonyOS 支持的音频模式字段：
 - `allowsBackgroundRecording`：是否允许后台录音，默认 `false`。
 
 后台播放或录音须同时启用对应的 Config Plugin 选项和音频模式字段。未同时启用时，应用进入后台后相应播放或录音会暂停；回到前台后播放器和录音器会恢复，实时麦克风流需重新调用 `start()`。
+
+录音器和实时麦克风流须在应用前台启动。启用后台录音后，已启动的录制可以在应用退到后台后继续。
 
 ##### HarmonyOS 上不支持的属性
 

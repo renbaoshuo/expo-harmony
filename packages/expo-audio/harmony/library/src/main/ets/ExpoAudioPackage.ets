@@ -10,7 +10,6 @@ import {
   ExpoAVSessionControls,
   ExpoAppLifecycleState,
   ExpoAudioSessionClient,
-  ExpoFileAccessKey,
   fileUriFromPath,
   ExpoFunction,
   ExpoModule,
@@ -34,7 +33,7 @@ import { util } from '@kit.ArkTS';
 import { audio } from '@kit.AudioKit';
 import { avSession } from '@kit.AVSessionKit';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
-import { BusinessError, systemDateTime } from '@kit.BasicServicesKit';
+import { Available, BusinessError, systemDateTime } from '@kit.BasicServicesKit';
 import { media } from '@kit.MediaKit';
 import { notificationManager } from '@kit.NotificationKit';
 import deviceInfo from '@ohos.deviceInfo';
@@ -86,17 +85,10 @@ const SOURCE_INITIALIZATION_TIMEOUT_MS: number = 15_000;
 const SEEK_COMPLETION_TIMEOUT_MS: number = 15_000;
 const MAX_DATA_URI_PAYLOAD_BYTES: number = 32 * 1024 * 1024;
 const RAW_RESOURCE_NOT_FOUND: number = 9001005;
-let sequence: number = 0;
+const NOTIFICATIONS_DISABLED: number = 1600004;
 
 type PlaylistLoopMode = 'none' | 'single' | 'all';
 type InterruptionMode = 'mixWithOthers' | 'doNotMix' | 'duckOthers';
-
-enum PermissionRequestReason {
-  INVALID = 1,
-  UNDECLARED = 2,
-  CANNOT_REQUEST = 5,
-  MANUAL_SETTINGS = 6,
-}
 
 interface AudioSource {
   uri?: string;
@@ -258,7 +250,7 @@ class AudioStatusRecord {
     this.isBuffering = controller.buffering;
     this.isLoaded = controller.loaded;
     this.playbackRate = controller.playbackRate;
-    this.shouldCorrectPitch = controller.correctsPitch;
+    this.shouldCorrectPitch = true;
     this.isLive = controller.isLive;
     this.error = controller.error;
   }
@@ -568,9 +560,8 @@ function openPackagedSource(context: ExpoModuleContext, uri: string): SourceFile
   }
 }
 
-function writeDataUri(uri: string, cacheDir: string): string {
+async function writeDataUri(uri: string, cacheDir: string): Promise<string> {
   const comma = uri.indexOf(',');
-
   if (comma <= DATA_URI_PREFIX.length) {
     throw new ExpoAudioError('ERR_AUDIO_INVALID_DATA_URI', 'The audio data URI is malformed.');
   }
@@ -590,7 +581,7 @@ function writeDataUri(uri: string, cacheDir: string): string {
 
   let bytes: Uint8Array;
   try {
-    bytes = new util.Base64Helper().decodeSync(payload);
+    bytes = await new util.Base64Helper().decode(payload);
   } catch (error) {
     throw new ExpoAudioError('ERR_AUDIO_INVALID_DATA_URI', `The audio data URI is not valid base64: ${cleanError(error as Object)}`);
   }
@@ -602,17 +593,16 @@ function writeDataUri(uri: string, cacheDir: string): string {
   const dir = `${cacheDir}/expo-audio/sources`;
   if (!fs.accessSync(dir)) fs.mkdirSync(dir, true);
 
-  sequence += 1;
-  const path = `${dir}/source-${Date.now()}-${sequence}${dataUriExtension(metadata)}`;
-  const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+  const path = `${dir}/source-${util.generateRandomUUID()}${dataUriExtension(metadata)}`;
+  const file = await fs.open(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
 
   try {
-    if (fs.writeSync(file.fd, bytes.buffer) !== bytes.byteLength) {
+    if (await fs.write(file.fd, bytes.buffer) !== bytes.byteLength) {
       throw new ExpoAudioError('ERR_AUDIO_DATA_URI_WRITE', 'The cached audio source was only partially written.');
     }
   } catch (error) {
     try {
-      fs.closeSync(file);
+      await fs.close(file);
     } catch (_) {}
 
     deleteFile(path);
@@ -621,13 +611,26 @@ function writeDataUri(uri: string, cacheDir: string): string {
   }
 
   try {
-    fs.closeSync(file);
+    await fs.close(file);
   } catch (error) {
     deleteFile(path);
+
     throw new ExpoAudioError('ERR_AUDIO_DATA_URI_CLOSE', `The cached audio data URI file could not be closed: ${cleanError(error as Object)}`);
   }
 
   return path;
+}
+
+function assignFileSource(player: media.AVPlayer, file: SourceFile): SourceFile {
+  try {
+    player.fdSrc = { fd: file.file.fd, offset: file.offset, length: file.length };
+  } catch (error) {
+    closeSourceFile(file);
+
+    throw new ExpoAudioError('ERR_AUDIO_PLAYER_LOAD', cleanError(error as Object));
+  }
+
+  return file;
 }
 
 async function assignSource(
@@ -642,71 +645,63 @@ async function assignSource(
   }
 
   if (isDataAudioUri(uri)) {
-    const path = writeDataUri(uri, cacheDir);
-    const file = openSourceFile(path, true);
-
-    try {
-      player.fdSrc = {
-        fd: file.file.fd,
-        offset: file.offset,
-        length: file.length,
-      };
-    } catch (error) {
-      closeSourceFile(file);
-
-      throw new ExpoAudioError('ERR_AUDIO_PLAYER_LOAD', cleanError(error as Object));
-    }
-
-    return file;
+    return assignFileSource(player, openSourceFile(await writeDataUri(uri, cacheDir), true));
   }
 
   if (isPackagedAudioUri(uri) || isRnohRawfileResourceUri(uri)) {
-    const file = openPackagedSource(context, uri);
-
-    try {
-      player.fdSrc = {
-        fd: file.file.fd,
-        offset: file.offset,
-        length: file.length,
-      };
-    } catch (error) {
-      closeSourceFile(file);
-
-      throw new ExpoAudioError('ERR_AUDIO_PLAYER_LOAD', cleanError(error as Object));
-    }
-
-    return file;
+    return assignFileSource(player, openPackagedSource(context, uri));
   }
 
   if (uri.startsWith('/') || uri.toLowerCase().startsWith(FILE_URI_PREFIX)) {
-    const file = openSourceFile(uri, false, context);
-
-    try {
-      player.fdSrc = {
-        fd: file.file.fd,
-        offset: file.offset,
-        length: file.length,
-      };
-    } catch (error) {
-      closeSourceFile(file);
-
-      throw new ExpoAudioError('ERR_AUDIO_PLAYER_LOAD', cleanError(error as Object));
-    }
-
-    return file;
+    return assignFileSource(player, openSourceFile(uri, false, context));
   }
 
-  if (context.services.get(ExpoFileAccessKey) !== undefined && !isRemoteAudioUri(uri)) {
-    throw new ExpoAudioError('ERR_AUDIO_INVALID_SOURCE', 'This URI scheme is not supported by the project file policy.');
+  if (!isRemoteAudioUri(uri)) {
+    throw new ExpoAudioError('ERR_AUDIO_INVALID_SOURCE', 'This URI scheme is not supported for HarmonyOS audio playback.');
   }
 
-  if (isRemoteAudioUri(uri) && hasHeaders(source)) {
+  if (hasHeaders(source)) {
     await player.setMediaSource(media.createMediaSourceWithUrl(uri, source.headers));
   } else {
     player.url = uri;
   }
 
   return undefined;
+}
+
+async function preparePlayer(source: AudioSource, preferredBufferDuration: number, delegate: PlaybackDelegate): Promise<PreparedPlayer> {
+  const player = await media.createAVPlayer();
+  let file: SourceFile | undefined;
+  let prepared: PreparedPlayer | undefined;
+
+  try {
+    file = await assignSource(player, source, delegate.cacheDir, delegate.context);
+    await waitForSourceInitialization(player);
+
+    if (preferredBufferDuration > 0) {
+      await player.setPlaybackStrategy({ preferredBufferDuration });
+    }
+    player.audioRendererInfo = { usage: delegate.playbackUsage(), rendererFlags: 0 };
+    await player.prepare();
+
+    if (player.state !== 'prepared') {
+      throw new ExpoAudioError('ERR_AUDIO_PLAYER_LOAD', `HarmonyOS AVPlayer entered the ${player.state} state while preparing the audio source.`);
+    }
+
+    prepared = new PreparedPlayer(player, file);
+    return prepared;
+  } finally {
+    if (prepared === undefined) await releasePreparedPlayer(player, file);
+  }
+}
+
+async function releasePreparedPlayer(player?: media.AVPlayer, file?: SourceFile): Promise<void> {
+  try {
+    if (player !== undefined && player.state !== 'released') await player.release();
+  } catch (_) {
+  } finally {
+    closeSourceFile(file);
+  }
 }
 
 async function waitForSourceInitialization(player: media.AVPlayer): Promise<void> {
@@ -821,7 +816,7 @@ async function seekAndWait(player: media.AVPlayer, position: number): Promise<vo
       finish(new ExpoAudioError('ERR_AUDIO_SEEK_TIMEOUT', `HarmonyOS AVPlayer did not finish seeking within ${SEEK_COMPLETION_TIMEOUT_MS} ms.`));
     }, SEEK_COMPLETION_TIMEOUT_MS);
 
-    player.seek(position, media.SeekMode.SEEK_CLOSEST);
+    player.seek(position);
 
     await complete;
 
@@ -927,7 +922,6 @@ abstract class PlaybackController extends OperationQueue {
   protected mutedValue: boolean = false;
   protected loopValue: boolean = false;
   protected rateValue: number = 1;
-  protected correctPitchValue: boolean = true;
   protected bufferingValue: boolean = false;
   protected loadedValue: boolean = false;
   protected playingValue: boolean = false;
@@ -955,13 +949,13 @@ abstract class PlaybackController extends OperationQueue {
     this.objectId = objectId;
     this.id = `expo-audio-${objectId}`;
     this.source = source;
-    this.updateIntervalMs = Math.max(MIN_UPDATE_INTERVAL_MS, finiteNumber(updateInterval, 500));
+    this.updateIntervalMs = bounded(finiteNumber(updateInterval, 500), MIN_UPDATE_INTERVAL_MS, MAX_TIMER_DELAY_MS);
     this.keepsAudioSessionActive = keepsAudioSessionActive;
     this.preferredBufferDuration = Math.max(0, finiteNumber(preferredBufferDuration, 0));
     this.dispatcher = dispatcher;
     this.delegate = delegate;
 
-    this.schedule('initialize', async (): Promise<void> => this.replacePlayer(source, false));
+    this.scheduleSourceChange('initialize', async (): Promise<void> => this.replacePlayer(source, false));
   }
 
   get playing(): boolean {
@@ -971,7 +965,7 @@ abstract class PlaybackController extends OperationQueue {
     return this.mutedValue;
   }
   get looping(): boolean {
-    return this.loopValue;
+    return !this.isLive && this.loopValue;
   }
   get loaded(): boolean {
     return this.loadedValue;
@@ -987,10 +981,7 @@ abstract class PlaybackController extends OperationQueue {
     return this.durationMs / 1000;
   }
   get playbackRate(): number {
-    return this.rateValue;
-  }
-  get correctsPitch(): boolean {
-    return this.correctPitchValue;
+    return this.isLive ? 1 : this.rateValue;
   }
   get suspendedForInterruption(): boolean {
     return this.interruptionSuspended;
@@ -1015,10 +1006,6 @@ abstract class PlaybackController extends OperationQueue {
       return false;
     }
   }
-  get sourceUri(): string | undefined {
-    return this.source?.uri;
-  }
-
   setObserving(eventName: string, observing: boolean): void {
     if (observing) this.observedEvents.add(eventName);
     else this.observedEvents.delete(eventName);
@@ -1040,13 +1027,15 @@ abstract class PlaybackController extends OperationQueue {
   setLooping(value: boolean): void {
     this.loopValue = value;
     this.schedule('set loop', async (): Promise<void> => {
-      if (this.player !== undefined && this.isPreparedState(this.player.state)) this.player.loop = this.loopValue;
+      if (this.player !== undefined && this.isPreparedState(this.player.state) && !this.isLive) {
+        this.player.loop = this.loopValue;
+      }
     });
     this.emitStatus();
   }
 
   setVolume(value: number): void {
-    this.volumeValue = bounded(value, 0, 1);
+    this.volumeValue = bounded(finiteNumber(value, this.volumeValue), 0, 1);
     this.schedule('set volume', async (): Promise<void> => this.applyVolume());
     this.emitStatus();
   }
@@ -1058,17 +1047,19 @@ abstract class PlaybackController extends OperationQueue {
         'HarmonyOS AVPlayer does not expose a control for disabling pitch correction.',
       );
     }
-
-    this.correctPitchValue = true;
-    this.emitStatus();
   }
 
   replace(source: AudioSource | null): void {
-    this.schedule('replace source', async (): Promise<void> => this.replacePlayer(source, this.intendedPlaying));
+    if (source === null) {
+      this.intendedPlaying = false;
+      this.retainedAudioSession = false;
+      this.cancelSuspensions();
+    }
+    this.scheduleSourceChange('replace source', async (): Promise<void> => this.replacePlayer(source, this.intendedPlaying));
   }
 
   refreshAudioRendererUsage(): void {
-    this.schedule('replace source', async (): Promise<void> => this.replacePlayer(this.source, this.intendedPlaying, true));
+    this.scheduleSourceChange('update audio route', async (): Promise<void> => this.replacePlayer(this.source, this.intendedPlaying, true));
   }
 
   async seekTo(seconds: number): Promise<void> {
@@ -1113,7 +1104,7 @@ abstract class PlaybackController extends OperationQueue {
         return;
       }
 
-      if (player.state === 'completed' || this.state === 'completed') await this.seekAttachedPlayerAndWait(player, 0);
+      if (this.state === 'completed' && !this.isLive) await this.seekAttachedPlayerAndWait(player, 0);
       if (!isCurrent() || this.player !== player) {
         this.delegate.playbackStateChanged(this);
         return;
@@ -1132,8 +1123,15 @@ abstract class PlaybackController extends OperationQueue {
       this.errorValue = null;
       this.emitStatus();
     }).catch((error: Object): void => {
-      if (isCurrent()) this.onScheduledError('play', error);
-      else if (!this.destroyed) this.delegate.playbackStateChanged(this);
+      if (isCurrent()) {
+        if (!this.playingValue) {
+          this.intendedPlaying = false;
+          this.delegate.playbackStateChanged(this);
+        }
+        this.onScheduledError('play', error);
+      } else if (!this.destroyed) {
+        this.delegate.playbackStateChanged(this);
+      }
     });
   }
 
@@ -1200,6 +1198,9 @@ abstract class PlaybackController extends OperationQueue {
   }
 
   setPlaybackRate(rate: number): void {
+    if (!Number.isFinite(rate)) {
+      throw new ExpoAudioError('ERR_AUDIO_INVALID_PLAYBACK_RATE', 'The playback rate must be finite.');
+    }
     const value: number = bounded(rate, MIN_PLAYBACK_RATE, MAX_PLAYBACK_RATE);
 
     if (value < MIN_NATIVE_PLAYBACK_RATE) {
@@ -1235,11 +1236,10 @@ abstract class PlaybackController extends OperationQueue {
       this.player = undefined;
       this.sourceFile = undefined;
 
-      await this.releasePlayer(player, file);
+      await releasePreparedPlayer(player, file);
     });
   }
 
-  protected abstract className(): string;
   protected abstract statusEventName(): string;
   protected abstract statusPayload(didJustFinish: boolean): ESObject;
 
@@ -1282,7 +1282,7 @@ abstract class PlaybackController extends OperationQueue {
     this.didJustFinish = false;
     this.errorValue = null;
 
-    if (playing !== this.playing) this.delegate.playbackStateChanged(this);
+    if (playing !== this.playing || source === null) this.delegate.playbackStateChanged(this);
     this.emitStatus();
 
     if (previous !== undefined && previous.state === 'playing') {
@@ -1291,48 +1291,27 @@ abstract class PlaybackController extends OperationQueue {
       } catch (_) {}
     }
 
-    await this.releasePlayer(previous, previousFile);
+    await releasePreparedPlayer(previous, previousFile);
     if (this.destroyed || source === null) return;
 
     let next: media.AVPlayer | undefined;
     let nextFile: SourceFile | undefined;
 
     try {
-      const prepared = await this.delegate.takePreloaded(source);
-
-      if (prepared !== undefined) {
-        next = prepared.player;
-        nextFile = prepared.file;
-      } else {
-        next = await media.createAVPlayer();
-        nextFile = await assignSource(next, source, this.delegate.cacheDir, this.delegate.context);
-        await waitForSourceInitialization(next);
-
-        if (this.preferredBufferDuration > 0) {
-          await next.setPlaybackStrategy({ preferredBufferDuration: this.preferredBufferDuration });
-        }
-
-        next.audioRendererInfo = {
-          usage: this.delegate.playbackUsage(),
-          rendererFlags: 0,
-        };
-
-        await next.prepare();
-      }
+      const load = await this.delegate.takePreloaded(source) ?? await preparePlayer(source, this.preferredBufferDuration, this.delegate);
+      next = load.player;
+      nextFile = load.file;
       if (next.state !== 'prepared') {
         throw new ExpoAudioError('ERR_AUDIO_PLAYER_LOAD', `HarmonyOS AVPlayer entered the ${next.state} state while preparing the audio source.`);
       }
 
       const duration = this.safeDuration(next);
-
-      // Live streams may have no seekable timeline.
       if (preserve && position > 0 && duration > 0 && this.isPreparedState(next.state)) {
         await seekAndWait(next, seekTargetMilliseconds(position / 1000, duration));
       }
 
       if (this.destroyed) {
-        await this.releasePlayer(next, nextFile);
-
+        await releasePreparedPlayer(next, nextFile);
         return;
       }
 
@@ -1345,9 +1324,9 @@ abstract class PlaybackController extends OperationQueue {
       this.durationMs = this.safeDuration(next);
 
       if (this.loadedValue) {
-        next.loop = this.loopValue;
-        await this.applyVolume();
-        await this.applyPlaybackRate();
+        if (!this.isLive) next.loop = this.loopValue;
+        this.applyVolume();
+        this.applyPlaybackRate();
       }
 
       this.emitStatus();
@@ -1355,14 +1334,7 @@ abstract class PlaybackController extends OperationQueue {
       if (this.player === next) this.player = undefined;
       if (this.sourceFile === nextFile) this.sourceFile = undefined;
 
-      await this.releasePlayer(next, nextFile);
-
-      this.state = 'error';
-      this.loadedValue = false;
-      this.bufferingValue = false;
-      this.playingValue = false;
-      this.currentTimeMs = 0;
-      this.durationMs = 0;
+      await releasePreparedPlayer(next, nextFile);
 
       throw new ExpoAudioError('ERR_AUDIO_PLAYER_LOAD', cleanError(error as Object));
     }
@@ -1372,6 +1344,9 @@ abstract class PlaybackController extends OperationQueue {
 
   protected async seek(seconds: number): Promise<void> {
     const player = this.requirePreparedPlayer('seek');
+    if (this.isLive) {
+      throw new ExpoAudioError('ERR_AUDIO_SEEK_UNSUPPORTED', 'HarmonyOS AVPlayer cannot seek within a live audio source.');
+    }
     const length = this.safeDuration(player);
     const target = seekTargetMilliseconds(seconds, length);
 
@@ -1400,11 +1375,15 @@ abstract class PlaybackController extends OperationQueue {
     }, SEEK_COMPLETION_TIMEOUT_MS);
 
     try {
-      player.seek(position, media.SeekMode.SEEK_CLOSEST);
+      player.seek(position);
 
       await complete;
 
       if (failure !== undefined) throw new ExpoAudioError(failure.code, failure.message);
+      if (this.state === 'completed' && (this.durationMs <= 0 || position < this.durationMs)) {
+        this.state = 'paused';
+        this.emitStatus();
+      }
     } finally {
       clearTimeout(timer);
       if (this.seekWaiter === finish) this.seekWaiter = undefined;
@@ -1412,26 +1391,18 @@ abstract class PlaybackController extends OperationQueue {
   }
 
   protected onScheduledError(label: string, error: Object): void {
-    if (this.destroyed && label !== 'release') return;
-
+    if (this.destroyed) return;
     this.errorValue = cleanError(error);
     console.error(`Expo Audio ${label} failed for ${this.id}: ${this.errorValue}`);
+    this.emitStatus();
+  }
 
-    if (
-      label !== 'initialize' &&
-      label !== 'replace source' &&
-      label !== 'change playlist track' &&
-      label !== 'advance after completion' &&
-      label !== 'player state' &&
-      label !== 'player callback'
-    ) {
-      if (label === 'play' && !this.playingValue) {
-        this.intendedPlaying = false;
-        this.delegate.playbackStateChanged(this);
-      }
-      this.emitStatus();
-      return;
-    }
+  protected scheduleSourceChange(label: string, operation: () => Promise<void>): void {
+    this.enqueue(operation).catch((error: Object): void => this.failPlayback(label, error));
+  }
+
+  private failPlayback(label: string, error: Object): void {
+    if (this.destroyed) return;
 
     const player = this.player;
     const file = this.sourceFile;
@@ -1447,11 +1418,11 @@ abstract class PlaybackController extends OperationQueue {
     this.currentTimeMs = 0;
     this.durationMs = 0;
 
-    this.emitStatus();
+    this.onScheduledError(label, error);
     // Playlist edits can hide the failed source before this callback.
     this.delegate.playbackStateChanged(this);
 
-    this.enqueue(async (): Promise<void> => this.releasePlayer(player, file)).catch((): void => {});
+    this.enqueue(async (): Promise<void> => releasePreparedPlayer(player, file)).catch((): void => {});
   }
 
   private attachPlayerCallbacks(target: media.AVPlayer): void {
@@ -1479,12 +1450,11 @@ abstract class PlaybackController extends OperationQueue {
 
       if (state === 'error' || state === 'released') {
         this.seekWaiter?.(new ExpoAudioError('ERR_AUDIO_SEEK', `HarmonyOS AVPlayer entered the ${state} state while seeking.`));
-        this.onScheduledError('player state', new ExpoAudioError('ERR_AUDIO_PLAYER_STATE', `HarmonyOS AVPlayer entered the ${state} state.`));
+        this.failPlayback('player state', new ExpoAudioError('ERR_AUDIO_PLAYER_STATE', `HarmonyOS AVPlayer entered the ${state} state.`));
         return;
       }
 
       const wasPlaying = this.playing;
-
       this.state = state;
       this.playingValue = state === 'playing';
       this.loadedValue = this.isPreparedState(state);
@@ -1500,7 +1470,7 @@ abstract class PlaybackController extends OperationQueue {
         this.didJustFinish = !continuing;
         this.intendedPlaying = continuing;
         if (continuing) {
-          this.schedule('advance after completion', async (): Promise<void> => {
+          this.scheduleSourceChange('advance after completion', async (): Promise<void> => {
             if (!this.destroyed && this.player === target && this.state === 'completed' && this.intendedPlaying) {
               await this.onCompleted();
             }
@@ -1533,12 +1503,13 @@ abstract class PlaybackController extends OperationQueue {
       if (type === media.BufferingInfoType.BUFFERING_END) this.bufferingValue = false;
 
       if (wasPlaying !== this.playing) this.delegate.playbackStateChanged(this);
+      this.updateStatusTimer();
       this.emitStatus();
     });
     target.on('seekDone', (time: number): void => {
       if (this.player !== target) return;
 
-      this.currentTimeMs = Math.max(0, time);
+      this.refreshPosition();
       this.seekWaiter?.(undefined, time);
 
       this.emitStatus();
@@ -1553,7 +1524,12 @@ abstract class PlaybackController extends OperationQueue {
       if (this.player !== target) return;
 
       this.seekWaiter?.(new ExpoAudioError('ERR_AUDIO_SEEK', cleanError(error)));
-      this.onScheduledError('player callback', error);
+      if (target.state === 'error' || target.state === 'released') {
+        this.failPlayback('player callback', error);
+      } else {
+        this.errorValue = cleanError(error);
+        this.emitStatus();
+      }
     });
   }
 
@@ -1576,16 +1552,6 @@ abstract class PlaybackController extends OperationQueue {
     }
   }
 
-  private async releasePlayer(player?: media.AVPlayer, file?: SourceFile): Promise<void> {
-    if (player !== undefined && player.state !== 'released') {
-      try {
-        await player.release();
-      } catch (_) {}
-    }
-
-    closeSourceFile(file);
-  }
-
   private requirePreparedPlayer(operation: string): media.AVPlayer {
     if (this.destroyed) {
       throw new ExpoAudioError('ERR_AUDIO_PLAYER_RELEASED', `Cannot ${operation}; the audio object was released.`);
@@ -1603,7 +1569,7 @@ abstract class PlaybackController extends OperationQueue {
     return state === 'prepared' || state === 'playing' || state === 'paused' || state === 'completed';
   }
 
-  private async applyVolume(): Promise<void> {
+  private applyVolume(): void {
     const player = this.player;
     if (player === undefined || !this.isPreparedState(player.state)) return;
 
@@ -1612,9 +1578,9 @@ abstract class PlaybackController extends OperationQueue {
     player.setVolume(this.mutedValue ? 0 : volume);
   }
 
-  private async applyPlaybackRate(): Promise<void> {
+  private applyPlaybackRate(): void {
     const player = this.player;
-    if (player === undefined || !this.isPreparedState(player.state)) return;
+    if (player === undefined || !this.isPreparedState(player.state) || this.isLive) return;
 
     if (deviceInfo.sdkApiVersion >= 20) {
       player.setPlaybackRate(this.rateValue);
@@ -1645,9 +1611,6 @@ abstract class PlaybackController extends OperationQueue {
 }
 
 class AudioPlayerController extends PlaybackController {
-  protected className(): string {
-    return PLAYER_CLASS_NAME;
-  }
   protected statusEventName(): string {
     return PLAYBACK_STATUS_EVENT;
   }
@@ -1728,9 +1691,6 @@ class PlaylistController extends PlaybackController {
     return this.hasCurrentSource ? super.durationSeconds : 0;
   }
 
-  protected className(): string {
-    return PLAYLIST_CLASS_NAME;
-  }
   protected statusEventName(): string {
     return PLAYLIST_STATUS_EVENT;
   }
@@ -1748,15 +1708,15 @@ class PlaylistController extends PlaybackController {
   }
 
   next(): void {
-    this.scheduleRelativeTrackChange(1);
+    this.selectTrack(this.nextIndex());
   }
 
   previous(): void {
-    this.scheduleRelativeTrackChange(-1);
+    this.selectTrack(this.previousIndex());
   }
 
   skipTo(index: number): void {
-    this.scheduleTrackChange(Math.trunc(index));
+    this.selectTrack(Math.trunc(index));
   }
 
   add(source: AudioSource | null): void {
@@ -1764,7 +1724,6 @@ class PlaylistController extends PlaybackController {
 
     this.tracks.push(source);
     if (this.tracks.length === 1) this.scheduleCurrentTrackLoad(false);
-
     this.emitStatus();
   }
 
@@ -1773,7 +1732,6 @@ class PlaylistController extends PlaybackController {
     if (source === null || source.uri === undefined || source.uri.length === 0 || !(position >= 0 && position <= this.tracks.length)) return;
 
     this.tracks.splice(position, 0, source);
-
     if (this.tracks.length === 1) this.scheduleCurrentTrackLoad(false);
     else if (position <= this.indexValue) this.indexValue += 1;
 
@@ -1789,28 +1747,30 @@ class PlaylistController extends PlaybackController {
     this.indexValue = 0;
     this.intendedPlaying = false;
 
-    this.schedule('clear playlist', async (): Promise<void> => this.replacePlayer(null, false));
+    this.scheduleSourceChange('clear playlist', async (): Promise<void> => this.replacePlayer(null, false));
     this.delegate.playbackStateChanged(this);
     this.emitStatus();
   }
 
   protected async onCompleted(): Promise<void> {
-    if (this.tracks.length === 0) return;
+    if (!this.hasCurrentSource || !this.intendedPlaying) return;
+
     if (this.loopModeValue === 'single') {
-      await this.replacePlayer(this.tracks[this.indexValue], true);
+      if (!this.isLive) await this.replacePlayer(this.tracks[this.indexValue], true);
       return;
     }
-    if (this.indexValue + 1 < this.tracks.length) {
-      await this.changeTrack(this.indexValue + 1, true);
-      return;
-    }
-    if (this.loopModeValue === 'all') {
-      await this.changeTrack(0, true);
-    }
+
+    const index = this.nextIndex();
+    if (index < 0) return;
+
+    const source = this.updateTrackIndex(index);
+    await this.replacePlayer(source, true);
   }
 
   protected shouldContinueAfterCompletion(): boolean {
-    return this.tracks.length > 0 && (this.loopModeValue === 'single' || this.indexValue + 1 < this.tracks.length || this.loopModeValue === 'all');
+    // A requested track change takes precedence over completion of the previous one.
+    if (!this.hasCurrentSource) return this.tracks.length > 0;
+    return this.loopModeValue === 'single' ? !this.isLive : this.nextIndex() >= 0;
   }
 
   private nextIndex(): number {
@@ -1822,41 +1782,34 @@ class PlaylistController extends PlaybackController {
   }
 
   private scheduleCurrentTrackLoad(resume: boolean): void {
-    this.schedule(
+    this.scheduleTrackLoad(this.tracks[this.indexValue] ?? null, resume);
+  }
+
+  private scheduleTrackLoad(source: AudioSource | null, resume: boolean): void {
+    this.scheduleSourceChange(
       'change playlist track',
-      async (): Promise<void> => this.replacePlayer(this.tracks[this.indexValue] ?? null, resume && this.intendedPlaying),
+      async (): Promise<void> => this.replacePlayer(source, resume && this.intendedPlaying),
     );
   }
 
-  private scheduleTrackChange(index: number): void {
-    this.schedule('change playlist track', async (): Promise<void> => {
-      await this.changeTrack(index, this.intendedPlaying);
-    });
-  }
-
-  private scheduleRelativeTrackChange(offset: number): void {
-    this.schedule('change playlist track', async (): Promise<void> => {
-      const index = offset > 0 ? this.nextIndex() : this.previousIndex();
-      await this.changeTrack(index, this.intendedPlaying);
-    });
-  }
-
-  private async changeTrack(index: number, resume: boolean): Promise<void> {
+  private selectTrack(index: number): void {
     if (!(index >= 0 && index < this.tracks.length)) return;
 
+    const source = this.updateTrackIndex(index);
+    this.scheduleTrackLoad(source, this.intendedPlaying);
+    this.emitStatus();
+  }
+
+  private updateTrackIndex(index: number): AudioSource {
     const previous = this.indexValue;
-
+    const source = this.tracks[index];
     this.indexValue = index;
-
-    await this.replacePlayer(this.tracks[index], resume);
-
-    if (this.destroyed) return;
 
     if (previous !== index && this.observedEvents.has(TRACK_CHANGED_EVENT)) {
       this.dispatcher.emit(TRACK_CHANGED_EVENT, new TrackChangedRecord(previous, index));
     }
 
-    this.emitStatus();
+    return source;
   }
 
   private removeTrack(index: number): void {
@@ -1871,7 +1824,7 @@ class PlaylistController extends PlaybackController {
       this.indexValue = 0;
       this.intendedPlaying = false;
 
-      this.schedule('empty playlist', async (): Promise<void> => this.replacePlayer(null, false));
+      this.scheduleSourceChange('empty playlist', async (): Promise<void> => this.replacePlayer(null, false));
       this.delegate.playbackStateChanged(this);
     } else if (current) {
       this.indexValue = Math.min(index, this.tracks.length - 1);
@@ -1911,19 +1864,8 @@ function readLockScreenOptions(value: ESObject): LockScreenOptionsInput | undefi
   };
 }
 
-function readRecordingOptions(value: ESObject, fallback?: RecordingOptionsInput): RecordingOptionsInput {
+function readRecordingOptions(value: ESObject): RecordingOptionsInput {
   const options: RecordingOptionsInput = {};
-
-  if (fallback !== undefined) {
-    options.directory = fallback.directory;
-    options.extension = fallback.extension;
-    options.sampleRate = fallback.sampleRate;
-    options.numberOfChannels = fallback.numberOfChannels;
-    options.bitRate = fallback.bitRate;
-    options.isMeteringEnabled = fallback.isMeteringEnabled;
-    options.mimeType = fallback.mimeType;
-    options.bitsPerSecond = fallback.bitsPerSecond;
-  }
 
   if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) return options;
 
@@ -2020,7 +1962,7 @@ function recordingProfile(options: RecordingOptionsInput): RecorderProfile {
 interface RecorderDelegate {
   readonly context: ExpoModuleContext;
   ensureRecordingPermission(): void;
-  ensureRecordingAvailable(): void;
+  ensureRecordingAvailable(continuing?: boolean): void;
   recordingStateChanged(): void;
 }
 
@@ -2030,6 +1972,7 @@ class AudioRecorderController extends OperationQueue {
   private readonly dispatcher: AudioObjectEventSink;
   private readonly delegate: RecorderDelegate;
   private options: RecordingOptionsInput;
+  private readonly defaultOptions: RecordingOptionsInput;
   private recorder?: media.AVRecorder;
   private outputFile?: fs.File;
   private outputPath: string | null = null;
@@ -2059,6 +2002,7 @@ class AudioRecorderController extends OperationQueue {
     this.objectId = objectId;
     this.id = `expo-audio-recorder-${objectId}`;
     this.options = options;
+    this.defaultOptions = options;
     this.dispatcher = dispatcher;
     this.delegate = delegate;
   }
@@ -2090,8 +2034,8 @@ class AudioRecorderController extends OperationQueue {
   }
 
   async prepareToRecord(options?: RecordingOptionsInput): Promise<void> {
-    const merged: RecordingOptionsInput = options === undefined ? this.options : mergeRecordingOptions(this.options, options);
-    await this.enqueue(async (): Promise<void> => this.prepare(merged));
+    const settings = options === undefined ? this.defaultOptions : mergeRecordingOptions(this.defaultOptions, options);
+    await this.enqueue(async (): Promise<void> => this.prepare(settings));
   }
 
   async stop(): Promise<void> {
@@ -2165,7 +2109,6 @@ class AudioRecorderController extends OperationQueue {
       throw new ExpoAudioError('ERR_AUDIO_RECORDER_ALREADY_PREPARED', 'The audio recorder is already prepared.');
     }
 
-    this.options = options;
     this.failed = false;
     this.backgroundSuspended = false;
     this.interruptionSuspended = false;
@@ -2179,8 +2122,7 @@ class AudioRecorderController extends OperationQueue {
 
     if (!fs.accessSync(folder)) fs.mkdirSync(folder, true);
 
-    sequence += 1;
-    const path = `${folder}/recording-${Date.now()}-${sequence}${profile.extension}`;
+    const path = `${folder}/recording-${util.generateRandomUUID()}${profile.extension}`;
     const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
 
     let recorder: media.AVRecorder | undefined;
@@ -2243,6 +2185,7 @@ class AudioRecorderController extends OperationQueue {
     }
 
     this.recorder = recorder;
+    this.options = options;
     this.outputFile = file;
     this.outputPath = path;
     this.preparedValue = true;
@@ -2253,7 +2196,7 @@ class AudioRecorderController extends OperationQueue {
   }
 
   record(options: RecordingStartOptions): void {
-    this.delegate.ensureRecordingAvailable();
+    this.delegate.ensureRecordingAvailable(this.pausedValue || this.recordingValue);
 
     if (!this.preparedValue || this.recorder === undefined) {
       throw new ExpoAudioError('ERR_AUDIO_RECORDER_NOT_PREPARED', 'Call prepareToRecordAsync() before starting an audio recording.');
@@ -2290,7 +2233,7 @@ class AudioRecorderController extends OperationQueue {
       if (generation !== this.recordGeneration || this.backgroundSuspended || this.interruptionSuspended || !this.recordingRequested) return;
 
       const recorder = this.requireRecorder('start');
-      this.delegate.ensureRecordingAvailable();
+      this.delegate.ensureRecordingAvailable(this.pausedValue || this.recordingValue);
 
       if (!this.recordingValue) {
         if (this.pausedValue) await recorder.resume();
@@ -2475,8 +2418,13 @@ class AudioRecorderController extends OperationQueue {
   getAvailableInputs(): RecordingInputRecord[] {
     this.requireRecorder('list inputs');
 
-    const manager = audio.getAudioManager().getRoutingManager();
-    const devices = manager.getDevicesSync(audio.DeviceFlag.INPUT_DEVICES_FLAG);
+    const manager = audio.getAudioManager();
+    let devices: audio.AudioDeviceDescriptors;
+    if (deviceInfo.sdkApiVersion >= 21) {
+      devices = manager.getSessionManager().getAvailableDevices(audio.DeviceUsage.MEDIA_INPUT_DEVICES);
+    } else {
+      devices = manager.getRoutingManager().getDevicesSync(audio.DeviceFlag.INPUT_DEVICES_FLAG);
+    }
 
     return devices.map((device: audio.AudioDeviceDescriptor): RecordingInputRecord => new RecordingInputRecord(device));
   }
@@ -2496,27 +2444,28 @@ class AudioRecorderController extends OperationQueue {
 
     this.requireRecorder('select input');
 
-    if (deviceInfo.sdkApiVersion < 21) {
-      throw new ExpoAudioError(
-        'ERR_AUDIO_INPUT_SELECTION_UNAVAILABLE',
-        `Selecting a recording input requires HarmonyOS API ${INPUT_SELECTION_API} or newer.`,
-      );
+    if (deviceInfo.sdkApiVersion >= 21) {
+      this.selectRecordingInput(uid);
+      return;
     }
+    throw new ExpoAudioError(
+      'ERR_AUDIO_INPUT_SELECTION_UNAVAILABLE',
+      `Selecting a recording input requires HarmonyOS API ${INPUT_SELECTION_API} or newer.`,
+    );
+  }
 
-    const manager = audio.getAudioManager();
-    const devices = manager.getRoutingManager().getDevicesSync(audio.DeviceFlag.INPUT_DEVICES_FLAG);
+  @Available({ minApiVersion: '21' })
+  private selectRecordingInput(uid: string): void {
+    const manager = audio.getAudioManager().getSessionManager();
+    const devices = manager.getAvailableDevices(audio.DeviceUsage.MEDIA_INPUT_DEVICES);
     const input = devices.find((device: audio.AudioDeviceDescriptor): boolean => String(device.id) === uid);
-
     if (input === undefined) {
       throw new ExpoAudioError('ERR_AUDIO_INPUT_NOT_FOUND', `Recording input '${uid}' is unavailable.`);
     }
 
     this.enqueue(async (): Promise<void> => {
       this.requireRecorder('select input');
-
-      if (deviceInfo.sdkApiVersion >= 21) {
-        await manager.getSessionManager().selectMediaInputDevice(input);
-      }
+      await manager.selectMediaInputDevice(input);
     }).catch((error: Object): void => {
       const message = `Failed to select recording input '${uid}': ${cleanError(error)}`;
 
@@ -2641,6 +2590,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   private readonly sessionManager: audio.AudioSessionManager;
   private readonly audioSession: ExpoAudioSessionClient = new ExpoAudioSessionClient();
   private microphoneRequest?: Promise<PermissionRecord>;
+  private notificationRequest?: Promise<PermissionRecord>;
   private active: boolean = true;
   private inBackground: boolean;
   private focusInterrupted: boolean = false;
@@ -2654,6 +2604,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   private lockScreenSession?: ExpoAVSessionClient;
   private sessionController?: PlaybackController;
   private sessionOptions?: LockScreenOptionsInput;
+  private sessionSeekable: boolean = false;
   private sessionNeedsActivation: boolean = false;
   private requestedLockScreenActivation: number = 0;
   private publishedLockScreenActivation: number = 0;
@@ -2665,6 +2616,11 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   private readonly canceledBackgroundModes = new Set<string>();
   private listeningForBackgroundCancellation: boolean = false;
   private readonly onBackgroundTaskCanceled = (info: backgroundTaskManager.ContinuousTaskCancelInfo): void => {
+    if (deviceInfo.sdkApiVersion >= 22) this.handleBackgroundTaskCanceled(info);
+  };
+
+  @Available({ minApiVersion: '22' })
+  private handleBackgroundTaskCanceled(info: backgroundTaskManager.ContinuousTaskCancelInfo): void {
     if (this.destroyed || this.stoppingBackgroundTasks.has(info.id)) return;
     for (const entry of this.backgroundTaskIds) {
       const mode = entry[0];
@@ -2691,7 +2647,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
       this.scheduleBackgroundTaskSync();
       return;
     }
-  };
+  }
   private backgroundTaskTail: Promise<void> = Promise.resolve();
   private lifecycleTail: Promise<void> = Promise.resolve();
   private nextObjectId: number = 1;
@@ -2725,7 +2681,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     const entry = this.preloaded.get(key);
     if (this.destroyed || entry === undefined || !sameSourceHeaders(entry.source.headers, source.headers)) return undefined;
 
-    const prepared = this.createPreloadedPlayer(entry.source, entry.preferredBufferDuration);
+    const prepared = preparePlayer(entry.source, entry.preferredBufferDuration, this);
     const replacement = new PreloadEntry(entry.source, entry.preferredBufferDuration, prepared);
 
     this.preloaded.set(key, replacement);
@@ -2767,6 +2723,10 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
 
   lockScreenStateChanged(controller: AudioPlayerController): void {
     if (this.lockScreenPlayer !== controller) return;
+    if (this.sessionController === controller && this.sessionSeekable !== this.canSeekOnLockScreen(controller, this.lockScreenOptions)) {
+      this.updateLockScreenMetadata(controller, this.lockScreenMetadata);
+      return;
+    }
     this.updateMediaPlaybackState(controller);
   }
 
@@ -2833,7 +2793,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     if (metadata?.artist !== undefined) details.artist = metadata.artist;
     if (metadata?.albumTitle !== undefined) details.album = metadata.albumTitle;
     if (metadata?.artworkUrl !== undefined) details.mediaImage = metadata.artworkUrl;
-    if (options?.isLiveStream !== true && controller.durationSeconds > 0) {
+    if (this.canSeekOnLockScreen(controller, options) && controller.durationSeconds > 0) {
       details.duration = Math.round(controller.durationSeconds * 1000);
     }
     await session.setAVMetadata(details);
@@ -2845,8 +2805,8 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     }
   }
 
-  ensureRecordingAvailable(): void {
-    if (this.destroyed || (this.inBackground && !this.canContinueInBackground(BACKGROUND_RECORDING_MODE))) {
+  ensureRecordingAvailable(continuing: boolean = false): void {
+    if (this.destroyed || (this.inBackground && (!continuing || !this.canContinueInBackground(BACKGROUND_RECORDING_MODE)))) {
       throw new ExpoAudioError('ERR_AUDIO_RECORDING_UNAVAILABLE', 'Audio recording is unavailable in the current app state.');
     }
     this.ensureRecordingPermission();
@@ -2895,15 +2855,17 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
 
     await this.clearAllPreloaded();
     await this.stopBackgroundTask();
-    if (deviceInfo.sdkApiVersion >= 21 && this.listeningForBackgroundCancellation) {
-      try { backgroundTaskManager.off('continuousTaskCancel', this.onBackgroundTaskCanceled); } catch (_) {}
+    if (deviceInfo.sdkApiVersion >= 22) {
+      if (this.listeningForBackgroundCancellation) {
+        try { backgroundTaskManager.off('continuousTaskCancel', this.onBackgroundTaskCanceled); } catch (_) {}
+      }
     }
     this.lockScreenPlayer = undefined;
     this.lockScreenOptions = undefined;
     this.lockScreenMetadata = undefined;
     this.clearMediaSession();
     await this.mediaSessionTail.catch((): void => {});
-    await this.deactivateAudioSession();
+    await this.deactivateAudioSession(true);
 
     try {
       this.sessionManager.off('audioSessionDeactivated', this.onSessionDeactivated);
@@ -3010,7 +2972,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     this.clearAudioSessionRetainers();
     this.pauseAllPlayback();
 
-    await this.deactivateAudioSession();
+    await this.deactivateAudioSession(true);
   }
 
   async setAudioMode(input: AudioModeInput): Promise<void> {
@@ -3153,17 +3115,24 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   }
 
   private async acquireAudioSession(interruption: InterruptionMode, earpiece: boolean): Promise<void> {
-    await this.audioSession.acquire({
-      concurrencyMode: this.concurrencyMode(interruption),
-      scene: earpiece ? audio.AudioSessionScene.AUDIO_SESSION_SCENE_VOICE_COMMUNICATION : undefined,
-      outputDevice: earpiece ? audio.DeviceType.EARPIECE : undefined,
-    });
+    const concurrencyMode = this.concurrencyMode(interruption);
+    if (deviceInfo.sdkApiVersion >= 20) {
+      await this.audioSession.acquire({
+        concurrencyMode,
+        scene: earpiece ? audio.AudioSessionScene.AUDIO_SESSION_SCENE_VOICE_COMMUNICATION : undefined,
+        outputDevice: earpiece ? audio.DeviceType.EARPIECE : undefined,
+      });
+    } else {
+      await this.audioSession.acquire({ concurrencyMode });
+    }
+
     this.audioSessionAcquired = true;
   }
 
-  private async deactivateAudioSession(): Promise<void> {
+  private async deactivateAudioSession(force: boolean = false): Promise<void> {
     await this.queueAudioSessionOperation(async (): Promise<void> => {
       if (!this.audioSessionAcquired) return;
+      if (!force && (this.hasActivePlayback() || this.hasSessionRetainer())) return;
       await this.audioSession.release();
       this.audioSessionAcquired = false;
     }).catch((error: Object): void => {
@@ -3173,19 +3142,16 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
 
   async preload(source: AudioSource | null, preferredBufferDuration: number): Promise<void> {
     const key = sourceKey(source);
-
     if (this.destroyed || source === null || key === null) return;
 
     const entry = this.preloaded.get(key);
-
     if (entry !== undefined && sameSourceHeaders(entry.source.headers, source.headers)) {
       await entry.prepared;
-
       return;
     }
 
     const duration = Math.max(0, finiteNumber(preferredBufferDuration, 0));
-    const load = this.createPreloadedPlayer(source, duration);
+    const load = preparePlayer(source, duration, this);
     const next = new PreloadEntry(source, duration, load);
 
     this.preloaded.set(key, next);
@@ -3199,37 +3165,6 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
       throw new ExpoAudioError('ERR_AUDIO_PRELOAD', cleanError(error as Object));
     } finally {
       await cleanup;
-    }
-  }
-
-  private async createPreloadedPlayer(source: AudioSource, preferredBufferDuration: number): Promise<PreparedPlayer> {
-    const player = await media.createAVPlayer();
-    let file: SourceFile | undefined;
-
-    try {
-      file = await assignSource(player, source, this.cacheDir, this.context);
-      await waitForSourceInitialization(player);
-
-      if (preferredBufferDuration > 0) {
-        await player.setPlaybackStrategy({ preferredBufferDuration });
-      }
-
-      player.audioRendererInfo = {
-        usage: this.playbackUsage(),
-        rendererFlags: 0,
-      };
-
-      await player.prepare();
-
-      return new PreparedPlayer(player, file);
-    } catch (error) {
-      try {
-        await player.release();
-      } catch (_) {}
-
-      closeSourceFile(file);
-
-      throw new ExpoAudioError('ERR_AUDIO_PRELOAD', cleanError(error as Object));
     }
   }
 
@@ -3264,25 +3199,28 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     }
   }
 
-  async getRecordingPermission(): Promise<PermissionRecord> {
-    let denied: boolean | undefined;
-    if (deviceInfo.sdkApiVersion < 20) {
-      try {
-        const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: PERMISSION_PREFERENCES });
-        denied = (await store.get(MICROPHONE_DENIED, false)) === true;
-      } catch (_) {}
+  getRecordingPermission(): PermissionRecord {
+    const response = this.context.getPermissionResponse(MICROPHONE_PERMISSION);
+    if (response.status === ExpoPermissionStatus.GRANTED) return new PermissionRecord('granted', response.canAskAgain);
+    if (response.status === ExpoPermissionStatus.NOT_DETERMINED) {
+      if (deviceInfo.sdkApiVersion < 20) {
+        // Preserve denial history written before Expo Modules Core tracked it.
+        try {
+          const store = preferences.getPreferencesSync(this.context.uiAbilityContext, { name: PERMISSION_PREFERENCES });
+          if (store.getSync(MICROPHONE_DENIED, false) === true) return new PermissionRecord('denied', false);
+        } catch (_) {}
+      }
+      return new PermissionRecord('undetermined', response.canAskAgain);
     }
-    const status = this.context.permissionStatus(MICROPHONE_PERMISSION, denied);
-    if (status === ExpoPermissionStatus.GRANTED) return new PermissionRecord('granted', true);
-    if (status === ExpoPermissionStatus.NOT_DETERMINED) return new PermissionRecord('undetermined', true);
-    // Older systems expose permanent denial only in the request result.
-    return new PermissionRecord('denied', status === ExpoPermissionStatus.DENIED && deviceInfo.sdkApiVersion < 20);
+    return new PermissionRecord('denied', response.canAskAgain);
   }
 
   async requestRecordingPermission(): Promise<PermissionRecord> {
     if (this.microphoneRequest !== undefined) return await this.microphoneRequest;
+
     const pending = this.requestMicrophone();
     this.microphoneRequest = pending;
+
     try {
       return await pending;
     } finally {
@@ -3291,33 +3229,42 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   }
 
   private async requestMicrophone(): Promise<PermissionRecord> {
-    const request = await this.context.requestPermissions([MICROPHONE_PERMISSION]).catch((error: Object): never => {
+    if (this.context.getPermissionResponse(MICROPHONE_PERMISSION).status === ExpoPermissionStatus.INVALID) {
+      throw new ExpoAudioError('ERR_AUDIO_PERMISSION_REQUEST', 'Declare the microphone permission in module.json5 before requesting it.');
+    }
+
+    await this.context.requestPermissions([MICROPHONE_PERMISSION]).catch((error: Object): never => {
       throw new ExpoAudioError('ERR_AUDIO_PERMISSION_REQUEST', cleanError(error));
     });
-    let blocked = false;
-    let denied: boolean | undefined;
-    for (const result of request.systemResults) {
-      const index = result.permissions.indexOf(MICROPHONE_PERMISSION);
-      const reason = deviceInfo.sdkApiVersion >= 18 ? result.errorReasons?.[index] : undefined;
-      if (index < 0 || reason === PermissionRequestReason.INVALID || reason === PermissionRequestReason.UNDECLARED) {
-        throw new ExpoAudioError('ERR_AUDIO_PERMISSION_REQUEST', 'Declare the microphone permission in module.json5 before requesting it.');
-      }
-      const granted = result.authResults[index] === ExpoPermissionStatus.GRANTED;
-      blocked = !granted && (reason === PermissionRequestReason.CANNOT_REQUEST || reason === PermissionRequestReason.MANUAL_SETTINGS);
-      if (granted || blocked || result.dialogShownResults?.[index] === true) denied = !granted;
-    }
-    if (deviceInfo.sdkApiVersion < 20 && denied !== undefined) {
+
+    const response = this.getRecordingPermission();
+    if (deviceInfo.sdkApiVersion < 20 && response.granted) {
       try {
-        const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: PERMISSION_PREFERENCES });
-        await store.put(MICROPHONE_DENIED, denied);
-        await store.flush();
+        const store = preferences.getPreferencesSync(this.context.uiAbilityContext, { name: PERMISSION_PREFERENCES });
+        if (store.hasSync(MICROPHONE_DENIED)) {
+          store.deleteSync(MICROPHONE_DENIED);
+          await store.flush();
+        }
       } catch (_) {}
     }
-    const response = await this.getRecordingPermission();
-    return blocked && !response.granted ? new PermissionRecord('denied', false) : response;
+
+    return response;
   }
 
   async requestNotificationPermission(): Promise<PermissionRecord> {
+    if (this.notificationRequest !== undefined) return await this.notificationRequest;
+
+    const pending = this.requestNotification();
+    this.notificationRequest = pending;
+
+    try {
+      return await pending;
+    } finally {
+      if (this.notificationRequest === pending) this.notificationRequest = undefined;
+    }
+  }
+
+  private async requestNotification(): Promise<PermissionRecord> {
     if (notificationManager.isNotificationEnabledSync()) return new PermissionRecord('granted', true);
 
     try {
@@ -3325,7 +3272,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     } catch (error) {
       const cause = error as BusinessError;
 
-      if (cause.code === 1600004) return new PermissionRecord('denied', false);
+      if (cause.code === NOTIFICATIONS_DISABLED) return new PermissionRecord('denied', false);
 
       throw new ExpoAudioError('ERR_AUDIO_NOTIFICATION_PERMISSION', cleanError(cause));
     }
@@ -3376,25 +3323,27 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   private async syncBackgroundTask(): Promise<void> {
     const modes = this.inBackground && !this.destroyed ? this.desiredBackgroundModes() : [];
 
-    if (deviceInfo.sdkApiVersion >= 21) {
+    if (deviceInfo.sdkApiVersion >= 22) {
       const hadPlayback = this.backgroundTaskIds.has(BACKGROUND_PLAYBACK_MODE);
       await this.syncScopedBackgroundTasks(modes);
+
       if (hadPlayback && !modes.includes(BACKGROUND_PLAYBACK_MODE) && this.lockScreenPlayer === undefined) this.clearMediaSession();
       return;
     }
 
-    let mediaSessionError: Error | undefined;
+    let failure: Error | undefined;
     if (modes.includes(BACKGROUND_PLAYBACK_MODE)) {
       try {
         await this.ensureBackgroundMediaSession();
       } catch (error) {
         this.suspendUnavailableBackgroundMode(BACKGROUND_PLAYBACK_MODE);
         modes.splice(modes.indexOf(BACKGROUND_PLAYBACK_MODE), 1);
-        mediaSessionError = error as Error;
+        failure = error as Error;
       }
     }
+
     await this.syncLegacyBackgroundTask(modes);
-    if (mediaSessionError !== undefined) throw mediaSessionError;
+    if (failure !== undefined) throw failure;
   }
 
   private async syncLegacyBackgroundTask(modes: string[]): Promise<void> {
@@ -3434,13 +3383,13 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     });
   }
 
+  @Available({ minApiVersion: '22' })
   private async syncScopedBackgroundTasks(modes: string[]): Promise<void> {
-    if (deviceInfo.sdkApiVersion < 21) return;
-
     let failure: Error | undefined;
     for (const entry of this.backgroundTaskIds) {
       const mode = entry[0];
       if (modes.includes(mode)) continue;
+
       try {
         await this.stopScopedBackgroundTask(mode, entry[1]);
       } catch (error) {
@@ -3461,6 +3410,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     if (failure !== undefined) throw failure;
   }
 
+  @Available({ minApiVersion: '22' })
   private async startScopedBackgroundTask(mode: string): Promise<void> {
     if (!this.listeningForBackgroundCancellation) {
       backgroundTaskManager.on('continuousTaskCancel', this.onBackgroundTaskCanceled);
@@ -3485,9 +3435,11 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     this.backgroundTaskIds.set(mode, task.continuousTaskId);
   }
 
+  @Available({ minApiVersion: '22' })
   private async stopScopedBackgroundTask(mode: string, taskId: number): Promise<void> {
     const context = this.context.uiAbilityContext;
     this.stoppingBackgroundTasks.add(taskId);
+
     try {
       await backgroundTaskManager.stopBackgroundRunning(context, taskId);
     } catch (error) {
@@ -3496,6 +3448,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     } finally {
       this.stoppingBackgroundTasks.delete(taskId);
     }
+
     this.backgroundTaskIds.delete(mode);
   }
 
@@ -3610,6 +3563,10 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     return next;
   }
 
+  private canSeekOnLockScreen(controller: PlaybackController, options?: LockScreenOptionsInput): boolean {
+    return !controller.isLive && options?.isLiveStream !== true;
+  }
+
   private async ensureMediaSessionNow(controller: PlaybackController, options?: LockScreenOptionsInput): Promise<ExpoAVSessionClient> {
     let session = this.lockScreenSession;
 
@@ -3617,20 +3574,22 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
       session = new ExpoAVSessionClient(this.context.uiAbilityContext, { name: 'ExpoAudio', type: 'audio' });
       this.lockScreenSession = session;
     }
-    if (this.sessionController === controller && this.sessionOptions === options) return session;
+
+    const seekable = this.canSeekOnLockScreen(controller, options);
+    if (this.sessionController === controller && this.sessionOptions === options && this.sessionSeekable === seekable) return session;
 
     const controls: ExpoAVSessionControls = {
       play: (): void => controller.play(),
       pause: (): void => controller.pause(),
     };
 
-    if (options?.isLiveStream !== true) {
+    if (seekable) {
       controls.seek = (time: number): void => {
         controller.seekTo(time / 1000).catch((): void => {});
       };
     }
 
-    if (options?.isLiveStream !== true && options?.showSeekForward === true) {
+    if (seekable && options?.showSeekForward === true) {
       controls.fastForward = (time?: number): void => {
         const offset = time ?? SEEK_STEP_MS;
 
@@ -3638,7 +3597,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
       };
     }
 
-    if (options?.isLiveStream !== true && options?.showSeekBackward === true) {
+    if (seekable && options?.showSeekBackward === true) {
       controls.rewind = (time?: number): void => {
         const offset = time ?? SEEK_STEP_MS;
 
@@ -3647,9 +3606,11 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     }
 
     await session.setControls(controls);
+
     if (this.sessionController !== controller) this.sessionNeedsActivation = true;
     this.sessionController = controller;
     this.sessionOptions = options;
+    this.sessionSeekable = seekable;
 
     return session;
   }
@@ -3664,6 +3625,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   }
 
   private mediaPlaybackState(controller: PlaybackController): avSession.AVPlaybackState {
+    const options = controller === this.lockScreenPlayer ? this.lockScreenOptions : undefined;
     return {
       state: controller.playing ? avSession.PlaybackState.PLAYBACK_STATE_PLAY : avSession.PlaybackState.PLAYBACK_STATE_PAUSE,
       speed: controller.playing ? controller.playbackRate : 0,
@@ -3671,7 +3633,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
         elapsedTime: Math.round(controller.currentTimeSeconds * 1000),
         updateTime: Date.now(),
       },
-      duration: controller === this.lockScreenPlayer && this.lockScreenOptions?.isLiveStream === true ? undefined : Math.round(controller.durationSeconds * 1000),
+      duration: this.canSeekOnLockScreen(controller, options) ? Math.round(controller.durationSeconds * 1000) : undefined,
       muted: controller.muted,
       volume: controller.volume,
     };
@@ -3695,6 +3657,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
       this.lockScreenSession = undefined;
       this.sessionController = undefined;
       this.sessionOptions = undefined;
+      this.sessionSeekable = false;
       this.sessionNeedsActivation = false;
       if (session === undefined) return;
       await session.destroy();
@@ -3783,10 +3746,8 @@ class ExpoAudioStream extends ExpoAudioSharedObject {
           await capturer.release();
           return;
         }
+
         this.capturer = capturer;
-        const info = capturer.getStreamInfoSync();
-        this.sampleRate = info.samplingRate;
-        this.channels = info.channels;
         const current = capturer;
         capturer.on('readData', (buffer: ArrayBuffer): void => {
           if (this.capturer !== current || !this.isStreaming || generation !== this.generation) return;
@@ -3800,13 +3761,19 @@ class ExpoAudioStream extends ExpoAudioSharedObject {
           if (this.capturer !== current || !this.isStreaming) return;
           if (state === audio.AudioState.STATE_STOPPED || state === audio.AudioState.STATE_RELEASED) this.stop();
         });
+
         await capturer.start();
         if (generation !== this.generation || this.destroyed) {
           await this.releaseCapturer();
           return;
         }
+
+        const info = capturer.getStreamInfoSync();
+        this.sampleRate = info.samplingRate;
+        this.channels = info.channels;
         this.startedAtMs = uptimeMilliseconds();
         this.isStreaming = true;
+
         this.emitStatus();
         this.runtime.recordingStateChanged();
       } catch (error) {
@@ -3814,6 +3781,7 @@ class ExpoAudioStream extends ExpoAudioSharedObject {
         else if (capturer !== undefined && capturer.state !== audio.AudioState.STATE_RELEASED) {
           try { await capturer.release(); } catch (_) {}
         }
+
         throw new ExpoAudioError('ERR_AUDIO_STREAM_START', cleanError(error as Object));
       }
     });
@@ -3857,9 +3825,6 @@ class ExpoAudioStream extends ExpoAudioSharedObject {
     this.capturer = undefined;
     if (capturer === undefined) return;
     try {
-      capturer.off('readData');
-      capturer.off('audioInterrupt');
-      capturer.off('stateChange');
       if (capturer.state === audio.AudioState.STATE_RUNNING) await capturer.stop();
     } finally {
       if (capturer.state !== audio.AudioState.STATE_RELEASED) await capturer.release();
@@ -4107,7 +4072,7 @@ export class ExpoAudioModule extends ExpoModule {
       .property(
         'shouldCorrectPitch',
         ExpoValueTypes.boolean(),
-        (object: ExpoAudioPlayer): boolean => object.controller.correctsPitch,
+        (_object: ExpoAudioPlayer): boolean => true,
         (object: ExpoAudioPlayer, value: boolean): void => object.controller.setShouldCorrectPitch(value),
       )
       .property('currentStatus', (object: ExpoAudioPlayer): ESObject => object.controller.currentStatus)
@@ -4327,7 +4292,7 @@ export class ExpoAudioModule extends ExpoModule {
       )
       .asyncFunction('requestRecordingPermissionsAsync', async (): Promise<PermissionRecord> => await this.runtime.requestRecordingPermission())
       .asyncFunction('requestNotificationPermissionsAsync', async (): Promise<PermissionRecord> => await this.runtime.requestNotificationPermission())
-      .asyncFunction('getRecordingPermissionsAsync', async (): Promise<PermissionRecord> => await this.runtime.getRecordingPermission())
+      .asyncFunction('getRecordingPermissionsAsync', async (): Promise<PermissionRecord> => this.runtime.getRecordingPermission())
       .asyncFunction(
         'preload',
         ExpoFunction.typed2(
