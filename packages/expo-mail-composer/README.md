@@ -12,7 +12,7 @@ npm install @expo-harmony/expo-mail-composer expo-mail-composer@~57.0.2
 
 本包适配 Expo SDK 57。
 
-引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 21（HarmonyOS 6.0.1）。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 21（HarmonyOS 6.0.1）。系统邮件面板从 API 21 起提供区分客户端启动和用户取消的回调。
 
 ## API 对照表
 
@@ -26,13 +26,13 @@ npm install @expo-harmony/expo-mail-composer expo-mail-composer@~57.0.2
 
 #### `MailComposer.isAvailableAsync()`
 
-返回 `Promise<boolean>`。查询设备是否有应用可处理 `mailto` 链接；没有时返回 `false`。调用前需在应用配置的 `harmony.querySchemes` 中声明 `mailto`。查询失败时以 `ERR_MAIL_COMPOSER_AVAILABILITY` 拒绝。
+返回 `Promise<boolean>`。查询设备是否有应用可处理 `mailto` 链接；没有时返回 `false`。调用前需在应用配置的 `harmony.querySchemes` 中声明 `mailto`。查询失败时以 `ERR_MAIL_COMPOSER_AVAILABILITY` 拒绝。系统邮件面板也可能显示未注册 `mailto` 的撰写客户端。
 
 #### `MailComposer.composeAsync(options)`
 
 返回 `Promise<MailComposerResult>`，打开系统邮件选择界面并将选项中的内容交给用户选择的邮件客户端。系统报告用户取消选择时返回 `{ status: 'cancelled' }`；客户端启动成功或系统只返回通用结果时返回 `{ status: 'undetermined' }`。结果不代表邮件已发送或保存。设备没有可用邮件客户端时，系统可能提示用户，但 Promise 可能一直等待系统回调。
 
-应用必须处于前台才能调用。上一个请求未结束时再次调用会以 `ERR_MAIL_COMPOSER_IN_PROGRESS` 拒绝；应用在请求完成前重载或销毁时会以 `ERR_MAIL_COMPOSER_DESTROYED` 拒绝。启动客户端失败时以 `ERR_MAIL_COMPOSER_COMPOSE` 拒绝。
+应用必须处于前台才能调用。同一 UIAbility 一次只能处理一个请求；请求仍在进行时再次调用会以 `ERR_MAIL_COMPOSER_IN_PROGRESS` 拒绝。发起请求的运行时重载或销毁时会以 `ERR_MAIL_COMPOSER_DESTROYED` 拒绝。启动客户端失败时以 `ERR_MAIL_COMPOSER_COMPOSE` 拒绝。
 
 ### Types
 

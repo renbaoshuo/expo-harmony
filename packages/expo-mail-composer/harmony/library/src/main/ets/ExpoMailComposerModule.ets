@@ -6,6 +6,7 @@
  */
 
 import { AbilityStartFailureCode, bundleManager, common, wantConstant } from '@kit.AbilityKit';
+import type { BusinessError } from '@kit.BasicServicesKit';
 import { ExpoAppLifecycleState, ExpoFunction, ExpoModule, ExpoModuleDefinition, ExpoModuleError } from '@expo-harmony/expo-modules-core';
 
 import { attachmentUri } from './MailComposerAttachments';
@@ -17,6 +18,7 @@ const URI_PERMISSION_FLAG: string = 'ability.want.params.uriPermissionFlag';
 const MAILTO_URI: string = 'mailto://';
 const ABILITY_CAPABILITY: string = 'SystemCapability.Ability.AbilityRuntime.Core';
 const BUNDLE_CAPABILITY: string = 'SystemCapability.BundleManager.BundleFramework.Core';
+const QUERY_SCHEME_NOT_DECLARED: number = 17700056;
 
 interface MailClient {
   label: string;
@@ -31,16 +33,19 @@ interface MailComposerResult {
 }
 
 class MailComposerRequest {
-  resolve: (result: MailComposerResult) => void;
-  reject: (error: ExpoModuleError) => void;
+  readonly ability: common.UIAbilityContext;
+  readonly resolve: (result: MailComposerResult) => void;
+  readonly reject: (error: ExpoModuleError) => void;
 
-  constructor(resolve: (result: MailComposerResult) => void, reject: (error: ExpoModuleError) => void) {
+  constructor(ability: common.UIAbilityContext, resolve: (result: MailComposerResult) => void, reject: (error: ExpoModuleError) => void) {
+    this.ability = ability;
     this.resolve = resolve;
     this.reject = reject;
   }
 }
 
 export class ExpoMailComposerModule extends ExpoModule {
+  private static readonly openRequests = new WeakMap<common.UIAbilityContext, MailComposerRequest>();
   private pending?: MailComposerRequest;
   private destroyed: boolean = false;
 
@@ -64,11 +69,12 @@ export class ExpoMailComposerModule extends ExpoModule {
     try {
       return bundleManager.canOpenLink(MAILTO_URI);
     } catch (error) {
-      throw new ExpoModuleError(
-        'ERR_MAIL_COMPOSER_AVAILABILITY',
-        `Unable to query email applications. Declare "mailto" in the host module's querySchemes. ${(error as Error)?.message ?? String(error)}`,
-        error as Object,
-      );
+      const missingScheme = (error as BusinessError)?.code === QUERY_SCHEME_NOT_DECLARED;
+      const message = missingScheme
+        ? 'Declare "mailto" in the host module’s querySchemes to query email applications.'
+        : `Unable to query email applications: ${(error as Error)?.message ?? String(error)}`;
+
+      throw new ExpoModuleError('ERR_MAIL_COMPOSER_AVAILABILITY', message, error as Object);
     }
   }
 
@@ -85,7 +91,9 @@ export class ExpoMailComposerModule extends ExpoModule {
   private compose(options: MailComposerOptions): Promise<MailComposerResult> {
     this.assertForeground();
 
-    if (this.pending !== undefined) {
+    const ability = this.context.uiAbilityContext;
+
+    if (this.pending !== undefined || ExpoMailComposerModule.openRequests.has(ability)) {
       throw new ExpoModuleError('ERR_MAIL_COMPOSER_IN_PROGRESS', 'Another mail composer request is in progress.');
     }
     if (options.isHtml) {
@@ -93,8 +101,9 @@ export class ExpoMailComposerModule extends ExpoModule {
     }
 
     return new Promise<MailComposerResult>((resolve, reject): void => {
-      const request = new MailComposerRequest(resolve, reject);
+      const request = new MailComposerRequest(ability, resolve, reject);
       this.pending = request;
+      ExpoMailComposerModule.openRequests.set(ability, request);
 
       this.open(request, options).catch((error: Object): void => this.fail(request, error));
     });
@@ -141,26 +150,28 @@ export class ExpoMailComposerModule extends ExpoModule {
       },
     };
 
-    try {
-      // ComposeMail clients need not declare mailto, so canOpenLink cannot gate this call.
-      await this.context.uiAbilityContext.startAbilityByType(MAIL_TYPE, params, callback);
-    } catch (error) {
-      this.fail(request, error as Object);
+    // ComposeMail clients need not accept mailto links, so canOpenLink cannot gate this call.
+    await request.ability.startAbilityByType(MAIL_TYPE, params, callback);
+  }
+
+  private release(request: MailComposerRequest): boolean {
+    if (this.pending !== request) return false;
+
+    this.pending = undefined;
+    if (ExpoMailComposerModule.openRequests.get(request.ability) === request) {
+      ExpoMailComposerModule.openRequests.delete(request.ability);
     }
+
+    return true;
   }
 
   private finish(request: MailComposerRequest, status: MailComposerStatus = 'undetermined'): void {
-    if (this.pending !== request) return;
-
-    this.pending = undefined;
-
+    if (!this.release(request)) return;
     request.resolve({ status });
   }
 
   private fail(request: MailComposerRequest, error: Object): void {
-    if (this.pending !== request) return;
-
-    this.pending = undefined;
+    if (!this.release(request)) return;
 
     request.reject(
       error instanceof ExpoModuleError ? error : new ExpoModuleError('ERR_MAIL_COMPOSER_COMPOSE', (error as Error)?.message ?? String(error), error),
@@ -171,8 +182,8 @@ export class ExpoMailComposerModule extends ExpoModule {
     this.destroyed = true;
 
     const request = this.pending;
-    this.pending = undefined;
-
-    request?.reject(new ExpoModuleError('ERR_MAIL_COMPOSER_DESTROYED', 'The mail composer host was destroyed while a request was pending.'));
+    if (request !== undefined) {
+      this.fail(request, new ExpoModuleError('ERR_MAIL_COMPOSER_DESTROYED', 'The mail composer host was destroyed while a request was pending.'));
+    }
   }
 }
