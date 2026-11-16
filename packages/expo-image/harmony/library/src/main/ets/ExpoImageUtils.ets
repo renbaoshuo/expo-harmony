@@ -7,9 +7,12 @@
 
 import { parseExpoColor } from '@expo-harmony/expo-modules-core';
 import { drawing } from '@kit.ArkGraphics2D';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
-import deviceInfo from '@ohos.deviceInfo';
 import { ExpoImageError } from './ExpoImageError';
+
+const WEBP_LOOP_METADATA_API: number = 24;
+export const MAX_DECODED_BYTES: number = 256 * 1024 * 1024;
 
 export function colorComponents(value: number | string): number[] {
   try {
@@ -21,12 +24,22 @@ export function colorComponents(value: number | string): number[] {
 }
 
 export async function copyPixelMap(pixel: image.PixelMap, maxSize?: number): Promise<image.PixelMap> {
-  const info = pixel.getImageInfoSync();
-  // Draw into an owned RGBA map synchronously before an external SharedRef can
-  // release the source. Drawing performs native format/alpha conversion.
-  const copy = image.createPixelMapSync(new ArrayBuffer(info.size.width * info.size.height * 4), {
-    size: info.size,
-    srcPixelFormat: image.PixelMapFormat.RGBA_8888,
+  const info = pixel.getImageInfoSync().size;
+  const width = info.width;
+  const height = info.height;
+  const scale = maxSize === undefined ? 1 : Math.min(1, maxSize / Math.max(width, height));
+  const size: image.Size = {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  };
+
+  if (size.width * size.height * 4 > MAX_DECODED_BYTES) {
+    throw new ExpoImageError('ERR_IMAGE_TOO_LARGE', 'Decoded image frames exceed the 256 MiB memory limit.');
+  }
+
+  // Draw synchronously before a release can invalidate the borrowed SharedRef.
+  const copy = image.createPixelMapSync({
+    size,
     pixelFormat: image.PixelMapFormat.RGBA_8888,
     alphaType: image.AlphaType.PREMUL,
     editable: true,
@@ -34,16 +47,12 @@ export async function copyPixelMap(pixel: image.PixelMap, maxSize?: number): Pro
 
   try {
     const canvas = new drawing.Canvas(copy);
-    canvas.drawImage(pixel, 0, 0);
-
-    if (maxSize !== undefined) {
-      const factor = Math.min(1, maxSize / Math.max(info.size.width, info.size.height));
-      if (factor < 1)
-        await copy.scale(
-          Math.max(1, Math.round(info.size.width * factor)) / info.size.width,
-          Math.max(1, Math.round(info.size.height * factor)) / info.size.height,
-        );
-    }
+    canvas.drawColor(0, 0, 0, 0, drawing.BlendMode.SRC);
+    canvas.drawImageRect(
+      pixel,
+      { left: 0, top: 0, right: size.width, bottom: size.height },
+      new drawing.SamplingOptions(drawing.FilterMode.FILTER_MODE_LINEAR),
+    );
 
     return copy;
   } catch (error) {
@@ -101,7 +110,7 @@ export async function animationIterations(source: image.ImageSource, mediaType: 
     if (mediaType === 'image/gif') {
       const value = await source.getImageProperty(image.PropertyKey.GIF_LOOP_COUNT);
       if (value.trim().length > 0) count = Number(value);
-    } else if (mediaType === 'image/webp' && deviceInfo.apiAvailable(24)) {
+    } else if (mediaType === 'image/webp' && deviceInfo.sdkApiVersion >= WEBP_LOOP_METADATA_API) {
       const metadata = await source.readImageMetadata([image.WebPPropertyKey.LOOP_COUNT]);
       count = metadata.webPMetadata?.loopCount;
     }
@@ -116,14 +125,8 @@ export async function tintPixelMap(pixel: image.PixelMap, tint: number[]): Promi
   const copy = await copyPixelMap(pixel);
 
   try {
-    const info = await copy.getImageInfo();
     const canvas = new drawing.Canvas(copy);
-    const brush = new drawing.Brush();
-    brush.setColor({ red: tint[0], green: tint[1], blue: tint[2], alpha: tint[3] });
-    brush.setBlendMode(drawing.BlendMode.SRC_IN);
-    canvas.attachBrush(brush);
-    canvas.drawRect({ left: 0, top: 0, right: info.size.width, bottom: info.size.height });
-    canvas.detachBrush();
+    canvas.drawColor(tint[3], tint[0], tint[1], tint[2], drawing.BlendMode.SRC_IN);
 
     return copy;
   } catch (error) {

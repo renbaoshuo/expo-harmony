@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import util from '@ohos.util';
+import { util } from '@kit.ArkTS';
 import { ExpoImageError } from './ExpoImageError';
 
 const BASE83: string = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz#$%*+,-.:;=?@[]^_{|}~';

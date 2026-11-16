@@ -7,6 +7,7 @@
 
 import { ExpoSharedRef, ExpoView, ExpoViewContext, ExpoViewContentContext } from '@expo-harmony/expo-modules-core';
 import { image } from '@kit.ImageKit';
+import { Descriptor, ViewDescriptorWrapperBase } from '@rnoh/react-native-openharmony';
 import {
   ExpoImageLease,
   ExpoImageLoadCancellation,
@@ -46,6 +47,8 @@ export interface ImageViewProps {
   cachePolicy?: string | null;
   recyclingKey?: string | null;
   allowDownscaling?: boolean;
+  enforceEarlyResizing?: boolean;
+  preferHighDynamicRange?: boolean;
   autoplay?: boolean;
   decodeFormat?: string | null;
 }
@@ -58,15 +61,17 @@ export class ExpoImageLayer {
   readonly position: ContentPosition;
   readonly placeholder: boolean;
   readonly blurRadius: number;
+  readonly preferHighDynamicRange: boolean;
 
-  constructor(lease: ExpoImageLease, fit: string, position: ContentPosition, placeholder: boolean, id: number, blurRadius: number) {
+  constructor(lease: ExpoImageLease, fit: string, position: ContentPosition, placeholder: boolean, id: number, props: ImageViewProps) {
     this.resource = lease.resource;
     this.lease = lease;
     this.id = id;
     this.fit = fit;
     this.position = position;
     this.placeholder = placeholder;
-    this.blurRadius = placeholder ? 0 : blurRadius;
+    this.blurRadius = placeholder ? 0 : (props.blurRadius ?? 0);
+    this.preferHighDynamicRange = !placeholder && props.preferHighDynamicRange === true;
   }
 }
 
@@ -237,16 +242,29 @@ export class ExpoImageView extends ExpoView {
   }
 
   setPixelSize(width: number, height: number): void {
-    const w = Math.max(0, width);
-    const h = Math.max(0, height);
+    const w = Math.max(0, Math.round(width));
+    const h = Math.max(0, Math.round(height));
 
     if (!Number.isFinite(w) || !Number.isFinite(h)) return;
-    if (Math.abs(w - this.pixelWidth) < 0.5 && Math.abs(h - this.pixelHeight) < 0.5) return;
+
+    const lastWidth = this.pixelWidth;
+    const lastHeight = this.pixelHeight;
+    if (w === lastWidth && h === lastHeight) return;
 
     this.pixelWidth = w;
     this.pixelHeight = h;
 
-    void this.reload(false);
+    if (
+      w === 0 || h === 0 || lastWidth === 0 || lastHeight === 0 ||
+      (Array.isArray(this.props.source) && (
+        this.shouldDownscale() ||
+        chooseSource(this.props.source, w, h) !== chooseSource(this.props.source, lastWidth, lastHeight)
+      )) ||
+      (Array.isArray(this.props.placeholder) &&
+        chooseSource(this.props.placeholder, w, h) !== chooseSource(this.props.placeholder, lastWidth, lastHeight))
+    ) {
+      void this.reload(false);
+    }
   }
 
   commitProps(): void {
@@ -262,6 +280,8 @@ export class ExpoImageView extends ExpoView {
       contentFit: this.props.contentFit,
       cachePolicy: this.props.cachePolicy,
       allowDownscaling: this.props.allowDownscaling,
+      enforceEarlyResizing: this.props.enforceEarlyResizing,
+      preferHighDynamicRange: this.props.preferHighDynamicRange,
       decodeFormat: this.props.decodeFormat,
       recyclingKey: this.props.recyclingKey,
       priority: this.props.priority,
@@ -403,7 +423,9 @@ export class ExpoImageView extends ExpoView {
         options.priority = this.props.priority ?? undefined;
         options.decodeFormat = this.props.decodeFormat ?? undefined;
         options.contentFit = this.props.contentFit ?? undefined;
-        if (this.props.allowDownscaling !== false && this.props.contentFit !== 'none' && this.props.contentFit !== 'fill') {
+        options.enforceEarlyResizing = this.props.enforceEarlyResizing;
+        options.preferHighDynamicRange = this.props.preferHighDynamicRange;
+        if (this.shouldDownscale()) {
           if (width > 0) options.maxWidth = width;
           if (height > 0) options.maxHeight = height;
         }
@@ -471,6 +493,11 @@ export class ExpoImageView extends ExpoView {
     }
   }
 
+  private shouldDownscale(): boolean {
+    return this.props.enforceEarlyResizing === true ||
+      (this.props.allowDownscaling !== false && this.props.contentFit !== 'none' && this.props.contentFit !== 'fill');
+  }
+
   private cancelPendingLoads(): void {
     this.sourceCancel?.cancel();
     this.sourceCancel = undefined;
@@ -535,7 +562,7 @@ export class ExpoImageView extends ExpoView {
       placeholder ? { top: '50%', left: '50%' } : normalizedPosition(this.props.contentPosition),
       placeholder,
       id,
-      Math.max(0, this.props.blurRadius ?? 0),
+      this.props,
     );
   }
 
@@ -644,8 +671,20 @@ struct ExpoImageSurface {
   @State private surfaceHeight: number = 0;
   @State private currentOpacity: number = 1;
   @State private previousOpacity: number = 0;
+  @State private borderRadii: BorderRadiuses = {};
+  private unsubscribeDescriptor?: () => void;
 
   aboutToAppear(): void {
+    const tag = this.view.context.tag;
+    const registry = this.view.context.rnComponentContext.descriptorRegistry;
+    const update = (descriptor: Descriptor): void => {
+      this.borderRadii = new ViewDescriptorWrapperBase(descriptor).borderRadius;
+    };
+
+    this.unsubscribeDescriptor = registry.subscribeToDescriptorChanges(tag, update);
+    const descriptor = registry.getDescriptor(tag);
+    if (descriptor !== undefined) update(descriptor);
+
     this.view.setRenderHandler((next: ExpoImageRenderState): void => {
       this.renderState = next;
       if (next.transition !== undefined) {
@@ -664,6 +703,8 @@ struct ExpoImageSurface {
 
   aboutToDisappear(): void {
     this.view.setRenderHandler(undefined);
+    this.unsubscribeDescriptor?.();
+    this.unsubscribeDescriptor = undefined;
   }
 
   private activeLayer(layer: ExpoImageLayer): ExpoImageLayer {
@@ -696,6 +737,7 @@ struct ExpoImageSurface {
     }
     .width('100%')
     .height('100%')
+    .borderRadius(this.borderRadii)
     .clip(true)
     .accessibilityGroup(this.renderState.accessible)
     .accessibilityLevel(this.renderState.accessible ? 'yes' : 'no-hide-descendants')
@@ -755,6 +797,7 @@ struct ExpoImageLayerContent {
         .width('100%')
         .height('100%')
         .objectFit(ImageFit.Fill)
+        .dynamicRangeMode(this.layer.preferHighDynamicRange ? DynamicRangeMode.CONSTRAINT : DynamicRangeMode.STANDARD)
         .onComplete((event): void => {
           if (event?.loadingStatus === 1) this.view.onDisplay(this.layer.id);
         })

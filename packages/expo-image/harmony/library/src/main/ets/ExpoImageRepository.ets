@@ -7,23 +7,21 @@
 
 import { ExpoModuleContext, isRnohRawfileResourceUri, rawResourcePathFromUri } from '@expo-harmony/expo-modules-core';
 import { common } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
 import type { BusinessError } from '@kit.BasicServicesKit';
-import { fileIo } from '@kit.CoreFileKit';
+import { fileIo as fs, hash as fileHash } from '@kit.CoreFileKit';
+import { image } from '@kit.ImageKit';
 import { resourceManager } from '@kit.LocalizationKit';
 import { http } from '@kit.NetworkKit';
-import fs from '@ohos.file.fs';
-import fileHash from '@ohos.file.hash';
-import image from '@ohos.multimedia.image';
-import util from '@ohos.util';
 import { decodeBlurhash, decodeThumbhash } from './ExpoImageHash';
-import { animationIterations, colorComponents, copyPixelMap, ExifOrientation, orientPixelMap, readOrientation, tintPixelMap } from './ExpoImageUtils';
+import { animationIterations, colorComponents, copyPixelMap, ExifOrientation, MAX_DECODED_BYTES, orientPixelMap, readOrientation, tintPixelMap } from './ExpoImageUtils';
 import { ExpoImageError } from './ExpoImageError';
 
 const MAX_SOURCE_BYTES: number = 100 * 1024 * 1024;
 const CONNECT_TIMEOUT_MS: number = 15_000;
 const READ_TIMEOUT_MS: number = 60_000;
 const IO_CHUNK_BYTES: number = 64 * 1024;
-const MAX_DECODED_BYTES: number = 256 * 1024 * 1024;
+const MAX_LRU_CAPACITY: number = 2_147_483_647;
 const SVG_MEDIA_TYPE: string = 'image/svg+xml';
 const RAW_RESOURCE_NOT_FOUND: number = 9001005;
 
@@ -38,7 +36,6 @@ export interface ImageSourceRecord {
   scale?: number | null;
   headers?: Record<string, string>;
   cacheKey?: string;
-  isAnimated?: boolean;
 }
 
 export interface ImageLoadOptions {
@@ -48,6 +45,8 @@ export interface ImageLoadOptions {
   priority?: string;
   decodeFormat?: string;
   contentFit?: string;
+  enforceEarlyResizing?: boolean;
+  preferHighDynamicRange?: boolean;
 }
 
 export interface ImageCacheConfig {
@@ -143,6 +142,7 @@ class CacheRequestGuard {
   readonly cacheKey: string;
   readonly tracker: RequestTracker | undefined;
   valid: boolean = true;
+  storeInMemory: boolean = true;
 
   constructor(cacheKey: string, tracker?: RequestTracker) {
     this.cacheKey = cacheKey;
@@ -350,7 +350,6 @@ export class ExpoImageResource {
   readonly cacheType: CacheType;
   retainCount: number = 0;
   memoryCached: boolean = false;
-  lastAccess: number = Date.now();
   private disposal?: Promise<void>;
 
   constructor(
@@ -448,31 +447,8 @@ function finitePositive(value?: number | null): number | undefined {
   return value !== undefined && value !== null && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
-function copyHeaders(headers?: Record<string, string> | null): Record<string, string> {
-  if (headers === undefined) return {};
-  if (headers === null || typeof headers !== 'object' || Array.isArray(headers)) {
-    throw new ExpoImageError('ERR_IMAGE_INVALID_HEADER', 'Image request headers must be an object.');
-  }
-
-  const output: Record<string, string> = {};
-  for (const key of Object.keys(headers)) {
-    const name = key.trim();
-    const value = headers[key];
-    if (typeof value !== 'string') {
-      throw new ExpoImageError('ERR_IMAGE_INVALID_HEADER', 'Image request header values must be strings.');
-    }
-    if (name.length === 0 || /[\r\n:]/.test(name) || /[\r\n]/.test(value)) {
-      throw new ExpoImageError('ERR_IMAGE_INVALID_HEADER', 'Image request headers must not contain control characters.');
-    }
-
-    Reflect.set(output, name, value);
-  }
-
-  return output;
-}
-
 function headerCacheIdentity(headers: Record<string, string>): string {
-  const entries = Object.keys(headers).map((key: string): string => `${key.toLowerCase()}:${headers[key]}`);
+  const entries = Object.keys(headers).map((key: string): string => `${key}:${headers[key]}`);
   entries.sort();
 
   return JSON.stringify(entries);
@@ -480,6 +456,7 @@ function headerCacheIdentity(headers: Record<string, string>): string {
 
 function imageKey(identity: string, headers: Record<string, string>, source: ImageSourceRecord, options: ImageLoadOptions): string {
   const hash = source.uri?.startsWith('blurhash:/') === true;
+
   return JSON.stringify([
     identity,
     headerCacheIdentity(headers),
@@ -491,6 +468,7 @@ function imageKey(identity: string, headers: Record<string, string>, source: Ima
     options.tintColor ?? null,
     options.decodeFormat ?? 'argb',
     options.contentFit ?? null,
+    options.preferHighDynamicRange === true,
   ]);
 }
 
@@ -657,11 +635,13 @@ async function readPackagedResource(
 }
 
 async function readLocalFile(context: ExpoModuleContext, uri: string, tracker?: RequestTracker): Promise<ArrayBuffer> {
-  let file: fileIo.File | undefined;
+  let file: fs.File | undefined;
+
   try {
     tracker?.throwIfCancelled();
     file = context.openFileForRead(uri);
-    const stat = await fileIo.stat(file.fd);
+    const stat = await fs.stat(file.fd);
+
     tracker?.throwIfCancelled();
     if (!stat.isFile()) throw new ExpoImageError('ERR_IMAGE_RESOURCE', 'The local image must be a regular file.');
 
@@ -673,7 +653,7 @@ async function readLocalFile(context: ExpoModuleContext, uri: string, tracker?: 
 
     while (offset < size) {
       const chunk = new ArrayBuffer(Math.min(IO_CHUNK_BYTES, size - offset));
-      const read = await fileIo.read(file.fd, chunk);
+      const read = await fs.read(file.fd, chunk);
       tracker?.throwIfCancelled();
       if (read <= 0) throw new ExpoImageError('ERR_IMAGE_FILE_READ', 'The local image could not be read completely.');
 
@@ -691,7 +671,7 @@ async function readLocalFile(context: ExpoModuleContext, uri: string, tracker?: 
   } finally {
     if (file !== undefined) {
       try {
-        await fileIo.close(file.fd);
+        await fs.close(file.fd);
       } catch (_) {}
     }
   }
@@ -763,7 +743,7 @@ async function download(
       tracker.throwIfCancelled();
     }
 
-    console.error(`Expo Image download failed for '${uri}': ${String(error)}`);
+    console.error(`Expo Image download failed: ${String(error)}`);
     throw new ExpoImageError('ERR_IMAGE_DOWNLOAD', 'The image could not be downloaded.');
   } finally {
     unsubscribe?.();
@@ -781,7 +761,7 @@ function createImageSource(input: DecodeInput): image.ImageSource {
 export class ExpoImageRepository {
   private readonly context: ExpoModuleContext;
   private readonly directory: string;
-  private readonly memory: Map<string, ExpoImageResource> = new Map();
+  private readonly memory = new util.LRUCache<string, ExpoImageResource>(MAX_LRU_CAPACITY);
   private readonly pending: Map<string, PendingImageLoad> = new Map();
   private readonly cacheRequests: Set<CacheRequestGuard> = new Set();
   private readonly resources: Set<ExpoImageResource> = new Set();
@@ -793,7 +773,6 @@ export class ExpoImageRepository {
   constructor(context: ExpoModuleContext) {
     this.context = context;
     this.directory = `${context.cachePath}/expo-image`;
-    ensureDirectory(this.directory);
   }
 
   configure(config: ImageCacheConfig): void {
@@ -833,24 +812,25 @@ export class ExpoImageRepository {
     if (uri.startsWith('sf:/')) throw new ExpoImageError('ERR_IMAGE_UNSUPPORTED_SOURCE', 'SF Symbols are not available on HarmonyOS.');
 
     const policy = normalizedPolicy(cachePolicy);
-    const headers = copyHeaders(source.headers);
+    const headers = source.headers ?? {};
     const identity = source.cacheKey ?? uri;
     const key = imageKey(identity, headers, source, options);
 
     if (hasMemory(policy)) {
-      const fallback = options.contentFit !== undefined && options.tintColor == null ? imageKey(identity, headers, source, {}) : key;
       let cached = this.memory.get(key);
 
-      if (cached === undefined) {
-        const original = this.memory.get(fallback);
+      if (
+        cached === undefined && options.contentFit !== undefined && options.tintColor == null &&
+        options.preferHighDynamicRange !== true && options.enforceEarlyResizing !== true &&
+        (options.decodeFormat ?? 'argb') === 'argb'
+      ) {
+        const original = this.memory.get(imageKey(identity, headers, source, {}));
 
         // SVG prefetches contain natural-size pixels, not scalable vector data.
-        if (original?.mediaType !== SVG_MEDIA_TYPE && (options.decodeFormat ?? 'argb') === 'argb') cached = original;
+        if (original?.mediaType !== SVG_MEDIA_TYPE) cached = original;
       }
 
       if (cached !== undefined) {
-        cached.lastAccess = Date.now();
-
         return new ExpoImageLease(this, cached, 'memory');
       }
     }
@@ -863,11 +843,9 @@ export class ExpoImageRepository {
       const tracker = new RequestTracker();
       const guard = new CacheRequestGuard(identity, tracker);
       this.cacheRequests.add(guard);
+
       let entry: PendingImageLoad | undefined;
-      const promise = this.loadResource(source, uri, identity, key, policy, options, (event: ImageProgress): void => entry?.notify(event), tracker, guard)
-        .finally((): void => {
-          this.cacheRequests.delete(guard);
-        });
+      const promise = this.loadResource(source, uri, headers, identity, key, policy, options, (event: ImageProgress): void => entry?.notify(event), tracker, guard);
 
       entry = new PendingImageLoad(
         guard,
@@ -876,7 +854,7 @@ export class ExpoImageRepository {
         (resource: ExpoImageResource): void => {
           // Hold the pending load's reference before exposing it to cache eviction.
           this.retain(resource);
-          if (guard.valid && !this.destroyed && !tracker.isCancelled()) this.maybeCache(resource, policy);
+          if (guard.valid && guard.storeInMemory && !this.destroyed && !tracker.isCancelled()) this.maybeCache(resource, policy);
         },
         (resource: ExpoImageResource): void => this.release(resource),
         (): void => {
@@ -885,9 +863,16 @@ export class ExpoImageRepository {
           }
         },
       );
+
       pending = entry;
       this.pending.set(taskKey, pending);
       pending.addSubscriber(subscriber);
+
+      // Keep the guard until this load finishes updating the cache.
+      const forgetGuard = (): void => {
+        this.cacheRequests.delete(guard);
+      };
+      void promise.then(forgetGuard, forgetGuard);
     }
 
     const task = pending;
@@ -940,9 +925,11 @@ export class ExpoImageRepository {
     const temporary = temporaryPath(this.directory);
     let file: fs.File | undefined;
     let packer: image.ImagePacker | undefined;
+
     this.retainDiskPath(path);
 
     try {
+      ensureDirectory(this.directory);
       if (typeof source === 'string') {
         if (!/^file:\/\//i.test(source)) {
           throw new ExpoImageError('ERR_IMAGE_CACHE_REMOTE_SOURCE', 'The cache source must be a local file URI or an ImageRef. Use prefetch for remote images.');
@@ -959,9 +946,9 @@ export class ExpoImageRepository {
       }
 
       this.assertAlive();
-      // The temporary file is complete before it replaces any existing cached bytes.
       fs.moveFileSync(temporary, path, 0);
       DiskPathProtection.didWrite(path);
+
       for (const guard of this.cacheRequests) {
         if (guard.cacheKey === key) guard.valid = false;
       }
@@ -970,7 +957,7 @@ export class ExpoImageRepository {
         if (pending.guard.cacheKey === key) pending.stopAccepting();
       }
 
-      for (const resource of Array.from(this.memory.values())) {
+      for (const resource of this.memory.values()) {
         if (resource.cacheKey === key) this.discard(resource);
       }
     } catch (error) {
@@ -984,6 +971,7 @@ export class ExpoImageRepository {
         try { await packer.release(); } catch (_) {}
       }
       try { await fs.unlink(temporary); } catch (_) {}
+
       this.releaseDiskPath(path);
       this.evictDisk();
     }
@@ -1010,13 +998,16 @@ export class ExpoImageRepository {
         await resource.dispose();
         this.assertAlive();
       }
-      return new ExpoImageLease(this, this.maybeCache(resource, guard.valid ? 'memory' : 'none'));
+      this.maybeCache(resource, guard.valid && guard.storeInMemory ? 'memory' : 'none');
+
+      return new ExpoImageLease(this, resource);
     } catch (error) {
       // A corrupt cached entry is a miss too; never fall back to a network request.
       this.assertAlive();
       if (guard.valid && error instanceof ExpoImageError && error.code === 'ERR_IMAGE_DECODE') {
         DiskPathProtection.invalidate(path, revision);
       }
+
       console.warn(`Expo Image could not read its cached image: ${String(error)}`);
 
       return this.findCachedVariant(key);
@@ -1028,14 +1019,14 @@ export class ExpoImageRepository {
 
   private findCachedVariant(cacheKey: string): ExpoImageLease | null {
     // Decoded variants have separate internal keys for headers, scale and transforms.
-    let mostRecent: ExpoImageResource | undefined;
-    for (const resource of this.memory.values()) {
-      if (resource.cacheKey === cacheKey && (mostRecent === undefined || resource.lastAccess >= mostRecent.lastAccess)) {
-        mostRecent = resource;
+    for (const resource of this.memory.values().reverse()) {
+      if (resource.cacheKey === cacheKey) {
+        this.memory.get(resource.key);
+        return new ExpoImageLease(this, resource, 'memory');
       }
     }
 
-    return mostRecent === undefined ? null : new ExpoImageLease(this, mostRecent, 'memory');
+    return null;
   }
 
   adoptPixelMap(pixel: image.PixelMap): ExpoImageLease {
@@ -1112,7 +1103,7 @@ export class ExpoImageRepository {
             }
           })
           .catch((error: Object): void => {
-            console.warn(`Expo Image prefetch failed for '${uri}': ${String(error)}`);
+            console.warn(`Expo Image prefetch failed: ${String(error)}`);
             if (!resolved) {
               resolved = true;
               resolve(false);
@@ -1123,7 +1114,9 @@ export class ExpoImageRepository {
   }
 
   async clearMemory(): Promise<boolean> {
-    const resources = Array.from(this.memory.values());
+    for (const request of this.cacheRequests) request.storeInMemory = false;
+
+    const resources = this.memory.values();
     for (const resource of resources) resource.memoryCached = false;
 
     this.memory.clear();
@@ -1176,7 +1169,7 @@ export class ExpoImageRepository {
 
   getCachePath(key: string): string | null {
     const path = cachePath(this.directory, key);
-    if (DiskPathProtection.isInvalid(path) || !fs.accessSync(path)) return null;
+    if (DiskPathProtection.isInvalid(path) || !this.diskFileExists(path)) return null;
 
     try {
       fs.utimes(path, Date.now());
@@ -1187,7 +1180,6 @@ export class ExpoImageRepository {
 
   retain(resource: ExpoImageResource): void {
     resource.retainCount += 1;
-    resource.lastAccess = Date.now();
   }
 
   release(resource: ExpoImageResource): void {
@@ -1211,6 +1203,7 @@ export class ExpoImageRepository {
     }
 
     this.cacheRequests.clear();
+
     for (const pending of this.pending.values()) {
       pending.cancel('ERR_IMAGE_RUNTIME_DESTROYED', 'The Expo Image repository has been destroyed.');
     }
@@ -1229,7 +1222,7 @@ export class ExpoImageRepository {
   }
 
   private discard(resource: ExpoImageResource): void {
-    if (this.memory.get(resource.key) === resource) this.memory.delete(resource.key);
+    if (this.memory.get(resource.key) === resource) this.memory.remove(resource.key);
 
     resource.memoryCached = false;
     if (resource.retainCount === 0) resource.dispose();
@@ -1240,6 +1233,7 @@ export class ExpoImageRepository {
   private async loadResource(
     source: ImageSourceRecord,
     uri: string,
+    headers: Record<string, string>,
     cacheKey: string,
     key: string,
     policy: CachePolicy,
@@ -1257,9 +1251,11 @@ export class ExpoImageRepository {
 
     if (uri.startsWith('blurhash:/') || uri.startsWith('thumbhash:/')) {
       let pixel: image.PixelMap | undefined;
+
       try {
         const blurhash = uri.startsWith('blurhash:/');
         let encoded: string;
+
         try {
           encoded = decodeURIComponent(uri.slice(uri.indexOf(':/') + 2));
         } catch (_) {
@@ -1267,7 +1263,7 @@ export class ExpoImageRepository {
         }
 
         pixel = blurhash
-          ? decodeBlurhash(encoded, finitePositive(source.width) ?? 16, finitePositive(source.height) ?? 16)
+          ? await decodeBlurhash(encoded, finitePositive(source.width) ?? 16, finitePositive(source.height) ?? 16)
           : await decodeThumbhash(encoded.replace(/\\/g, '/'));
 
         const info = await pixel.getImageInfo();
@@ -1304,21 +1300,21 @@ export class ExpoImageRepository {
     }
 
     const remote = /^https?:\/\//i.test(uri);
-    const cachedPath = cachePath(this.directory, cacheKey);
-    if (hasDisk(policy) && (remote || fs.accessSync(cachedPath))) {
-      diskPath = cachedPath;
+    const cached = cachePath(this.directory, cacheKey);
+    if (hasDisk(policy) && (remote || this.diskFileExists(cached))) {
+      diskPath = cached;
       diskRevision = this.retainDiskPath(diskPath);
     }
 
     try {
-      if (diskPath !== undefined && fs.accessSync(diskPath) && !DiskPathProtection.isInvalid(diskPath)) {
+      if (diskPath !== undefined && !DiskPathProtection.isInvalid(diskPath) && this.diskFileExists(diskPath)) {
         input = diskPath;
         cacheType = 'disk';
         try {
           fs.utimes(diskPath, Date.now());
         } catch (_) {}
       } else {
-        const result = await this.readSource(uri, source, options, progress, tracker);
+        const result = await this.readSource(uri, headers, options, progress, tracker);
         if (remote && diskPath !== undefined) downloaded = result;
         // Decode this request's bytes even if a concurrent seed replaced the cache path.
         input = result.buffer;
@@ -1334,7 +1330,7 @@ export class ExpoImageRepository {
 
         if (cacheType === 'disk' && diskPath !== undefined && error instanceof ExpoImageError && error.code === 'ERR_IMAGE_DECODE') {
           DiskPathProtection.invalidate(diskPath, diskRevision);
-          const result = await this.readSource(uri, source, options, progress, tracker);
+          const result = await this.readSource(uri, headers, options, progress, tracker);
           if (remote) downloaded = result;
           reportedType = result.contentType;
 
@@ -1382,18 +1378,20 @@ export class ExpoImageRepository {
 
   private async readSource(
     uri: string,
-    source: ImageSourceRecord,
+    headers: Record<string, string>,
     options: ImageLoadOptions,
     progress: ImageProgressCallback | undefined,
     tracker: RequestTracker,
   ): Promise<DownloadResult> {
     tracker.throwIfCancelled();
+
     if (/^https?:\/\//i.test(uri)) {
-      return await download(uri, copyHeaders(source.headers), requestPriority(options.priority), tracker, progress);
+      return await download(uri, headers, requestPriority(options.priority), tracker, progress);
     }
     if (/^data:/i.test(uri)) {
       return new DownloadResult(await dataUriBuffer(uri), contentType(uri.slice(5, uri.indexOf(','))));
     }
+
     return new DownloadResult(await localInput(this.context, uri, tracker));
   }
 
@@ -1410,24 +1408,24 @@ export class ExpoImageRepository {
     const temp = temporaryPath(this.directory);
 
     try {
+      ensureDirectory(this.directory);
       await writeAll(temp, buffer);
+
       tracker.throwIfCancelled();
-      // Preserve a newer cache entry or clear that happened during the download.
-      if (!guard.valid || !DiskPathProtection.isCurrentRevision(path, revision) || (fs.accessSync(path) && !DiskPathProtection.isInvalid(path))) {
-        fs.unlinkSync(temp);
-      } else {
-        fs.moveFileSync(temp, path, 0);
-        DiskPathProtection.didWrite(path);
-      }
+      // A seed or clear can change the cache revision during the write.
+      if (!guard.valid || !DiskPathProtection.isCurrentRevision(path, revision) || (fs.accessSync(path) && !DiskPathProtection.isInvalid(path))) return;
+
+      fs.moveFileSync(temp, path, 0);
+      DiskPathProtection.didWrite(path);
     } catch (error) {
-      if (fs.accessSync(temp)) {
+      if (error instanceof ExpoImageError) throw new ExpoImageError(error.code, error.message);
+      throw new ExpoImageError('ERR_IMAGE_FILE_WRITE', `The image cache file could not be committed: ${String(error)}`);
+    } finally {
+      if (this.diskFileExists(temp)) {
         try {
           fs.unlinkSync(temp);
         } catch (_) {}
       }
-
-      if (error instanceof ExpoImageError) throw new ExpoImageError(error.code, error.message);
-      throw new ExpoImageError('ERR_IMAGE_FILE_WRITE', `The image cache file could not be committed: ${String(error)}`);
     }
   }
 
@@ -1442,12 +1440,13 @@ export class ExpoImageRepository {
     tracker?: RequestTracker,
   ): Promise<ExpoImageResource> {
     tracker?.throwIfCancelled();
+
     let decoder: image.ImageSource;
 
     try {
       decoder = createImageSource(input);
     } catch (error) {
-      console.error(`Expo Image could not open '${uri}': ${String(error)}`);
+      console.error(`Expo Image could not open the image source: ${String(error)}`);
       throw new ExpoImageError('ERR_IMAGE_DECODE', 'The image source could not be opened.');
     }
 
@@ -1456,7 +1455,10 @@ export class ExpoImageRepository {
     try {
       const info = await decoder.getImageInfo();
       tracker?.throwIfCancelled();
-      const count = await decoder.getFrameCount();
+
+      const mime = contentType(info.mimeType) ?? reported ?? null;
+      // ImageKit only exposes frame timing for GIF and WebP. Decode the primary image for other containers.
+      const count = mime === 'image/gif' || mime === 'image/webp' ? await decoder.getFrameCount() : 1;
 
       if (![info.size.width, info.size.height, count].every((value: number): boolean => Number.isSafeInteger(value) && value > 0)) {
         throw new ExpoImageError('ERR_IMAGE_DECODE', 'The image dimensions and frame count must be positive integers.');
@@ -1467,7 +1469,6 @@ export class ExpoImageRepository {
       const width = swapped ? info.size.height : info.size.width;
       const height = swapped ? info.size.width : info.size.height;
       const animated = count > 1;
-      const mime = contentType(info.mimeType) ?? reported ?? null;
       const maxWidth = finitePositive(options.maxWidth);
       const maxHeight = finitePositive(options.maxHeight);
       const bounds = this.desiredSize(width, height, maxWidth, maxHeight, options.contentFit, mime === SVG_MEDIA_TYPE);
@@ -1531,10 +1532,16 @@ export class ExpoImageRepository {
       }
 
       tracker?.throwIfCancelled();
+      const hdr = options.preferHighDynamicRange === true && tint === undefined && mime !== SVG_MEDIA_TYPE;
       let pixel = await decoder.createPixelMap({
         editable: orientation !== ExifOrientation.Normal,
         desiredSize: size,
-        desiredPixelFormat: options.decodeFormat === 'rgb' && tint === undefined ? image.PixelMapFormat.RGB_565 : image.PixelMapFormat.RGBA_8888,
+        desiredDynamicRange: hdr ? image.DecodingDynamicRange.AUTO : image.DecodingDynamicRange.SDR,
+        desiredPixelFormat: hdr
+          ? undefined
+          : options.decodeFormat === 'rgb' && tint === undefined
+            ? image.PixelMapFormat.RGB_565
+            : image.PixelMapFormat.RGBA_8888,
       });
       transient = [pixel];
 
@@ -1560,7 +1567,7 @@ export class ExpoImageRepository {
 
       return resource;
     } catch (error) {
-      if (!tracker?.isCancelled()) console.error(`Expo Image decode failed for '${uri}': ${String(error)}`);
+      if (!tracker?.isCancelled()) console.error(`Expo Image decode failed: ${String(error)}`);
 
       if (error instanceof ExpoImageError) {
         throw new ExpoImageError(error.code, error.message);
@@ -1604,48 +1611,34 @@ export class ExpoImageRepository {
     return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
   }
 
-  private maybeCache(resource: ExpoImageResource, policy: CachePolicy): ExpoImageResource {
+  private maybeCache(resource: ExpoImageResource, policy: CachePolicy): void {
     this.resources.add(resource);
 
-    if (hasMemory(policy)) {
+    if (hasMemory(policy) && (this.maxMemoryCost === 0 || resource.memoryBytes <= this.maxMemoryCost)) {
       const previous = this.memory.get(resource.key);
       if (previous !== undefined && previous !== resource) {
-        previous.memoryCached = false;
-        if (previous.retainCount === 0) {
-          previous.dispose();
-          this.resources.delete(previous);
-        }
+        this.discard(previous);
       }
 
       resource.memoryCached = true;
-      resource.lastAccess = Date.now();
-      this.memory.set(resource.key, resource);
-      this.evictMemory(resource);
-      const cached = this.memory.get(resource.key);
-      if (cached !== undefined) return cached;
+      this.memory.put(resource.key, resource);
+      this.evictMemory();
     }
-
-    return resource;
   }
 
-  private evictMemory(protectedResource?: ExpoImageResource): void {
-    let cost = 0;
-    for (const resource of this.memory.values()) cost += resource.memoryBytes;
+  private evictMemory(): void {
+    if (this.maxMemoryCount === 0 && this.maxMemoryCost === 0) return;
 
-    const ordered = Array.from(this.memory.values()).sort(
-      (left: ExpoImageResource, right: ExpoImageResource): number => left.lastAccess - right.lastAccess,
-    );
+    const ordered = this.memory.values();
+    let cost = ordered.reduce((bytes: number, resource: ExpoImageResource): number => bytes + resource.memoryBytes, 0);
 
-    while ((this.maxMemoryCount > 0 && this.memory.size > this.maxMemoryCount) || (this.maxMemoryCost > 0 && cost > this.maxMemoryCost)) {
-      const resource = ordered.shift();
-      if (resource === undefined) break;
-      if (this.memory.get(resource.key) !== resource) continue;
-      this.memory.delete(resource.key);
-      resource.memoryCached = false;
+    for (const resource of ordered) {
+      const exceedsCount = this.maxMemoryCount > 0 && this.memory.length > this.maxMemoryCount;
+      const exceedsCost = this.maxMemoryCost > 0 && cost > this.maxMemoryCost;
+      if (!exceedsCount && !exceedsCost) break;
+
       cost -= resource.memoryBytes;
-      if (resource === protectedResource) continue;
-      if (resource.retainCount === 0) resource.dispose();
-      if (resource.retainCount === 0) this.resources.delete(resource);
+      this.discard(resource);
     }
   }
 
@@ -1700,10 +1693,18 @@ export class ExpoImageRepository {
     DiskPathProtection.release(path);
   }
 
+  private diskFileExists(path: string): boolean {
+    try {
+      return fs.accessSync(path);
+    } catch (_) {
+      return false;
+    }
+  }
+
   private cacheLimit(value: number | undefined, name: string): number {
     if (value === undefined) return 0;
 
-    if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
+    if (!Number.isSafeInteger(value) || value < 0) {
       throw new ExpoImageError('ERR_IMAGE_INVALID_CACHE_CONFIG', `${name} must be a non-negative integer.`);
     }
 

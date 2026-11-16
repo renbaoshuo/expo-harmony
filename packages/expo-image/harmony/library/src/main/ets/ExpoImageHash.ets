@@ -7,9 +7,8 @@
 
 // BlurHash by Wolt Enterprises: https://github.com/woltapp/blurhash
 // ThumbHash by Evan Wallace: https://github.com/evanw/thumbhash
-import image from '@ohos.multimedia.image';
-import util from '@ohos.util';
-import taskpool from '@ohos.taskpool';
+import { taskpool, util } from '@kit.ArkTS';
+import { image } from '@kit.ImageKit';
 import { ExpoImageError } from './ExpoImageError';
 import { ColorFactor, ThumbChannel, clamp, signPow, srgbToLinear, linearToSrgb, decode83, blurhash, thumbhash } from './ExpoImageHashCodec';
 
@@ -23,10 +22,17 @@ function pixelMap(width: number, height: number, rgba: Uint8Array): image.PixelM
   });
 }
 
-export function decodeBlurhash(hash: string, targetWidth: number, targetHeight: number): image.PixelMap {
+export async function decodeBlurhash(hash: string, targetWidth: number, targetHeight: number): Promise<image.PixelMap> {
   const width = Math.max(1, Math.min(512, Math.round(targetWidth)));
   const height = Math.max(1, Math.min(512, Math.round(targetHeight)));
 
+  const rgba = (await taskpool.execute(decodeBlurhashPixels, hash, width, height)) as Uint8Array;
+
+  return pixelMap(width, height, rgba);
+}
+
+@Concurrent
+function decodeBlurhashPixels(hash: string, width: number, height: number): Uint8Array {
   if (hash.length < 6) throw new ExpoImageError('ERR_IMAGE_INVALID_HASH', 'The blurhash is too short.');
 
   const size = decode83(hash, 0, 1);
@@ -78,7 +84,7 @@ export function decodeBlurhash(hash: string, targetWidth: number, targetHeight: 
     }
   }
 
-  return pixelMap(width, height, output);
+  return output;
 }
 
 async function readRgba(pixel: image.PixelMap): Promise<Uint8Array> {

@@ -184,7 +184,7 @@ GIF 循环次数取自文件；没有循环扩展时播放一次。API 24 及以
 
 类型：`ImageDecodeFormat`，默认 `'argb'`
 
-设置静态图片的解码格式。`'argb'` 使用带透明通道的 32 位色；`'rgb'` 使用不带透明通道的 16 位色，内存占用较小。动画图片和同时设置了 `tintColor` 的图片不使用 `'rgb'` 格式。
+设置静态图片的解码格式。`'argb'` 使用带透明通道的 32 位色；`'rgb'` 使用不带透明通道的 16 位色，内存占用较小。动画图片和启用着色或 HDR 的图片由专用解码路径处理。
 
 ##### `accessible`
 
@@ -240,11 +240,11 @@ GIF 循环次数取自文件；没有循环扩展时播放一次。API 24 及以
 
 ##### `onLoadEnd`
 
-- HarmonyOS 没有对应的加载结束回调，此属性不会触发。
+上游 `expo-image` 在成功回调 `onLoad` 或失败回调 `onError` 后触发此属性。
 
 ##### `alt`
 
-- HarmonyOS 不会将此属性作为无障碍朗读文本；请使用 `accessibilityLabel`。
+图片的无障碍朗读文本。若同时提供 `accessibilityLabel`，优先使用后者。
 
 ##### `draggable`
 
@@ -264,11 +264,11 @@ GIF 循环次数取自文件；没有循环扩展时播放一次。API 24 及以
 
 ##### `enforceEarlyResizing`
 
-- HarmonyOS 不提供此属性对应的效果。
+设为 `true` 时，在解码阶段按视图的像素尺寸缩小图片。已解码的 `ImageRef` 保留已有像素尺寸。
 
 ##### `preferHighDynamicRange`
 
-- HarmonyOS 不提供此属性对应的效果。
+设为 `true` 时，可在支持 HDR 的设备上以受限的高动态范围显示受系统支持的静态图片。动画、SVG 和启用了着色的图片按标准动态范围显示。
 
 ##### `sfEffect`
 
@@ -324,7 +324,7 @@ GIF 循环次数取自文件；没有循环扩展时播放一次。API 24 及以
 
 #### `Image.clearMemoryCache()`
 
-返回 `Promise<boolean>`，清理内存缓存。仍被引用的图片会保留并可继续显示；系统内存告警时也会清理内存缓存。
+返回 `Promise<boolean>`，清理内存缓存。仍被引用的图片会保留并可继续显示。清理开始前已发起的加载不会重新写入内存缓存。系统内存告警也会清理内存缓存。
 
 #### `Image.clearDiskCache()`
 

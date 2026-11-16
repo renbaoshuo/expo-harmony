@@ -93,10 +93,19 @@ const COLOR = new ExpoValueType<number | string>(
   },
   (value: number | string): ESObject => value,
 );
+const HTTP_HEADER_NAME: RegExp = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const HTTP_INVALID_HEADER_VALUE: RegExp = /[\u0000-\u0008\u000A-\u001F\u007F]/;
 const HEADERS = recordType<Record<string, string>>('Headers', (values: Record<string, ESObject>, path: string): Record<string, string> => {
   const headers: Record<string, string> = {};
-  Object.keys(values).forEach((name: string): void => {
-    headers[name] = STRING.decode(values[name], `${path}.${name}`);
+  Object.keys(values).forEach((key: string): void => {
+    const name = key.trim().toLowerCase();
+    const value = STRING.decode(values[key], `${path}.${key}`);
+
+    if (name === '__proto__' || !HTTP_HEADER_NAME.test(name) || HTTP_INVALID_HEADER_VALUE.test(value)) {
+      throw new ExpoImageError('ERR_IMAGE_INVALID_HEADER', 'Image request headers contain an invalid name or value.');
+    }
+
+    headers[name] = value;
   });
 
   return headers;
@@ -110,7 +119,6 @@ const SOURCE = recordType<ImageSourceRecord>(
     scale: field(values, 'scale', NUMBER, path),
     headers: field(values, 'headers', HEADERS, path),
     cacheKey: field(values, 'cacheKey', STRING, path),
-    isAnimated: field(values, 'isAnimated', BOOLEAN, path),
   }),
 );
 const SOURCES = ExpoValueTypes.array(SOURCE);
@@ -363,6 +371,22 @@ export class ExpoImageModule extends ExpoModule {
           view.props.allowDownscaling = value;
         },
         true,
+      )
+      .prop(
+        'enforceEarlyResizing',
+        BOOLEAN,
+        (view: ExpoImageView, value: boolean): void => {
+          view.props.enforceEarlyResizing = value;
+        },
+        false,
+      )
+      .prop(
+        'preferHighDynamicRange',
+        BOOLEAN,
+        (view: ExpoImageView, value: boolean): void => {
+          view.props.preferHighDynamicRange = value;
+        },
+        false,
       )
       .prop(
         'autoplay',
