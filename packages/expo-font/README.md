@@ -28,9 +28,9 @@ npm install @expo-harmony/expo-font expo-font@~57.0.4
 
 返回 `Promise<void>`，用于加载并注册字体。`fontFamilyOrFontMap` 可以是字体系列名到字体源的映射；也可以是单个字体系列名，此时用 `source` 提供字体源。
 
-字体源可为 `require()` 返回的资源模块 ID、Expo Asset、应用内打包资源，或远程 `http://`、`https://` 与本地 `file://` 地址。`rawfile://` 地址中的特殊字符须使用 URL 转义。远程地址需要 `ohos.permission.INTERNET`；本地文件默认限于应用沙箱，沙箱外的文件需要访问授权。字体文件大小须在 1 字节到 32 MiB 之间。
+字体源可为 `require()` 返回的资源模块 ID、Expo Asset、应用内打包资源，或远程 `http://`、`https://` 与本地 `file://` 地址。`rawfile:` 地址中的特殊字符须使用 URL 转义。远程地址需要 `ohos.permission.INTERNET`。沙箱外的文件需要访问授权，授权提供方的 URI 会先复制到应用缓存。字体文件大小须在 1 字节到 32 MiB 之间。
 
-同一系列名和同一字体文件重复加载不会再次注册。预打包字体在应用启动时注册；动态加载的字体可用于 `Text`，在 `TextInput` 等其他组件上的效果不保证。
+同一系列名和同一字体文件重复加载不会再次注册。预打包字体在应用启动时注册。配置插件默认使用去掉扩展名的完整文件名作为系列名，例如 `Example_bold.ttf` 对应 `Example_bold`。需要保留原有短名时，可以使用配置插件的显式 `fontFamily`。HarmonyOS 每个系列使用一个字体文件，动态加载的字体可用于 `Text`，在 `TextInput` 等其他组件上的效果取决于 RNOH。
 
 字体注册方式随 HarmonyOS SDK 版本变化：API 23 及以上异步加载并校验字体文件；API 18 至 22 异步加载但不校验文件内容；API 13 至 17 在调用时同步注册。
 
@@ -48,15 +48,15 @@ npm install @expo-harmony/expo-font expo-font@~57.0.4
 
 #### `Font.renderToImageAsync(glyphs, options?)`
 
-将 `glyphs` 渲染为 PNG 图片并写入应用缓存目录，返回 `Promise<RenderToImageResult>`。字号和行高必须为有限正数；设置 `lineHeight` 后，额外行距会均分到文字上下。多行文本的换行由系统处理。
+将 `glyphs` 渲染为 PNG 图片并写入应用缓存目录，返回 `Promise<RenderToImageResult>`。图片缩放系数取自应用所在显示器，字体与调用方运行时中的注册对应。字号和行高必须为有限正数。设置 `lineHeight` 后，额外行距会均分到文字上下。多行文本的换行由系统处理。
 
 #### `Font.unloadAsync(fontFamilyOrFontMap, options?)`
 
-- HarmonyOS 不支持注销已加载的字体，调用会失败。
+- Expo 将此操作仅开放给 Web。HarmonyOS 上调用会失败。
 
 #### `Font.unloadAllAsync()`
 
-- HarmonyOS 不支持注销已加载的字体，调用会失败。
+- Expo 将此操作仅开放给 Web。HarmonyOS 上调用会失败。
 
 ### Types
 

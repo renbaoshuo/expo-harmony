@@ -14,7 +14,5 @@ export function bundledFontCachePath(directory: string, source: string, hash: st
     throw new ExpoFontError('ERR_FONT_BUNDLED_MANIFEST', 'Invalid bundled font cache identity.');
   }
 
-  // Leave room for the digest and extension even when the source name uses multibyte characters.
-  const stem = dot <= 60 ? `${name.slice(0, dot)}-` : '';
-  return `${directory}/${stem}${hash.toLowerCase()}${name.slice(dot).toLowerCase()}`;
+  return `${directory}/${hash.toLowerCase()}${name.slice(dot).toLowerCase()}`;
 }

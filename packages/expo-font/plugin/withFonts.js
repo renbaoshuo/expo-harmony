@@ -34,8 +34,7 @@ class ExpoFontPluginError extends HarmonyConfigPluginError {
 }
 
 function fontFamilyFromFilename(file) {
-  const name = path.basename(file, path.extname(file));
-  return name.replace(/(?:_bold_italic|_bold|_italic)$/, '') || name;
+  return path.parse(file).name;
 }
 
 function appendFontEntries(fonts, value, field) {
