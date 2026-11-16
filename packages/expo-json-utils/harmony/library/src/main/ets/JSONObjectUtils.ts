@@ -21,20 +21,12 @@ export class JSONObjectUtils {
   }
 
   static require(json: JSONObject, key: string): JSONValue {
-    const field = Object.getOwnPropertyDescriptor(json, key);
-
-    if (field === undefined) {
-      throw new JSONUtilsError(`No value for ${key}`);
-    }
-    if (!Object.prototype.hasOwnProperty.call(field, 'value')) {
-      throw new JSONUtilsError(`Value for ${key} must be a data property`);
-    }
-
-    return field.value;
+    return requireDataValue(Object.getOwnPropertyDescriptor(json, key), key);
   }
 
   static getNullable(json: JSONObject, key: string): JSONValue {
-    return JSONObjectUtils.hasValue(json, key) ? JSONObjectUtils.require(json, key) : null;
+    const field = Object.getOwnPropertyDescriptor(json, key);
+    return field === undefined ? null : requireDataValue(field, key);
   }
 
   static requireString(json: JSONObject, key: string): string {
@@ -126,6 +118,17 @@ export class JSONObjectUtils {
   }
 }
 
+function requireDataValue(field: PropertyDescriptor | undefined, key: string): JSONValue {
+  if (field === undefined) {
+    throw new JSONUtilsError(`No value for ${key}`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(field, 'value')) {
+    throw new JSONUtilsError(`Value for ${key} must be a data property`);
+  }
+
+  return field.value;
+}
+
 function isJSONObject(value: unknown): value is JSONObject {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
 
@@ -151,8 +154,13 @@ function validateJSON(root: unknown, key: string): void {
     if (seen.has(value)) continue;
     seen.add(value);
 
-    // Inspect descriptors without invoking getters or inherited toJSON hooks.
+    const array = Array.isArray(value);
     let prototype = Object.getPrototypeOf(value);
+    if (array && prototype !== Array.prototype) {
+      throw new JSONUtilsError(`Value for ${key} cannot be converted to JSON array`);
+    }
+
+    // Inspect descriptors without invoking getters or inherited toJSON hooks.
     while (prototype !== null) {
       if (Object.getOwnPropertyDescriptor(prototype, 'toJSON') !== undefined) {
         throw new JSONUtilsError(`Value for ${key} cannot be converted to JSON value`);
@@ -160,29 +168,20 @@ function validateJSON(root: unknown, key: string): void {
       prototype = Object.getPrototypeOf(prototype);
     }
 
-    const fields = Object.getOwnPropertyDescriptors(value);
-    if (Object.getOwnPropertySymbols(fields).length !== 0) {
+    const toJSON = Object.getOwnPropertyDescriptor(value, 'toJSON');
+    if (toJSON !== undefined && (!Object.prototype.hasOwnProperty.call(toJSON, 'value') || typeof toJSON.value === 'function')) {
       throw new JSONUtilsError(`Value for ${key} cannot be converted to JSON value`);
     }
 
-    if (Array.isArray(value)) {
-      if (Object.getPrototypeOf(value) !== Array.prototype) {
-        throw new JSONUtilsError(`Value for ${key} cannot be converted to JSON array`);
+    if (array) {
+      for (let index = 0; index < value.length; index++) {
+        const name = String(index);
+        pending.push(requireDataValue(Object.getOwnPropertyDescriptor(value, name), name));
       }
-
-      for (let i = 0; i < value.length; i++) {
-        if (!Object.prototype.hasOwnProperty.call(fields, i)) {
-          throw new JSONUtilsError(`Value for ${key} cannot be converted to JSON array`);
-        }
+    } else {
+      for (const name of Object.keys(value)) {
+        pending.push(requireDataValue(Object.getOwnPropertyDescriptor(value, name), name));
       }
-    }
-
-    for (const field of Object.values(fields)) {
-      if (!Object.prototype.hasOwnProperty.call(field, 'value')) {
-        throw new JSONUtilsError(`Value for ${key} cannot be converted to JSON value`);
-      }
-
-      pending.push(field.value);
     }
   }
 }

@@ -8,7 +8,7 @@
 
 本包适配 Expo SDK 57。
 
-引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 12（HarmonyOS 5.0.0）。
 
 ```bash
 npm install @expo-harmony/expo-json-utils
@@ -32,7 +32,7 @@ npm install @expo-harmony/expo-json-utils
 
 #### `JSONObjectUtils.requireString(json, key)`
 
-接收 JSON 对象 `json` 和字段名 `key`，返回 `string`。字符串原样返回；`null` 转为 `"null"`；布尔值和有限数值转为文本；数组和普通对象序列化为 JSON 文本。其他值或无法序列化的数组、对象会抛出 `JSONUtilsError`。
+接收 JSON 对象 `json` 和字段名 `key`，返回 `string`。字符串原样返回，`null` 转为 `"null"`，布尔值和有限数值转为文本。普通对象的可枚举字符串字段和数组的元素按 JSON 规则序列化，序列化不调用访问器或 `toJSON` 函数。其他值或无法序列化的数组、对象会抛出 `JSONUtilsError`。
 
 #### `JSONObjectUtils.getNullableString(json, key)`
 
