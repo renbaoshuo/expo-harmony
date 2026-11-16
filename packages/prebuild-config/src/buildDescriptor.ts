@@ -198,19 +198,32 @@ function validateHarmonyBuildDescriptor(value: unknown): HarmonyBuildDescriptor 
   return value as unknown as HarmonyBuildDescriptor;
 }
 
+function getHarmonyHapName(moduleName: string, targetName: string, signed: boolean, artifactName?: unknown): string {
+  if (artifactName === undefined) {
+    return `${moduleName}-${targetName}-${signed ? 'signed' : 'unsigned'}.hap`;
+  }
+
+  if (typeof artifactName !== 'string' || !/^[A-Za-z0-9_.-]+$/u.test(artifactName)) {
+    throw new TypeError('target.output.artifactName must contain only letters, digits, periods, hyphens and underscores.');
+  }
+
+  return `${artifactName}${signed ? '' : '-unsigned'}.hap`;
+}
+
 function createHarmonyBuildDescriptor(
   config: NormalizedHarmonyConfig,
-  signing: string | null
+  signing: string | null,
+  output: { artifactName?: unknown; bundleName?: string } = {}
 ): HarmonyBuildDescriptor {
   const paths = HarmonyPaths.HARMONY_PATHS;
   const harmony = HarmonyPlatformDirectory;
   const module = `${harmony}/${path.posix.dirname(paths.entryBuildProfile)}`;
   const target = 'default';
   const rawfile = `${module}/src/main/resources/rawfile`;
-  const suffix = signing ? 'signed' : 'unsigned';
+  const hap = getHarmonyHapName(config.moduleName, target, Boolean(signing), output.artifactName);
 
   const variants = Object.fromEntries(BuildModes.map(mode => [mode, {
-    expectedHap: `${module}/build/${target}/outputs/${target}/${config.moduleName}-${target}-${suffix}.hap`,
+    expectedHap: `${module}/build/${target}/outputs/${target}/${hap}`,
     hvigorArgs: [
       '--mode', 'module',
       '-p', `module=${config.moduleName}@${target}`,
@@ -232,7 +245,7 @@ function createHarmonyBuildDescriptor(
     harmonyRoot: harmony,
     identity: {
       abilityName: config.abilityName,
-      bundleName: config.bundleName,
+      bundleName: output.bundleName ?? config.bundleName,
       moduleName: config.moduleName,
       productName: config.productName,
       targetName: target,
@@ -274,6 +287,7 @@ export {
   HarmonyPlatformDirectory,
   HarmonyTemplateMarker,
   createHarmonyBuildDescriptor,
+  getHarmonyHapName,
   harmonyModuleSourcePath,
   resolveHarmonyBuildPath,
   validateHarmonyBuildDescriptor,

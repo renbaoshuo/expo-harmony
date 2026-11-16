@@ -23,6 +23,7 @@ import {
 import { mirrorHarmonyCheckPath } from './checkPath';
 import { HarmonyPrebuildError } from './errors';
 import { getPrebuildConfigAsync } from './getPrebuildConfig';
+import { JournalPath } from './jsonOwnershipJournal';
 import {
   CngManifestPath,
   hashHarmonyConfig,
@@ -43,9 +44,8 @@ interface Result {
   expected: CngManifest;
 }
 
-async function stageAutolinkingAsync(project: string, target: string): Promise<void> {
-  const source = path.join(project, ManifestArtifact);
-
+async function stageStateFileAsync(project: string, target: string, relative: string): Promise<void> {
+  const source = await HarmonyPaths.resolveHarmonyPath(project, relative);
   let stat;
 
   try {
@@ -54,7 +54,7 @@ async function stageAutolinkingAsync(project: string, target: string): Promise<v
     if (error.code === 'ENOENT') return;
     throw new HarmonyPrebuildError(
       error.code || 'ERR_HARMONY_MANIFEST_DRIFT',
-      error.message || `Cannot inspect the previous autolinking manifest: ${source}`,
+      error.message || `Cannot inspect the previous Harmony state file: ${source}`,
       { cause: error, operation: error.operation || 'check' }
     );
   }
@@ -62,7 +62,7 @@ async function stageAutolinkingAsync(project: string, target: string): Promise<v
   if (!stat.isFile() || stat.isSymbolicLink()) return;
 
   const content = await fs.promises.readFile(source, 'utf8');
-  const file = path.join(target, ManifestArtifact);
+  const file = await HarmonyPaths.resolveHarmonyPath(target, relative);
 
   await fs.promises.mkdir(path.dirname(file), { recursive: true });
   await fs.promises.writeFile(file, content);
@@ -263,7 +263,8 @@ async function stageAsync(
     : null;
 
   await stageManifestAsync(project, expected, harmony, signing);
-  await stageAutolinkingAsync(project, expected);
+  await stageStateFileAsync(project, expected, ManifestArtifact);
+  await stageStateFileAsync(project, expected, JournalPath);
   await stageSigningAsync(project, temp, signing);
 }
 

@@ -47,6 +47,8 @@ npx expo-harmony prebuild
 
 工程会生成在项目根目录的 `harmony/` 下。修改了应用配置后，再次运行该命令以更新工程；需要先清理现有工程时，可使用 `npx expo-harmony prebuild --clean`。
 
+设置 `harmony.productName` 后，CLI 会构建指定的 product。生成工程会保留 Hvigor 要求的 `default` product，两者共用入口模块和 SDK 版本范围。 [华为多目标和产物配置](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/ide-customized-multi-targets-and-products-guides/)
+
 ## 设置应用图标和权限
 
 可以在 `harmony` 字段中指定应用图标和需要声明的权限：

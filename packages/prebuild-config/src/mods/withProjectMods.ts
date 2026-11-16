@@ -110,14 +110,50 @@ export function withProjectMods(config) {
     const signing = mod._internal?.harmonySigningConfig;
     const previousSigning = mod._internal?.harmonyPreviousSigningConfigName;
     const previous = mod._internal?.harmonyPreviousManagedIdentity;
+    const previousProduct = previous?.productName;
+    const defaultProduct = 'default';
+    let current = Array.isArray(app.products) ? app.products : [];
+    const restore = mod._internal?.harmonyReconcileBuildProperties?.restorePrevious;
 
-    const products = upsertManagedNamed(
-      app.products,
+    if (restore && previousProduct && previousProduct !== productName) {
+      // Restore the old product before its managed settings can move to another product.
+      const old = current.find(item => item?.name === previousProduct);
+      const record = readRecord(old?.buildOption);
+      const option = record === old?.buildOption ? record : undefined;
+      const restored = restore('product', option);
+      if (old && restored !== option) {
+        const product = { ...old };
+        if (restored === undefined) delete product.buildOption;
+        else product.buildOption = restored;
+        current = current.map(item => item === old ? product : item);
+      }
+    }
+
+    const hasDefault = current.some(item => item?.name === defaultProduct);
+    const useDefault = productName === defaultProduct && hasDefault;
+    const retiring = useDefault && previousProduct && previousProduct !== defaultProduct
+      ? previousProduct
+      : undefined;
+    const entries = retiring === undefined
+      ? []
+      : current.filter(item => item?.name === retiring);
+
+    if (entries.length > 1) {
+      throw new HarmonyPrebuildError(
+        'ERR_HARMONY_IDENTITY_COLLISION',
+        `Harmony productName '${retiring}' is duplicated in the build profile.`,
+        { operation: 'reconcile-identity' }
+      );
+    }
+
+    let products = upsertManagedNamed(
+      retiring === undefined ? current : current.filter(item => item?.name !== retiring),
       productName,
-      previous?.productName,
-      'default',
+      useDefault || previousProduct === defaultProduct ? undefined : previousProduct,
+      productName === defaultProduct ? defaultProduct : '',
       (existing) => {
         const product = {
+          ...entries[0],
           ...existing,
           name: productName,
           runtimeOS: 'HarmonyOS',
@@ -132,6 +168,27 @@ export function withProjectMods(config) {
       },
       'productName'
     );
+
+    if (productName !== defaultProduct) {
+      // Hvigor requires a default product even when the app builds a custom one.
+      products = upsertManagedNamed(products, defaultProduct, defaultProduct, defaultProduct, (existing) => {
+        const fallback = {
+          ...existing,
+          name: defaultProduct,
+          compatibleSdkVersion: harmony.compatibleSdkVersionString,
+          targetSdkVersion: harmony.targetSdkVersionString,
+          runtimeOS: 'HarmonyOS',
+        };
+
+        if (previousSigning && fallback.signingConfig === previousSigning) {
+          if (signing) fallback.signingConfig = signing.name;
+          else delete fallback.signingConfig;
+        }
+
+        return fallback;
+      }, 'productName');
+    }
+
     const modules = upsertManagedNamed(
       profile.modules,
       moduleName,
@@ -144,12 +201,10 @@ export function withProjectMods(config) {
         targets: upsertNamed(existing.targets, targetName, target => ({
           ...target,
           name: targetName,
-          applyToProducts: replaceManagedString(
-            target.applyToProducts,
-            productName,
-            previous?.productName,
-            'default'
-          ),
+          applyToProducts: [...new Set([
+            defaultProduct,
+            ...replaceManagedString(target.applyToProducts, productName, previousProduct, defaultProduct),
+          ])],
         })),
       }),
       'moduleName'

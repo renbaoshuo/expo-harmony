@@ -15,7 +15,7 @@ import { getHarmonyConfigPlugins } from '@expo-harmony/config-plugins/internal';
 
 import { resolveHarmonyBuildPath } from './buildDescriptor';
 import { HarmonyPrebuildError } from './errors';
-import { CngManifestPath, validateCngManifest, type CngManifest } from './manifest';
+import { CngManifestPath, hashFile, validateCngManifest, type CngManifest } from './manifest';
 
 async function readPreviousCngManifestAsync(root) {
   const file = resolveHarmonyBuildPath(root, CngManifestPath);
@@ -58,7 +58,8 @@ function findDeferredPluginFiles(
   return manifest.managedFiles.filter(entry => previous.get(entry.owner)?.has(entry.path));
 }
 
-async function removeManagedFileAsync(root: string, relative: string) {
+async function removeManagedFileAsync(root: string, entry: CngManifest['managedFiles'][number]) {
+  const relative = entry.path;
   const directory = await HarmonyPaths.resolveHarmonyPath(root, path.dirname(relative));
   const target = path.join(directory, path.basename(relative));
 
@@ -83,6 +84,9 @@ async function removeManagedFileAsync(root: string, relative: string) {
       { file: target, operation: 'remove-stale-plugin-output' }
     );
   }
+
+  // Keep generated files edited since the last prebuild.
+  if (!stat.isFile() || await hashFile(target) !== entry.sha256) return;
 
   await fs.promises.rm(target, { force: true });
 }
@@ -112,7 +116,7 @@ async function removeStalePluginFilesAsync(
     && (owners.has(entry.owner) || obsolete.get(entry.owner)?.has(entry.path)));
 
   for (const entry of dryRun ? [] : files) {
-    await removeManagedFileAsync(root, entry.path);
+    await removeManagedFileAsync(root, entry);
   }
 
   // Keep missing files in the result so a retry also removes their declarations.
@@ -134,7 +138,7 @@ async function reconcileDeferredPluginFilesAsync(mod: HarmonyModConfig<null>): P
     if (claimed.has(entry.path)) continue;
     const plugin = active.get(entry.owner);
     if (!plugin || plugin.files !== undefined) {
-      await removeManagedFileAsync(mod.modRequest.projectRoot, entry.path);
+      await removeManagedFileAsync(mod.modRequest.projectRoot, entry);
       continue;
     }
 

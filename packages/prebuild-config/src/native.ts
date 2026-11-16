@@ -47,12 +47,13 @@ function isRnohAutolinkingDisabled(source: string): boolean {
   if (!exported || !ts.isObjectLiteralExpression(exported)) return false;
 
   const plugins = getProperty(exported, 'plugins');
-  if (!plugins || !ts.isArrayLiteralExpression(plugins) || !plugins.elements.length) return false;
+  if (!plugins || !ts.isArrayLiteralExpression(plugins) || plugins.elements.some(ts.isSpreadElement)) return false;
 
-  return plugins.elements.every((plugin) => {
-    if (!ts.isCallExpression(plugin) || !ts.isIdentifier(plugin.expression) || !bindings.has(plugin.expression.text)) {
-      return false;
-    }
+  const rnoh = plugins.elements.filter((plugin): plugin is ts.CallExpression => (
+    ts.isCallExpression(plugin) && ts.isIdentifier(plugin.expression) && bindings.has(plugin.expression.text)
+  ));
+
+  return rnoh.length > 0 && rnoh.every((plugin) => {
     const [options] = plugin.arguments;
     return Boolean(options && ts.isObjectLiteralExpression(options)
       && getProperty(options, 'autolinking')?.kind === ts.SyntaxKind.NullKeyword);

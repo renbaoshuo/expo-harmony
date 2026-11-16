@@ -296,12 +296,25 @@ async function createCngManifest(
   plugins: readonly HarmonyConfigPluginOwnership[] = [],
   ownership: { moduleConfig?: ManagedModuleConfig; buildProperties?: ManagedBuildProperties } = {}
 ): Promise<CngManifest> {
-  const file = path.join(root, 'harmony', HarmonyPaths.HARMONY_PATHS.projectBuildProfile);
-  const profile = JSON5.parse(await fs.readFile(file, 'utf8'));
-  const product = profile.app?.products?.find(item => item.name === config.productName);
-  const build = createHarmonyBuildDescriptor(config, product?.signingConfig ?? null);
-  const files = [];
+  const paths = HarmonyPaths.HARMONY_PATHS;
+  const read = async (relative: string) => {
+    const file = await HarmonyPaths.resolveHarmonyPath(root, `harmony/${relative}`);
+    return JSON5.parse(await fs.readFile(file, 'utf8'));
+  };
+  const [profile, entry, scope] = await Promise.all([
+    read(paths.projectBuildProfile),
+    read(paths.entryBuildProfile),
+    read(paths.appJson),
+  ]);
 
+  const product = profile.app?.products?.find(item => item.name === config.productName);
+  const target = entry.targets?.find(item => item.name === 'default');
+  const build = createHarmonyBuildDescriptor(config, product?.signingConfig ?? null, {
+    artifactName: target?.output?.artifactName,
+    bundleName: product?.bundleName ?? scope.app?.bundleName,
+  });
+
+  const files = [];
   for (const item of managed) {
     if (item.sha256 !== undefined) {
       files.push({ owner: item.owner, path: item.path, sha256: item.sha256 });

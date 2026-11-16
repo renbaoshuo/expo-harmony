@@ -123,4 +123,4 @@ async function prepareJsonOwnershipJournal(
   return { applied, managed, beforeWrite, finish: () => fs.rm(file, { force: true }) };
 }
 
-export { prepareJsonOwnershipJournal };
+export { JournalPath, prepareJsonOwnershipJournal };

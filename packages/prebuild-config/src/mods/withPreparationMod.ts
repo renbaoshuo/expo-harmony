@@ -35,7 +35,9 @@ function withPreparationMod(config) {
       ? null
       : await readPreviousCngManifestAsync(root);
     const plugins = getHarmonyConfigPlugins(mod);
+
     const stale = findStaleConfigPlugins(manifest, plugins);
+    const signing = harmony.signingConfigFile ? await readSigningConfigFile(root, harmony.signingConfigFile) : null;
 
     mod._internal ??= {};
     if (mod.modRequest.introspect) mod._internal.harmonyTemplateDirectory = path.join(resolveTemplate().root, 'harmony');
@@ -69,6 +71,7 @@ function withPreparationMod(config) {
     mod._internal.harmonyPreviousManagedManifestConfig = ownership.applied.pluginChanges;
     mod._internal.harmonyBeforeJsonWrite = ownership.beforeWrite;
     mod._internal.harmonyFinishJsonOwnershipJournal = ownership.finish;
+
     mod._internal.harmonyConfigPlugins = plugins;
     mod._internal.harmonyPreviousConfigPlugins = manifest?.configPlugins ?? [];
     mod._internal.harmonyStaleConfigPlugins = stale;
@@ -77,11 +80,7 @@ function withPreparationMod(config) {
     mod._internal.harmonyStalePluginFiles = await removeStalePluginFilesAsync(
       root, manifest, stale, plugins, mod.modRequest.introspect
     );
-
-    if (harmony.signingConfigFile) {
-      const signing = await readSigningConfigFile(root, harmony.signingConfigFile);
-      mod._internal.harmonySigningConfig = signing.config;
-    }
+    if (signing) mod._internal.harmonySigningConfig = signing.config;
 
     if (mod.modRequest.introspect) return mod;
 
