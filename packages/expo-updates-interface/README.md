@@ -8,7 +8,7 @@
 
 本包适配 Expo SDK 57。
 
-引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 12（HarmonyOS 5.0.0）。
 
 ```bash
 npm install @expo-harmony/expo-updates-interface
@@ -64,7 +64,7 @@ npm install @expo-harmony/expo-updates-interface
 
 #### `UpdatesControllerRegistry`
 
-`controller` 是可读写属性，类型为 `UpdatesInterface | undefined`。读取当前控制器；没有可用控制器时为 `undefined`。可将实现 `UpdatesInterface` 的控制器设为当前控制器。
+`controller` 是可读写属性，类型为 `UpdatesInterface | undefined`。同一 ArkTS 运行时中的 React 实例共享此注册表。注册表以弱引用保存控制器，控制器的生命周期由注册方管理。没有可用控制器时返回 `undefined`。
 
 #### `UpdatesInterface`
 

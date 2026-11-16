@@ -5,4 +5,4 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-module.exports = Object.freeze({});
+module.exports = null;
