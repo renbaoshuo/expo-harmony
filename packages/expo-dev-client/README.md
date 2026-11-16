@@ -14,6 +14,8 @@
 npm install @expo-harmony/expo-dev-client expo-dev-client@~57.0.20
 ```
 
+在 Expo 配置的 `plugins` 中注册 `@expo-harmony/expo-dev-client`。配置插件会应用 HarmonyOS 启动器配置，启动器依赖的 Dev Menu 通过自动链接集成。
+
 ## API 对照表
 
 ### Methods
@@ -31,13 +33,14 @@ npm install @expo-harmony/expo-dev-client expo-dev-client@~57.0.20
 - `embeddedBundle?: boolean`：启用内置 bundle 入口；应用需提供内置 JavaScript bundle。
 - `skipOnboarding?: boolean`：设置是否跳过首次启动引导。
 - `showMenuAtLaunch?: boolean`：设置开发菜单的默认启动状态。
+- `addGeneratedScheme?: boolean`：默认开启。使用官方 Dev Client 规则从应用的 `slug` 生成 `exp+…` scheme，并注册 `exp+…://expo-development-client`。关闭后仍可使用 `expo-harmony://open` 打开开发启动器。
 - `harmony`：可选的 HarmonyOS 专属配置；其中的配置项优先于顶层同名项，可使用以上字段。
 
 这些默认设置不会覆盖用户已保存的设置。
 
 ### Permissions
 
-- 配置插件会为开发服务连接和局域网服务发现声明 `ohos.permission.INTERNET` 与 `ohos.permission.GET_NETWORK_INFO`。
+- 启动器插件声明连接开发服务器所需的 `ohos.permission.INTERNET`。
 
 ## Author
 

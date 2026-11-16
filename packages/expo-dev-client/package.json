@@ -29,6 +29,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@expo-harmony/config-plugins": "workspace:*",
     "@expo-harmony/expo-dev-launcher": "workspace:*"
   }
 }

@@ -7,4 +7,12 @@
 
 import type { PluginConfigType } from '@expo-harmony/expo-dev-launcher/plugin';
 
-export default function devClient(options?: PluginConfigType): ['@expo-harmony/expo-dev-client', PluginConfigType];
+interface GeneratedSchemeOptions {
+  addGeneratedScheme?: boolean;
+}
+
+export type DevClientPluginConfigType = PluginConfigType & GeneratedSchemeOptions & {
+  harmony?: GeneratedSchemeOptions;
+};
+
+export default function devClient(options?: DevClientPluginConfigType): ['@expo-harmony/expo-dev-client', DevClientPluginConfigType];
