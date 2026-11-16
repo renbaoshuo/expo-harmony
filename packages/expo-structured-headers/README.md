@@ -6,7 +6,7 @@
 
 ## 安装
 
-引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 12（HarmonyOS 5.0.0）。
 
 ```bash
 npm install @expo-harmony/expo-structured-headers

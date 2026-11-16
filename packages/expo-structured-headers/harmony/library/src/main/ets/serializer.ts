@@ -18,7 +18,7 @@ import {
 
 import { Token } from './token';
 
-import { isAscii, isInnerList, isValidKeyStr } from './util';
+import { isAscii, isInnerList, isValidKeyStr, isValidTokenStr } from './util';
 
 export class SerializeError extends Error {
   constructor(message: string, cause?: Error) {
@@ -31,40 +31,38 @@ export class SerializeError extends Error {
 }
 
 export function serializeList(input: List): string {
-  return input.map(value => {
-    if (isInnerList(value)) {
-      return serializeInnerList(value);
-    } else {
-      return serializeItem(value);
-    }
-  }).join(', ');
+  if (!Array.isArray(input)) throw new SerializeError('A list must be an array.');
+
+  return Array.from(input, value => isInnerList(value) ? serializeInnerList(value) : serializeItem(value)).join(', ');
 }
 
 export function serializeDictionary(input: Dictionary): string {
-  return Array.from(
-    input.entries()
-  ).map(([key, value]) => {
-    let out = serializeKey(key);
-    if (value[0]===true) {
-      out += serializeParameters(value[1]);
-    } else {
-      out += '=';
-      if (isInnerList(value)) {
-        out += serializeInnerList(value);
-      } else {
-        out += serializeItem(value);
-      }
-    }
-    return out;
+  if (!(input instanceof Map)) throw new SerializeError('A dictionary must be a Map.');
+
+  return Array.from(input.entries()).map(([key, value]) => {
+    checkMember(value);
+    const name = serializeKey(key);
+    if (value[0] === true) return name + serializeParameters(value[1]);
+
+    const member = isInnerList(value) ? serializeInnerList(value) : serializeItem(value);
+    return `${name}=${member}`;
   }).join(', ');
 }
 
 export function serializeItem(input: Item): string {
+  checkMember(input);
   return serializeBareItem(input[0]) + serializeParameters(input[1]);
 }
 
 function serializeInnerList(input: InnerList): string {
-  return `(${input[0].map(value => serializeItem(value)).join(' ')})${serializeParameters(input[1])}`;
+  checkMember(input);
+  return `(${Array.from(input[0], serializeItem).join(' ')})${serializeParameters(input[1])}`;
+}
+
+function checkMember(input: Item | InnerList): void {
+  if (!Array.isArray(input) || input.length !== 2) {
+    throw new SerializeError('A member must contain a value and parameters.');
+  }
 }
 
 function serializeBareItem(input: BareItem): string {
@@ -108,7 +106,9 @@ function serializeDecimal(input: number): string {
 function serializeDecimalPermille(input: number): string {
   const negative = input < 0;
   const value = Math.abs(input);
-  if (value > 999_999_999_999_999) throw new SerializeError('A decimal cannot have more than 12 digits before the decimal point');
+  if (!Number.isInteger(value) || value > 999_999_999_999_999) {
+    throw new SerializeError('A decimal must contain a valid signed permille value.');
+  }
 
   const whole = Math.floor(value / 1000);
   let fraction = String(value % 1000).padStart(3, '0').replace(/0+$/, '');
@@ -133,16 +133,17 @@ function serializeByteSequence(input: ByteSequence): string {
 }
 
 function serializeToken(input: Token): string {
-  return input.toString();
+  const value = input.toString();
+  if (!isValidTokenStr(value)) throw new SerializeError('Invalid token.');
+  return value;
 }
 
 function serializeParameters(input: Parameters): string {
+  if (!(input instanceof Map)) throw new SerializeError('Parameters must be a Map.');
+
   return Array.from(input).map(([key, value]) => {
-    let out = ';' + serializeKey(key);
-    if (value!==true) {
-      out+='=' + serializeBareItem(value);
-    }
-    return out;
+    const name = ';' + serializeKey(key);
+    return value === true ? name : `${name}=${serializeBareItem(value)}`;
   }).join('');
 }
 

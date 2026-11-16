@@ -16,6 +16,8 @@ export type Parameters = Map<string, BareItem>;
 
 export type Dictionary = Map<string, Item|InnerList>;
 
+const MAX_PERMILLE = 999_999_999_999_999;
+
 export class Decimal {
   readonly permille: number;
 
@@ -25,40 +27,18 @@ export class Decimal {
 
   static valueOf(value: number): Decimal {
     if (!Number.isFinite(value)) throw new TypeError('Decimal must be finite.');
-    if (value === 0) return Decimal.fromPermille(0);
+    const magnitude = Math.abs(value);
+    if (magnitude >= 1_000_000_000_000) throw new TypeError('Decimal permille is out of range.');
 
-    // Decode the IEEE 754 binary64 value so scaling does not introduce a second
-    // floating-point rounding. RFC 8941 section 4.1.5 rounds ties to even.
-    const view = new DataView(new ArrayBuffer(8));
-    view.setFloat64(0, Math.abs(value), false);
+    // Exact ties are odd multiples of 1/16. toFixed rounds up, so correct odd results to the even neighbor.
+    let permille = Number(magnitude.toFixed(3).replace('.', ''));
+    if (magnitude % (1 / 8) === 1 / 16 && permille % 2 !== 0) permille--;
 
-    const high = view.getUint32(0, false);
-    const low = view.getUint32(4, false);
-    const exponent = (high >>> 20) & 0x7ff;
-    const fraction = (BigInt(high & 0xfffff) << BigInt(32)) | BigInt(low);
-    const significand = exponent === 0 ? fraction : (BigInt(1) << BigInt(52)) | fraction;
-    const shift = exponent === 0 ? -1074 : exponent - 1023 - 52;
-
-    const scaled = significand * BigInt(1000);
-    let rounded: bigint;
-    if (shift >= 0) {
-      rounded = scaled << BigInt(shift);
-    } else {
-      const divisor = BigInt(1) << BigInt(-shift);
-      const quotient = scaled / divisor;
-      const remainder = scaled % divisor;
-      const twice = remainder * BigInt(2);
-
-      rounded = quotient + (twice > divisor || (twice === divisor && quotient % BigInt(2) !== BigInt(0)) ? BigInt(1) : BigInt(0));
-    }
-
-    const permille = Number(rounded) * (value < 0 ? -1 : 1);
-
-    return Decimal.fromPermille(permille);
+    return Decimal.fromPermille(value < 0 ? -permille : permille);
   }
 
   static fromPermille(permille: number): Decimal {
-    if (!Number.isInteger(permille) || Math.abs(permille) > 999_999_999_999_999) {
+    if (!Number.isInteger(permille) || Math.abs(permille) > MAX_PERMILLE) {
       throw new TypeError('Decimal permille is out of range.');
     }
 
