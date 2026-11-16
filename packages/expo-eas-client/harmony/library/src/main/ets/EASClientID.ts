@@ -22,6 +22,7 @@ type Migration = (context: common.ApplicationContext) => string | undefined;
 export class EASClientID {
   private static migration?: Migration;
   private readonly path: string;
+  private storedID?: string;
 
   constructor(private readonly context: common.ApplicationContext) {
     this.path = `${context.filesDir}/${filename}`;
@@ -50,6 +51,11 @@ export class EASClientID {
   }
 
   get clientID(): string {
+    this.storedID ??= this.loadClientID();
+    return this.storedID;
+  }
+
+  private loadClientID(): string {
     const existing = client.clientID(this.path);
     if (existing !== undefined) return existing;
 
