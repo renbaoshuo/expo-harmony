@@ -14,6 +14,8 @@ import { DevMenuPreference, DevMenuPreferences } from './DevMenuPreferences';
 import { DevMenuSourceData, DevMenuSourceEntry, DevMenuSourceFile, DevMenuSourceMap } from './DevMenuSourceMap';
 import { highlightSource, SourceToken } from './DevMenuSourceHighlight';
 
+const BIND_SHEET_NOT_FOUND: number = 120003;
+
 export enum DevMenuScreen {
   Main = 'main',
   Settings = 'settings',
@@ -648,9 +650,9 @@ export class ExpoDevMenuPresenter {
         await dismissed;
       })
       .catch((error: BusinessError): void => {
-        // A detached window or native gesture may already have removed this sheet.
-        if (error.code === 120003) this.release(content);
-        else throw new ExpoModuleError('ERR_DEV_MENU_WINDOW', error.message, error);
+        if (error.code !== BIND_SHEET_NOT_FOUND) throw new ExpoModuleError('ERR_DEV_MENU_WINDOW', error.message, error);
+
+        this.release(content);
       });
     this.closing = pending;
     try {

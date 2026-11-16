@@ -163,7 +163,9 @@ export class DevMenuFab {
     if (ui === undefined || target === undefined || area === undefined) return;
 
     const rect = target.getWindowProperties().windowRect;
-    const origin = new FabPoint(Number(area.globalPosition.x) - ui.px2vp(rect.left), Number(area.globalPosition.y) - ui.px2vp(rect.top));
+
+    // Area.globalPosition and touch coordinates are already relative to this window.
+    const origin = new FabPoint(Number(area.globalPosition.x), Number(area.globalPosition.y));
     const width = Number(area.width);
     const height = Number(area.height);
     const insets = new FabInsets();
@@ -175,6 +177,7 @@ export class DevMenuFab {
       insets.bottom = Math.max(insets.bottom, ui.px2vp(avoid.bottomRect.height) - (ui.px2vp(rect.height) - origin.y - height));
       insets.right = Math.max(insets.right, ui.px2vp(avoid.rightRect.width) - (ui.px2vp(rect.width) - origin.x - width));
     }
+
     this.model.origin = origin;
     this.model.updateBounds(new FabBounds(width, height, insets));
   }

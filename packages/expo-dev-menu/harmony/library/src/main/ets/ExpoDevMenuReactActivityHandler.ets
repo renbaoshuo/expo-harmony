@@ -23,14 +23,22 @@ function menuForRoot(context: ReactRootViewContext): ExpoDevMenuRuntime | undefi
 }
 
 export class ExpoDevMenuReactActivityHandler implements ReactActivityHandler {
+  private readonly mountedMenus: Map<Object, ExpoDevMenuRuntime> = new Map<Object, ExpoDevMenuRuntime>();
+
   constructor(_context: common.Context) {}
 
   onRootViewMounted(context: ReactRootViewContext, uiContext: UIContext, root: Object): void {
-    menuForRoot(context)?.mountRoot(root, uiContext);
+    const menu = menuForRoot(context);
+    if (menu === undefined) return;
+
+    this.mountedMenus.set(root, menu);
+    menu.mountRoot(root, uiContext);
   }
 
-  onRootViewUnmounted(context: ReactRootViewContext, root: Object): void {
-    menuForRoot(context)?.unmountRoot(root);
+  onRootViewUnmounted(_context: ReactRootViewContext, root: Object): void {
+    const menu = this.mountedMenus.get(root);
+    this.mountedMenus.delete(root);
+    menu?.unmountRoot(root);
   }
 
   applyRootViewGestures(context: ReactRootViewContext, event: UIGestureEvent): void {

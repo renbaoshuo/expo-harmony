@@ -12,6 +12,8 @@ import { FabPoint } from './DevMenuFabGeometry';
 
 const STORE_NAME: string = 'expo.modules.devmenu.preferences';
 const FAST_REFRESH: string = 'hotLoadingEnabled';
+const FAB_POSITION_X: string = 'fabPositionX';
+const FAB_POSITION_Y: string = 'fabPositionY';
 const AUTO_LAUNCH_METADATA: string = 'DEV_CLIENT_TRY_TO_LAUNCH_LAST_BUNDLE';
 const LEGACY_LAUNCH_MODE_METADATA: string = 'expo.devLauncher.launchMode';
 const PREFERENCES_TYPE = ExpoValueTypes.custom<Record<string, ESObject>>(
@@ -45,7 +47,9 @@ export class DevMenuPreferences {
 
   constructor(context: common.Context) {
     try {
-      this.store = preferences.getPreferencesSync(context.getApplicationContext(), { name: STORE_NAME });
+      const store = preferences.getPreferencesSync(context.getApplicationContext(), { name: STORE_NAME });
+      store.on('change', this.onChange);
+      this.store = store;
     } catch (error) {
       console.warn(`Expo Dev Menu preferences are unavailable; using session defaults: ${String(error)}`);
     }
@@ -60,13 +64,10 @@ export class DevMenuPreferences {
       [DevMenuPreference.TryToLaunchLastBundle, metadata.get(AUTO_LAUNCH_METADATA) ?? true],
     ]);
     if (this.store === undefined) DevMenuPreferences.sessionListeners.add(this.onChange);
-    else this.store.on('change', this.onChange);
   }
 
   get(key: DevMenuPreference): boolean {
-    const fallback = this.defaults.get(key) ?? false;
-    const value = this.store?.getSync(key, fallback) ?? DevMenuPreferences.sessionValues.get(key) ?? fallback;
-    return typeof value === 'boolean' ? value : fallback;
+    return this.readBoolean(key, this.defaults.get(key) ?? false);
   }
 
   async set(key: DevMenuPreference, value: boolean): Promise<void> {
@@ -74,12 +75,25 @@ export class DevMenuPreferences {
   }
 
   getFastRefreshEnabled(): boolean {
-    const value = this.store?.getSync(FAST_REFRESH, true) ?? DevMenuPreferences.sessionValues.get(FAST_REFRESH) ?? true;
-    return typeof value === 'boolean' ? value : true;
+    return this.readBoolean(FAST_REFRESH, true);
   }
 
   async setFastRefreshEnabled(value: boolean): Promise<void> {
     await this.setBooleans(new Map<string, boolean>([[FAST_REFRESH, value]]));
+  }
+
+  private readBoolean(key: string, fallback: boolean): boolean {
+    const value = this.read(key, DevMenuPreferences.sessionValues.get(key) ?? fallback);
+    return typeof value === 'boolean' ? value : fallback;
+  }
+
+  private read(key: string, fallback: preferences.ValueType): preferences.ValueType {
+    try {
+      return this.store?.getSync(key, fallback) ?? fallback;
+    } catch (error) {
+      console.warn(`Unable to read Expo Dev Menu preference ${key}: ${String(error)}`);
+      return fallback;
+    }
   }
 
   private async setBooleans(values: Map<string, boolean>): Promise<void> {
@@ -116,8 +130,10 @@ export class DevMenuPreferences {
   }
 
   getFabPosition(): FabPoint | undefined {
-    const x = this.store?.getSync('fabPositionX', -1) ?? DevMenuPreferences.sessionPosition?.x;
-    const y = this.store?.getSync('fabPositionY', -1) ?? DevMenuPreferences.sessionPosition?.y;
+    const position = DevMenuPreferences.sessionPosition;
+    const x = this.read(FAB_POSITION_X, position?.x ?? -1);
+    const y = this.read(FAB_POSITION_Y, position?.y ?? -1);
+
     return typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y) && x >= 0 && y >= 0
       ? new FabPoint(x, y)
       : undefined;
@@ -130,8 +146,8 @@ export class DevMenuPreferences {
       throw new Error('FAB position storage is unavailable; keeping the position for this session.');
     }
 
-    store.putSync('fabPositionX', position.x);
-    store.putSync('fabPositionY', position.y);
+    store.putSync(FAB_POSITION_X, position.x);
+    store.putSync(FAB_POSITION_Y, position.y);
     await store.flush();
   }
 

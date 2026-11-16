@@ -13,6 +13,7 @@ import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
 
 // NetStack's documented maximum; its 5 MiB default is too small for Metro maps.
 const MAX_SOURCE_MAP_BYTES: number = 100 * 1024 * 1024;
+const METRO_BUNDLE_EXTENSION: string = '.bundle';
 
 export class DevMenuSourceFile {
   readonly index: number;
@@ -47,56 +48,67 @@ export class DevMenuSourceMap {
     this.assertActive();
 
     let failure: Object | undefined;
-    // A host-provided cached bundle is authoritative: do not first wait on its CDN URL.
-    if (local !== undefined) {
-      return await this.loadLocal(local);
-    }
-    if (/^https?:\/\//i.test(bundle)) {
+    if (local !== undefined && local.length > 0) {
       try {
-        const address = new url.URL(bundle);
-        address.pathname = address.pathname.endsWith('.bundle') ? address.pathname.slice(0, -7) + '.map' : address.pathname + '.map';
+        return await this.loadLocal(local);
+      } catch (error) {
+        failure = error as Object;
+      }
+    }
 
-        const request = http.createHttp();
-        this.request = request;
-        try {
-          const response = await request.request(address.toString(), {
-            method: http.RequestMethod.GET,
-            expectDataType: http.HttpDataType.STRING,
-            connectTimeout: 15000,
-            readTimeout: 60000,
-            maxLimit: MAX_SOURCE_MAP_BYTES,
-          });
-          if (response.responseCode < 200 || response.responseCode >= 300)
-            throw new Error(`Source map request returned HTTP ${response.responseCode}.`);
-          return this.parse(String(response.result));
-        } finally {
-          if (this.request === request) {
-            this.request = undefined;
-            request.destroy();
-          }
+    this.assertActive();
+
+    if (bundle.length > 0 && bundle !== local) {
+      try {
+        if (/^https?:\/\//i.test(bundle)) return await this.loadRemote(bundle);
+        if (bundle.startsWith('file://') || bundle.startsWith('/')) return await this.loadLocal(bundle);
+        if (!bundle.includes('://')) {
+          const bytes = await this.resources.getRawFileContent(bundle);
+          return this.parseInline(util.TextDecoder.create('utf-8').decodeToString(bytes));
         }
       } catch (error) {
         failure = error as Object;
       }
     }
-    this.assertActive();
 
-    if (bundle.startsWith('file://') || bundle.startsWith('/')) return await this.loadLocal(bundle);
-    // RNOH ResourceJSBundleProvider exposes its rawfile-relative path as the bundle URL.
-    if (bundle.length > 0 && !bundle.includes('://')) {
-      try {
-        const bytes = await this.resources.getRawFileContent(bundle);
-        return this.parseInline(util.TextDecoder.create('utf-8').decodeToString(bytes));
-      } catch (error) {
-        failure = error as Object;
-      }
-    }
+    this.assertActive();
 
     throw new ExpoModuleError(
       'ERR_DEV_MENU_SOURCE_MAP',
-      'No source map found. Connect to Metro or include an inline source map in the local bundle.',
+      failure instanceof Error ? failure.message : 'No source map found. Connect to Metro or include an inline source map in the local bundle.',
       failure,
     );
+  }
+
+  private async loadRemote(bundle: string): Promise<DevMenuSourceFile[]> {
+    const address = new url.URL(bundle);
+    const path = address.pathname;
+    address.pathname = (path.endsWith(METRO_BUNDLE_EXTENSION) ? path.slice(0, -METRO_BUNDLE_EXTENSION.length) : path) + '.map';
+
+    const request = http.createHttp();
+    this.request = request;
+
+    try {
+      const response = await request.request(address.toString(), {
+        method: http.RequestMethod.GET,
+        expectDataType: http.HttpDataType.STRING,
+        connectTimeout: 15000,
+        readTimeout: 60000,
+        maxLimit: MAX_SOURCE_MAP_BYTES,
+      });
+
+      if (response.responseCode < 200 || response.responseCode >= 300) {
+        throw new Error(`Source map request returned HTTP ${response.responseCode}.`);
+      }
+      if (typeof response.result !== 'string') throw new Error('The source map response is not text.');
+
+      return this.parse(response.result);
+    } finally {
+      if (this.request === request) {
+        this.request = undefined;
+        request.destroy();
+      }
+    }
   }
 
   private async loadLocal(local: string): Promise<DevMenuSourceFile[]> {

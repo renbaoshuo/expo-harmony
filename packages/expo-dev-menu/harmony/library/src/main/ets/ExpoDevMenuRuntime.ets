@@ -125,7 +125,10 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
         // Split bundles can finish before the initial app bundle on a shared instance.
         const source = this.runtime.instance.getInitialBundleUrl();
         if (source === undefined || event.jsBundleUrl !== source || this.runtime.instance.getBundleExecutionStatus(source) !== 'DONE') return;
+
         this.bundleReady = true;
+        // RNOH reinitializes HMR with true each time it executes the main bundle.
+        this.fastRefreshEnabled = true;
         this.lastReloadAt = Date.now();
 
         try {
@@ -177,7 +180,8 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
   }
 
   unmountRoot(owner: Object): void {
-    this.roots.delete(owner);
+    if (!this.roots.delete(owner)) return;
+
     let last: UIContext | undefined;
     this.roots.forEach((ui: UIContext): void => {
       last = ui;
@@ -253,13 +257,20 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
       this.keyboardVisible = height > 0;
       this.refreshFab();
     };
-    nativeWindow.on('keyboardHeightChange', keyboardChanged);
-    this.windowCleanup = (): void => nativeWindow.off('keyboardHeightChange', keyboardChanged);
+
+    try {
+      nativeWindow.on('keyboardHeightChange', keyboardChanged);
+      this.windowCleanup = (): void => nativeWindow.off('keyboardHeightChange', keyboardChanged);
+    } catch (error) {
+      this.reportActionError(error instanceof Error ? error : new Error(String(error)));
+    }
+
     try {
       this.fab.attach(ui);
     } catch (error) {
       this.reportActionError(error instanceof Error ? error : new Error(String(error)));
     }
+
     this.windowActive = true;
     this.refreshFab();
     this.maybeShowAtLaunch();
@@ -268,6 +279,11 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
   get hasMountedWindow(): boolean {
     return this.active && this.ui !== undefined;
   }
+
+  isMountedInWindow(name: string): boolean {
+    return this.hasMountedWindow && this.windowName === name;
+  }
+
   get canPresentMenu(): boolean {
     return this.hasMountedWindow && this.bundleReady && this.foreground;
   }
@@ -325,6 +341,8 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
     this.reloadTimer = timer;
 
     try {
+      await this.close();
+      if (!this.active) return;
       await this.runtime.reload(RELOAD_REASON);
     } catch (error) {
       if (this.reloadTimer === timer) {
@@ -332,6 +350,7 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
         this.reloadTimer = undefined;
         this.reloading = false;
       }
+
       throw new ExpoModuleError(
         error instanceof ExpoModuleError ? error.code : 'ERR_DEV_MENU_RELOAD',
         error instanceof Error ? error.message : String(error),
@@ -380,14 +399,18 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
     if (event.getModifierKeyState?.(['Alt']) || event.getModifierKeyState?.(['Shift'])) return false;
     if (event.keyCode === KeyCode.KEYCODE_D) return this.toggleMenu();
 
-    let action: (() => void | Promise<void>) | undefined;
-    if (event.keyCode === KeyCode.KEYCODE_R) action = (): Promise<void> => this.reload();
-    else if (event.keyCode === KeyCode.KEYCODE_I) action = (): void => this.toggleInspector();
+    if (event.keyCode === KeyCode.KEYCODE_R) {
+      this.reload().catch((error: Error): void => this.reportActionError(error));
+      return true;
+    }
+
+    let action: (() => void) | undefined;
+    if (event.keyCode === KeyCode.KEYCODE_I) action = (): void => this.toggleInspector();
     else if (event.keyCode === KeyCode.KEYCODE_P) action = (): void => this.togglePerformanceMonitor();
     if (action === undefined) return false;
 
     try {
-      Promise.resolve(action()).catch((error: Error): void => this.reportActionError(error));
+      action();
       this.closeMenu();
     } catch (error) {
       this.reportActionError(error instanceof Error ? error : new Error(String(error)));
@@ -689,7 +712,7 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
         'reload',
         'Reload',
         'Reload the current JavaScript bundle',
-        true,
+        false,
         async (): Promise<void> => {
           await this.reload();
         },
@@ -918,7 +941,7 @@ class ExpoDevMenuRnohBridge {
     const pending = group.pending
       .catch((): boolean => false)
       .then(async (): Promise<boolean> => {
-        if (group.desired !== runtime || !group.runtimes.includes(runtime) || !runtime.hasMountedWindow) return false;
+        if (group.desired !== runtime || !group.runtimes.includes(runtime) || !runtime.isMountedInWindow(name)) return false;
         if (group.owner === runtime && runtime.isWindowOwner) {
           this.lastWindow = name;
           return true;
@@ -927,17 +950,21 @@ class ExpoDevMenuRnohBridge {
         const previous = group.owner;
         await previous?.deactivateWindow();
         group.owner = undefined;
-        if (group.desired !== runtime || !group.runtimes.includes(runtime) || !runtime.hasMountedWindow) return false;
+
+        if (group.desired !== runtime || !group.runtimes.includes(runtime) || !runtime.isMountedInWindow(name)) return false;
+
         try {
           runtime.activateWindow();
         } catch (error) {
           await runtime.deactivateWindow();
+
           throw new ExpoModuleError(
             error instanceof ExpoModuleError ? error.code : 'ERR_DEV_MENU_RUNTIME',
             error instanceof Error ? error.message : String(error),
             error as Object,
           );
         }
+
         group.owner = runtime;
         this.lastWindow = name;
 

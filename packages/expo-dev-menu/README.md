@@ -24,7 +24,7 @@ npm install @expo-harmony/expo-dev-menu expo-dev-menu@~57.0.20
 
 开发构建中会显示可拖动的悬浮菜单按钮，按钮位置会保存。应用退到后台、键盘弹出、引导页未完成或菜单打开时，按钮会隐藏。也可通过三指长按或外接键盘快捷键打开菜单：Ctrl/Command + D 切换菜单，Ctrl/Command + R、I、P 分别用于重新加载、切换元素检查器和性能监视器。菜单设置可关闭三指长按和快捷键。
 
-- 摇动设备或从 React Native 开发菜单打开时，需要在该菜单中选择 “Open Expo development menu”；HarmonyOS 上摇动入口由 React Native 开发菜单管理，不能直接打开 Expo 开发菜单。
+- 摇动设备或由 Metro 发出 `devMenu` 命令时，RNOH 会打开原生 React Native 开发菜单。选择 “Open Expo development menu” 即可进入 Expo 菜单。RNOH 0.86 的 Metro 客户端支持 `devMenu` 和 `reload`。
 - React Native DevTools 和 Fast Refresh 仅在已加载 Metro 开发 bundle 时可用。Fast Refresh 开关状态会保存，并控制当前开发 bundle 的热更新。
 
 源码查看器可浏览和搜索 source map 中的文件、复制源码或临时编辑；临时编辑不会改变运行中的应用。source map 未包含源码内容时，该文件无法查看。菜单还显示 bundle 地址、应用版本以及 runtimeVersion 或 SDK 版本，并支持复制这些信息。
