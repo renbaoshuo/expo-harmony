@@ -19,16 +19,18 @@ function toPosixPath(value: string): string {
 }
 
 function assertSafeRelative(relative: string, label: string): string {
-  const segments = typeof relative === 'string' ? relative.split('/') : [];
-  const native = segments.join(path.sep);
-
-  if (!relative || relative.includes('\\') || relative.includes('\0')
-    || segments.some(segment => !segment || segment === '.' || segment === '..')
-    || path.isAbsolute(native)) {
+  if (typeof relative !== 'string' || !relative || relative.includes('\\') || relative.includes('\0')
+    || path.win32.parse(relative).root) {
     throw new Error(`${label} contains an unsafe path.`);
   }
 
-  return native;
+  const segments = relative.split('/');
+
+  if (segments.some(segment => !segment || segment === '.' || segment === '..')) {
+    throw new Error(`${label} contains an unsafe path.`);
+  }
+
+  return segments.join(path.sep);
 }
 
 export { assertSafeRelative, isInside, toPosixPath };

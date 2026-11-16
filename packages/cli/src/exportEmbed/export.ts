@@ -21,7 +21,7 @@ import { resolveTimeoutMs } from '../timeout';
 import { resolveExpoHermesBuilder } from '../expo';
 import { readMetroRuntimeAsync, resolveMetroRuntimeRoot } from '../runtime/config';
 import {
-  assertHermesBundle, assertSourceMap, exportPaths,
+  assertHermesBundle, assertSourceMap, exportPaths, normalizeMetroSourceMap,
   publishExportAsync, validatePublishedExportAsync,
   type HarmonyExportManifest,
 } from './manifest';
@@ -50,6 +50,7 @@ async function exportEmbedUnlockedAsync(
 ): Promise<HarmonyExportManifest> {
   const buildMode = options.buildMode ?? 'release';
   const mode = buildMode === 'release' ? 'production' : 'development';
+
   if (!options.skipDoctor) {
     const doctor = await doctorAsync(root, { envMode: mode, requireDeviceTools: false });
     if (!doctor.ok) {
@@ -62,8 +63,10 @@ async function exportEmbedUnlockedAsync(
   const plan = await resolveHarmonyBuildPlanAsync(root, { buildMode });
   const paths = options.outputDirectory
     ? {
-        rawfileRoot: path.join(options.outputDirectory, 'embedded'), bundle: path.join(options.outputDirectory, 'embedded/hermes_bundle.hbc'),
-        metadataRoot: options.outputDirectory, manifest: path.join(options.outputDirectory, 'export-manifest.json'),
+        rawfileRoot: path.join(options.outputDirectory, 'embedded'),
+        bundle: path.join(options.outputDirectory, 'embedded/hermes_bundle.hbc'),
+        metadataRoot: options.outputDirectory,
+        manifest: path.join(options.outputDirectory, 'export-manifest.json'),
         sourceMap: path.join(options.outputDirectory, 'hermes_bundle.hbc.map'),
       }
     : exportPaths(plan);
@@ -87,7 +90,7 @@ async function exportEmbedUnlockedAsync(
     const result = await spawnAsync(process.execPath, [
       path.resolve(__dirname, '../internal/export.js'), root,
       JSON.stringify({ update: !!options.outputDirectory, platform: 'harmony', entryFile: entry, bundleOutput: temp.javascript, assetsDest: temp.assets,
-        dev: false, minify: false, sourcemapOutput: temp.metroSourceMap, sourcemapSourcesRoot: '.',
+        dev: false, minify: false, sourcemapOutput: temp.metroSourceMap,
         unstableTransformProfile: 'hermes-stable', resetCache: options.resetCache }), temp.metadata,
     ], {
       capture: true,
@@ -114,20 +117,18 @@ async function exportEmbedUnlockedAsync(
       );
     }
 
-    // Expo only infers Hermes for its built-in native platforms. Keep Harmony bundling in the Expo CLI,
-    // then explicitly hand its JS and source map to Expo's own Hermes exporter.
+    // Expo infers Hermes only for its built-in native platforms.
     try {
       const [code, map] = await Promise.all([
         fs.promises.readFile(temp.javascript, 'utf8'),
         fs.promises.readFile(temp.metroSourceMap, 'utf8'),
       ]);
       const buildHermes = resolveExpoHermesBuilder(root);
-
-      // Expo resolves hermes-compiler from react-native. For Harmony, resolve it
-      // from RNOH instead of the app's Android/iOS React Native installation.
-      const runtime = resolveMetroRuntimeRoot(root, await readMetroRuntimeAsync(root, mode));
+      const metro = await readMetroRuntimeAsync(root, mode);
+      const runtime = resolveMetroRuntimeRoot(root, metro);
       const modules = path.join(directory, 'node_modules');
 
+      // Expo resolves hermes-compiler through react-native; point it at RNOH.
       await fs.promises.mkdir(modules);
       await fs.promises.symlink(runtime, path.join(modules, 'react-native'),
         process.platform === 'win32' ? 'junction' : 'dir');
@@ -135,7 +136,7 @@ async function exportEmbedUnlockedAsync(
       const output = await buildHermes({
         code,
         filename: entry,
-        map,
+        map: normalizeMetroSourceMap(map, metro.serverRoot),
         minify: true,
         projectRoot: directory,
       });
@@ -164,7 +165,8 @@ async function exportEmbedUnlockedAsync(
     await assertSourceMap(temp.sourceMap);
 
     const manifest = await publishExportAsync(root, paths, temp, entry, bytecode);
-    await publishEmbeddedUpdateAsync(root, paths, JSON.parse(await fs.promises.readFile(temp.metadata, 'utf8')), mode);
+    const metadata = JSON.parse(await fs.promises.readFile(temp.metadata, 'utf8'));
+    await publishEmbeddedUpdateAsync(root, paths, metadata, mode);
 
     return manifest;
   } finally {

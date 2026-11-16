@@ -194,9 +194,7 @@ function createHarmonyToolchainEnv(toolchain = resolveHarmonyToolchain()): NodeJ
     ...(toolchain.hvigor.args.length > 0
       ? { HARMONY_NODE: toolchain.hvigor.command }
       : toolchain.ohpm.args.length > 0 ? { HARMONY_NODE: toolchain.ohpm.command } : {}),
-    ...(toolchain.sdkHome && !process.env.DEVECO_SDK_HOME
-      ? { DEVECO_SDK_HOME: toolchain.sdkHome }
-      : {}),
+    ...(toolchain.sdkHome ? { DEVECO_SDK_HOME: toolchain.sdkHome } : {}),
   };
 }
 

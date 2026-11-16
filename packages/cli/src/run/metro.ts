@@ -59,23 +59,25 @@ function probeMetroAsync(
       host: options.host || '127.0.0.1',
       path: '/status',
       port,
+      signal: AbortSignal.timeout(timeoutMs),
     }, (response) => {
       let body = '';
 
       response.setEncoding('utf8');
       response.on('data', (chunk) => {
-        if (body.length < 1_024) body += chunk;
+        if (body.length + chunk.length > 1_024) {
+          response.destroy();
+          finish('occupied');
+        } else {
+          body += chunk;
+        }
       });
       response.on('end', () => finish(
         response.statusCode === 200 && body.trim() === 'packager-status:running'
           ? 'metro'
           : 'occupied'
       ));
-    });
-
-    request.setTimeout(timeoutMs, () => {
-      request.destroy();
-      finish('occupied');
+      response.on('error', () => finish('occupied'));
     });
 
     request.on('error', (error: NodeJS.ErrnoException) => finish(

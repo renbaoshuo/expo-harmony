@@ -97,9 +97,10 @@ export function prepareHarmonyBundleTask(
   onBuildFinished: (restore: () => void) => void,
   bundle = embeddedBundlePath(root)
 ): () => void {
-  if (mode === 'release' || JSON.parse(fs.readFileSync(path.join(path.dirname(bundle), 'expo-updates/config.json'), 'utf8')).useNativeDebug === true) {
+  if (mode === 'release' || shouldEmbedDebugBundle(bundle)) {
     return () => bundleHarmonyNativeBuild(root, bundle, mode);
   }
+
   if (!fs.existsSync(bundle)) return () => {};
 
   const backupRoot = path.join(root, '.expo', 'harmony');
@@ -137,8 +138,28 @@ export function prepareHarmonyBundleTask(
   };
 
   process.once('exit', restoreOnExit);
-  onBuildFinished(restore);
+
+  try {
+    onBuildFinished(restore);
+  } catch (error) {
+    restore();
+
+    throw error;
+  }
+
   return () => {};
+}
+
+function shouldEmbedDebugBundle(bundle: string): boolean {
+  const config = path.join(path.dirname(bundle), 'expo-updates/config.json');
+
+  try {
+    return JSON.parse(fs.readFileSync(config, 'utf8'))?.useNativeDebug === true;
+  } catch (cause) {
+    if (cause.code === 'ENOENT') return false;
+
+    throw new HarmonyCliError('ERR_HARMONY_UPDATES_CONFIG', `Cannot read the embedded Expo Updates configuration at ${config}.`, { cause, operation: 'native-build' });
+  }
 }
 
 export function publishHarmonyNativeRuntime(root: string, mode: 'debug' | 'release'): void {

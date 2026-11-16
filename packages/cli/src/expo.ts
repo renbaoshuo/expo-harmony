@@ -63,6 +63,7 @@ interface HarmonyMetroMetadata {
   platform: boolean;
   extensions: boolean;
   runtime?: HarmonyMetroRuntime;
+  serverRoot?: string;
 }
 
 function readExpoConfigInChildAsync<T>(

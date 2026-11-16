@@ -142,16 +142,24 @@ async function copyAsync(
     filter: source => shouldCopyPrebuildCheckPath(project, source, plan),
   });
 
-  const modules = path.join(project, 'node_modules');
+  let linked = false;
+  // Preserve Node's ancestor lookup for hoisted dependencies in the scratch tree.
+  for (let directory = project; ; directory = path.dirname(directory)) {
+    const modules = path.join(directory, 'node_modules');
 
-  if (!fs.existsSync(modules)) {
+    if (fs.statSync(modules, { throwIfNoEntry: false })?.isDirectory()) {
+      await linkModulesAsync(modules, mirrorHarmonyCheckPath(temp, modules));
+      linked = true;
+    }
+    if (directory === path.dirname(directory)) break;
+  }
+
+  if (!linked) {
     throw new HarmonyCliError('ERR_HARMONY_DEPENDENCIES_MISSING', 'node_modules is required for --check.', {
       operation: 'check',
     });
   }
 
-  // Link individual packages so dependency scanners retain paths inside the mirror.
-  await linkModulesAsync(modules, path.join(target, 'node_modules'));
   await stageAsync(project, target, temp, buildType === 'release' ? 'production' : 'development');
 }
 
@@ -186,6 +194,8 @@ async function withGeneratedProjectAsync<T>(
       env: {
         ...createHarmonyToolchainEnv(),
         ...packed.env,
+        EXPO_HARMONY: '1',
+        EXPO_METRO_TARGET: 'harmony',
         NODE_ENV: process.env.NODE_ENV || (options.buildType === 'release' ? 'production' : 'development'),
         EXPO_HARMONY_PREBUILD_FRESH: clean || !fs.existsSync(path.join(expected, HarmonyPlatformDirectory)) ? '1' : '0',
         ...(options.buildType ? { EXPO_HARMONY_BUILD_TYPE: options.buildType } : {}),

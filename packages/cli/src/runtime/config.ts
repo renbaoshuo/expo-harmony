@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
-import { compileHarmonyModsAsync, normalizeHarmonyConfig, parseHarmonySdkVersion, type ExpoConfigWithHarmony } from '@expo-harmony/config-plugins';
+import { compareHarmonyApiVersions, compileHarmonyModsAsync, normalizeHarmonyConfig, parseHarmonySdkVersion, type ExpoConfigWithHarmony } from '@expo-harmony/config-plugins';
 import type { HarmonyRuntimeContract } from '@expo-harmony/expo-modules-autolinking/runtime';
 import { withHarmonyPrebuildConfig } from '@expo-harmony/prebuild-config';
 import { getHarmonyProjectConfig, type EnvMode } from '@expo-harmony/expo__config/internal/project-config';
@@ -65,11 +65,14 @@ export async function resolveRuntimeVersionAsync(
   return version;
 }
 
-export async function readMetroRuntimeAsync(root: string, mode?: EnvMode): Promise<HarmonyMetroRuntime> {
-  const { runtime } = await loadHarmonyMetroMetadataAsync(root, mode);
-  return runtime ?? {
-    reactPackage: 'react',
-    harmonyPackage: ProjectPackages.rnohRuntime,
+export async function readMetroRuntimeAsync(
+  root: string, mode?: EnvMode
+): Promise<HarmonyMetroRuntime & { serverRoot: string }> {
+  const { runtime, serverRoot } = await loadHarmonyMetroMetadataAsync(root, mode);
+
+  return {
+    ...runtime ?? { reactPackage: 'react', harmonyPackage: ProjectPackages.rnohRuntime },
+    serverRoot: serverRoot ?? root,
   };
 }
 
@@ -84,31 +87,64 @@ export function resolveMetroRuntimeRoot(root: string, runtime: HarmonyMetroRunti
 function nativeLibFilterHash(filter): string | undefined {
   if (filter === undefined) return undefined;
 
-  const values = {};
+  const values: Record<string, unknown> = {};
 
   for (const key of ['excludes', 'pickFirsts', 'pickLasts']) {
     if (filter[key]?.length) values[key] = [...new Set(filter[key])].sort();
   }
+
   if (filter.enableOverride) values['enableOverride'] = true;
+  if (Array.isArray(filter.select) && filter.select.length > 0) {
+    values['select'] = filter.select.map(rule => ({
+      package: rule.package,
+      version: rule.version,
+      includePattern: rule.includePattern,
+      excludePattern: rule.excludePattern,
+      include: rule.include,
+      exclude: rule.exclude,
+    }));
+  }
 
   return Object.keys(values).length ? createHash('sha256').update(JSON.stringify(values)).digest('hex') : undefined;
 }
 
-function nativeConfig(profile, module, build, product: string, ability: string): HarmonyRuntimeContract['config'] {
-  const selected = profile?.app?.products?.find(item => item.name === product);
+function resolveNativeRuntime(app, profile, module, build, productName: string, ability: string): {
+  app: { bundleName: string; versionName: string; versionCode: number };
+  config: HarmonyRuntimeContract['config'];
+} {
+  const product = profile?.app?.products?.find(item => item.name === productName);
+  if (!product) {
+    throw new HarmonyCliError('ERR_HARMONY_RUNTIME_CONFIG', `Cannot find the Harmony build product ${productName}.`, { operation: 'runtime-contract' });
+  }
+
   const entry = module?.abilities?.find(item => item.name === ability);
-  const targetSdk = selected.targetSdkVersion ?? selected.compileSdkVersion;
+  const sdk = product.targetSdkVersion ?? product.compileSdkVersion;
+  const targetApi = sdk === undefined ? undefined : parseHarmonySdkVersion(sdk, 'targetSdkVersion').api;
+  const compatibleApi = parseHarmonySdkVersion(product.compatibleSdkVersion, 'compatibleSdkVersion').api;
+
+  if (targetApi !== undefined && compareHarmonyApiVersions(compatibleApi, targetApi) > 0) {
+    throw new HarmonyCliError('ERR_HARMONY_RUNTIME_CONFIG', 'compatibleSdkVersion cannot exceed targetSdkVersion.', { operation: 'runtime-contract' });
+  }
+
   const hash = nativeLibFilterHash(build.buildOption?.nativeLib?.filter);
 
   return {
-    nativeCompiler: selected.buildOption?.nativeCompiler ?? 'BiSheng',
-    ...(targetSdk === undefined ? {} : { targetApiVersion: parseHarmonySdkVersion(targetSdk, 'targetSdkVersion').api }),
-    compatibleApiVersion: parseHarmonySdkVersion(selected.compatibleSdkVersion, 'compatibleSdkVersion').api,
-    ...(hash ? { nativeLibFilterHash: hash } : {}),
-    permissions: [...new Set<string>((module.requestPermissions || []).map(item => item.name))].sort(),
-    querySchemes: [...new Set<string>(module.querySchemes || [])].sort(),
-    backgroundModes: [...new Set<string>(entry?.backgroundModes || [])].sort(),
-    abiFilters: [...(build.buildOption?.externalNativeOptions?.abiFilters || [])].sort(),
+    app: {
+      ...app,
+      bundleName: product.bundleName ?? app.bundleName,
+      versionName: product.versionName ?? app.versionName,
+      versionCode: product.versionCode ?? app.versionCode,
+    },
+    config: {
+      nativeCompiler: product.buildOption?.nativeCompiler ?? 'BiSheng',
+      ...(targetApi === undefined ? {} : { targetApiVersion: targetApi }),
+      compatibleApiVersion: compatibleApi,
+      ...(hash ? { nativeLibFilterHash: hash } : {}),
+      permissions: [...new Set<string>((module.requestPermissions || []).map(item => item.name))].sort(),
+      querySchemes: [...new Set<string>(module.querySchemes || [])].sort(),
+      backgroundModes: [...new Set<string>(entry?.backgroundModes || [])].sort(),
+      abiFilters: [...(build.buildOption?.externalNativeOptions?.abiFilters || [])].sort(),
+    },
   };
 }
 
@@ -119,7 +155,7 @@ export function readNativeRuntime(plan: HarmonyBuildPlan) {
   const module = read(plan.projectFiles.moduleJson).module;
   const build = read(path.join(plan.moduleRoot, 'build-profile.json5'));
 
-  return { app, config: nativeConfig(profile, module, build, plan.productName, plan.abilityName) };
+  return resolveNativeRuntime(app, profile, module, build, plan.productName, plan.abilityName);
 }
 
 export async function evaluateProjectNativeRuntimeAsync(root: string, mode?: EnvMode) {
@@ -135,18 +171,17 @@ export async function evaluateProjectNativeRuntimeAsync(root: string, mode?: Env
       introspect: true,
       ignoreExistingNativeFiles: true,
     });
+
     const results = evaluated._internal?.modResults?.harmony;
-    native = {
-      app: results?.appJson?.app,
-      config: nativeConfig(
-        results?.projectBuildProfile,
-        results?.moduleJson?.module,
-        results?.entryBuildProfile,
-        settings.productName,
-        settings.abilityName
-      ),
-    };
-    bundle = settings.bundleName;
+    native = resolveNativeRuntime(
+      results?.appJson?.app,
+      results?.projectBuildProfile,
+      results?.moduleJson?.module,
+      results?.entryBuildProfile,
+      settings.productName,
+      settings.abilityName
+    );
+    bundle = native.app.bundleName;
   } else {
     const plan = await resolveHarmonyBuildPlanAsync(root);
     native = readNativeRuntime(plan);
@@ -155,6 +190,7 @@ export async function evaluateProjectNativeRuntimeAsync(root: string, mode?: Env
 
   const serializable = { ...config };
   delete (serializable as { mods?: unknown }).mods;
+
   return { config: serializable, bundleName: bundle, native };
 }
 

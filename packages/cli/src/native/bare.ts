@@ -7,6 +7,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { getHarmonyHapName } from '@expo-harmony/prebuild-config/internal';
 import JSON5 from 'json5';
 
 import { HarmonyCliError } from '../errors';
@@ -98,9 +99,23 @@ function resolveBareHarmonyBuildPlan(root: string, mode: 'debug' | 'release'): B
   });
   const target = identifier(selectDefault(targets, 'module targets').name, 'target name');
 
+  const moduleProfile = readJson(path.join(entry, 'build-profile.json5'));
+  const moduleTargets = records(moduleProfile.targets ?? [], 'module build targets');
+  const entryTarget = moduleTargets.find(item => item.name === target);
+  const output = entryTarget?.output === undefined ? undefined : record(entryTarget.output, 'target output');
+
   const ability = identifier(module.mainElement, 'module.mainElement');
-  const bundle = identifier(app.bundleName, 'app.bundleName');
+  const bundle = identifier(selected.bundleName ?? app.bundleName, 'bundleName');
   const signed = Boolean(selected.signingConfig);
+  let hapName: string;
+
+  try {
+    hapName = getHarmonyHapName(name, target, signed, output?.artifactName);
+  } catch (cause) {
+    if (!(cause instanceof TypeError)) throw cause;
+
+    throw new HarmonyCliError('ERR_HARMONY_NATIVE_PROJECT', `Native ${cause.message}`, { operation: 'resolve-build', cause });
+  }
 
   const rawfile = path.join(entry, 'src/main/resources/rawfile');
   const metadata = path.join(root, '.expo/harmony/export');
@@ -115,7 +130,7 @@ function resolveBareHarmonyBuildPlan(root: string, mode: 'debug' | 'release'): B
     moduleRoot: entry,
     productName: product,
     targetName: target,
-    expectedHap: path.join(entry, `build/${target}/outputs/${target}/${name}-${target}-${signed ? 'signed' : 'unsigned'}.hap`),
+    expectedHap: path.join(entry, 'build', target, 'outputs', target, hapName),
     hvigorArgs: ['--mode', 'module', '-p', `module=${name}@${target}`, '-p', `product=${product}`, '-p', `buildMode=${mode}`, '--no-daemon', 'assembleHap'],
     exportPaths: {
       bundle: path.join(rawfile, 'hermes_bundle.hbc'),

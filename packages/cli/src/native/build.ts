@@ -10,7 +10,7 @@ import path from 'node:path';
 
 import { commitHarmonyNativeBuildCacheAsync, prepareHarmonyNativeBuildCacheAsync } from './cache';
 import { installHarmonyDependenciesAsync } from './install';
-import type { HarmonyToolchain } from './toolchain';
+import { createHarmonyToolchainEnv, type HarmonyToolchain } from './toolchain';
 import type { HarmonyBuildPlan } from './types';
 import { HarmonyCliError } from '../errors';
 import { exportEmbedAsync } from '../exportEmbed/export';
@@ -35,8 +35,10 @@ export async function buildNativeAsync(
 ): Promise<NativeBuildResult> {
   let exported: NativeBuildResult['export'] = null;
   const embedded = plan.buildMode === 'release' || getHarmonyProjectConfig(root).exp.updates?.useNativeDebug === true;
+
   if (embedded) {
-    progress(options, 'Exporting the release Hermes bundle');
+    progress(options, 'Exporting the embedded Hermes bundle');
+
     const manifest = await timedAsync(steps, 'export', () => exportEmbedAsync(root, {
       buildMode: plan.buildMode,
       resetCache: options.resetCache,
@@ -67,16 +69,14 @@ export async function buildNativeAsync(
     code: 'ERR_HARMONY_BUILD_FAILED',
     cwd: plan.harmonyRoot,
     env: {
-      ...process.env,
+      ...createHarmonyToolchainEnv(tools),
+      EXPO_HARMONY: '1',
       EXPO_HARMONY_NODE: process.env.EXPO_HARMONY_NODE || process.execPath,
       EXPO_METRO_TARGET: 'harmony',
       EXPO_HARMONY_BUILD_TYPE: plan.buildMode,
       HERMES_V1_ENABLED: 'true',
       ...(plan.workflow === 'bare' ? { EXPO_HARMONY_NATIVE_PREPARED: '1' } : {}),
       ...(embedded ? { EXPO_HARMONY_BUNDLE_PREBUILT: '1' } : {}),
-      ...(tools.sdkHome && !process.env.DEVECO_SDK_HOME
-        ? { DEVECO_SDK_HOME: tools.sdkHome }
-        : {}),
     },
     message: 'Hvigor build',
     operation: 'hvigor-build',

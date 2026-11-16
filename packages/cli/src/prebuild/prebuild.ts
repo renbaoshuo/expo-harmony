@@ -56,6 +56,8 @@ async function prebuildParsedUnlockedAsync(
       env: {
         ...createHarmonyToolchainEnv(),
         ...packed.env,
+        EXPO_HARMONY: '1',
+        EXPO_METRO_TARGET: 'harmony',
         NODE_ENV: process.env.NODE_ENV || (options.buildType === 'release' ? 'production' : 'development'),
         EXPO_HARMONY_PREBUILD_FRESH: freshHarmonyProject ? '1' : '0',
         ...(options.buildType ? { EXPO_HARMONY_BUILD_TYPE: options.buildType } : {}),
@@ -77,6 +79,7 @@ async function prebuildParsedUnlockedAsync(
       const plan = await resolveHarmonyBuildPlanAsync(projectRoot, {
         buildMode: options.buildType,
       });
+
       if (plan.workflow !== 'cng') {
         throw new HarmonyCliError('ERR_HARMONY_TEMPLATE_INVALID', 'Prebuild did not produce a CNG project.', { operation: 'prebuild' });
       }

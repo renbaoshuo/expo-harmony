@@ -284,14 +284,15 @@ async function launchAppAsync(
   device: Device,
   bundleName: string,
   abilityName: string,
-  options: HdcOptions = {}
+  options: HdcOptions & { moduleName?: string } = {}
 ): Promise<void> {
+  // Quote for the remote shell; HDC forwards this command verbatim.
+  const quote = (value: string) => `'${value.replaceAll('\'', '\'\\\'\'')}'`;
+
   await runHdcAsync(hdc, [
     '-t', device.id,
     'shell',
-    'aa',
-    'force-stop',
-    bundleName,
+    `aa force-stop ${quote(bundleName)}`,
   ], {
     allowFailure: true,
     cwd: options.cwd,
@@ -302,10 +303,7 @@ async function launchAppAsync(
   await runHdcAsync(hdc, [
     '-t', device.id,
     'shell',
-    'aa',
-    'start',
-    '-a', abilityName,
-    '-b', bundleName,
+    `aa start -a ${quote(abilityName)} -b ${quote(bundleName)}${options.moduleName ? ` -m ${quote(options.moduleName)}` : ''}`,
   ], {
     code: 'ERR_HARMONY_LAUNCH_FAILED',
     cwd: options.cwd,

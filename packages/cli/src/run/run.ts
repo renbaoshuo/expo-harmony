@@ -179,13 +179,15 @@ async function runHarmonyUnlockedAsync(
       ));
     }
 
+    const module = identity.bundleName === plan.bundleName ? plan.moduleName : undefined;
+
     progress(settings, `Launching ${identity.bundleName}`);
     await timedAsync(steps, 'launch', () => launchAppAsync(
       tools.hdc,
       device,
       identity.bundleName,
       identity.abilityName,
-      { cwd: plan.harmonyRoot }
+      { cwd: plan.harmonyRoot, moduleName: module }
     ));
 
     const result: HarmonyRunResult = {

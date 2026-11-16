@@ -53,6 +53,61 @@ function assertHermesBundle(file: string) {
   }
 }
 
+function normalizeMetroSourceMap(json: string, root: string): string {
+  const map = JSON.parse(json);
+  if (map?.version !== 3 || !Array.isArray(map.sources)) {
+    throw new HarmonyCliError('ERR_HARMONY_EXPORT_INVALID_SOURCEMAP', 'Expo did not produce a version 3 Metro source map.', { operation: 'validate-export' });
+  }
+
+  const packages = new Map<string, string>();
+  const instances = new Map<string, number>();
+  const packageSource = (file: string): string | undefined => {
+    for (let dir = path.dirname(file); dir !== path.dirname(dir); dir = path.dirname(dir)) {
+      let prefix = packages.get(dir);
+
+      if (!prefix) {
+        let pkg;
+        try {
+          pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+        } catch (error) {
+          if (error.code === 'ENOENT') continue;
+          throw error;
+        }
+
+        if (typeof pkg?.name !== 'string') continue;
+
+        const name = toPosixPath(assertSafeRelative(pkg.name, 'Metro source package'));
+        const version = typeof pkg.version === 'string' && /^[0-9A-Za-z.+-]+$/u.test(pkg.version)
+          ? `@${pkg.version}`
+          : '';
+        const id = `${name}${version}`;
+        const count = (instances.get(id) ?? 0) + 1;
+
+        instances.set(id, count);
+        prefix = `node_modules/${id}${count > 1 ? `~${count}` : ''}`;
+        packages.set(dir, prefix);
+      }
+
+      return `${prefix}/${toPosixPath(path.relative(dir, file))}`;
+    }
+  };
+
+  map.sources = map.sources.map((source: unknown) => {
+    if (typeof source !== 'string' || !source.startsWith('/') || source.startsWith('//')) return source;
+
+    // Expo prefixes server-root-relative paths with a slash; resolve them before Hermes drops leading '..' segments.
+    const resolved = path.resolve(root, source.slice(1));
+    const file = [resolved, source].find(candidate => fs.statSync(candidate, { throwIfNoEntry: false })?.isFile());
+
+    if (!file) return source;
+    if (isInside(root, file)) return toPosixPath(path.relative(root, file));
+
+    return packageSource(file) ?? source;
+  });
+
+  return JSON.stringify(map);
+}
+
 async function assertSourceMap(file) {
   try {
     const contents = await fs.promises.readFile(file, 'utf8');
@@ -217,6 +272,7 @@ export {
   assertHermesBundle,
   assertSourceMap,
   exportPaths,
+  normalizeMetroSourceMap,
   publishExportAsync,
   validatePublishedExportAsync,
 };

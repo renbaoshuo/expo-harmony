@@ -45,6 +45,7 @@ async function main() {
     platform: Array.isArray(platforms) && platforms.includes('harmony'),
     extensions: Array.isArray(extensions) && extensions.includes('harmony'),
     runtime: config?.resolver?.resolveRequest?.harmonyRuntime,
+    serverRoot: config?.server?.unstable_serverRoot ?? config?.projectRoot,
   };
 }
 
