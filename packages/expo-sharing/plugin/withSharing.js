@@ -21,9 +21,11 @@ const SEND_ACTIONS = [
   'ohos.want.action.sendData',
   'ohos.want.action.sendMultipleData',
 ];
+const LINK_TYPE = 'general.hyperlink';
 const DEFAULT_SHARED_TYPES = [
   'general.text',
   'general.file',
+  LINK_TYPE,
 ];
 // SharedData supports up to 500 records (Share Kit API reference).
 const MAX_SHARED_RECORDS = 500;
@@ -31,8 +33,8 @@ const DEFAULT_MAX_FILES = MAX_SHARED_RECORDS;
 const SHARE_SCHEME_METADATA = 'expo.sharing.scheme';
 
 function createSharingSkill(options) {
-  const values = options.utds ?? DEFAULT_SHARED_TYPES;
-  if (!Array.isArray(values) || values.some(value => typeof value !== 'string' || !value.trim())) {
+  const types = options.utds ?? DEFAULT_SHARED_TYPES;
+  if (!Array.isArray(types) || types.some(type => typeof type !== 'string' || !type.trim())) {
     throw new HarmonyConfigPluginError(
       'ERR_HARMONY_SHARING_CONFIG_INVALID',
       '@expo-harmony/expo-sharing utds must be an array of non-empty UTD strings.',
@@ -48,8 +50,8 @@ function createSharingSkill(options) {
     );
   }
 
-  const limit = options.maxFileSupported ?? DEFAULT_MAX_FILES;
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SHARED_RECORDS) {
+  const maximum = options.maxFileSupported ?? DEFAULT_MAX_FILES;
+  if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > MAX_SHARED_RECORDS) {
     throw new HarmonyConfigPluginError(
       'ERR_HARMONY_SHARING_CONFIG_INVALID',
       `@expo-harmony/expo-sharing maxFileSupported must be between 1 and ${MAX_SHARED_RECORDS}.`,
@@ -57,8 +59,10 @@ function createSharingSkill(options) {
     );
   }
 
-  const actions = options.allowMultiple === false ? [SEND_ACTIONS[0]] : SEND_ACTIONS;
-  const utds = [...new Set(values.map(value => value.trim()))].sort();
+  const single = options.allowMultiple === false;
+  const actions = single ? [SEND_ACTIONS[0]] : SEND_ACTIONS;
+  const limit = single ? 1 : maximum;
+  const utds = [...new Set(types.map(type => type.trim()))].sort();
 
   return {
     actions,
@@ -68,8 +72,8 @@ function createSharingSkill(options) {
         utd,
         maxFileSupported: limit,
       })),
-      { scheme: 'http', utd: 'general.hyperlink' },
-      { scheme: 'https', utd: 'general.hyperlink' },
+      { scheme: 'http', utd: LINK_TYPE },
+      { scheme: 'https', utd: LINK_TYPE },
     ],
   };
 }

@@ -26,11 +26,13 @@ npm install @expo-harmony/expo-sharing expo-modules-core@~57.0.24 expo-sharing@~
 }
 ```
 
-配置会在指定的 Ability 上启用分享接收。默认接收文本、文件和 HTTP(S) 链接，每次最多接收 500 项。可以通过 `utds`、`maxFileSupported`、`allowMultiple` 和 `abilityName` 设置可接收的数据类型、数量上限、是否一次接收多项数据以及目标 Ability。`maxFileSupported` 可设为 1 到 500。目标 Ability 必须已存在，并设置 `exported: true`。此配置只用于接收分享。
+配置会在指定的 Ability 上启用分享接收。默认接收文本、文件和 HTTP(S) 链接，每次最多接收 500 项。可以通过 `utds` 和 `maxFileSupported` 设置文件类型及每种类型的数量上限。`maxFileSupported` 可设为 1 到 500，`allowMultiple: false` 将每种类型的上限设为 1。可通过 `abilityName` 指定接收分享的 Ability，该 Ability 必须已存在，并设置 `exported: true`。
 
 Bare 工程还需按[接入说明](https://github.com/renbaoshuo/expo-harmony/blob/master/docs/BareInstallation.md)完成 HarmonyOS 配置。
 
 收到的数据由目标 Ability 交给应用。设置 Expo `scheme` 后，系统可通过 `<scheme>://expo-sharing` 打开应用；对应页面可以调用 `useIncomingShare()` 读取数据。未设置 `scheme` 时，也可以在当前页面读取数据。
+
+应用直接通过 `Want` 分享文件时，接收方也可以读取系统授予权限的文件 URI。分享方通过 `Want.uri` 或 `ability.params.stream` 传递文件地址，并设置 URI 读或写授权标记。
 
 ## API 对照表
 
@@ -126,7 +128,7 @@ Bare 工程还需按[接入说明](https://github.com/renbaoshuo/expo-harmony/bl
 
 | 选项          | 说明                                                                                                                       |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `anchor`      | 分享面板的弹出位置。`x`、`y` 是相对窗口的偏移，`width`、`height` 是锚点区域的尺寸，负的尺寸按 0 处理；省略时位置由系统决定 |
+| `anchor`      | 分享面板的弹出位置。以 React Native 的布局单位指定相对窗口的 `x`、`y` 及区域的 `width`、`height`，负的尺寸按 0 处理。省略时位置由系统决定 |
 | `mimeType`    | 分享内容的 MIME 类型，用于判定面板中的展示形态，未提供时按文件扩展名判定                                                   |
 
 不支持以下选项：
