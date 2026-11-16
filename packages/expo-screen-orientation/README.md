@@ -22,22 +22,19 @@ npm install @expo-harmony/expo-screen-orientation expo-screen-orientation@~57.0.
 - `unlockAsync(): Promise<void>`：将方向策略恢复为 `DEFAULT`。
 - `getOrientationAsync(): Promise<Orientation>`：读取当前方向。HarmonyOS SDK API 23 及以上且支持窗口方向转换时按窗口方向解析；无法转换或使用较低版本时按窗口所在显示器的方向解析。窗口尺寸无效或显示器暂不可用时返回 `Orientation.UNKNOWN`。
 - `getOrientationLockAsync(): Promise<OrientationLock>`：读取当前窗口策略；当前策略无法映射到 `OrientationLock` 时返回 `OrientationLock.OTHER`。
-- `getPlatformOrientationLockAsync(): Promise<PlatformOrientationInfo>`：HarmonyOS 不提供平台专属方向锁定信息，成功时返回空对象 `{}`。
-- `supportsOrientationLockAsync(orientationLock: OrientationLock): Promise<boolean>`：检查策略是否受支持。`OTHER`、`UNKNOWN` 以及二合一设备上的方向策略返回 `false`；其他有效策略返回 `true`。
-
-未实现项：
-
-- `lockPlatformAsync(options: PlatformOrientationInfo): Promise<void>`：HarmonyOS 没有可用的平台专属方向锁定参数，调用会以 `TypeError` 拒绝。
+- `getPlatformOrientationLockAsync(): Promise<HarmonyPlatformOrientationInfo>`：返回包含 `screenOrientationConstantHarmony` 的对象，值为当前的 HarmonyOS [`window.Orientation`](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/arkts-apis-window-e/) 数值。
+- `lockPlatformAsync(options: HarmonyPlatformOrientationInfo): Promise<void>`：通过 `screenOrientationConstantHarmony` 指定 HarmonyOS `window.Orientation` 数值，包括 `0`（`UNSPECIFIED`）。
+- `supportsOrientationLockAsync(orientationLock: OrientationLock): Promise<boolean>`：检查策略和设备的窗口旋转能力。`OTHER`、`UNKNOWN`、二合一设备及缺少窗口管理能力的设备返回 `false`。分屏、自由窗口等场景由系统决定何时应用策略。
 
 ### Event subscriptions
 
-- `addOrientationChangeListener(listener: OrientationChangeListener): Subscription`：订阅窗口尺寸变化，回调接收包含 `orientationLock` 和 `orientationInfo` 的事件。180° 转向若未改变窗口尺寸，不一定触发回调。返回的订阅可调用 `subscription.remove()` 移除。
+- `addOrientationChangeListener(listener: OrientationChangeListener): Subscription`：订阅当前窗口的显示方向变化，包含系统报告的 180° 转向。回调接收 `orientationLock` 和 `orientationInfo`。返回的订阅可调用 `subscription.remove()` 移除。
 - `removeOrientationChangeListener(subscription: Subscription): void`：移除指定订阅；此方法已弃用，建议调用 `subscription.remove()`。
 - `removeOrientationChangeListeners(): void`：移除所有方向变化订阅；此方法已弃用。
 
 ### Types
 
-- `PlatformOrientationInfo`：HarmonyOS 不提供平台专属方向锁定字段；`getPlatformOrientationLockAsync()` 返回空对象。
+- `HarmonyPlatformOrientationInfo`：可从 `@expo-harmony/expo-screen-orientation` 导入的类型，补充 `screenOrientationConstantHarmony` 字段。
 - `ScreenOrientationInfo`：包含当前 `orientation`；HarmonyOS 不提供尺寸等级字段。
 - `OrientationChangeEvent`：包含当前的 `orientationLock` 和 `orientationInfo`。
 - `OrientationChangeListener`：类型为 `(event: OrientationChangeEvent) => void`。
@@ -56,6 +53,8 @@ npm install @expo-harmony/expo-screen-orientation expo-screen-orientation@~57.0.
 ### Error codes
 
 - `ERR_SCREEN_ORIENTATION_INVALID_LOCK`：传入 `OrientationLock.UNKNOWN`。
+- `ERR_SCREEN_ORIENTATION_INVALID_PLATFORM_LOCK`：所传 HarmonyOS 方向数值无效或不可用。
+- `ERR_SCREEN_ORIENTATION_UNSUPPORTED_LOCK`：当前设备不支持方向锁定。
 - `ERR_SCREEN_ORIENTATION_WINDOW`：当前没有可用的 UIAbility 窗口。
 - `ERR_SCREEN_ORIENTATION_DESTROYED`：方向模块运行环境已销毁。
 - `ERR_SCREEN_ORIENTATION_CONVERSION`：HarmonyOS 无法转换当前窗口方向信息。

@@ -5,15 +5,36 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { window } from '@kit.ArkUI';
+import { display, window } from '@kit.ArkUI';
 import { ExpoFunction, ExpoModule, ExpoModuleDefinition, ExpoModuleError, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
 import {
+  canObserveWindowDisplayChange,
   fromPreferredOrientation,
+  Orientation,
+  OrientationLock,
   readOrientation,
+  requireOrientationLockSupport,
   requirePlatformOrientation,
   supportsOrientationLock,
   toPreferredOrientation,
 } from './ScreenOrientation';
+
+const ORIENTATION_EVENT = 'expoDidUpdateDimensions';
+
+interface OrientationInfo {
+  orientation: Orientation;
+}
+
+interface OrientationChangeEvent {
+  orientationLock: OrientationLock;
+  orientationInfo: OrientationInfo;
+}
+
+interface AppliedOrientation {
+  target: window.Window;
+  original: window.Orientation;
+  applied: window.Orientation;
+}
 
 export class ExpoScreenOrientationModule extends ExpoModule {
   private pending: Promise<void> = Promise.resolve();
@@ -21,13 +42,15 @@ export class ExpoScreenOrientationModule extends ExpoModule {
   private destroyed: boolean = false;
   private stage: window.WindowStage | null = null;
   private generation: number = 0;
-  private readonly originals: Map<window.Window, window.Orientation> = new Map();
+  private readonly orientations: Map<number, AppliedOrientation> = new Map();
+  private observing: boolean = false;
+  private stopObservingWindow?: () => void;
 
   definition(): ExpoModuleDefinition {
     return (
       new ExpoModuleDefinition()
         .name('ExpoScreenOrientation')
-        .events(['expoDidUpdateDimensions'])
+        .events([ORIENTATION_EVENT])
         .asyncFunction(
           'lockAsync',
           ExpoFunction.typed1(ExpoValueTypes.number(), async (value: number): Promise<void> => {
@@ -57,11 +80,20 @@ export class ExpoScreenOrientationModule extends ExpoModule {
             return supportsOrientationLock(value);
           }),
         )
+        .onStartObserving(ORIENTATION_EVENT, (): void => {
+          this.observing = true;
+          this.observeWindow();
+        })
+        .onStopObserving(ORIENTATION_EVENT, (): void => {
+          this.observing = false;
+          this.unobserveWindow();
+        })
         .onWindowStageSetup((stage: window.WindowStage): void => {
           if (this.destroyed || this.stage === stage) return;
 
           this.releaseWindow();
           this.stage = stage;
+          this.observeWindow();
         })
         .onWindowStageWillDestroy((): void => {
           this.releaseWindow();
@@ -74,13 +106,90 @@ export class ExpoScreenOrientationModule extends ExpoModule {
 
   private setOrientation(orientation: window.Orientation): Promise<void> {
     return this.useWindow(async (win: window.Window): Promise<void> => {
-      const original = this.originals.has(win) ? undefined : win.getPreferredOrientation();
+      requireOrientationLockSupport();
 
-      // Always apply the request: the OS may have changed orientation since the
-      // previous lock, including when returning to a previously applied policy.
+      const id = win.getWindowProperties().id;
+      const previous = win.getPreferredOrientation();
+      const owned = this.orientations.get(id);
+      const original = owned !== undefined && previous === owned.applied ? owned.original : previous;
+
+      // The OS may have changed orientation after the previous lock.
       await win.setPreferredOrientation(orientation);
-      if (original !== undefined) this.originals.set(win, original);
+      this.orientations.set(id, { target: win, original, applied: orientation });
     });
+  }
+
+  private observeWindow(): void {
+    const stage = this.stage;
+    if (!this.observing || stage === null || this.destroyed || this.context.isHeadless || this.stopObservingWindow) return;
+    if (!canIUse('SystemCapability.WindowManager.WindowManager.Core')) return;
+
+    try {
+      const win = stage.getMainWindowSync();
+      let last = Orientation.UNKNOWN;
+      let active = true;
+
+      const refresh = (notify: boolean): void => {
+        if (!active || !this.context.isValid) return;
+
+        try {
+          const orientation = readOrientation(win);
+          if (orientation === Orientation.UNKNOWN || orientation === last) return;
+
+          if (!notify) {
+            last = orientation;
+            return;
+          }
+
+          const event: OrientationChangeEvent = {
+            orientationLock: fromPreferredOrientation(win.getPreferredOrientation()),
+            orientationInfo: { orientation },
+          };
+          last = orientation;
+          this.sendEvent(ORIENTATION_EVENT, event);
+        } catch (error) {
+          console.warn(`Unable to read the Expo ScreenOrientation window update: ${String(error)}`);
+        }
+      };
+
+      refresh(false);
+      const onChange = (): void => refresh(true);
+
+      const subscriptions: (() => void)[] = [];
+      const subscribe = (attach: () => void, detach: () => void): void => {
+        try {
+          attach();
+          subscriptions.push(detach);
+        } catch (error) {
+          console.warn(`Unable to observe Expo ScreenOrientation changes: ${String(error)}`);
+        }
+      };
+
+      subscribe((): void => display.on('change', onChange), (): void => display.off('change', onChange));
+      subscribe((): void => win.on('windowSizeChange', onChange), (): void => win.off('windowSizeChange', onChange));
+      if (canObserveWindowDisplayChange()) {
+        subscribe((): void => win.on('displayIdChange', onChange), (): void => win.off('displayIdChange', onChange));
+      }
+
+      this.stopObservingWindow = (): void => {
+        active = false;
+
+        for (const detach of subscriptions) {
+          try {
+            detach();
+          } catch (error) {
+            console.warn(`Unable to stop observing Expo ScreenOrientation changes: ${String(error)}`);
+          }
+        }
+      };
+    } catch (error) {
+      console.warn(`Unable to start observing the Expo ScreenOrientation window: ${String(error)}`);
+    }
+  }
+
+  private unobserveWindow(): void {
+    this.stopObservingWindow?.();
+    this.stopObservingWindow = undefined;
   }
 
   private useWindow<T>(task: (win: window.Window) => Promise<T>): Promise<T> {
@@ -130,6 +239,7 @@ export class ExpoScreenOrientationModule extends ExpoModule {
   }
 
   private releaseWindow(): void {
+    this.unobserveWindow();
     this.stage = null;
     this.generation += 1;
 
@@ -149,6 +259,7 @@ export class ExpoScreenOrientationModule extends ExpoModule {
     if (this.cleanup !== null) return this.cleanup;
 
     this.destroyed = true;
+    this.unobserveWindow();
     this.cleanup = this.serialize(async (): Promise<void> => this.restoreOrientations());
 
     return this.cleanup;
@@ -157,15 +268,18 @@ export class ExpoScreenOrientationModule extends ExpoModule {
   private async restoreOrientations(): Promise<void> {
     let failure: Object | undefined;
 
-    for (const entry of this.originals) {
+    for (const entry of this.orientations.values()) {
       try {
-        await entry[0].setPreferredOrientation(entry[1]);
+        // A host or another window owner can change the policy after our request.
+        if (entry.target.getPreferredOrientation() === entry.applied && entry.original !== entry.applied) {
+          await entry.target.setPreferredOrientation(entry.original);
+        }
       } catch (error) {
         failure = error;
       }
     }
 
-    this.originals.clear();
+    this.orientations.clear();
 
     if (failure !== undefined) {
       throw new ExpoModuleError('ERR_SCREEN_ORIENTATION_RESTORE', `Unable to restore the initial window orientation: ${String(failure)}`);

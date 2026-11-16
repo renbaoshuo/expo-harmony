@@ -45,6 +45,7 @@ const LOCKS: Map<number, window.Orientation> = new Map([
 // Official deviceType value; setPreferredOrientation does not take effect on 2in1.
 // Use the string contract because DeviceTypes.TYPE_2IN1 is only available since API 20.
 const TWO_IN_ONE_DEVICE_TYPE: string = '2in1';
+const WINDOW_DISPLAY_CHANGE_API_LEVEL: number = 14;
 const ORIENTATION_CONVERSION_API_LEVEL: number = 23;
 const CAPABILITY_NOT_SUPPORTED: number = 801;
 const INVALID_DISPLAY: number = 1400001;
@@ -59,7 +60,22 @@ enum WindowDirection {
 }
 
 export function supportsOrientationLock(value: number): boolean {
-  return deviceInfo.deviceType !== TWO_IN_ONE_DEVICE_TYPE && LOCKS.has(value);
+  return LOCKS.has(value) && canSetOrientation();
+}
+
+function canSetOrientation(): boolean {
+  return deviceInfo.deviceType !== TWO_IN_ONE_DEVICE_TYPE && canIUse('SystemCapability.WindowManager.WindowManager.Core');
+}
+
+export function requireOrientationLockSupport(): void {
+  if (!canSetOrientation()) {
+    throw new ExpoModuleError('ERR_SCREEN_ORIENTATION_UNSUPPORTED_LOCK', 'This device does not support locking the window orientation.');
+  }
+}
+
+export function canObserveWindowDisplayChange(): boolean {
+  return deviceInfo.deviceType !== TWO_IN_ONE_DEVICE_TYPE && deviceInfo.sdkApiVersion >= WINDOW_DISPLAY_CHANGE_API_LEVEL
+    && canIUse('SystemCapability.Window.SessionManager');
 }
 
 export function toPreferredOrientation(value: number): window.Orientation {
@@ -93,16 +109,22 @@ export function requirePlatformOrientation(value: number): window.Orientation {
     case window.Orientation.AUTO_ROTATION_PORTRAIT_RESTRICTED:
     case window.Orientation.AUTO_ROTATION_LANDSCAPE_RESTRICTED:
     case window.Orientation.LOCKED:
-    case window.Orientation.AUTO_ROTATION_UNSPECIFIED:
-    case window.Orientation.USER_ROTATION_PORTRAIT:
-    case window.Orientation.USER_ROTATION_LANDSCAPE:
-    case window.Orientation.USER_ROTATION_PORTRAIT_INVERTED:
-    case window.Orientation.USER_ROTATION_LANDSCAPE_INVERTED:
-    case window.Orientation.FOLLOW_DESKTOP:
       return value;
-    default:
-      throw new ExpoModuleError('ERR_SCREEN_ORIENTATION_INVALID_PLATFORM_LOCK', `Unsupported HarmonyOS orientation: ${value}.`);
   }
+
+  if (canIUse('SystemCapability.Window.SessionManager')) {
+    switch (value) {
+      case window.Orientation.AUTO_ROTATION_UNSPECIFIED:
+      case window.Orientation.USER_ROTATION_PORTRAIT:
+      case window.Orientation.USER_ROTATION_LANDSCAPE:
+      case window.Orientation.USER_ROTATION_PORTRAIT_INVERTED:
+      case window.Orientation.USER_ROTATION_LANDSCAPE_INVERTED:
+      case window.Orientation.FOLLOW_DESKTOP:
+        return value;
+    }
+  }
+
+  throw new ExpoModuleError('ERR_SCREEN_ORIENTATION_INVALID_PLATFORM_LOCK', `Unsupported HarmonyOS orientation: ${value}.`);
 }
 
 export function readOrientation(win: window.Window): Orientation {
