@@ -52,7 +52,7 @@ import { MeshGradientView } from 'expo-mesh-gradient';
 
 ##### `smoothsColors`
 
-类型：`boolean`，默认 `true`。控制顶点之间的颜色过渡：`true` 使用 sRGB 色彩空间的平滑过渡，`false` 使用 Oklab 色彩空间的线性过渡。网格边缘以曲线连接；行列数不相等时，部分纵向边缘形状可能与预期不同。
+类型为 `boolean`，默认为 `true`。开启时使用 sRGB 色彩空间平滑过渡，关闭时使用 Oklab 色彩空间线性过渡。横向和纵向的曲线分别按列数和行数确定边界。
 
 ##### `resolution`
 

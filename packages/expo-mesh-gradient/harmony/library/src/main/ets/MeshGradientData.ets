@@ -7,7 +7,7 @@
 
 // Copyright 2024-present 650 Industries. All rights reserved. MIT licensed.
 import { common2D, drawing } from '@kit.ArkGraphics2D';
-import { interpolateColor } from './MeshGradientColors';
+import { createColorSampler } from './MeshGradientColors';
 
 export const DEFAULT_RESOLUTION: number = 8;
 // Drawing's indexed triangles use uint16 indices, as does Android Canvas.
@@ -44,25 +44,49 @@ function cubicPath(start: common2D.Point, end: common2D.Point, position: Segment
     end.x,
     end.y,
   );
-  path.lineTo(end.x, end.y);
 
   return path;
 }
 
-function sample(path: drawing.Path, distance: number, fallback: common2D.Point): common2D.Point {
-  const point: common2D.Point = { x: fallback.x, y: fallback.y };
+function sampleEdge(
+  mesh: MeshGradientData,
+  start: number,
+  stride: number,
+  steps: number,
+  position: SegmentPosition,
+  horizontal: boolean,
+  smooth: boolean,
+): void {
+  const end = start + stride * steps;
+  const from = mesh.positions[start];
+  const to = mesh.positions[end];
+  const path = from.x === to.x && from.y === to.y ? undefined : cubicPath(from, to, position, horizontal);
+  const length = path?.getLength(false) ?? 0;
+  if (!Number.isFinite(length)) throw new Error('ExpoMeshGradient path length must be finite.');
+
+  const colorAt = createColorSampler(mesh.colors[start], mesh.colors[end], smooth);
   const tangent: common2D.Point = { x: 0, y: 0 };
 
-  // A collapsed edge has no tangent. Keep its coincident endpoint finite.
-  if (!path.getPositionAndTangent(false, distance, point, tangent) && distance !== 0) {
-    throw new Error('ExpoMeshGradient could not sample the mesh path.');
-  }
+  for (let step = 1; step < steps; step += 1) {
+    const fraction = step / steps;
+    const index = start + step * stride;
 
-  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
-    throw new Error('ExpoMeshGradient path coordinates must be finite.');
-  }
+    if (path === undefined || length === 0) {
+      mesh.positions[index] = from;
+    } else {
+      const point: common2D.Point = { x: 0, y: 0 };
+      if (!path.getPositionAndTangent(false, fraction * length, point, tangent)) {
+        throw new Error('ExpoMeshGradient could not sample the mesh path.');
+      }
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+        throw new Error('ExpoMeshGradient path coordinates must be finite.');
+      }
 
-  return point;
+      mesh.positions[index] = point;
+    }
+
+    mesh.colors[index] = colorAt(fraction);
+  }
 }
 
 export function createMesh(
@@ -114,48 +138,27 @@ export function createMesh(
   if (columns < 2 || rows < 2) return undefined;
 
   const mesh: MeshGradientData = { positions: [], colors: [], indices: [] };
-
   for (let y = 0; y < rows; y += 1) {
     for (let x = 0; x < columns; x += 1) {
       const source = y * columns + x;
       const target = y * stepsY * width + x * stepsX;
-      const start: common2D.Point = { x: points[source][0], y: points[source][1] };
-
-      mesh.positions[target] = start;
+      mesh.positions[target] = { x: points[source][0], y: points[source][1] };
       mesh.colors[target] = colors[source] >>> 0;
+    }
 
-      if (x === columns - 1 || stepsX === 1) continue;
+    if (stepsX === 1) continue;
 
-      const end: common2D.Point = { x: points[source + 1][0], y: points[source + 1][1] };
-      const path = cubicPath(start, end, segmentPosition(x, columns - 1), true);
-      const length = path.getLength(false);
-
-      for (let step = 1; step < stepsX; step += 1) {
-        const fraction = step / stepsX;
-
-        mesh.positions[target + step] = sample(path, fraction * length, start);
-        mesh.colors[target + step] = interpolateColor(colors[source], colors[source + 1], fraction, smooth);
-      }
+    for (let x = 0; x < columns - 1; x += 1) {
+      const target = y * stepsY * width + x * stepsX;
+      sampleEdge(mesh, target, 1, stepsX, segmentPosition(x, columns - 1), true, smooth);
     }
   }
 
-  for (let y = 0; y < rows - 1; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      if (stepsY === 1) continue;
-
-      const start = y * stepsY * width + x;
-      const end = (y + 1) * stepsY * width + x;
-
-      // Android uses the column boundary here, even for rectangular meshes.
-      const path = cubicPath(mesh.positions[start], mesh.positions[end], segmentPosition(y, columns - 1), false);
-      const length = path.getLength(false);
-
-      for (let step = 1; step < stepsY; step += 1) {
-        const fraction = step / stepsY;
-        const target = start + step * width;
-
-        mesh.positions[target] = sample(path, fraction * length, mesh.positions[start]);
-        mesh.colors[target] = interpolateColor(mesh.colors[start], mesh.colors[end], fraction, smooth);
+  if (stepsY > 1) {
+    for (let y = 0; y < rows - 1; y += 1) {
+      const position = segmentPosition(y, rows - 1);
+      for (let x = 0; x < width; x += 1) {
+        sampleEdge(mesh, y * stepsY * width + x, width, stepsY, position, false, smooth);
       }
     }
   }

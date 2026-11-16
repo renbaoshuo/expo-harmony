@@ -20,7 +20,8 @@ import {
 import type { ExpoViewContentContext } from '@expo-harmony/expo-modules-core';
 import { createMesh, DEFAULT_RESOLUTION, MeshGradientData } from './MeshGradientData';
 
-// React Native can send undefined or null for an unrecognized color or a missing coordinate.
+const DRAWING_CAPABILITY = 'SystemCapability.Graphics.Drawing';
+// NaN lets validation reject missing coordinates and unsupported colors.
 const MESH_NUMBER = ExpoValueTypes.number().defaulted(NaN);
 
 interface MeshResolution {
@@ -51,18 +52,21 @@ class ExpoMeshGradientView extends ExpoView {
   }
 
   update(): void {
+    this.mesh = undefined;
+
     try {
-      this.mesh = createMesh(
-        this.columns,
-        this.rows,
-        this.points,
-        this.colors,
-        this.resolution.x ?? DEFAULT_RESOLUTION,
-        this.resolution.y ?? DEFAULT_RESOLUTION,
-        this.smoothsColors,
-      );
+      if (canIUse(DRAWING_CAPABILITY)) {
+        this.mesh = createMesh(
+          this.columns,
+          this.rows,
+          this.points,
+          this.colors,
+          this.resolution.x ?? DEFAULT_RESOLUTION,
+          this.resolution.y ?? DEFAULT_RESOLUTION,
+          this.smoothsColors,
+        );
+      }
     } catch (error) {
-      this.mesh = undefined;
       console.warn(`ExpoMeshGradient cleared an invalid mesh: ${String(error)}`);
     }
 
@@ -72,7 +76,6 @@ class ExpoMeshGradientView extends ExpoView {
 
 class MeshRenderNode extends RenderNode {
   mesh?: MeshGradientData;
-  private brush: drawing.Brush = new drawing.Brush();
 
   override draw(context: DrawContext): void {
     const mesh = this.mesh;
@@ -83,16 +86,15 @@ class MeshRenderNode extends RenderNode {
 
     const canvas = context.canvas;
     canvas.save();
-    canvas.scale(size.width, size.height);
-    canvas.attachBrush(this.brush);
 
     try {
-      // DST selects the vertex colors. The brush composites them with SRC_OVER.
+      canvas.scale(size.width, size.height);
+      // DST selects the vertex colors. The default brush composites them with SRC_OVER.
       canvas.drawVertices(
         drawing.VertexMode.TRIANGLES_VERTEXMODE,
         mesh.positions.length,
         mesh.positions,
-        mesh.positions,
+        null,
         mesh.colors,
         mesh.indices.length,
         mesh.indices,
@@ -101,7 +103,6 @@ class MeshRenderNode extends RenderNode {
     } catch (error) {
       console.warn(`ExpoMeshGradient could not draw the mesh: ${String(error)}`);
     } finally {
-      canvas.detachBrush();
       canvas.restore();
     }
   }
@@ -115,11 +116,21 @@ class MeshNodeController extends NodeController {
   override makeNode(context: UIContext): FrameNode {
     if (this.frame === undefined) {
       this.frame = new FrameNode(context);
-      this.node = new MeshRenderNode();
+      const root = this.frame.getRenderNode();
 
-      this.node.mesh = this.mesh;
-      this.node.clipToFrame = true;
-      this.frame.getRenderNode()?.appendChild(this.node);
+      if (root !== null) {
+        const node = new MeshRenderNode();
+        node.mesh = this.mesh;
+        node.clipToFrame = true;
+
+        try {
+          root.appendChild(node);
+          this.node = node;
+        } catch (error) {
+          node.dispose();
+          console.warn(`ExpoMeshGradient could not attach its render node: ${String(error)}`);
+        }
+      }
     }
 
     return this.frame;
@@ -145,13 +156,21 @@ class MeshNodeController extends NodeController {
   }
 
   dispose(): void {
-    this.frame?.getRenderNode()?.clearChildren();
-    this.node?.dispose();
-    this.frame?.dispose();
+    const frame = this.frame;
+    const node = this.node;
 
     this.node = undefined;
     this.frame = undefined;
     this.mesh = undefined;
+
+    try {
+      frame?.getRenderNode()?.clearChildren();
+    } catch (error) {
+      console.warn(`ExpoMeshGradient could not detach its render node: ${String(error)}`);
+    } finally {
+      node?.dispose();
+      frame?.dispose();
+    }
   }
 }
 
@@ -246,8 +265,10 @@ export class ExpoMeshGradientModule extends ExpoModule {
       )
       .onDidUpdateProps((view: ExpoMeshGradientView): void => view.update())
       .onDestroy((view: ExpoMeshGradientView): void => {
-        view.redraw = undefined;
         view.mesh = undefined;
+        const redraw = view.redraw;
+        view.redraw = undefined;
+        redraw?.(undefined);
       });
 
     return new ExpoModuleDefinition().name('ExpoMeshGradient').view(view);

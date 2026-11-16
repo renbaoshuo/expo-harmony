@@ -47,26 +47,31 @@ function fromOklab(lightness: number, a: number, b: number, alpha: number): numb
   return ((byte(alpha) << 24) | (byte(r) << 16) | (byte(g) << 8) | byte(blue)) >>> 0;
 }
 
-export function interpolateColor(start: number, end: number, fraction: number, smooth: boolean): number {
-  if (smooth) {
-    const t = 3 * fraction * fraction - 2 * fraction * fraction * fraction;
-    let result = 0;
+function interpolateSrgb(start: number, end: number, fraction: number): number {
+  const t = 3 * fraction * fraction - 2 * fraction * fraction * fraction;
+  let result = 0;
 
-    for (let shift = 0; shift <= 24; shift += 8) {
-      const channel = Math.round(((start >>> shift) & 255) * (1 - t) + ((end >>> shift) & 255) * t);
-      result |= channel << shift;
-    }
-
-    return result >>> 0;
+  for (let shift = 0; shift <= 24; shift += 8) {
+    const channel = Math.round(((start >>> shift) & 255) * (1 - t) + ((end >>> shift) & 255) * t);
+    result |= channel << shift;
   }
+
+  return result >>> 0;
+}
+
+export function createColorSampler(start: number, end: number, smooth: boolean): (fraction: number) => number {
+  if (start === end) return (): number => start;
+  if (smooth) return (fraction: number): number => interpolateSrgb(start, end, fraction);
 
   const a = toOklab(start);
   const b = toOklab(end);
+  const startAlpha = start >>> 24;
+  const endAlpha = end >>> 24;
 
-  return fromOklab(
+  return (fraction: number): number => fromOklab(
     a[0] * (1 - fraction) + b[0] * fraction,
     a[1] * (1 - fraction) + b[1] * fraction,
     a[2] * (1 - fraction) + b[2] * fraction,
-    ((start >>> 24) * (1 - fraction) + (end >>> 24) * fraction) / 255,
+    (startAlpha * (1 - fraction) + endAlpha * fraction) / 255,
   );
 }
