@@ -26,7 +26,7 @@ npm install @expo-harmony/expo-cellular expo-cellular@~57.0.2
 
 #### `Cellular.getCellularGenerationAsync()`
 
-返回 `Promise<CellularGeneration>`，表示当前蜂窝网络代际。使用默认数据 SIM 卡的网络类型；设备通过 Wi-Fi 联网时仍可返回蜂窝网络代际。SIM 卡未就绪、权限不可用、蜂窝网络信息不可用或网络类型无法识别时返回 `UNKNOWN`。5G 仅对应系统上报的 NR；其他未映射类型（包括 IWLAN）返回 `UNKNOWN`。
+返回 `Promise<CellularGeneration>`，表示当前蜂窝网络代际。使用默认数据 SIM 卡的网络类型。设备通过 Wi-Fi 联网时仍可返回蜂窝网络代际。SIM 卡未就绪、权限不可用、蜂窝网络信息不可用或网络类型无法识别时返回 `UNKNOWN`。系统上报 NR 或 LTE 与 NR 双连接时返回 5G，未映射的网络类型（包括 IWLAN）返回 `UNKNOWN`。
 
 #### `Cellular.allowsVoipAsync()`
 
@@ -44,7 +44,7 @@ npm install @expo-harmony/expo-cellular expo-cellular@~57.0.2
 
 #### `Cellular.getMobileCountryCodeAsync()`
 
-返回 `Promise<string | null>`，SIM 卡归属 PLMN 的 MCC（三位移动国家码）。依次使用默认数据、短信和语音 SIM 卡；SIM 卡未就绪或 PLMN 不是 5 到 6 位数字时返回 `null`。
+返回 `Promise<string | null>`，SIM 卡归属 PLMN 的 MCC（三位移动国家码）。按默认数据、短信、语音的顺序选择首张已就绪的 SIM 卡。没有已就绪的默认 SIM 卡或 PLMN 不是 5 到 6 位数字时返回 `null`。
 
 #### `Cellular.getMobileNetworkCodeAsync()`
 
@@ -78,7 +78,7 @@ npm install @expo-harmony/expo-cellular expo-cellular@~57.0.2
 - `CELLULAR_2G = 1`：系统上报 GSM 或 1xRTT。
 - `CELLULAR_3G = 2`：系统上报 WCDMA、HSPA、HSPAP、TD-SCDMA、EVDO 或 EHRPD。
 - `CELLULAR_4G = 3`：系统上报 LTE 或 LTE-CA。
-- `CELLULAR_5G = 4`：系统上报 NR。
+- `CELLULAR_5G = 4`：系统上报 NR 或 LTE 与 NR 双连接。
 
 #### `PermissionStatus`
 

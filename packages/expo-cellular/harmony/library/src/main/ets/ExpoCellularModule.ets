@@ -26,6 +26,7 @@ enum SimField {
 const PERMISSION_DENIED: number = 201;
 const CAPABILITY_NOT_SUPPORTED: number = 801;
 const NO_SIM_CARD: number = 8300004;
+const SIM_NOT_ACTIVATED: number = 8301001;
 const NO_DEFAULT_SLOT: number = -1;
 const MOBILE_COUNTRY_CODE_LENGTH: number = 3;
 const TELEPHONY_CORE_CAPABILITY: string = 'SystemCapability.Telephony.CoreService';
@@ -71,9 +72,9 @@ export class ExpoCellularModule extends ExpoModule {
     try {
       if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
         if (canIUse(CELLULAR_DATA_CAPABILITY)) {
-          const slot = await data.getDefaultCellularDataSlotId();
+          const slot = await findReadySlot(() => data.getDefaultCellularDataSlotId(), sim.getMaxSimCount());
 
-          if (!(await this.isSimReady(slot))) return CellularGeneration.UNKNOWN;
+          if (slot === NO_DEFAULT_SLOT) return CellularGeneration.UNKNOWN;
 
           const tech = await radio.getRadioTech(slot);
 
@@ -90,7 +91,7 @@ export class ExpoCellularModule extends ExpoModule {
               return CellularGeneration.CELLULAR_3G;
             case radio.RadioTechnology.RADIO_TECHNOLOGY_LTE:
             case radio.RadioTechnology.RADIO_TECHNOLOGY_LTE_CA:
-              return CellularGeneration.CELLULAR_4G;
+              return await readLteGeneration(slot);
             case radio.RadioTechnology.RADIO_TECHNOLOGY_NR:
               return CellularGeneration.CELLULAR_5G;
             default:
@@ -103,7 +104,7 @@ export class ExpoCellularModule extends ExpoModule {
     } catch (error) {
       const code = (error as BusinessError).code;
 
-      if (code === PERMISSION_DENIED || code === CAPABILITY_NOT_SUPPORTED || code === NO_SIM_CARD) {
+      if (code === PERMISSION_DENIED || isUnavailableSim(code)) {
         return CellularGeneration.UNKNOWN;
       }
 
@@ -114,11 +115,12 @@ export class ExpoCellularModule extends ExpoModule {
   private async readSimValue(field: SimField): Promise<string | null> {
     try {
       if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
+        const count = sim.getMaxSimCount();
         const slot = field === SimField.OPERATOR_NUMERIC
-          ? await this.getOperatorSlot()
-          : await this.getDefaultSubscriptionSlot();
+          ? await getOperatorSlot(count)
+          : await getDefaultSubscriptionSlot(count);
 
-        if (!(await this.isSimReady(slot))) return null;
+        if (slot === NO_DEFAULT_SLOT) return null;
 
         let value: string;
 
@@ -141,7 +143,7 @@ export class ExpoCellularModule extends ExpoModule {
     } catch (error) {
       const code = (error as BusinessError).code;
 
-      if (code === CAPABILITY_NOT_SUPPORTED || code === NO_SIM_CARD) return null;
+      if (isUnavailableSim(code)) return null;
 
       throw new ExpoModuleError('ERR_CELLULAR_SIM', 'Unable to query HarmonyOS SIM information.', error as Object);
     }
@@ -152,70 +154,82 @@ export class ExpoCellularModule extends ExpoModule {
 
     return operator !== null && /^\d{5,6}$/.test(operator) ? operator : null;
   }
-
-  private async getOperatorSlot(): Promise<number> {
-    // AOSP resolves PLMN through data/SMS/voice defaults, unlike SPN and country code.
-    if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
-      const count = sim.getMaxSimCount();
-
-      if (canIUse(CELLULAR_DATA_CAPABILITY)) {
-        const slot = await readDefaultSlot(() => data.getDefaultCellularDataSlotId());
-
-        if (isValidSlot(slot, count)) return slot;
-      }
-
-      if (canIUse(SMS_CAPABILITY)) {
-        const slot = await readDefaultSlot(() => sms.getDefaultSmsSlotId());
-
-        if (isValidSlot(slot, count)) return slot;
-      }
-
-      return await readDefaultSlot(() => sim.getDefaultVoiceSlotId());
-    }
-
-    return NO_DEFAULT_SLOT;
-  }
-
-  private async getDefaultSubscriptionSlot(): Promise<number> {
-    if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
-      if (canIUse(CALL_MANAGER_CAPABILITY) && call.hasVoiceCapability()) {
-        const slot = await readDefaultSlot(() => sim.getDefaultVoiceSlotId());
-
-        if (isValidSlot(slot, sim.getMaxSimCount())) return slot;
-      }
-
-      if (canIUse(CELLULAR_DATA_CAPABILITY)) return await data.getDefaultCellularDataSlotId();
-    }
-
-    return NO_DEFAULT_SLOT;
-  }
-
-  private async isSimReady(slot: number): Promise<boolean> {
-    if (canIUse(TELEPHONY_CORE_CAPABILITY) && isValidSlot(slot, sim.getMaxSimCount())) {
-      const state = await sim.getSimState(slot);
-
-      return state === sim.SimState.SIM_STATE_READY || state === sim.SimState.SIM_STATE_LOADED;
-    }
-
-    return false;
-  }
 }
 
-async function readDefaultSlot(getSlot: () => Promise<number>): Promise<number> {
+async function readLteGeneration(slot: number): Promise<CellularGeneration> {
+  if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
+    try {
+      const state = await radio.getNetworkState(slot);
+
+      // In NSA the packet-switched RAT can still be LTE while NR is connected.
+      if (state.nsaState === radio.NsaState.NSA_STATE_DUAL_CONNECTED) {
+        return CellularGeneration.CELLULAR_5G;
+      }
+    } catch (_) {
+    }
+  }
+
+  return CellularGeneration.CELLULAR_4G;
+}
+
+async function getOperatorSlot(count: number): Promise<number> {
+  // AOSP resolves PLMN through data/SMS/voice defaults, unlike SPN and country code.
+  if (canIUse(CELLULAR_DATA_CAPABILITY)) {
+    const slot = await findReadySlot(() => data.getDefaultCellularDataSlotId(), count);
+
+    if (slot !== NO_DEFAULT_SLOT) return slot;
+  }
+
+  if (canIUse(SMS_CAPABILITY)) {
+    const slot = await findReadySlot(() => sms.getDefaultSmsSlotId(), count);
+
+    if (slot !== NO_DEFAULT_SLOT) return slot;
+  }
+
+  if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
+    return await findReadySlot(() => sim.getDefaultVoiceSlotId(), count);
+  }
+
+  return NO_DEFAULT_SLOT;
+}
+
+async function getDefaultSubscriptionSlot(count: number): Promise<number> {
+  if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
+    if (canIUse(CALL_MANAGER_CAPABILITY) && call.hasVoiceCapability()) {
+      const slot = await findReadySlot(() => sim.getDefaultVoiceSlotId(), count);
+
+      if (slot !== NO_DEFAULT_SLOT) return slot;
+    }
+  }
+
+  if (canIUse(CELLULAR_DATA_CAPABILITY)) {
+    return await findReadySlot(() => data.getDefaultCellularDataSlotId(), count);
+  }
+
+  return NO_DEFAULT_SLOT;
+}
+
+async function findReadySlot(getSlot: () => Promise<number>, count: number): Promise<number> {
   try {
-    return await getSlot();
+    const slot = await getSlot();
+
+    if (!Number.isInteger(slot) || slot < 0 || slot >= count) return NO_DEFAULT_SLOT;
+
+    if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
+      const state = await sim.getSimState(slot);
+
+      if (state === sim.SimState.SIM_STATE_READY || state === sim.SimState.SIM_STATE_LOADED) return slot;
+    }
   } catch (error) {
     const code = (error as BusinessError).code;
 
-    // TelephonyKit can reject a default voice or SMS lookup with -1 when no slot is available.
-    if (code === NO_DEFAULT_SLOT || code === CAPABILITY_NOT_SUPPORTED || code === NO_SIM_CARD) {
-      return NO_DEFAULT_SLOT;
-    }
-
-    throw error as Error;
+    // TelephonyKit can reject with -1 when no default slot is available.
+    if (code !== NO_DEFAULT_SLOT && !isUnavailableSim(code)) return Promise.reject(error as Error);
   }
+
+  return NO_DEFAULT_SLOT;
 }
 
-function isValidSlot(slot: number, count: number): boolean {
-  return Number.isInteger(slot) && slot >= 0 && slot < count;
+function isUnavailableSim(code: number): boolean {
+  return code === CAPABILITY_NOT_SUPPORTED || code === NO_SIM_CARD || code === SIM_NOT_ACTIVATED;
 }
