@@ -23,6 +23,7 @@ import type {
   MaterializedLocalSource,
   MaterializeLocalSourceOptions,
   ModuleArtifactDescriptor,
+  ModuleDescriptor,
   ModuleSource,
   RnohMetadata,
 } from '../types';
@@ -32,7 +33,9 @@ import { publishArtifactsAsync } from './transaction/publish';
 const DefaultBuildTimeoutMs = 10 * 60_000;
 const DefaultOutputLimit = 64 * 1024;
 const HarmonyProjectPath = 'harmony';
-const LocalBuildGeneratedDirectories = new Set(['.git', '.hvigor', '.cxx', 'build', 'node_modules', 'oh_modules']);
+const LocalBuildGeneratedEntries = new Set([
+  '.git', '.hvigor', '.cxx', '.native-build', 'build', 'node_modules', 'oh_modules', 'oh-package-lock.json5',
+]);
 
 interface FixedBuildStep {
   readonly id: 'ohpm-install' | 'hvigor-build';
@@ -383,8 +386,9 @@ async function materializeLocalSourceAsync(
     });
   }
 
-  const dependencies = (options.dependencies ?? []).filter(value => value.artifact.kind === 'bundled');
+  const dependencies = (options.dependencies ?? []).filter(value => value.artifact.kind === 'bundled' || value.arkTs?.builtHarPath);
   const { overrides, versions } = resolveBuildOhpmDependencies(dependencies);
+
   // Keep the same parent so OHPM specifiers relative to sibling modules still resolve.
   const stage = await fs.promises.mkdtemp(path.join(path.dirname(root), '.expo-harmony-build-'));
 
@@ -393,15 +397,18 @@ async function materializeLocalSourceAsync(
       recursive: true,
       dereference: true,
       filter: async (entry) => {
-        if (entry === har || (entry !== root && LocalBuildGeneratedDirectories.has(path.basename(entry)))) return false;
+        if (entry === har || (entry !== root && LocalBuildGeneratedEntries.has(path.basename(entry)))) return false;
+
         if (!isPathInside(root, await fs.promises.realpath(entry))) {
           throw new HarmonyAutolinkingError('UNSAFE_SOURCE_ARTIFACT', `Harmony source link escapes its local module: ${path.relative(root, entry)}`, {
             packageName: module.packageName, stage: 'artifact-materialize',
           });
         }
+
         return true;
       },
     });
+
     const cwd = path.join(stage, path.relative(root, source));
     const file = path.join(cwd, 'oh-package.json5');
     const config = JSON5.parse(await fs.promises.readFile(file, 'utf8'));
@@ -446,11 +453,56 @@ async function materializeLocalSourcesAsync(
   modules: ReadonlyArray<MaterializeLocalSourceOptions['module']>,
   options: Omit<MaterializeLocalSourceOptions, 'module'>
 ): Promise<ReadonlyArray<MaterializedLocalSource>> {
-  const results = [];
-  for (const module of [...modules].sort((left, right) => compareText(left.packageName, right.packageName))) {
-    results.push(await materializeLocalSourceAsync({ ...options, module }));
+  const packages = new Map(modules.map(module => [module.arkTs.ohPackageName, module]));
+  const results = new Map<string, MaterializedLocalSource>();
+  const artifacts = new Map<string, ModuleDescriptor>();
+  const building: string[] = [];
+
+  async function build(module: MaterializeLocalSourceOptions['module']) {
+    const name = module.arkTs.ohPackageName;
+    if (results.has(name)) return;
+    if (building.includes(name)) {
+      throw new HarmonyAutolinkingError('SOURCE_BUILD_FAILED', `Circular local Harmony dependencies: ${[...building, name].join(' -> ')}.`, {
+        packageName: module.packageName, stage: 'artifact-materialize',
+      });
+    }
+
+    building.push(name);
+    const [root, library] = await Promise.all(
+      ['oh-package.json5', 'library/oh-package.json5'].map(async (relative) => {
+        const file = await resolveInsideAsync(module.packageRoot, `${HarmonyProjectPath}/${relative}`, 'Harmony OHPM manifest', {
+          packageName: module.packageName, stage: 'artifact-materialize', type: 'file',
+        });
+
+        return JSON5.parse(await fs.promises.readFile(file, 'utf8'));
+      })
+    );
+
+    const sections = ['dependencies', 'devDependencies', 'dynamicDependencies'];
+    const declared = [
+      ...sections.flatMap(section => Object.keys(root[section] ?? {})),
+      ...sections.flatMap(section => Object.keys(library[section] ?? {})),
+      ...Object.keys(root.overrides ?? {}),
+    ];
+
+    for (const dependency of [...new Set(declared)].sort(compareText)) {
+      const local = packages.get(dependency);
+      if (local && local !== module) await build(local);
+    }
+
+    const dependencies = [...(options.dependencies ?? []), ...artifacts.values()];
+    const result = await materializeLocalSourceAsync({ ...options, module, dependencies });
+
+    results.set(name, result);
+    artifacts.set(name, { ...module, arkTs: { ...module.arkTs, builtHarPath: result.builtHarPath } });
+    building.pop();
   }
-  return results;
+
+  for (const module of [...modules].sort((left, right) => compareText(left.packageName, right.packageName))) {
+    await build(module);
+  }
+
+  return [...results.values()];
 }
 
 export {

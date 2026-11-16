@@ -198,11 +198,11 @@ export async function buildConfiguredModulesAsync(
           });
         }
 
-        product.compatibleSdkVersion = settings.compatibleSdkVersion;
         product.targetSdkVersion = settings.targetSdkVersion;
 
         const file = path.join(project, 'library/build-profile.json5');
         const build = JSON5.parse(await fs.readFile(file, 'utf8'));
+
         if (build.buildOption?.externalNativeOptions) {
           build.buildOption.externalNativeOptions.abiFilters = settings.abiFilters;
         }

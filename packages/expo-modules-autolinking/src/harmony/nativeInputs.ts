@@ -11,7 +11,7 @@ import path from 'node:path';
 
 import JSON5 from 'json5';
 
-const HarmonyNativeInputsFingerprintVersion = 3;
+const HarmonyNativeInputsFingerprintVersion = 4;
 
 interface HarmonyNativeInputsFingerprint {
   artifactCount: number;
@@ -48,8 +48,11 @@ function readOptionalFile(file: string): Uint8Array | null {
 
 function resolveLocalHar(root: string, specifier: unknown, local = false): string | null {
   if (typeof specifier !== 'string') return null;
-  const file = specifier.replace(/^(?:file|link):/u, '');
-  if (!local && !path.isAbsolute(file) && !/^\.\.?[\\/]/u.test(file)) return null;
+
+  const prefix = /^(?:file|link):/u.exec(specifier);
+  const file = prefix ? specifier.slice(prefix[0].length) : specifier;
+
+  if (!local && !prefix && !path.isAbsolute(file) && !/^\.\.?[\\/]/u.test(file)) return null;
   if (/^[a-z][a-z\d+.-]*:\/\//iu.test(file)) return null;
   if (!file.toLowerCase().endsWith('.har')) return null;
 

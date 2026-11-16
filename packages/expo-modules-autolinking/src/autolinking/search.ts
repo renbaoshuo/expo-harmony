@@ -195,12 +195,14 @@ async function loadOverridesAsync(deps: expoAutolinking.ResolutionResult, option
       if (![dependencies, optional, peers].some(group => Object.hasOwn(group, target))) {
         throw new HarmonyAutolinkingError('INVALID_METADATA', `${packageName} declares Harmony module ${target} but does not list it in a production dependency field.`, { packageName, stage: 'search' });
       }
+
       const dependency = await resolveSidecarTargetAsync(requireFromOwner, target);
       if (!dependency) {
-        if (Object.hasOwn(dependencies, target)
-          || (Object.hasOwn(peers, target) && peerMeta[target]?.optional !== true)) {
+        if (!Object.hasOwn(optional, target) && (Object.hasOwn(dependencies, target)
+          || (Object.hasOwn(peers, target) && peerMeta[target]?.optional !== true))) {
           throw new HarmonyAutolinkingError('INVALID_METADATA', `${packageName} declares Harmony module ${target}, but that dependency is not installed.`, { packageName: target, stage: 'search' });
         }
+
         continue;
       }
       if (metadata.version !== undefined && metadata.version !== dependency.version) {
@@ -212,6 +214,7 @@ async function loadOverridesAsync(deps: expoAutolinking.ResolutionResult, option
         || (metadata.packageRoot !== undefined && previous.root !== root))) {
         throw new HarmonyAutolinkingError('INVALID_METADATA', `${packageName} and ${previous.owner} declare conflicting Harmony metadata for ${target} at ${dependency.path}.`, { packageName: target, stage: 'search' });
       }
+
       overrides.set(dependency.path, { metadata, owner: packageName, root });
 
       // The upstream recursive scan skips optional-only dependencies.
@@ -330,10 +333,12 @@ async function searchModulesAsync(rawOptions: SearchOptions = {}): Promise<Searc
   const options = await normalizeOptionsAsync(rawOptions);
   const { revisions, projectConfig } = await resolveDependencyRevisionsAsync(options);
   const { overrides, resolved } = await loadOverridesAsync(revisions, options);
+
   const deps = mergeRevisions([revisions, ...resolved]);
   const search = { ...options, sidecars: overrides, projectConfig };
   const selected = new Map();
   const unique = new Map();
+  const found = new Set<string>();
 
   for (const name of Object.keys(deps).sort(compareText)) {
     const resolution = deps[name];
@@ -348,36 +353,38 @@ async function searchModulesAsync(rawOptions: SearchOptions = {}): Promise<Searc
       })),
     ];
 
-    const records = (await Promise.all(
+    const [winner, ...duplicates] = await Promise.all(
       revisions.map((revision, index) => createSearchRecordAsync(revision, search, index === 0))
-    )).filter(Boolean);
+    );
 
-    const winner = records[0];
-    const sidecars = records.filter(record => record.producerSidecar);
-    if (sidecars.length > 0 && resolution.source !== DependencySource.reactNativeConfig) {
+    const records = [winner, ...duplicates].filter(Boolean);
+    const sidecar = records.find(record => record.producerSidecar);
+    if (sidecar && resolution.source !== DependencySource.reactNativeConfig) {
       const competing = records.filter(
-        record => record.nativeCandidate && record.packageName === sidecars[0].packageName
+        record => record.nativeCandidate && record.packageName === sidecar.packageName
       );
       if (new Set(competing.map(record => record.npmRoot)).size > 1) {
-        throw new HarmonyAutolinkingError('INVALID_METADATA', `Competing native revisions of ${sidecars[0].packageName}: ${competing.map(record => record.npmRoot).join(', ')}. Use a single native revision or configure an explicit app override.`, { packageName: sidecars[0].packageName, stage: 'search' });
+        throw new HarmonyAutolinkingError('INVALID_METADATA', `Competing native revisions of ${sidecar.packageName}: ${competing.map(record => record.npmRoot).join(', ')}. Use a single native revision or configure an explicit app override.`, { packageName: sidecar.packageName, stage: 'search' });
       }
     }
+
     const chosen = winner?.nativeCandidate
       ? winner
-      : sidecars[0] ?? (resolution.source === DependencySource.searchPath
-        ? records.slice(1).find(record => record.nativeCandidate)
+      : sidecar ?? (resolution.source === DependencySource.searchPath
+        ? duplicates.find(record => record?.nativeCandidate)
         : null);
     if (chosen) selected.set(chosen.packageName, chosen);
     if (!chosen && !records.some(record => record.includedForVerification)) continue;
 
+    found.add(name);
     for (const record of records) {
+      found.add(record.packageName);
       const key = `${record.packageName}\0${record.packageVersion}\0${record.npmRoot}`;
       if (!unique.has(key)) unique.set(key, record);
     }
   }
 
   const all = [...unique.values()];
-  const found = new Set(all.map(record => record.packageName));
   const records = [...selected.values()].map(({
     includedForVerification: _includedForVerification,
     nativeCandidate: _nativeCandidate,

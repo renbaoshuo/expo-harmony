@@ -72,7 +72,6 @@ function collectDescriptorConflicts(descriptors) {
   const registrations = new Map();
   const oh = new Map();
   const rnohCmakeTargets = new Map();
-  const rnohEtsSymbols = new Map();
   const rnohCppSymbols = new Map();
 
   function push(map, key, source, value = key) {
@@ -87,6 +86,7 @@ function collectDescriptorConflicts(descriptors) {
       push(oh, arkTs.ohPackageName, diagnosticSource(descriptor, {
         field: `HAR:${arkTs.harPath}`,
       }), `${descriptor.packageRoot}\0${arkTs.harPath}`);
+
       for (const moduleClass of descriptor.harmony.modules) {
         const registrationId = moduleRegistrationId(arkTs.ohPackageName, moduleClass);
         push(registrations, registrationId, diagnosticSource(descriptor, {
@@ -94,25 +94,25 @@ function collectDescriptorConflicts(descriptors) {
         }));
       }
     }
+
     if (descriptor.rnoh.harPaths.length > 0) {
-      const rnohMetadata = resolveRnohMetadata(descriptor);
-      const packageSource = `${descriptor.packageRoot}\0${rnohMetadata.harMappings
+      const rnoh = resolveRnohMetadata(descriptor);
+      const source = `${descriptor.packageRoot}\0${rnoh.harMappings
         .map(mapping => mapping.harPath)
         .join('\0')}`;
-      for (const mapping of rnohMetadata.harMappings) {
+
+      for (const mapping of rnoh.harMappings) {
         push(oh, mapping.ohPackageName, diagnosticSource(descriptor, {
           field: `HAR:${mapping.harPath}`,
         }), `${descriptor.packageRoot}\0${mapping.harPath}`);
       }
-      push(rnohEtsSymbols, rnohMetadata.etsPackageClassName, diagnosticSource(descriptor, {
-        field: 'etsPackageClassName',
-      }), packageSource);
-      push(rnohCppSymbols, rnohMetadata.cppPackageClassName, diagnosticSource(descriptor, {
+
+      push(rnohCppSymbols, rnoh.cppPackageClassName, diagnosticSource(descriptor, {
         field: 'cppPackageClassName',
-      }), packageSource);
-      push(rnohCmakeTargets, rnohMetadata.cmakeLibraryTargetName, diagnosticSource(descriptor, {
+      }), source);
+      push(rnohCmakeTargets, rnoh.cmakeLibraryTargetName, diagnosticSource(descriptor, {
         field: 'cmakeLibraryTargetName',
-      }), packageSource);
+      }), source);
     }
   }
 
@@ -125,12 +125,6 @@ function collectDescriptorConflicts(descriptors) {
   for (const [value, entries] of rnohCmakeTargets) {
     if (new Set(entries.map(entry => entry.value)).size > 1) {
       diagnostics.push(conflictDiagnostic('DUPLICATE_MODULE', 'CMake target', value, entries));
-    }
-  }
-
-  for (const [value, entries] of rnohEtsSymbols) {
-    if (new Set(entries.map(entry => entry.value)).size > 1) {
-      diagnostics.push(conflictDiagnostic('DUPLICATE_MODULE', 'ETS Package class', value, entries));
     }
   }
 
@@ -219,8 +213,11 @@ function searchRecordFromDescriptor(descriptor, declared) {
       stage: 'verify',
     });
   }
+
   const modules = [...descriptor.harmony.modules];
   const services = [...descriptor.harmony.services];
+  const supportsHarmony = Boolean(descriptor.arkTs) || modules.length > 0 || services.length > 0 || host;
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rnoh: Record<string, any> = {};
   if (descriptor.rnoh.ohPackageName !== undefined) {
@@ -251,8 +248,8 @@ function searchRecordFromDescriptor(descriptor, declared) {
     packageVersion: descriptor.packageVersion,
     packageRoot: descriptor.packageRoot,
     source: descriptor.source,
-    supportsHarmony: modules.length > 0 || services.length > 0 || host,
-    expoModuleConfig: modules.length > 0 || services.length > 0 || host
+    supportsHarmony,
+    expoModuleConfig: supportsHarmony
       ? {
           platforms: ['harmony'],
           harmony: {

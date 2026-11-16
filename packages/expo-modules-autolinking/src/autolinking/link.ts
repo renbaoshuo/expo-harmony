@@ -162,13 +162,15 @@ async function linkPreparedModulesAsync(
     return result;
   } catch (error) {
     failure = error;
+
     emitLog(input.logger, 'error', 'Harmony autolinking failed.', {
-      code: error.code || 'ERR_EXPO_HARMONY_UNKNOWN',
-      stage: error.stage || 'link',
+      code: error?.code || 'ERR_EXPO_HARMONY_UNKNOWN',
+      stage: error?.stage || 'link',
     });
   } finally {
     if (stage) {
       const cleanup = await cleanupStagingProjectAsync(stage);
+
       if (cleanup) {
         const warning = { ...cleanup };
         delete warning.cause;
@@ -180,16 +182,16 @@ async function linkPreparedModulesAsync(
   }
 
   throw new HarmonyAutolinkingError(
-    typeof failure.code === 'string' ? failure.code : 'UNKNOWN',
-    failure.message || 'Harmony autolinking failed.',
+    typeof failure?.code === 'string' ? failure.code : 'UNKNOWN',
+    failure?.message || (failure == null ? 'Harmony autolinking failed.' : String(failure)),
     {
       cause: failure,
-      stage: failure.stage || 'link',
-      packageName: failure.packageName,
-      diagnostics: failure.diagnostics,
+      stage: failure?.stage || 'link',
+      packageName: failure?.packageName,
+      diagnostics: failure?.diagnostics,
       details: cleanupWarning
-        ? { ...(failure.details || {}), cleanupWarning }
-        : failure.details,
+        ? { ...(failure?.details || {}), cleanupWarning }
+        : failure?.details,
     }
   );
 }

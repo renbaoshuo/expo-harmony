@@ -211,12 +211,13 @@ async function normalizeOptionsAsync(input: Record<string, any> = {}) {
     throw new HarmonyAutolinkingError('INVALID_OPTIONS', 'projectRoot must be a non-empty string.', { stage: 'options' });
   }
 
-  let root = await realpathExistingAsync(origin, {
+  const cwd = await realpathExistingAsync(origin, {
     type: 'directory',
     field: 'projectRoot',
     stage: 'options',
   });
 
+  let root = cwd;
   let file = path.join(root, 'package.json');
   while (!fs.existsSync(file) && path.dirname(root) !== root) {
     root = path.dirname(root);
@@ -228,6 +229,7 @@ async function normalizeOptionsAsync(input: Record<string, any> = {}) {
   }
 
   const pkg = await readJsonAsync(file, 'INVALID_OPTIONS', 'options');
+
   const expo = pkg.expo === undefined ? {} : validateConfigObject(pkg.expo, 'package.json#expo');
   const shared = expo.autolinking === undefined ? {} : validateConfigObject(expo.autolinking, 'package.json#expo.autolinking');
   const platform = shared.harmony === undefined ? {} : validateConfigObject(shared.harmony, 'package.json#expo.autolinking.harmony');
@@ -237,7 +239,10 @@ async function normalizeOptionsAsync(input: Record<string, any> = {}) {
   const lists = {
     searchPaths: input.searchPaths === undefined
       ? configured.searchPaths
-      : [...normalizeStringArray(input.searchPaths, 'searchPaths'), ...configured.searchPaths],
+      : [
+          ...normalizeStringArray(input.searchPaths, 'searchPaths').map(value => path.resolve(cwd, value)),
+          ...configured.searchPaths,
+        ],
     exclude: input.exclude === undefined
       ? configured.exclude
       : [...configured.exclude, ...normalizeStringArray(input.exclude, 'exclude')],

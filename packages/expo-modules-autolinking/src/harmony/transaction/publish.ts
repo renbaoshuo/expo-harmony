@@ -222,6 +222,7 @@ async function publishArtifactsAsync(options) {
   const tmp = await fs.promises.mkdtemp(path.join(path.dirname(lockPath), '.expo-harmony-publish-'));
   const prepared = [];
   let lockHandle;
+  let retainBackups = false;
   const touched = [];
   const changed = [];
   const unchanged = [];
@@ -235,18 +236,21 @@ async function publishArtifactsAsync(options) {
 
     lockHandle = await acquirePublishLockAsync(lockPath);
     await options.validateSnapshot?.();
+
     for (let index = 0; index < prepared.length; index += 1) {
       const file = prepared[index];
       if (await filesEqualAsync(file.staged, file.target)) {
         unchanged.push(file.target);
         continue;
       }
+
       const existed = await pathExistsAsync(file.target);
       const backup = existed ? path.join(tmp, `backup-${index}`) : null;
       if (backup) await fs.promises.copyFile(file.target, backup);
-      touched.push({ target: file.target, existed, backup });
+
       await fs.promises.mkdir(path.dirname(file.target), { recursive: true });
       await fs.promises.rename(file.staged, file.target);
+      touched.push({ target: file.target, existed, backup });
       if (file.mode) await fs.promises.chmod(file.target, file.mode);
       changed.push(file.target);
     }
@@ -254,10 +258,11 @@ async function publishArtifactsAsync(options) {
     for (let index = 0; index < stale.length; index += 1) {
       const target = stale[index];
       if (!(await pathExistsAsync(target))) continue;
+
       const backup = path.join(tmp, `stale-${index}`);
       await fs.promises.copyFile(target, backup);
-      touched.push({ target, existed: true, backup });
       await fs.promises.unlink(target);
+      touched.push({ target, existed: true, backup });
       changed.push(target);
     }
 
@@ -277,18 +282,22 @@ async function publishArtifactsAsync(options) {
           await removeEmptyParentsAsync(path.dirname(entry.target), allowedRoot);
         }
       } catch (error) {
-        failures.push({ target: entry.target, message: error.message });
+        failures.push({ target: entry.target, backup: entry.backup, message: error.message });
       }
     }
 
-    throw new HarmonyAutolinkingError('PUBLISH_FAILED', 'Harmony autolinking publish failed and was rolled back.', {
+    retainBackups = failures.length > 0;
+
+    throw new HarmonyAutolinkingError('PUBLISH_FAILED', retainBackups
+      ? 'Harmony autolinking publish failed and some artifacts could not be restored.'
+      : 'Harmony autolinking publish failed and was rolled back.', {
       cause,
-      details: failures.length > 0 ? { rollbackFailures: failures } : undefined,
+      details: retainBackups ? { rollbackFailures: failures, recoveryDirectory: tmp } : undefined,
       stage: 'publish',
     });
   } finally {
     if (lockHandle) await releasePublishLockAsync(lockHandle, lockPath);
-    await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    if (!retainBackups) await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
 }
 

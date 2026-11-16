@@ -100,7 +100,7 @@ function canonicalizeOhpmManifest(
     ...names,
   ]);
 
-  if (options.requireManagedEntries) {
+  if (options.requireManagedEntries && names.length > 0) {
     for (const field of ['dependencies', 'overrides']) {
       if (!isObject(candidate[field])) {
         throw new HarmonyAutolinkingError(
@@ -123,6 +123,7 @@ function canonicalizeOhpmManifest(
   }
 
   let changed = false;
+
   for (const field of ['dependencies', 'overrides']) {
     const values = { ...(candidate[field] || {}) };
     for (const packageName of managed) delete values[packageName];

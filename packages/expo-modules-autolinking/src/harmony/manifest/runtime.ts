@@ -115,7 +115,10 @@ export function createNativeModuleContracts(modules: readonly ModuleDescriptor[]
     try {
       artifacts = [...new Set([...files].map(digest))];
       if (module.inlineModules) artifacts.push(inlineSourceDigest(module));
-      if (module.source === 'nativeModulesDir') artifacts.push(sourceDigest(path.join(module.packageRoot, 'harmony')));
+      if (module.source === 'nativeModulesDir' && module.arkTs) {
+        artifacts.push(sourceDigest(path.join(module.packageRoot, 'harmony')));
+      }
+
       artifacts.sort();
     } catch (cause) {
       throw new HarmonyAutolinkingError(

@@ -181,19 +181,25 @@ async function stageProjectAsync(options) {
     }
 
     const previousOhpmManifest = await readOhpmManifestSourceAsync(harmony);
+
     const manifest = createManifest(options.modules, { buildType: options.buildType });
-    const ohpmManifest = canonicalizeOhpmManifest(previousOhpmManifest ?? '{}\n', manifest, {
+    const ohpm = canonicalizeOhpmManifest(previousOhpmManifest ?? '{}\n', manifest, {
       previousManagedOhpmPackageNames: options.previousManagedOhpmPackageNames,
       stage: 'staging',
-    }).source;
-    await fs.promises.writeFile(path.join(target, RnohArtifacts.ohPackage), ohpmManifest);
+    });
+    // RNOH's generator iterates dependencies even when an app has no linked packages.
+    const input = ohpm.manifest.dependencies === undefined
+      ? stringifyJson({ ...ohpm.manifest, dependencies: {} })
+      : ohpm.source;
+
+    await fs.promises.writeFile(path.join(target, RnohArtifacts.ohPackage), input);
 
     return {
       projectRoot: root,
       harmonyProjectPath: harmony,
       sourceNodeModulesPath: source,
       previousOhpmManifest,
-      ohpmManifest,
+      ohpmManifest: ohpm.source,
       nodeModulesPath: modules,
       rnohRuntimePackages: runtime,
       temporaryRoot: tmp,

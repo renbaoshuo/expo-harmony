@@ -278,12 +278,13 @@ async function createDescriptorFromSearchRecordAsync(record, buildType: BuildTyp
     }
   }
 
-  const expoConfig = isObject(base.expoModuleConfig) ? base.expoModuleConfig : null;
+  const expoConfig = base.supportsHarmony && isObject(base.expoModuleConfig) ? base.expoModuleConfig : null;
   const harmony = normalizeHarmonyModuleMetadata(
     expoConfig?.harmony,
     { packageName: record.packageName, packageVersion: record.packageVersion }
   );
-  const arkTs = await resolveArkTsModulePackageAsync(base, harmony);
+
+  const arkTs = expoConfig ? await resolveArkTsModulePackageAsync(base, harmony) : undefined;
   const rnoh = await normalizeRnohMetadataAsync(base);
   const expo = normalizeExpoMetadata(base, harmony);
   const artifact = await materializeModuleArtifactAsync({
