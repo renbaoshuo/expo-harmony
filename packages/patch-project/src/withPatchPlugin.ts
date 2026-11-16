@@ -14,7 +14,7 @@ import { WarningAggregator, type ModPlatform } from '@expo/config-plugins';
 
 import { HarmonyPatchError } from './errors';
 import { applyPatchAsync } from './gitPatch';
-import { getPatchFilesAsync } from './patches';
+import { defaultPatchRoot, getPatchFilesAsync } from './patches';
 
 export interface PatchPluginProps {
   patchRoot?: string;
@@ -43,7 +43,7 @@ const withPatchPlugin: HarmonyConfigPlugin<PatchPluginProps | void> = (config, p
     if (mod.modRequest.introspect || process.env.EXPO_HARMONY_SKIP_PATCHES === '1') return mod;
 
     const root = mod.modRequest.projectRoot;
-    const directory = await HarmonyPaths.resolveHarmonyPath(root, options.patchRoot ?? 'cng-patches');
+    const directory = await HarmonyPaths.resolveHarmonyPath(root, options.patchRoot ?? defaultPatchRoot);
     const files = await getPatchFilesAsync(directory, true);
     if (!files.length) {
       registerHarmonyConfigPlugin(mod, owner, { files: [] });

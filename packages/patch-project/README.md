@@ -66,7 +66,9 @@ npx expo-harmony prebuild --clean
 
 ## 调整插件选项
 
-默认情况下，插件会从项目根目录的 `cng-patches/` 查找补丁。需要更换查找目录时，可以设置 `patchRoot`；补丁生成命令仍写入 `cng-patches/`，因此需要把生成的补丁移到自定义目录。
+默认情况下，插件会从项目根目录的 `cng-patches/` 查找补丁。使用自定义目录时，设置插件的 `patchRoot` 并在生成补丁时传入同一路径，例如 `npx @expo-harmony/patch-project --patch-root native-patches`。
+
+如果应用配置按 Debug 或 Release 生成不同的工程文件，生成补丁时使用 `--build-type debug` 或 `--build-type release` 选择与当前工程一致的基线。
 
 `changedLinesLimit` 用于调整大补丁的提示阈值，默认值为 `300` 行。超过阈值时插件会发出提示，但仍会应用补丁：
 

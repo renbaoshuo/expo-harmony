@@ -13,9 +13,15 @@ import { atomicWrite, HarmonyPaths } from '@expo-harmony/config-plugins';
 
 import { HarmonyPatchError } from '../errors';
 import { generatePatchAsync } from '../gitPatch';
-import { getPatchFilesAsync } from '../patches';
+import { defaultPatchRoot, getPatchFilesAsync } from '../patches';
 
-export async function patchProjectAsync(projectRoot: string, options: { clean?: boolean } = {}) {
+interface PatchProjectOptions {
+  clean?: boolean;
+  patchRoot?: string;
+  buildType?: 'debug' | 'release';
+}
+
+export async function patchProjectAsync(projectRoot: string, options: PatchProjectOptions = {}) {
   return withHarmonyProjectLockAsync(projectRoot, 'patch-project', async (root) => {
     const native = await HarmonyPaths.resolveHarmonyPath(root, 'harmony');
     let stat;
@@ -32,18 +38,19 @@ export async function patchProjectAsync(projectRoot: string, options: { clean?: 
     }
     if (options.clean) await assertSafeCleanTarget(root);
 
-    const directory = await HarmonyPaths.resolveHarmonyPath(root, 'cng-patches');
-    const outputRoot = await fs.realpath(directory).catch((cause) => {
+    const directory = await HarmonyPaths.resolveHarmonyPath(root, options.patchRoot ?? defaultPatchRoot);
+    const output = await fs.realpath(directory).catch((cause) => {
       if (cause.code !== 'ENOENT') throw cause;
       return directory;
     });
-    if (HarmonyPaths.isInside(native, outputRoot)) {
+
+    if (HarmonyPaths.isInside(native, output)) {
       throw new HarmonyPatchError('ERR_HARMONY_PATCH_FAILED', `Patch output directory must be outside the Harmony native project: ${directory}.`);
     }
 
     const previous = await getPatchFilesAsync(directory);
     const result = await withGeneratedProjectAsync(
-      root, { clean: true, skipPatches: true }, async (expected, checksum) => ({
+      root, { clean: true, skipPatches: true, buildType: options.buildType }, async (expected, checksum) => ({
         patch: await generatePatchAsync(path.join(expected, 'harmony'), native),
         file: path.join(directory, `harmony+${checksum}.patch`),
       })
@@ -59,6 +66,7 @@ export async function patchProjectAsync(projectRoot: string, options: { clean?: 
 
       await atomicWrite(result.file, result.patch);
     }
+
     for (const name of previous) {
       const file = path.join(directory, name);
       if (!result.patch.length || file !== result.file) await fs.rm(file, { force: true });

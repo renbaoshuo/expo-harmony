@@ -90,6 +90,7 @@ async function git(cwd: string, args: string[]): Promise<string> {
 
   try {
     return (await exec('git', [
+      '--literal-pathspecs',
       '-c', 'core.autocrlf=false', '-c', 'core.quotePath=false', '-c', 'core.fileMode=true',
       '-c', 'core.protectHFS=true', '-c', 'core.protectNTFS=true', ...args,
     ], {
@@ -100,6 +101,16 @@ async function git(cwd: string, args: string[]): Promise<string> {
   } catch (cause) {
     throw new HarmonyPatchError('ERR_HARMONY_PATCH_FAILED', `Git patch operation failed: ${cause.stderr || cause.message}`, { cause, operation: 'patch-project' });
   }
+}
+
+async function initializePatchRepository(root: string): Promise<void> {
+  await git(root, ['init', '--quiet']);
+
+  // Local attributes override checkout filters that would change the snapshot's bytes.
+  const directory = path.join(root, '.git', 'info');
+  await fs.mkdir(directory, { recursive: true });
+
+  await fs.writeFile(path.join(directory, 'attributes'), '* !text !eol !filter !ident !working-tree-encoding !diff\n');
 }
 
 async function listFiles(source: string): Promise<string[]> {
@@ -114,8 +125,9 @@ async function listFiles(source: string): Promise<string[]> {
   }
 }
 
-async function snapshot(source: string, target: string, files: string[]): Promise<void> {
+async function snapshot(source: string, target: string, files: string[]): Promise<Map<string, Stats>> {
   await fs.mkdir(target, { recursive: true });
+  const originals = new Map<string, Stats>();
 
   for (const name of files) {
     if (!isProjectPath(name)) throw new HarmonyPatchError('ERR_HARMONY_PATCH_FAILED', `Invalid native patch path: ${name}.`);
@@ -127,7 +139,10 @@ async function snapshot(source: string, target: string, files: string[]): Promis
     if (!stat.isFile() && !stat.isSymbolicLink()) throw new HarmonyPatchError('ERR_HARMONY_PATCH_FAILED', `Patch source must be a file: ${from}.`);
     await fs.mkdir(path.dirname(to), { recursive: true });
     await fs.cp(from, to, { verbatimSymlinks: true });
+    originals.set(name, stat);
   }
+
+  return originals;
 }
 
 async function getPatchStatsAsync(
@@ -154,7 +169,7 @@ async function getPatchStatsAsync(
 export async function generatePatchAsync(baseline: string, current: string): Promise<Buffer> {
   const staging = await fs.mkdtemp(path.join(os.tmpdir(), 'harmony-patch-diff-'));
   try {
-    await git(staging, ['init', '--quiet']);
+    await initializePatchRepository(staging);
     const native = path.join(staging, 'harmony');
     const files = await listFiles(baseline);
     await snapshot(baseline, native, files);
@@ -229,6 +244,14 @@ export interface PatchResult {
 interface PatchWrite {
   target: string;
   staged?: string;
+  original?: Stats;
+}
+
+function hasSameFileVersion(original?: Stats, current?: Stats): boolean {
+  if (!original || !current) return original === current;
+
+  return original.dev === current.dev && original.ino === current.ino && original.mode === current.mode
+    && original.size === current.size && original.mtimeMs === current.mtimeMs && original.ctimeMs === current.ctimeMs;
 }
 
 async function hasSamePatchContents(before: string, after: string): Promise<boolean> {
@@ -258,12 +281,16 @@ async function publishPatchAsync(root: string, writes: PatchWrite[]): Promise<vo
       if (staged) await fs.cp(staged, path.join(transaction, `next-${index}`), { verbatimSymlinks: true });
     }
 
-    for (const [index, { target, staged }] of writes.entries()) {
+    for (const [index, { target, staged, original }] of writes.entries()) {
       const parent = path.dirname(target);
       const first = await fs.mkdir(parent, { recursive: true });
       for (let directory = parent; first && HarmonyPaths.isInside(first, directory);
         directory = path.dirname(directory)) {
         directories.push(directory);
+      }
+
+      if (!hasSameFileVersion(original, await lstatIfExists(target))) {
+        throw new HarmonyPatchError('ERR_HARMONY_PATCH_FAILED', `Harmony file changed while applying its patch: ${target}.`, { file: target });
       }
 
       const backup = path.join(transaction, `previous-${index}`);
@@ -272,6 +299,7 @@ async function publishPatchAsync(root: string, writes: PatchWrite[]): Promise<vo
         return false;
       });
       backups.push({ target, backup: hadOriginal ? backup : undefined });
+
       if (staged) await fs.rename(path.join(transaction, `next-${index}`), target);
     }
   } catch (cause) {
@@ -323,18 +351,20 @@ export async function applyPatchAsync(
   const staging = await fs.mkdtemp(path.join(os.tmpdir(), 'harmony-patch-apply-'));
 
   try {
-    await git(staging, ['init', '--quiet']);
+    await initializePatchRepository(staging);
+
     const patch = path.join(staging, 'changes.patch');
     await fs.writeFile(patch, content);
-    const { files: outputNames, changedLines } = await getPatchStatsAsync(staging, patch);
+
+    const { files: after, changedLines } = await getPatchStatsAsync(staging, patch);
     // Git can move a file when the before and after paths differ even without a rename header.
-    const { files: inputNames } = await getPatchStatsAsync(staging, patch, true);
-    inputNames.reverse();
-    if (outputNames.length !== inputNames.length || outputNames.some((name, index) => name !== inputNames[index])) {
+    const { files: before } = await getPatchStatsAsync(staging, patch, true);
+    before.reverse();
+    if (after.length !== before.length || after.some((name, index) => name !== before[index])) {
       throw new HarmonyPatchError('ERR_HARMONY_PATCH_FAILED', 'Patch sections must use the same path before and after each change.');
     }
 
-    const files = [...new Set(outputNames)];
+    const files = [...new Set(after)];
     const native = path.join(root, 'harmony');
     const nativeStat = await lstatIfExists(native);
     if (nativeStat && !nativeStat.isDirectory()) {
@@ -342,7 +372,7 @@ export async function applyPatchAsync(
     }
 
     const stagingNative = path.join(staging, 'harmony');
-    await snapshot(native, stagingNative, files);
+    const originals = await snapshot(native, stagingNative, files);
 
     const chunks = patchText.trimStart().split(/(?<=\n)(?=diff --git )/u);
     if (!chunks[0].startsWith('diff --git ')) {
@@ -416,9 +446,11 @@ export async function applyPatchAsync(
     }
 
     validateCreatedFiles?.(created);
+
     await publishPatchAsync(root, pending.map(file => ({
       target: path.join(native, file),
       staged: outputs.get(file),
+      original: originals.get(file),
     })));
 
     return { files, created, changedLines };

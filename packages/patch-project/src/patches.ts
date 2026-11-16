@@ -9,6 +9,8 @@ import fs from 'node:fs/promises';
 
 import { HarmonyPatchError } from './errors';
 
+export const defaultPatchRoot = 'cng-patches';
+
 export async function getPatchFilesAsync(root: string, includeSymlinks = false): Promise<string[]> {
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
