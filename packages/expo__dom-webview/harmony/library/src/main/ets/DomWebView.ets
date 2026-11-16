@@ -121,7 +121,7 @@ export class DomWebView extends ExpoView {
   private url: string = '';
   private title: string = '';
   // Only the top document's injected closure sends the registration prompt.
-  private readonly registerPrompt: string = `${REGISTER_PROMPT}${util.generateRandomUUID()}`;
+  private readonly registrationKey: string = util.generateRandomUUID();
   private readonly ready: Promise<void>;
   private attach?: () => void;
   private destroyed: boolean = false;
@@ -132,6 +132,8 @@ export class DomWebView extends ExpoView {
   private pending: Map<string, PendingEval> = new Map();
   private unsubscribe?: () => void;
   private update?: () => void;
+  private pendingProps?: Promise<boolean>;
+  private finishProps?: (navigated: boolean) => void;
 
   constructor(context: ExpoViewContext, register: (id: number, view: DomWebView) => void, unregister: (id: number) => void) {
     super(context);
@@ -158,6 +160,10 @@ export class DomWebView extends ExpoView {
     this.update = update;
   }
 
+  private get registerPrompt(): string {
+    return `${REGISTER_PROMPT}${this.registrationKey}:${this.bridgeRevision}`;
+  }
+
   get allowsAppFileAccess(): boolean {
     return this.source?.toLowerCase().startsWith('file://') === true;
   }
@@ -172,12 +178,26 @@ export class DomWebView extends ExpoView {
   }
 
   commitProps(): void {
-    this.update?.();
+    if (this.update === undefined) return;
+
+    if (this.pendingProps === undefined) {
+      this.pendingProps = new Promise<boolean>((resolve: (navigated: boolean) => void): void => {
+        this.finishProps = resolve;
+      });
+    }
+
+    try {
+      this.update();
+    } catch (error) {
+      this.completeProps(false);
+      throw new ExpoModuleError('ERR_WEBVIEW_LOAD', error instanceof Error ? error.message : String(error));
+    }
   }
 
   documentStartScript(): string {
-    // The placeholder is inside upstream's native event template literal.
-    // Interpolate this document's ID when the browser creates the listener.
+    if (!this.bridgeEnabled && this.script.length === 0) return '';
+
+    // The upstream listener interpolates its document ID inside a template literal.
     const install = INSTALL_GLOBALS_SCRIPT.split('"%%WEBVIEW_ID%%"').join('${webViewId}');
 
     // Completing the prompt asynchronously avoids a UI/Hermes sync-call deadlock.
@@ -226,24 +246,30 @@ export class DomWebView extends ExpoView {
     this.attach?.();
     this.attach = undefined;
 
-    this.controller.onActive();
-    this.loadSource();
+    try {
+      this.controller.onActive();
+    } catch (error) {
+      console.warn(`Expo DOM WebView could not activate the renderer: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    if (this.pendingProps === undefined) this.loadSource();
   }
 
   private navigate(url?: string): void {
-    const wasGone = this.rendererGone;
-    const wasRecovering = this.recovering;
+    const gone = this.rendererGone;
+    const recovering = this.recovering;
     const document = this.document;
+
     // Document-start scripts can run before the next onPageBegin callback.
     this.rendererGone = false;
-    this.recovering = wasGone || wasRecovering;
+    this.recovering = gone || recovering;
 
     try {
       if (url === undefined) this.controller.refresh();
       else this.controller.loadUrl(url);
     } catch (error) {
-      this.rendererGone = wasGone;
-      this.recovering = wasRecovering;
+      this.rendererGone = gone;
+      this.recovering = recovering;
       throw new ExpoModuleError('ERR_WEBVIEW_LOAD', error instanceof Error ? error.message : String(error));
     }
 
@@ -259,41 +285,65 @@ export class DomWebView extends ExpoView {
     return this.url;
   }
 
-  private reloadPage(): void {
+  private reloadPage(): boolean {
     const url = this.currentUrl();
+
     if (url) this.navigate(this.rendererGone ? url : undefined);
     else if (this.source !== null) this.navigate(this.source);
+    else return false;
+
+    return true;
   }
 
-  loadSource(): void {
-    if (!this.attached || this.destroyed) return;
+  applyCommittedProps(): void {
+    this.completeProps(this.loadSource());
+  }
+
+  private completeProps(navigated: boolean): void {
+    const finish = this.finishProps;
+    this.finishProps = undefined;
+    this.pendingProps = undefined;
+
+    finish?.(navigated);
+  }
+
+  private loadSource(): boolean {
+    if (!this.attached || this.destroyed) return false;
 
     updateDebugging(this.id, this.debuggable && this.debugging);
 
     try {
       const scripts = JSON.stringify([this.script, this.endScript, this.bridgeRevision]);
       const scriptsChanged = this.loadedScripts !== undefined && this.loadedScripts !== scripts;
+      let navigated = false;
 
       if (this.source !== null && this.source !== this.loadedSource &&
         (this.rendererGone || this.source !== this.currentUrl())) {
         this.navigate(this.source);
+        navigated = true;
       } else if (scriptsChanged) {
-        this.reloadPage();
+        navigated = this.reloadPage();
       }
 
       this.loadedScripts = scripts;
       this.loadedSource = this.source;
+
+      return navigated;
     } catch (error) {
       // Prop updates run from ArkUI callbacks, with no JS promise to reject.
       console.warn(`Expo DOM WebView could not load the page: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
   }
 
   async reload(): Promise<void> {
     await this.ready;
+    // The next ArkUI frame applies new scripts and file access before navigation.
+    const navigated = await this.pendingProps;
+
     if (this.destroyed) return;
     if (!this.attached) throw new ExpoModuleError('ERR_WEBVIEW_NOT_READY', 'The WebView renderer exited before the controller attached.');
-    if (this.recovering) return;
+    if (this.recovering || navigated) return;
 
     if (this.source !== null && this.source !== this.loadedSource) {
       this.navigate(this.source);
@@ -505,12 +555,15 @@ export class DomWebView extends ExpoView {
     this.attach?.();
     this.attach = undefined;
     this.update = undefined;
+    this.completeProps(false);
+
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.retireDocument();
     updateDebugging(this.id, false);
 
     if (!this.attached) return;
+
     try {
       this.controller.deleteJavaScriptRegister(MESSAGE_BRIDGE_NAME);
     } catch (_) {}
@@ -548,20 +601,26 @@ struct DomWebViewContent {
   private revision: number = 0;
 
   aboutToAppear(): void {
-    this.scripts = [{ script: this.view.documentStartScript(), scriptRules: ['*'] }];
-    this.endScripts = [{ script: this.view.documentEndScript(), scriptRules: ['*'] }];
+    this.refreshScripts();
     this.view.setContentUpdater((): void => {
-      this.scripts = [{ script: this.view.documentStartScript(), scriptRules: ['*'] }];
-      this.endScripts = [{ script: this.view.documentEndScript(), scriptRules: ['*'] }];
+      this.refreshScripts();
 
       // Apply ArkUI's document-start scripts before starting a new navigation.
       const revision = ++this.revision;
       this.getUIContext().postFrameCallback(
         new AfterRender((): void => {
-          if (this.revision === revision) this.view.loadSource();
+          if (this.revision === revision) this.view.applyCommittedProps();
         }),
       );
     });
+  }
+
+  private refreshScripts(): void {
+    const start = this.view.documentStartScript();
+    const end = this.view.documentEndScript();
+
+    this.scripts = start.length > 0 ? [{ script: start, scriptRules: ['*'] }] : [];
+    this.endScripts = end.length > 0 ? [{ script: end, scriptRules: ['*'] }] : [];
   }
 
   aboutToDisappear(): void {

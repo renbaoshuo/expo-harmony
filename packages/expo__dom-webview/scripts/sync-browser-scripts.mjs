@@ -9,6 +9,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import semver from 'semver';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
@@ -16,8 +17,9 @@ const upstream = path.dirname(require.resolve('@expo/dom-webview/package.json'))
 const pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
 const official = JSON.parse(await readFile(path.join(upstream, 'package.json'), 'utf8'));
 
-if (official.version !== pkg.peerDependencies['@expo/dom-webview']) {
-  throw new Error(`Unexpected @expo/dom-webview version: ${official.version}`);
+const supported = pkg.peerDependencies['@expo/dom-webview'];
+if (!semver.satisfies(official.version, supported)) {
+  throw new Error(`Expected @expo/dom-webview ${supported}, found ${official.version}.`);
 }
 
 const kotlin = await readFile(path.join(upstream,
