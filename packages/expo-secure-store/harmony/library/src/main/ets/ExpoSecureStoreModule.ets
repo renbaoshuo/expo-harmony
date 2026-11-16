@@ -77,7 +77,7 @@ export class ExpoSecureStoreModule extends ExpoModule {
         ExpoFunction.typed2(ExpoValueTypes.string(), SECURE_STORE_OPTIONS, async (key: string, options?: SecureStoreOptions): Promise<void> => {
           const alias = assetAlias(key, options ?? new SecureStoreOptions());
 
-          await this.run(alias, async (): Promise<void> => remove(alias));
+          await this.run(alias, async (): Promise<void> => remove(aliasQuery(alias)));
         }),
       )
       .syncFunction(
@@ -118,44 +118,47 @@ export class ExpoSecureStoreModule extends ExpoModule {
   }
 
   private async getValue(alias: Uint8Array, options: SecureStoreOptions): Promise<string | null> {
-    const item = await query(alias, asset.ReturnType.ATTRIBUTES);
+    const item = await query(aliasQuery(alias), asset.ReturnType.ATTRIBUTES);
 
     this.assertActive();
     if (item === undefined) return null;
+    const match = itemQuery(alias, item);
 
     if (!requiresAuthentication(item)) {
-      const stored = await query(alias, asset.ReturnType.ALL);
+      const stored = await query(match, asset.ReturnType.ALL);
 
       return stored === undefined ? null : decodeSecret(stored);
     }
 
     if (!credentialsMatch(item)) {
-      await remove(alias);
+      await remove(match);
 
       return null;
     }
 
-    const result = await this.queryAuthenticated(alias, options.authenticationPrompt);
-
-    this.assertActive();
+    const result = await this.queryAuthenticated(match, options.authenticationPrompt);
     if (result === undefined) return null;
 
-    if (!credentialsMatch(result)) {
-      await remove(alias);
+    try {
+      this.assertAuthenticationForeground();
+      if (!credentialsMatch(result)) {
+        await remove(match);
 
-      return null;
+        return null;
+      }
+      return decodeSecret(result);
+    } finally {
+      clearSecret(result);
     }
-
-    return decodeSecret(result);
   }
 
   private getValueSync(alias: Uint8Array): string | null {
-    const item = querySync(alias, asset.ReturnType.ATTRIBUTES);
+    const item = querySync(aliasQuery(alias), asset.ReturnType.ATTRIBUTES);
     if (item === undefined) return null;
 
     if (requiresAuthentication(item)) {
       if (!credentialsMatch(item)) {
-        removeSync(alias);
+        removeSync(itemQuery(alias, item));
 
         return null;
       }
@@ -166,7 +169,7 @@ export class ExpoSecureStoreModule extends ExpoModule {
       );
     }
 
-    const stored = querySync(alias, asset.ReturnType.ALL);
+    const stored = querySync(itemQuery(alias, item), asset.ReturnType.ALL);
 
     return stored === undefined ? null : decodeSecret(stored);
   }
@@ -174,25 +177,39 @@ export class ExpoSecureStoreModule extends ExpoModule {
   private async setValue(alias: Uint8Array, value: string, options: SecureStoreOptions): Promise<void> {
     const secret = encodeSecret(value);
 
-    const item = await query(alias, asset.ReturnType.ATTRIBUTES);
+    try {
+      await this.storeValue(alias, secret, options);
+    } finally {
+      secret.fill(0);
+    }
+  }
+
+  private async storeValue(alias: Uint8Array, secret: Uint8Array, options: SecureStoreOptions): Promise<void> {
+    const item = await query(aliasQuery(alias), asset.ReturnType.ATTRIBUTES);
 
     this.assertActive();
     if (options.requireAuthentication) requireAvailableBiometric();
 
     if (item !== undefined && requiresAuthentication(item) === options.requireAuthentication) {
+      const match = itemQuery(alias, item);
       if (!options.requireAuthentication) {
-        await asset.update(aliasQuery(alias), valueAttributes(secret));
+        await asset.update(match, valueAttributes(secret));
 
         return;
       }
 
       if (credentialsMatch(item)) {
-        const result = await this.queryAuthenticated(alias, options.authenticationPrompt);
+        const result = await this.queryAuthenticated(match, options.authenticationPrompt);
 
-        this.assertActive();
+        if (result === undefined) {
+          throw new ExpoModuleError('ERR_SECURE_STORE_BUSY', 'The SecureStore record changed during authentication. Retry the operation.');
+        }
 
-        if (result !== undefined && credentialsMatch(result)) {
-          await asset.update(aliasQuery(alias), valueAttributes(secret));
+        clearSecret(result);
+        this.assertAuthenticationForeground();
+
+        if (credentialsMatch(result)) {
+          await asset.update(match, valueAttributes(secret));
 
           return;
         }
@@ -202,19 +219,27 @@ export class ExpoSecureStoreModule extends ExpoModule {
     this.assertActive();
 
     // OVERWRITE encrypts before replacing immutable access controls, avoiding a remove/add gap.
-    await asset.add(newAttributes(alias, secret, options));
+    await asset.add(newAttributes(alias, secret, options, item !== undefined));
   }
 
   private setValueSync(alias: Uint8Array, value: string, options: SecureStoreOptions): void {
     const secret = encodeSecret(value);
 
-    const item = querySync(alias, asset.ReturnType.ATTRIBUTES);
+    try {
+      this.storeValueSync(alias, secret, options);
+    } finally {
+      secret.fill(0);
+    }
+  }
+
+  private storeValueSync(alias: Uint8Array, secret: Uint8Array, options: SecureStoreOptions): void {
+    const item = querySync(aliasQuery(alias), asset.ReturnType.ATTRIBUTES);
 
     if (options.requireAuthentication) requireAvailableBiometric();
 
     if (item !== undefined && requiresAuthentication(item) === options.requireAuthentication) {
       if (!options.requireAuthentication) {
-        asset.updateSync(aliasQuery(alias), valueAttributes(secret));
+        asset.updateSync(itemQuery(alias, item), valueAttributes(secret));
 
         return;
       }
@@ -226,15 +251,16 @@ export class ExpoSecureStoreModule extends ExpoModule {
         );
     }
 
-    asset.addSync(newAttributes(alias, secret, options));
+    asset.addSync(newAttributes(alias, secret, options, item !== undefined));
   }
 
-  private async queryAuthenticated(alias: Uint8Array, prompt: string): Promise<asset.AssetMap | undefined> {
+  private async queryAuthenticated(match: asset.AssetMap, prompt: string): Promise<asset.AssetMap | undefined> {
     this.assertAuthenticationForeground();
 
     let challenge: Uint8Array;
+
     try {
-      challenge = await asset.preQuery(aliasQuery(alias));
+      challenge = await asset.preQuery(match);
     } catch (error) {
       if (isNotFound(error as Object)) return undefined;
 
@@ -242,6 +268,7 @@ export class ExpoSecureStoreModule extends ExpoModule {
     }
 
     let failure: Object | undefined;
+    let result: asset.AssetMap | undefined;
 
     try {
       this.assertAuthenticationForeground();
@@ -249,13 +276,15 @@ export class ExpoSecureStoreModule extends ExpoModule {
       const token = await this.authentication.authenticate(challenge, prompt);
 
       try {
-        this.assertActive();
+        this.assertAuthenticationForeground();
 
-        const request = readQuery(alias, asset.ReturnType.ALL);
+        const request = readQuery(match, asset.ReturnType.ALL);
         request.set(asset.Tag.AUTH_CHALLENGE, challenge);
         request.set(asset.Tag.AUTH_TOKEN, token);
 
-        return singleResult(await asset.query(request));
+        result = singleResult(await asset.query(request));
+
+        return result;
       } finally {
         token.fill(0);
       }
@@ -271,6 +300,7 @@ export class ExpoSecureStoreModule extends ExpoModule {
       try {
         await asset.postQuery(handle);
       } catch (error) {
+        if (result !== undefined) clearSecret(result);
         if (failure === undefined || isNotFound(failure)) throw new ExpoSecureStoreError(error as Object);
 
         console.warn(`Unable to finish SecureStore authentication query: ${(error as BusinessError).code}`);
@@ -282,9 +312,12 @@ export class ExpoSecureStoreModule extends ExpoModule {
     this.assertActive();
 
     const lock = new util.Base64Helper().encodeToStringSync(alias);
-    const previous = operations.get(lock) ?? Promise.resolve();
-    const task = previous.then(async (): Promise<T> => {
+    const tail = operations.get(lock) ?? Promise.resolve();
+    const task = tail.then(async (): Promise<T> => {
       this.assertActive();
+
+      // Reload waits for operations with native work in flight, not an earlier runtime's queue.
+      this.pending.add(settled);
 
       try {
         const result = await operation();
@@ -301,8 +334,8 @@ export class ExpoSecureStoreModule extends ExpoModule {
       (): void => {},
       (): void => {},
     );
+
     operations.set(lock, settled);
-    this.pending.add(settled);
 
     try {
       return await task;
@@ -329,7 +362,9 @@ export class ExpoSecureStoreModule extends ExpoModule {
   }
 
   private assertActive(): void {
-    if (this.destroyed) throw new ExpoModuleError('ERR_SECURE_STORE_DESTROYED', 'The SecureStore runtime has been destroyed.');
+    if (this.destroyed || !this.context.isValid) {
+      throw new ExpoModuleError('ERR_SECURE_STORE_DESTROYED', 'The SecureStore runtime has been destroyed.');
+    }
   }
 
   private assertAuthenticationForeground(): void {
@@ -351,8 +386,16 @@ function aliasQuery(alias: Uint8Array): asset.AssetMap {
   return fields;
 }
 
-function readQuery(alias: Uint8Array, type: asset.ReturnType): asset.AssetMap {
+function itemQuery(alias: Uint8Array, item: asset.AssetMap): asset.AssetMap {
   const fields = aliasQuery(alias);
+  fields.set(asset.Tag.AUTH_TYPE, requiresAuthentication(item) ? asset.AuthType.ANY : asset.AuthType.NONE);
+  const enrollment = item.get(asset.Tag.DATA_LABEL_CRITICAL_1);
+  if (enrollment instanceof Uint8Array) fields.set(asset.Tag.DATA_LABEL_CRITICAL_1, enrollment);
+  return fields;
+}
+
+function readQuery(match: asset.AssetMap, type: asset.ReturnType): asset.AssetMap {
+  const fields: asset.AssetMap = new Map(match);
   fields.set(asset.Tag.RETURN_TYPE, type);
   fields.set(asset.Tag.RETURN_LIMIT, 1);
   return fields;
@@ -364,7 +407,7 @@ function valueAttributes(secret: Uint8Array): asset.AssetMap {
   return fields;
 }
 
-function newAttributes(alias: Uint8Array, secret: Uint8Array, options: SecureStoreOptions): asset.AssetMap {
+function newAttributes(alias: Uint8Array, secret: Uint8Array, options: SecureStoreOptions, overwrite: boolean): asset.AssetMap {
   const fields = aliasQuery(alias);
   fields.set(asset.Tag.SECRET, secret);
   fields.set(asset.Tag.ACCESSIBILITY, accessibility(options.keychainAccessible));
@@ -374,7 +417,7 @@ function newAttributes(alias: Uint8Array, secret: Uint8Array, options: SecureSto
   );
   fields.set(asset.Tag.AUTH_TYPE, options.requireAuthentication ? asset.AuthType.ANY : asset.AuthType.NONE);
   fields.set(asset.Tag.SYNC_TYPE, asset.SyncType.NEVER);
-  fields.set(asset.Tag.CONFLICT_RESOLUTION, asset.ConflictResolution.OVERWRITE);
+  if (overwrite) fields.set(asset.Tag.CONFLICT_RESOLUTION, asset.ConflictResolution.OVERWRITE);
 
   if (options.requireAuthentication) fields.set(asset.Tag.DATA_LABEL_CRITICAL_1, credentialSnapshot());
 
@@ -390,9 +433,9 @@ function requiresAuthentication(item: asset.AssetMap): boolean {
   return type === asset.AuthType.ANY;
 }
 
-async function query(alias: Uint8Array, type: asset.ReturnType): Promise<asset.AssetMap | undefined> {
+async function query(match: asset.AssetMap, type: asset.ReturnType): Promise<asset.AssetMap | undefined> {
   try {
-    return singleResult(await asset.query(readQuery(alias, type)));
+    return singleResult(await asset.query(readQuery(match, type)));
   } catch (error) {
     if (isNotFound(error as Object)) return undefined;
 
@@ -400,9 +443,9 @@ async function query(alias: Uint8Array, type: asset.ReturnType): Promise<asset.A
   }
 }
 
-function querySync(alias: Uint8Array, type: asset.ReturnType): asset.AssetMap | undefined {
+function querySync(match: asset.AssetMap, type: asset.ReturnType): asset.AssetMap | undefined {
   try {
-    return singleResult(asset.querySync(readQuery(alias, type)));
+    return singleResult(asset.querySync(readQuery(match, type)));
   } catch (error) {
     if (isNotFound(error as Object)) return undefined;
 
@@ -415,18 +458,18 @@ function singleResult(items: asset.AssetMap[]): asset.AssetMap {
   return items[0];
 }
 
-async function remove(alias: Uint8Array): Promise<void> {
+async function remove(match: asset.AssetMap): Promise<void> {
   try {
     // Always reach durable storage, including on retries after a failed delete (SDK 57).
-    await asset.remove(aliasQuery(alias));
+    await asset.remove(match);
   } catch (error) {
     if (!isNotFound(error as Object)) throw new ExpoSecureStoreError(error as Object);
   }
 }
 
-function removeSync(alias: Uint8Array): void {
+function removeSync(match: asset.AssetMap): void {
   try {
-    asset.removeSync(aliasQuery(alias));
+    asset.removeSync(match);
   } catch (error) {
     if (!isNotFound(error as Object)) throw new ExpoSecureStoreError(error as Object);
   }
@@ -434,4 +477,9 @@ function removeSync(alias: Uint8Array): void {
 
 function isNotFound(error: Object): boolean {
   return (error as BusinessError).code === asset.ErrorCode.NOT_FOUND;
+}
+
+function clearSecret(item: asset.AssetMap): void {
+  const secret = item.get(asset.Tag.SECRET);
+  if (secret instanceof Uint8Array) secret.fill(0);
 }

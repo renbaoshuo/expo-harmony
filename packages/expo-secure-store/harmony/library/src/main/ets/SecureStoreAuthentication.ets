@@ -116,10 +116,12 @@ export class SecureStoreAuthentication {
       );
     } catch (error) {
       release();
+
       const native = error as BusinessError;
       if (native.code === INVALID_NATIVE_PARAMETER) {
         throw new ExpoModuleError('ERR_SECURE_STORE_INVALID_ARGUMENT', 'The system rejected the authentication widget parameters.', native);
       }
+
       throw error as Error;
     }
 
@@ -141,8 +143,17 @@ export class SecureStoreAuthentication {
       const callback: userAuth.IAuthCallback = {
         onResult: (result: userAuth.UserAuthResult): void => {
           retire();
-          if (result.result === userAuth.UserAuthResultCode.SUCCESS) finish(result.token);
-          else finish(undefined, new ExpoModuleError('ERR_SECURE_STORE_AUTH_FAILED', `Biometric authentication failed (${result.result}).`));
+
+          try {
+            if (settled) return;
+            if (result.result === userAuth.UserAuthResultCode.SUCCESS) {
+              finish(result.token?.slice());
+            } else {
+              finish(undefined, new ExpoModuleError('ERR_SECURE_STORE_AUTH_FAILED', `Biometric authentication failed (${result.result}).`));
+            }
+          } finally {
+            result.token?.fill(0);
+          }
         },
       };
 
@@ -165,9 +176,10 @@ export class SecureStoreAuthentication {
 
         try {
           instance.cancel();
-          retire();
         } catch (error) {
           console.warn(`Unable to cancel SecureStore authentication: ${(error as BusinessError).code}`);
+        } finally {
+          retire();
         }
       };
 

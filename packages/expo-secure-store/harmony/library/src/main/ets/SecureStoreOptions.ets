@@ -31,6 +31,7 @@ export const SECURE_STORE_OPTIONS = new ExpoValueType<SecureStoreOptions>(
   'SecureStore options',
   (value: ESObject): SecureStoreOptions => {
     const options = new SecureStoreOptions();
+
     if (value === undefined || value === null) return options;
     if (typeof value !== 'object' || Array.isArray(value))
       throw new ExpoModuleError('ERR_SECURE_STORE_INVALID_ARGUMENT', 'options must be an object.');
@@ -55,6 +56,7 @@ export const SECURE_STORE_OPTIONS = new ExpoValueType<SecureStoreOptions>(
       ) {
         throw new ExpoModuleError('ERR_SECURE_STORE_INVALID_ARGUMENT', 'keychainAccessible must be a SecureStore accessibility constant.');
       }
+
       options.keychainAccessible = accessible as KeychainAccessibility;
     }
 
@@ -97,31 +99,48 @@ export function sha256(value: Uint8Array): Uint8Array {
 
 export function encodeSecret(value: string): Uint8Array {
   const bytes = encode(value);
-  if (bytes.length + VALUE_HEADER_BYTES > MAX_SECRET_BYTES) {
-    throw new ExpoModuleError(
-      'ERR_SECURE_STORE_VALUE_TOO_LARGE',
-      `HarmonyOS SecureStore supports at most ${MAX_SECRET_BYTES - VALUE_HEADER_BYTES} UTF-8 bytes per value.`,
-    );
+
+  try {
+    if (bytes.length + VALUE_HEADER_BYTES > MAX_SECRET_BYTES) {
+      throw new ExpoModuleError(
+        'ERR_SECURE_STORE_VALUE_TOO_LARGE',
+        `HarmonyOS SecureStore supports at most ${MAX_SECRET_BYTES - VALUE_HEADER_BYTES} UTF-8 bytes per value.`,
+      );
+    }
+
+    // ASSET disallows empty secrets, so the encrypted header also represents an empty string.
+    const secret = new Uint8Array(bytes.length + VALUE_HEADER_BYTES);
+    secret[0] = STORAGE_VERSION;
+    secret.set(bytes, VALUE_HEADER_BYTES);
+
+    return secret;
+  } finally {
+    bytes.fill(0);
   }
-
-  // ASSET disallows empty secrets, so the encrypted header also represents an empty string.
-  const secret = new Uint8Array(bytes.length + VALUE_HEADER_BYTES);
-  secret[0] = STORAGE_VERSION;
-  secret.set(bytes, VALUE_HEADER_BYTES);
-
-  return secret;
 }
 
 export function decodeSecret(item: asset.AssetMap): string {
   const secret = item.get(asset.Tag.SECRET);
-  if (!(secret instanceof Uint8Array) || secret.length < VALUE_HEADER_BYTES || secret.length > MAX_SECRET_BYTES || secret[0] !== STORAGE_VERSION) {
+  if (!(secret instanceof Uint8Array)) {
     throw new ExpoModuleError('ERR_SECURE_STORE_DECODE', 'The SecureStore record has an invalid or unsupported format.');
   }
 
-  if (secret.length === VALUE_HEADER_BYTES) return '';
+  try {
+    if (secret.length < VALUE_HEADER_BYTES || secret.length > MAX_SECRET_BYTES || secret[0] !== STORAGE_VERSION) {
+      throw new ExpoModuleError('ERR_SECURE_STORE_DECODE', 'The SecureStore record has an invalid or unsupported format.');
+    }
 
-  // HarmonyOS preserves the BOM when ignoreBOM is false.
-  return util.TextDecoder.create('utf-8', { ignoreBOM: false, fatal: true }).decodeToString(secret.subarray(VALUE_HEADER_BYTES), { stream: false });
+    if (secret.length === VALUE_HEADER_BYTES) return '';
+
+    // HarmonyOS preserves the BOM when ignoreBOM is false.
+    try {
+      return util.TextDecoder.create('utf-8', { ignoreBOM: false, fatal: true }).decodeToString(secret.subarray(VALUE_HEADER_BYTES), { stream: false });
+    } catch (error) {
+      throw new ExpoModuleError('ERR_SECURE_STORE_DECODE', 'The SecureStore value is not valid UTF-8.', error as Object);
+    }
+  } finally {
+    secret.fill(0);
+  }
 }
 
 export function accessibility(value: KeychainAccessibility): asset.Accessibility {
