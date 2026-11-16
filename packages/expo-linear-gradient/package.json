@@ -54,7 +54,7 @@
           "upstream": "expo-linear-gradient",
           "origin": "build/LinearGradient.js",
           "request": "./NativeLinearGradient",
-          "target": "build/NativeLinearGradient.js"
+          "upstreamTarget": "build/NativeLinearGradient.ios.js"
         }
       ]
     }

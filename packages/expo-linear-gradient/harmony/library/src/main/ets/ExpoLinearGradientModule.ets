@@ -6,6 +6,7 @@
  */
 
 import { ColorMetrics } from '@kit.ArkUI';
+import { Descriptor, ViewDescriptorWrapperBase } from '@rnoh/react-native-openharmony';
 import {
   ExpoEither,
   ExpoModule,
@@ -20,16 +21,12 @@ import type { ExpoViewContentContext } from '@expo-harmony/expo-modules-core';
 
 type GradientColor = ExpoEither<number, string> | null | undefined;
 type GradientNumber = number | null | undefined;
-type GradientRadius = ExpoEither<number, string>;
-type CanvasRadius = number | string;
 type GradientStop = [string, number];
 
 // Invalid colors and incomplete points can arrive as null array entries from upstream JS.
 const COLOR_TYPE = ExpoValueTypes.either(ExpoValueTypes.number(), ExpoValueTypes.string()).nullable().optional();
 const COLORS_TYPE = ExpoValueTypes.array(COLOR_TYPE);
 const NUMBERS_TYPE = ExpoValueTypes.array(ExpoValueTypes.number().nullable().optional()).nullable();
-const RADIUS_TYPE = ExpoValueTypes.either(ExpoValueTypes.number(), ExpoValueTypes.string());
-const BORDER_RADII_TYPE = ExpoValueTypes.array(RADIUS_TYPE).nullable();
 
 interface Gradient {
   readonly stops: GradientStop[];
@@ -43,7 +40,6 @@ class ExpoLinearGradientView extends ExpoView {
   locations: GradientNumber[] | null = null;
   startPoint: number[] = [0.5, 0];
   endPoint: number[] = [0.5, 1];
-  borderRadii: CanvasRadius[] = [0, 0, 0, 0];
   gradient?: Gradient;
   private redraw?: () => void;
 
@@ -62,11 +58,11 @@ class ExpoLinearGradientView extends ExpoView {
   updateGradient(): void {
     const stops: GradientStop[] | undefined = gradientStops(this.colors, this.locations);
     if (stops === undefined) {
+      // A resized canvas still needs the last valid gradient.
       console.warn('ExpoLinearGradient ignored an invalid colors or locations update.');
       return;
     }
 
-    // A resized or recreated canvas needs to repaint even after an invalid prop update.
     this.gradient = { stops, startPoint: this.startPoint, endPoint: this.endPoint };
     this.redraw?.();
   }
@@ -89,9 +85,7 @@ function colorToString(color: GradientColor): string | undefined {
   if (value === undefined || value.length === 0) return undefined;
 
   try {
-    // Canvas can silently ignore invalid color strings instead of throwing.
-    ColorMetrics.resourceColor(value);
-    return value;
+    return ColorMetrics.resourceColor(value).color;
   } catch {
     return undefined;
   }
@@ -132,38 +126,11 @@ function normalizePoint(point: GradientNumber[] | null, x: number, y: number): n
   return [pointX, pointY];
 }
 
-function normalizeRadius(radius: GradientRadius): CanvasRadius | undefined {
-  if (radius.isFirst) {
-    const value: number | undefined = radius.first;
-    return value !== undefined && Number.isFinite(value) && value >= 0 ? value : undefined;
-  }
-
-  const value: string | undefined = radius.second?.trim();
-  if (value === undefined || !/^\+?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?%$/i.test(value)) return undefined;
-
-  const percentage: number = Number(value.slice(0, -1));
-  return Number.isFinite(percentage) ? `${percentage}%` : undefined;
-}
-
-function normalizeBorderRadii(radii: GradientRadius[] | null): CanvasRadius[] | undefined {
-  if (radii === null) return [0, 0, 0, 0];
-  if (radii.length !== 4) return undefined;
-
-  const normalized: CanvasRadius[] = [];
-
-  for (let index = 0; index < radii.length; index += 1) {
-    const radius: CanvasRadius | undefined = normalizeRadius(radii[index]);
-    if (radius === undefined) return undefined;
-
-    normalized.push(radius);
-  }
-
-  return normalized;
-}
-
 @Component
 struct ExpoLinearGradientViewContent {
   @ObjectLink view: ExpoLinearGradientView;
+  @State private borderRadii: BorderRadiuses = {};
+  private unsubscribeDescriptor?: () => void;
   private context: CanvasRenderingContext2D = new CanvasRenderingContext2D(new RenderingContextSettings(true));
   private ready: boolean = false;
   private readonly redraw = (): void => {
@@ -171,12 +138,24 @@ struct ExpoLinearGradientViewContent {
   };
 
   aboutToAppear(): void {
+    const tag = this.view.context.tag;
+    const registry = this.view.context.rnComponentContext.descriptorRegistry;
+
+    const update = (descriptor: Descriptor): void => {
+      this.borderRadii = new ViewDescriptorWrapperBase(descriptor).borderRadius;
+    };
+    this.unsubscribeDescriptor = registry.subscribeToDescriptorChanges(tag, update);
+    const descriptor = registry.getDescriptor(tag);
+    if (descriptor !== undefined) update(descriptor);
+
     this.view.attachRedraw(this.redraw);
   }
 
   aboutToDisappear(): void {
     this.ready = false;
     this.view.detachRedraw(this.redraw);
+    this.unsubscribeDescriptor?.();
+    this.unsubscribeDescriptor = undefined;
   }
 
   private drawGradient(): void {
@@ -189,13 +168,13 @@ struct ExpoLinearGradientViewContent {
     const startY: number = gradient.startPoint[1] * height;
     const endX: number = gradient.endPoint[0] * width;
     const endY: number = gradient.endPoint[1] * height;
+    if (![startX, startY, endX, endY].every(Number.isFinite)) return;
 
     try {
       const fill: CanvasGradient = this.context.createLinearGradient(startX, startY, endX, endY);
       gradient.stops.forEach((stop: GradientStop): void => fill.addColorStop(stop[1], stop[0]));
 
       this.context.clearRect(0, 0, width, height);
-
       this.context.fillStyle = fill;
       this.context.fillRect(0, 0, width, height);
     } catch (error) {
@@ -207,19 +186,13 @@ struct ExpoLinearGradientViewContent {
     Canvas(this.context)
       .width('100%')
       .height('100%')
-      .borderRadius({
-        topLeft: this.view.borderRadii[0],
-        topRight: this.view.borderRadii[1],
-        bottomRight: this.view.borderRadii[2],
-        bottomLeft: this.view.borderRadii[3],
-      })
+      .borderRadius(this.borderRadii)
       .clip(true)
       .hitTestBehavior(HitTestMode.None)
       .onReady((): void => {
         this.ready = true;
         this.drawGradient();
-      })
-      .onAreaChange(this.redraw);
+      });
   }
 }
 
@@ -239,6 +212,7 @@ export class ExpoLinearGradientModule extends ExpoModule {
       (context: ExpoViewContext): ExpoLinearGradientView => new ExpoLinearGradientView(context),
       wrapBuilder(buildExpoLinearGradientView),
     )
+      .groupView()
       .prop(
         'colors',
         COLORS_TYPE,
@@ -270,15 +244,6 @@ export class ExpoLinearGradientModule extends ExpoModule {
         (view: ExpoLinearGradientView, point: GradientNumber[] | null): void => {
           const normalized: number[] | undefined = normalizePoint(point, 0.5, 1);
           if (normalized !== undefined) view.endPoint = normalized;
-        },
-        null,
-      )
-      .prop(
-        'borderRadii',
-        BORDER_RADII_TYPE,
-        (view: ExpoLinearGradientView, radii: GradientRadius[] | null): void => {
-          const normalized: CanvasRadius[] | undefined = normalizeBorderRadii(radii);
-          if (normalized !== undefined) view.borderRadii = normalized;
         },
         null,
       )
