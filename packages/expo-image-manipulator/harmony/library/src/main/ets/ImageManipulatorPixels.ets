@@ -7,7 +7,10 @@
 
 import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
 import { drawing } from '@kit.ArkGraphics2D';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
+
+const PIXEL_MAP_CLONE_API = 18;
 
 export function copyPixelMap(source: image.PixelMap): image.PixelMap {
   // Copy synchronously: the source SharedRef can be released as soon as manipulate() returns.
@@ -26,8 +29,12 @@ export function copyPixelMap(source: image.PixelMap): image.PixelMap {
     const brush = new drawing.Brush();
     brush.setBlendMode(drawing.BlendMode.SRC);
     canvas.attachBrush(brush);
-    canvas.drawImage(source, 0, 0);
-    canvas.detachBrush();
+
+    try {
+      canvas.drawImage(source, 0, 0);
+    } finally {
+      canvas.detachBrush();
+    }
 
     return pixel;
   } catch (error) {
@@ -37,8 +44,22 @@ export function copyPixelMap(source: image.PixelMap): image.PixelMap {
   }
 }
 
-export function releasePixelMap(pixel: image.PixelMap): void {
-  pixel.release().catch((error: Object): void => {
+export async function snapshotPixelMap(source: image.PixelMap): Promise<image.PixelMap> {
+  if (deviceInfo.sdkApiVersion >= PIXEL_MAP_CLONE_API) {
+    try {
+      return await source.clone();
+    } catch (error) {
+      throw new ExpoModuleError('ERR_IMAGE_MANIPULATOR', 'Could not copy the image bitmap.', error as Object);
+    }
+  }
+
+  return copyPixelMap(source);
+}
+
+export async function releasePixelMap(pixel: image.PixelMap): Promise<void> {
+  try {
+    await pixel.release();
+  } catch (error) {
     console.warn(`ImageManipulator could not release a bitmap: ${String(error)}`);
-  });
+  }
 }

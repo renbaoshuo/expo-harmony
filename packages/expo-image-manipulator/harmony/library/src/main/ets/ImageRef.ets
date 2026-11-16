@@ -116,8 +116,11 @@ export class ImageRef extends ExpoSharedRef<image.PixelMap> {
 
       this.context.assertActive();
 
+      const bytes = (await fileIo.stat(file.fd)).size;
+      if (bytes === 0) throw new ExpoModuleError('ERR_IMAGE_WRITE_FAILED', 'The image encoder did not write any bytes.');
+
       if (options.base64) fileIo.lseek(file.fd, 0, fileIo.WhenceType.SEEK_SET);
-      const base64 = options.base64 ? await this.readBase64(file) : null;
+      const base64 = options.base64 ? await this.readBase64(file, bytes) : null;
 
       await fileIo.close(file);
       file = undefined;
@@ -149,15 +152,15 @@ export class ImageRef extends ExpoSharedRef<image.PixelMap> {
     }
   }
 
-  private async readBase64(file: fileIo.File): Promise<string> {
-    const data = new Uint8Array((await fileIo.stat(file.fd)).size);
-    const buffer = new ArrayBuffer(Math.min(data.byteLength, READ_BUFFER_SIZE));
+  private async readBase64(file: fileIo.File, bytes: number): Promise<string> {
+    const data = new Uint8Array(bytes);
+    const buffer = new ArrayBuffer(Math.min(bytes, READ_BUFFER_SIZE));
     let offset = 0;
 
-    while (offset < data.byteLength) {
+    while (offset < bytes) {
       this.context.assertActive();
 
-      const count = await fileIo.read(file.fd, buffer, { length: Math.min(buffer.byteLength, data.byteLength - offset) });
+      const count = await fileIo.read(file.fd, buffer, { length: Math.min(buffer.byteLength, bytes - offset) });
       if (count <= 0) throw new Error('The saved image ended before all bytes could be read.');
 
       data.set(new Uint8Array(buffer, 0, count), offset);

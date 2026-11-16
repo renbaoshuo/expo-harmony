@@ -7,10 +7,11 @@
 
 import { ImageLoaderInterfaceKey } from '@expo-harmony/expo-image-loader';
 import { ExpoModuleContext, ExpoModuleError, ExpoSharedObject, ExpoSharedRef } from '@expo-harmony/expo-modules-core';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
 
 import { CropRect, FlipType, ResizeOptions } from './ImageManipulatorArguments';
-import { copyPixelMap, releasePixelMap } from './ImageManipulatorPixels';
+import { copyPixelMap, releasePixelMap, snapshotPixelMap } from './ImageManipulatorPixels';
 
 class ManipulatorTask {
   private readonly context: ExpoModuleContext;
@@ -55,7 +56,18 @@ class ManipulatorTask {
   }
 
   render(): Promise<image.PixelMap> {
-    const result = this.tail.then((): image.PixelMap => copyPixelMap(this.requirePixel()));
+    const result = this.tail.then(async (): Promise<image.PixelMap> => {
+      const snapshot = await snapshotPixelMap(this.requirePixel());
+      let retained = false;
+
+      try {
+        this.requirePixel();
+        retained = true;
+        return snapshot;
+      } finally {
+        if (!retained) releasePixelMap(snapshot);
+      }
+    });
 
     // Snapshot failures must not poison later transforms.
     this.tail = result.then(
@@ -71,7 +83,7 @@ class ManipulatorTask {
 
     this.closed = true;
 
-    // Wake pending renders now; release the bitmap only after active transforms finish.
+    // Stop waiting for a load; keep the bitmap until pending native operations finish.
     this.completeLoading();
 
     this.tail.then((): void => {
@@ -128,7 +140,14 @@ export class ImageManipulatorContext extends ExpoSharedObject {
         throw new ExpoModuleError('ERR_IMAGE_INVALID_ARGUMENT', 'Resize dimensions must be positive and at least one pixel.');
       }
 
-      await pixel.scale(width / size.width, height / size.height, image.AntiAliasingLevel.LOW);
+      const x = width / size.width;
+      const y = height / size.height;
+
+      if (deviceInfo.apiAvailable('26.0.0')) {
+        await pixel.applyScale(x, y, image.AntiAliasingLevel.LOW);
+      } else {
+        await pixel.scale(x, y, image.AntiAliasingLevel.LOW);
+      }
 
       const resized = pixel.getImageInfoSync().size;
       // Older Image Kit versions can resolve scale() even if the transform failed internally.
@@ -146,7 +165,12 @@ export class ImageManipulatorContext extends ExpoSharedObject {
       if (angle === 0) return;
 
       const size = angle === 90 || angle === 270 ? pixel.getImageInfoSync().size : undefined;
-      await pixel.rotate(angle);
+
+      if (deviceInfo.apiAvailable('26.0.0')) {
+        await pixel.applyRotate(angle);
+      } else {
+        await pixel.rotate(angle);
+      }
 
       // Older Image Kit versions can resolve rotate() even if the transform failed internally.
       if (size !== undefined) {
@@ -161,7 +185,12 @@ export class ImageManipulatorContext extends ExpoSharedObject {
   }
 
   flip(type: FlipType): ImageManipulatorContext {
-    this.task.transform((pixel: image.PixelMap): Promise<void> => pixel.flip(type === FlipType.HORIZONTAL, type === FlipType.VERTICAL));
+    this.task.transform((pixel: image.PixelMap): Promise<void> => {
+      const horizontal = type === FlipType.HORIZONTAL;
+      const vertical = type === FlipType.VERTICAL;
+      if (deviceInfo.apiAvailable('26.0.0')) return pixel.applyFlip(horizontal, vertical);
+      return pixel.flip(horizontal, vertical);
+    });
     return this;
   }
 
@@ -187,7 +216,18 @@ export class ImageManipulatorContext extends ExpoSharedObject {
         throw new ExpoModuleError('ERR_IMAGE_INVALID_CROP', 'The crop rectangle must be inside the source image and at least one pixel.');
       }
 
-      await pixel.crop({ x, y, size: { width, height } });
+      const region: image.Region = { x, y, size: { width, height } };
+
+      if (deviceInfo.apiAvailable('26.0.0')) {
+        await pixel.applyCrop(region);
+      } else {
+        await pixel.crop(region);
+      }
+
+      const cropped = pixel.getImageInfoSync().size;
+      if (cropped.width !== width || cropped.height !== height) {
+        throw new ExpoModuleError('ERR_IMAGE_MANIPULATOR', 'Could not crop the image to the requested rectangle.');
+      }
     });
 
     return this;
