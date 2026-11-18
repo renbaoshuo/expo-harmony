@@ -969,7 +969,7 @@ Legacy 上传的 `uploadType` 不是 `0` 或 `1` 时抛出。
 
 #### `ERR_FILE_SYSTEM_INVALID_URL`
 
-下载重定向目标不是 HTTP 或 HTTPS 地址时抛出。
+文件传输地址无效，或传输地址及重定向目标使用 HTTP 和 HTTPS 以外的协议时抛出。
 
 #### `ERR_FILESYSTEM_NETWORK`
 

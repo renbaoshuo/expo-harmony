@@ -51,6 +51,7 @@ const NETWORK_IDLE_TIMEOUT_MS: number = 60_000;
 const FILE_NOT_FOUND_ERROR: number = 13900002;
 const FILE_EXISTS_ERROR: number = 13900015;
 const CROSS_DEVICE_ERROR: number = 13900016;
+const BRIDGE_ERROR_CODE: string = 'ERR_ARKTS_MODULE';
 const DOWNLOAD_RESUME_FORMAT_VERSION: number = 1;
 const FILE_SYSTEM_LOG_DOMAIN: number = 0;
 const FILE_SYSTEM_LOG_TAG: string = 'ExpoFileSystem';
@@ -359,11 +360,20 @@ class ExpoFileSystemService {
   }
 
   private finishTask(uuid: string, task: NetworkTask): void {
-    try {
-      task.session?.close();
-    } catch (_) {}
+    this.closeTaskSession(task);
     if (this.tasks.get(uuid) === task) this.tasks.delete(uuid);
+
     task.finish();
+  }
+
+  private closeTaskSession(task: NetworkTask): void {
+    const session = task.session;
+    task.session = undefined;
+    task.request = undefined;
+
+    try {
+      session?.close();
+    } catch (_) {}
   }
 
   async cancel(uuid: string): Promise<null> {
@@ -473,7 +483,7 @@ class ExpoFileSystemService {
   }
 
   private async downloadHttp(input: DownloadRequest, uuid: string, task: NetworkTask): Promise<DownloadResult> {
-    let address = input.url;
+    let address = httpUrl(input.url).toString();
     let headers = copyHeaders(input.headers);
     let resume = task.transferred;
 
@@ -547,11 +557,14 @@ class ExpoFileSystemService {
               await writeAllAsync(file.fd, chunk);
               received += chunk.byteLength;
 
-              const range = parseContentRange(receivedHeaders === null ? null : headerValue(receivedHeaders, 'content-range'));
-              const progressPrefix = receivedStatus !== 200 && range?.start === resume ? resume : 0;
-              task.transferred = progressPrefix + received;
-              task.expectedTransfer = expectedDownloadSize(receivedHeaders, progressPrefix, callerRange);
-              if (input.emitProgress) this.emitDownloadProgress(task, uuid, false);
+              if (receivedStatus >= 200 && receivedStatus < 300) {
+                const range = parseContentRange(receivedHeaders === null ? null : headerValue(receivedHeaders, 'content-range'));
+                const prefix = receivedStatus === 206 && range?.start === resume ? resume : 0;
+
+                task.transferred = prefix + received;
+                task.expectedTransfer = expectedDownloadSize(receivedHeaders, prefix, callerRange);
+                if (input.emitProgress) this.emitDownloadProgress(task, uuid, false);
+              }
             } catch (error) {
               callbackFailure = new ExpoFileSystemError(
                 error instanceof ExpoModuleError ? error.code : 'ERR_FILE_SYSTEM_WRITE_FAILED',
@@ -598,9 +611,10 @@ class ExpoFileSystemService {
           if (redirects === MAX_DOWNLOAD_REDIRECTS) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_TOO_MANY_REDIRECTS');
 
           redirects += 1;
-          const nextUrl = redirectedDownloadUrl(address, location);
-          if (new url.URL(address).origin !== new url.URL(nextUrl).origin) {
-            headers = copyHeaders(headers, ['authorization', 'proxy-authorization', 'cookie', 'cookie2']);
+          const next = httpUrl(location, address);
+
+          if (new url.URL(address).origin !== next.origin) {
+            headers = copyHeaders(headers, ['authorization', 'proxy-authorization', 'cookie', 'cookie2', 'host']);
           }
           if (resume > 0) {
             // An ETag only identifies a representation of the resource that minted it.
@@ -608,7 +622,8 @@ class ExpoFileSystemService {
             task.resumeETag = undefined;
             headers = copyHeaders(headers, ['range', 'if-range']);
           }
-          address = nextUrl;
+
+          address = next.toString();
           task.transferred = resume;
           continue;
         }
@@ -629,15 +644,15 @@ class ExpoFileSystemService {
         assertNetworkTask(task);
 
         input.validateDestination?.(destination, 'write');
-        await publishDownload(temporary, destination, offset, input.idempotent === true, (): void => assertNetworkTask(task));
+        const md5 = await publishDownload(
+          temporary, destination, offset, input.idempotent === true, (): void => assertNetworkTask(task), input.md5,
+        );
+
         committed = true;
         task.destination = destination;
         task.transferred = offset + received;
         task.expectedTransfer = expectedDownloadSize(response.headers, offset, callerRange);
         if (input.emitProgress) this.emitDownloadProgress(task, uuid, true);
-
-        const md5 = input.md5 ? (await fileHash.hash(destination, 'md5')).toLowerCase() : undefined;
-        assertNetworkTask(task);
 
         return new DownloadResult(toFileUri(destination), response.statusCode, normalizedResponseHeaders(response.headers), md5);
       } catch (error) {
@@ -736,11 +751,11 @@ class ExpoFileSystemService {
 
       task.committing = true;
       input.validateDestination?.(destination, 'write');
-      await publishDownload(temporary, destination, 0, input.idempotent === true, (): void => assertNetworkTask(task));
-      if (input.emitProgress) this.emitDownloadProgress(task, uuid, true);
 
-      const md5 = input.md5 ? (await fileHash.hash(destination, 'md5')).toLowerCase() : undefined;
-      assertNetworkTask(task);
+      const md5 = await publishDownload(
+        temporary, destination, 0, input.idempotent === true, (): void => assertNetworkTask(task), input.md5,
+      );
+      if (input.emitProgress) this.emitDownloadProgress(task, uuid, true);
 
       return new RawDownloadResult(toFileUri(destination), md5);
     } finally {
@@ -762,6 +777,7 @@ class ExpoFileSystemService {
       assertNetworkTask(task);
 
       const input = prepare();
+      const address = httpUrl(input.url).toString();
       const headers = copyHeaders(input.headers, input.uploadType === 1 ? ['content-type'] : []);
       const method = normalizeUploadMethod(input.httpMethod);
 
@@ -773,7 +789,6 @@ class ExpoFileSystemService {
 
       let body: rcp.RequestContent;
       if (input.uploadType === 1) {
-        // MultipartForm supplies the boundary and includes zero-length string fields.
         body = makeMultipartForm(input);
       } else {
         task.expectedTransfer = (await fs.stat(input.source)).size;
@@ -782,7 +797,7 @@ class ExpoFileSystemService {
       }
       assertNetworkTask(task);
 
-      const request = new rcp.Request(input.url, method, headers, body);
+      const request = new rcp.Request(address, method, headers, body);
       request.configuration = networkConfiguration({
         onUploadProgress: (total: number, transferred: number): void => {
           if (task.cancelled) return;
@@ -803,11 +818,14 @@ class ExpoFileSystemService {
 
       const response = await this.fetch(task, request);
       assertNetworkTask(task);
+
       responseParts.push(decoder.decodeToString(new Uint8Array(0)));
       if (input.emitProgress) this.emitUploadProgress(task, uuid, true);
+
       return new UploadResult(responseParts.join(''), response.statusCode, normalizedResponseHeaders(response.headers));
     } catch (error) {
       if (task.cancelled) return null;
+
       throw new ExpoFileSystemError(
         error instanceof ExpoModuleError ? error.code : 'ERR_FILE_SYSTEM_UPLOAD_FAILED',
         error instanceof Error ? error.message : String(error),
@@ -815,11 +833,14 @@ class ExpoFileSystemService {
         error instanceof ExpoModuleError ? error.path : undefined,
       );
     } finally {
+      this.closeTaskSession(task);
+
       if (staging !== undefined) {
         try { await fs.rmdir(staging); } catch (error) {
           if (this.context.isValid) this.context.logger.warn(`Could not remove Expo upload staging files: ${cleanErrorMessage(error as Object)}`);
         }
       }
+
       this.finishTask(uuid, task);
     }
   }
@@ -1107,29 +1128,40 @@ function validateDownloadRange(requestedOffset: number, status: number, headers:
 
 // Keep the response body isolated until its status and byte range are final. Header/status
 // notifications may arrive after the first body chunk, so they cannot select append mode.
-async function publishDownload(body: string, destination: string, prefix: number, overwrite: boolean, check: () => void): Promise<void> {
+async function publishDownload(
+  body: string, destination: string, prefix: number, overwrite: boolean, check: () => void, includeMd5: boolean = false,
+): Promise<string | undefined> {
   check();
 
-  if (!overwrite) {
-    try {
-      atomicFileOperations.publishNoReplace(body, destination);
-    } catch (error) {
-      if (Reflect.get(error as Object, 'code') === 'ERR_FILE_SYSTEM_DESTINATION_EXISTS') {
-        throw new ExpoFileSystemError('ERR_DESTINATION_ALREADY_EXISTS', 'Download destination already exists', error as Object);
-      }
+  if (prefix === 0) {
+    const md5 = includeMd5 ? (await fileHash.hash(body, 'md5')).toLowerCase() : undefined;
+    check();
 
-      return Promise.reject(error as Error);
+    if (overwrite) {
+      await fs.rename(body, destination);
+    } else {
+      try {
+        atomicFileOperations.publishNoReplace(body, destination);
+      } catch (error) {
+        const code: ESObject = Reflect.get(error as Object, 'code');
+        if (code === 'ERR_FILE_SYSTEM_DESTINATION_EXISTS') {
+          throw new ExpoFileSystemError('ERR_DESTINATION_ALREADY_EXISTS', 'Download destination already exists', error as Object);
+        }
+
+        throw new ExpoFileSystemError(
+          String(code ?? 'ERR_FILE_SYSTEM'),
+          cleanErrorMessage(error as Object),
+          error instanceof ExpoModuleError ? error.cause : error as Object,
+          error instanceof ExpoModuleError ? error.path : undefined,
+        );
+      }
     }
 
-    return;
-  }
-
-  if (prefix === 0) {
-    await fs.rename(body, destination);
-    return;
+    return md5;
   }
 
   const combined = `${body}.combined`;
+
   try {
     if ((await fs.stat(destination)).size !== prefix) throw new ExpoFileSystemError('ERR_FILE_SYSTEM_INVALID_RESUME_DATA');
     await fs.copyFile(destination, combined);
@@ -1155,8 +1187,12 @@ async function publishDownload(body: string, destination: string, prefix: number
       await fs.close(input.fd);
     }
 
+    const md5 = includeMd5 ? (await fileHash.hash(combined, 'md5')).toLowerCase() : undefined;
     check();
+
     await fs.rename(combined, destination);
+
+    return md5;
   } finally {
     try {
       await fs.unlink(combined);
@@ -1164,11 +1200,22 @@ async function publishDownload(body: string, destination: string, prefix: number
   }
 }
 
-function redirectedDownloadUrl(previous: string, location: string): string {
-  const next = new url.URL(location, previous);
-  if (next.protocol !== 'http:' && next.protocol !== 'https:') throw new ExpoFileSystemError('ERR_FILE_SYSTEM_INVALID_URL');
-  return next.toString();
+function httpUrl(value: string, base?: string): url.URL {
+  let address: url.URL;
+
+  try {
+    address = base === undefined ? new url.URL(value) : new url.URL(value, base);
+  } catch (error) {
+    throw new ExpoFileSystemError('ERR_FILE_SYSTEM_INVALID_URL', 'Malformed file transfer URL', error as Object);
+  }
+
+  if (address.protocol !== 'http:' && address.protocol !== 'https:') {
+    throw new ExpoFileSystemError('ERR_FILE_SYSTEM_INVALID_URL', 'File transfers require an HTTP or HTTPS URL');
+  }
+
+  return address;
 }
+
 function writeAll(fd: number, data: ArrayBuffer, offset: number, onWrite?: (count: number) => void): number {
   fs.lseek(fd, offset, fs.WhenceType.SEEK_SET);
 
@@ -1296,13 +1343,20 @@ class FileSystemState {
     const path = decodeFileUri(uri);
     this.assertNoSymlinkSegments(path);
 
-    this.context.grantFileAccess(path, directory, writable);
+    let write = false;
+    if (writable) {
+      try {
+        write = fs.accessSync(path, fs.AccessModeType.WRITE);
+      } catch (_) {}
+    }
 
-    const existing = this.capabilities.find((capability: Capability): boolean => capability.path === path && capability.directory === directory);
-    if (existing === undefined) this.capabilities.push(new Capability(path, directory, writable));
-    else existing.writable = existing.writable || writable;
+    this.context.grantFileAccess(path, directory, write);
 
-    return writable;
+    const grant = this.capabilities.find((entry: Capability): boolean => entry.path === path && entry.directory === directory);
+    if (grant === undefined) this.capabilities.push(new Capability(path, directory, write));
+    else grant.writable = grant.writable || write;
+
+    return write;
   }
 
   resolve(uri: string, mustExist: boolean = false, mode: ExpoFileAccessMode = 'read'): string {
@@ -1606,7 +1660,7 @@ class FileSystemState {
 
 class FileSystemInfo {
   exists: boolean;
-  isDirectory: boolean | null = null;
+  isDirectory?: boolean;
   uri?: string;
   size?: number;
   modificationTime?: number | null;
@@ -1616,6 +1670,16 @@ class FileSystemInfo {
 
   constructor(exists: boolean) {
     this.exists = exists;
+  }
+}
+
+class PathInfo {
+  exists: boolean;
+  isDirectory: boolean | null;
+
+  constructor(isDirectory: boolean | null) {
+    this.exists = isDirectory !== null;
+    this.isDirectory = isDirectory;
   }
 }
 
@@ -2314,7 +2378,7 @@ export class ExpoFileSystemModule extends ExpoModule {
       .property('availableDiskSpace', ExpoValueTypes.number(), (): number => statvfs.getFreeSizeSync(this.state.documentPath))
       .syncFunction(
         'info',
-        ExpoFunction.typed1(ExpoValueTypes.string(), (uri: string): FileSystemInfo => pathInfo(this.state, uri)),
+        ExpoFunction.typed1(ExpoValueTypes.string(), (uri: string): PathInfo => pathInfo(this.state, uri)),
       )
       .asyncFunction(
         'downloadFileAsync',
@@ -2475,7 +2539,8 @@ export class ExponentFileSystemModule extends ExpoModule {
           const target = state.resolve(requiredRecordString(options, 'to'), false, 'write');
 
           if (isPackagedResource(source)) {
-            await this.service.download({ url: source, destination: target, idempotent: true });
+            const resource = toRawUri(packagedResourceName(source), false);
+            await copyStagedAsync(target, true, (path: string): Promise<void> => copyRawPathAsync(state, resource, path, false));
             return;
           }
 
@@ -2836,11 +2901,16 @@ async function makeDirectoryPathAsync(path: string, intermediates: boolean): Pro
 }
 
 function writeBytesFile(path: string, bytes: Uint8Array, append: boolean): void {
-  const mode = fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.NOFOLLOW | (append ? fs.OpenMode.APPEND : fs.OpenMode.TRUNC);
+  const mode = fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.NOFOLLOW | fs.OpenMode.NONBLOCK |
+    (append ? fs.OpenMode.APPEND : fs.OpenMode.TRUNC);
   const file = fs.openSync(path, mode);
+
   try {
-    const offset = append ? fs.statSync(file.fd).size : 0;
-    writeAll(file.fd, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), offset);
+    const stat = requireRegularFile(fs.statSync(file.fd));
+    const offset = append ? stat.size : 0;
+    const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+
+    writeAll(file.fd, data, offset);
   } finally {
     fs.closeSync(file.fd);
   }
@@ -2952,7 +3022,7 @@ function removePath(path: string): void {
 
 function reportCommittedCleanupFailure(staging: string, error: Object): void {
   hilog.warn(FILE_SYSTEM_LOG_DOMAIN, FILE_SYSTEM_LOG_TAG,
-    'File operation committed; temporary backup could not be fully removed at %{public}s: %{public}s',
+    'File operation committed; temporary backup could not be fully removed at %{private}s: %{private}s',
     staging, cleanErrorMessage(error));
 }
 
@@ -3073,9 +3143,26 @@ function movePathNoReplace(source: string, target: string): void {
 
 function movePathReplacing(source: string, target: string): void {
   assertSeparatePaths(source, target);
+
   if (!fs.accessSync(target)) {
     movePathNoReplace(source, target);
     return;
+  }
+
+  if (fs.lstatSync(source).isFile() && fs.lstatSync(target).isFile()) {
+    try {
+      fs.renameSync(source, target);
+      return;
+    } catch (error) {
+      const code: ESObject = Reflect.get(error as Object, 'code');
+      if (Number(code) !== CROSS_DEVICE_ERROR) {
+        throw new ExpoFileSystemError(
+          typeof code === 'string' ? code : BRIDGE_ERROR_CODE,
+          cleanErrorMessage(error as Object),
+          error as Object,
+        );
+      }
+    }
   }
 
   const staging = fs.mkdtempSync(joinPath(parentPath(target), '.expo-move-XXXXXX'));
@@ -3154,16 +3241,20 @@ function openFileHandle(owner: FileSystemFile, mode: FileMode): fs.File {
   if (owner.provider !== null && mode === FileMode.ReadOnly) {
     const source = owner.state.readSource(owner.provider);
     const file = fs.openSync(source, fileReadFlags(source));
+    let ready = false;
 
     try {
       requireRegularFile(fs.statSync(file.fd));
+      ready = true;
+
       return file;
-    } catch (error) {
-      fs.closeSync(file.fd);
-      throw error as Error;
+    } finally {
+      if (!ready) fs.closeSync(file.fd);
     }
   }
+
   if (mode === FileMode.ReadWrite) owner.path('read');
+
   const path = requireFile(owner.path(mode === FileMode.ReadOnly ? 'read' : 'write'));
   const flags = mode === FileMode.ReadOnly ? fs.OpenMode.READ_ONLY : mode === FileMode.ReadWrite
     ? fs.OpenMode.READ_WRITE : fs.OpenMode.WRITE_ONLY;
@@ -3343,9 +3434,9 @@ function fileInfo(owner: FileSystemFile, includeMd5: boolean): FileSystemInfo {
     try {
       return withFileRead(owner.state.readSource(owner.provider), (file: fs.File): FileSystemInfo => {
         const stat = requireRegularFile(fs.statSync(file.fd));
+
         const result = new FileSystemInfo(true);
         result.uri = owner.provider as string;
-        result.isDirectory = false;
         result.size = stat.size;
         result.modificationTime = modifiedMilliseconds(stat);
         result.creationTime = null;
@@ -3354,23 +3445,37 @@ function fileInfo(owner: FileSystemFile, includeMd5: boolean): FileSystemInfo {
         return result;
       });
     } catch (error) {
-      if (Number(Reflect.get(error as Object, 'code')) !== FILE_NOT_FOUND_ERROR) throw error as Error;
+      const code: ESObject = Reflect.get(error as Object, 'code');
+      if (Number(code) !== FILE_NOT_FOUND_ERROR) {
+        const message: ESObject = Reflect.get(error as Object, 'message');
+
+        throw new ExpoFileSystemError(
+          typeof code === 'string' ? code : BRIDGE_ERROR_CODE,
+          typeof message === 'string' ? message : cleanErrorMessage(error as Object),
+          error instanceof ExpoModuleError ? error.cause : error as Object,
+          error instanceof ExpoModuleError ? error.path : undefined,
+        );
+      }
+
       const missing = new FileSystemInfo(false);
       missing.uri = owner.provider;
 
       return missing;
     }
   }
+
   if (!owner.bundled && fs.accessSync(owner.path())) requireFile(owner.path());
+
   const exists = fileExists(owner);
   const result = new FileSystemInfo(exists);
   result.uri = owner.uri();
-  result.isDirectory = exists ? false : null;
   if (!exists) return result;
+
   result.size = fileSize(owner);
   result.modificationTime = fileTimestamp(owner, false);
   result.creationTime = fileTimestamp(owner, true);
   if (includeMd5) result.md5 = fileMd5(owner) ?? undefined;
+
   return result;
 }
 
@@ -3665,7 +3770,6 @@ function directoryInfo(owner: FileSystemDirectory): FileSystemInfo {
   const exists = directoryExists(owner);
   const result = new FileSystemInfo(exists);
   result.uri = owner.uri();
-  result.isDirectory = exists ? true : null;
   if (!exists) return result;
 
   result.files = owner.bundled ? owner.state.rawList(toRawUri(owner.rawPath(), true)) : fs.listFileSync(owner.path());
@@ -3694,40 +3798,34 @@ function listDirectoryRecords(owner: FileSystemDirectory): DirectoryEntryRecord[
     });
   }
 
-  return fs.listFileSync(requireDirectory(owner.path())).map((name: string): DirectoryEntryRecord => {
-    const target = joinPath(owner.path(), name);
+  const parent = requireDirectory(owner.path());
+
+  return fs.listFileSync(parent).map((name: string): DirectoryEntryRecord => {
+    const target = joinPath(parent, name);
     const directory = fs.lstatSync(target).isDirectory();
+
     return new DirectoryEntryRecord(directory, toFileUri(target, directory));
   });
 }
 
-function pathInfo(state: FileSystemState, uri: string): FileSystemInfo {
+function pathInfo(state: FileSystemState, uri: string): PathInfo {
   if (isRawUri(uri)) {
-    const directory = state.rawDirectoryExists(uri);
-    const result = new FileSystemInfo(directory || state.rawExists(uri));
-    result.isDirectory = result.exists ? directory : null;
+    if (state.rawDirectoryExists(uri)) return new PathInfo(true);
 
-    return result;
+    return new PathInfo(state.rawExists(uri) ? false : null);
   }
 
   if (state.providerUri(uri) !== null) {
     try {
-      return withFileRead(state.readSource(uri), (file: fs.File): FileSystemInfo => {
-        const stat = fs.statSync(file.fd);
-        const result = new FileSystemInfo(true);
-        result.isDirectory = stat.isDirectory();
-
-        return result;
-      });
+      return withFileRead(state.readSource(uri), (file: fs.File): PathInfo => new PathInfo(fs.statSync(file.fd).isDirectory()));
     } catch (_) {
-      return new FileSystemInfo(false);
+      return new PathInfo(null);
     }
   }
+
   const path = state.probe(uri);
-  if (path === null || !fs.accessSync(path)) return new FileSystemInfo(false);
-  const result = new FileSystemInfo(true);
-  result.isDirectory = fs.statSync(path).isDirectory();
-  return result;
+
+  return new PathInfo(path === null || !fs.accessSync(path) ? null : fs.statSync(path).isDirectory());
 }
 
 function modernDownloadRequest(url: string, destination: FileSystemDestination, options?: FileSystemRecord, overwrite: boolean = false): DownloadRequest {
@@ -3817,9 +3915,13 @@ async function readOwnerBytesAsync(owner: FileSystemFile): Promise<Uint8Array> {
 }
 
 async function writeBytesFileAsync(path: string, bytes: Uint8Array, append: boolean): Promise<void> {
-  const mode = fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.NOFOLLOW | (append ? fs.OpenMode.APPEND : fs.OpenMode.TRUNC);
+  const mode = fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.NOFOLLOW | fs.OpenMode.NONBLOCK |
+    (append ? fs.OpenMode.APPEND : fs.OpenMode.TRUNC);
   const file = await fs.open(path, mode);
+
   try {
+    requireRegularFile(await fs.stat(file.fd));
+
     let total = 0;
     while (total < bytes.byteLength) {
       const chunk = bytes.slice(total, Math.min(total + 64 * 1024, bytes.byteLength));
@@ -3934,8 +4036,13 @@ async function movePathNoReplaceAsync(source: string, target: string): Promise<v
     atomicFileOperations.publishNoReplace(source, target);
     return;
   } catch (error) {
-    if (Reflect.get(error as Object, 'code') !== 'ERR_FILE_SYSTEM_CROSS_DEVICE') {
-      throw new ExpoFileSystemError('ERR_FILE_SYSTEM_MOVE_FAILED', cleanErrorMessage(error as Object), error as Object);
+    const code: ESObject = Reflect.get(error as Object, 'code');
+    if (code !== 'ERR_FILE_SYSTEM_CROSS_DEVICE') {
+      throw new ExpoFileSystemError(
+        typeof code === 'string' ? code : BRIDGE_ERROR_CODE,
+        cleanErrorMessage(error as Object),
+        error as Object,
+      );
     }
   }
 
@@ -3950,9 +4057,26 @@ async function movePathNoReplaceAsync(source: string, target: string): Promise<v
 
 async function movePathReplacingAsync(source: string, target: string): Promise<void> {
   assertSeparatePaths(source, target);
+
   if (!(await fs.access(target))) {
     await movePathNoReplaceAsync(source, target);
     return;
+  }
+
+  if ((await fs.lstat(source)).isFile() && (await fs.lstat(target)).isFile()) {
+    try {
+      await fs.rename(source, target);
+      return;
+    } catch (error) {
+      const code: ESObject = Reflect.get(error as Object, 'code');
+      if (Number(code) !== CROSS_DEVICE_ERROR) {
+        throw new ExpoFileSystemError(
+          typeof code === 'string' ? code : BRIDGE_ERROR_CODE,
+          cleanErrorMessage(error as Object),
+          error as Object,
+        );
+      }
+    }
   }
 
   const staging = await fs.mkdtemp(joinPath(parentPath(target), '.expo-move-XXXXXX'));
@@ -4002,6 +4126,8 @@ async function relocateAsync(owner: FileSystemDestination, destination: FileSyst
   const path = owner.path(move ? 'write' : 'read');
   const source = owner instanceof FileSystemDirectory ? requireDirectory(path) : requireFile(path);
   const target = owner instanceof FileSystemDirectory ? directoryTarget(owner, destination) : fileTarget(owner, destination);
+  if (owner instanceof FileSystemDirectory) assertOutsideDirectory(source, target);
+
   if (move) {
     if (overwrite) await movePathReplacingAsync(source, target);
     else await movePathNoReplaceAsync(source, target);
@@ -4106,12 +4232,14 @@ async function legacyInfoAsync(state: FileSystemState, uri: string, includeMd5: 
     missing.isDirectory = false;
     return missing;
   }
+  const directory = stat.isDirectory();
   const result = new FileSystemInfo(true);
-  result.isDirectory = stat.isDirectory();
-  result.uri = toFileUri(path, result.isDirectory);
-  result.size = result.isDirectory ? await pathSizeAsync(path) : stat.size;
+  result.isDirectory = directory;
+  result.uri = toFileUri(path, directory);
+  result.size = directory ? await pathSizeAsync(path) : stat.size;
   result.modificationTime = modifiedMilliseconds(stat) / 1000;
-  if (includeMd5 && !result.isDirectory) result.md5 = (await fileHash.hash(path, 'md5')).toLowerCase();
+  if (includeMd5 && stat.isFile()) result.md5 = (await fileHash.hash(path, 'md5')).toLowerCase();
+
   return result;
 }
 
