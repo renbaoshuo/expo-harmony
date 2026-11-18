@@ -15,6 +15,7 @@ const CALENDAR_EVENT = 'onCalendarSettingsChanged';
 const USER_PREFERENCES_API = 18;
 const LOCALE_INSTANCE_API = 20;
 const UNDETERMINED_LANGUAGE = 'und';
+const UNKNOWN_REGION = 'ZZ';
 const I18N_CAPABILITY = 'SystemCapability.Global.I18n';
 const COMMON_EVENT_CAPABILITY = 'SystemCapability.Notification.CommonEvent';
 const UNSUBSCRIBE_ATTEMPTS = 3;
@@ -93,7 +94,11 @@ export class ExpoLocalizationModule extends ExpoModule {
 
     try {
       const region = i18n.System.getSystemRegion();
-      return region ? new Intl.Locale(UNDETERMINED_LANGUAGE, { region }).region || null : null;
+      if (!region) return null;
+
+      const code = new Intl.Locale(UNDETERMINED_LANGUAGE, { region }).region;
+
+      return code && code !== UNKNOWN_REGION ? code : null;
     } catch {
       return null;
     }
@@ -151,9 +156,8 @@ export class ExpoLocalizationModule extends ExpoModule {
 
   private locale(tag: string, region: string | null, systemTag: string, system: LocaleInfo, temperature: string | null): Locale {
     const preferred = new Intl.Locale(tag);
-    const language = new Intl.Locale(preferred, {
-      region: preferred.region || region || undefined,
-    });
+    const hasRegion = preferred.region !== undefined && preferred.region !== UNKNOWN_REGION;
+    const language = !hasRegion && region !== null ? new Intl.Locale(preferred, { region }) : preferred;
 
     const languageTag = language.toString();
     const info = languageTag === systemTag ? system : localization.getLocaleInfo(languageTag);
@@ -163,7 +167,7 @@ export class ExpoLocalizationModule extends ExpoModule {
       languageTag,
       languageCode: languageCode && languageCode !== UNDETERMINED_LANGUAGE ? languageCode : null,
       languageScriptCode: language.script || null,
-      languageRegionCode: language.region || null,
+      languageRegionCode: language.region && language.region !== UNKNOWN_REGION ? language.region : null,
       regionCode: region,
       textDirection: info.isRTL ? 'rtl' : 'ltr',
       decimalSeparator: system.decimalSeparator,
@@ -203,12 +207,12 @@ export class ExpoLocalizationModule extends ExpoModule {
     let firstWeekday = info.firstWeekday;
 
     if (canIUse(I18N_CAPABILITY)) {
-      timeZone = i18n.getTimeZone().getID() || null;
-      uses24hourClock = i18n.System.is24HourClock();
+      timeZone = this.calendarPreference('time zone', (): string => i18n.getTimeZone().getID()) || null;
+      uses24hourClock = this.calendarPreference('hour cycle', (): boolean => i18n.System.is24HourClock());
 
       if (deviceInfo.sdkApiVersion >= USER_PREFERENCES_API) {
-        const weekday = i18n.System.getFirstDayOfWeek();
-        if (weekday >= i18n.WeekDay.MON && weekday <= i18n.WeekDay.SUN) {
+        const weekday = this.calendarPreference('first weekday', (): number => i18n.System.getFirstDayOfWeek());
+        if (weekday !== null && weekday >= i18n.WeekDay.MON && weekday <= i18n.WeekDay.SUN) {
           // System.WeekDay starts on Monday. ICU starts on Sunday.
           firstWeekday = weekday === i18n.WeekDay.SUN ? 1 : weekday + 1;
         }
@@ -223,6 +227,16 @@ export class ExpoLocalizationModule extends ExpoModule {
         firstWeekday,
       },
     ];
+  }
+
+  private calendarPreference<T>(name: string, read: () => T): T | null {
+    try {
+      return read();
+    } catch (error) {
+      this.context.logger.warn(`Unable to read system calendar preference ${name}: ${String(error)}`);
+
+      return null;
+    }
   }
 
   private startObserving(): void {
@@ -252,7 +266,6 @@ export class ExpoLocalizationModule extends ExpoModule {
           console.warn(`ExpoLocalization: unable to observe changes: ${String(error)}`);
           this.failed = true;
           this.stopObserving();
-          this.scheduleRecovery();
 
           return;
         }
@@ -277,15 +290,20 @@ export class ExpoLocalizationModule extends ExpoModule {
   }
 
   private scheduleRecovery(): void {
-    if (this.destroyed || this.observedEvents.size === 0 || this.timer !== undefined || this.retries >= SUBSCRIPTION_RETRY_LIMIT) return;
+    if (this.destroyed || (this.observedEvents.size === 0 && this.subscriber === undefined) ||
+      this.timer !== undefined || this.retries >= SUBSCRIPTION_RETRY_LIMIT) return;
 
     this.retries++;
 
     this.timer = setTimeout((): void => {
       this.timer = undefined;
-      this.startObserving();
 
-      this.publishSettings();
+      if (this.observedEvents.size === 0) {
+        this.stopObserving();
+      } else {
+        this.startObserving();
+        this.publishSettings();
+      }
     }, SUBSCRIPTION_RETRY_DELAY_MS);
   }
 
@@ -301,11 +319,13 @@ export class ExpoLocalizationModule extends ExpoModule {
     const subscriber = this.subscriber;
     if (subscriber === undefined) return Promise.resolve();
 
+    const retry = this.failed;
     this.release = this.unsubscribe(subscriber).then((success: boolean): void => {
       if (success) this.subscriber = undefined;
+      this.failed = !success;
       this.release = undefined;
 
-      if (this.failed) this.scheduleRecovery();
+      if (!success || retry) this.scheduleRecovery();
       else this.startObserving();
     });
 
@@ -330,8 +350,6 @@ export class ExpoLocalizationModule extends ExpoModule {
     }
 
     // Keep a failed handle to avoid accumulating duplicate native subscriptions.
-    this.failed = true;
-
     return false;
   }
 
