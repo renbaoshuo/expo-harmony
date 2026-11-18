@@ -10,7 +10,18 @@ import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { ExpoAppLifecycleState, ExpoModule, ExpoModuleDefinition, ExpoModuleError } from '@expo-harmony/expo-modules-core';
 
 const CAPABILITY: string = 'SystemCapability.AppGalleryService.Distribution.Comment';
+const COMMENT_DIALOG_OS_API: number = 60000; // HarmonyOS 6.0.0 (API 20), encoded as X * 10000 + Y * 100 + Z.
 const APP_GALLERY_DETAIL_URL: string = 'https://appgallery.huawei.com/app/detail';
+
+function isCommentDialogAvailable(): boolean {
+  if (deviceInfo.distributionOSApiVersion < COMMENT_DIALOG_OS_API || !canIUse(CAPABILITY)) return false;
+
+  try {
+    return typeof commentManager.showCommentDialog === 'function';
+  } catch {
+    return false;
+  }
+}
 
 export class ExpoStoreReviewModule extends ExpoModule {
   definition(): ExpoModuleDefinition {
@@ -18,7 +29,7 @@ export class ExpoStoreReviewModule extends ExpoModule {
       .name('ExpoStoreReview')
       .constant('storeUrl', (): string | null => this.storeUrl())
       .asyncFunction('isAvailableAsync', async (): Promise<boolean> => {
-        return !this.context.isHeadless && deviceInfo.apiAvailable(20) && canIUse(CAPABILITY);
+        return !this.context.isHeadless && isCommentDialogAvailable();
       })
       .asyncFunction('requestReview', async (): Promise<void> => this.request());
   }
@@ -42,25 +53,26 @@ export class ExpoStoreReviewModule extends ExpoModule {
     const ability = this.context.uiAbilityContext;
 
     try {
-      if (deviceInfo.apiAvailable(20)) {
-        if (canIUse(CAPABILITY)) {
-          await commentManager.showCommentDialog(ability);
-          return;
-        }
+      if (isCommentDialogAvailable()) {
+        await commentManager.showCommentDialog(ability);
+
+        return;
       }
 
       const url = this.storeUrl();
+
       if (url !== null) {
         await ability.openLink(url, { appLinkingOnly: false });
+
         return;
       }
     } catch (error) {
-      const failure = error as BusinessError;
+      const cause = error as BusinessError;
 
       throw new ExpoModuleError(
-        failure?.code?.toString() || 'ERR_STORE_REVIEW_REQUEST_FAILED',
-        failure?.message || 'Failed to request an AppGallery review.',
-        error as Object,
+        cause?.code?.toString() || 'ERR_STORE_REVIEW_REQUEST_FAILED',
+        cause?.message || 'Failed to request an AppGallery review.',
+        cause,
       );
     }
 
