@@ -8,6 +8,7 @@
 import { common } from '@kit.AbilityKit';
 import { buffer, util } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { cert } from '@kit.DeviceCertificateKit';
 import { huks } from '@kit.UniversalKeystoreKit';
@@ -17,9 +18,11 @@ import { ExpoAppIntegrityError, IntegrityErrorCode } from './ExpoAppIntegrityErr
 const KEY_PREFIX: string = 'expo.app-integrity.';
 const PREFERENCES_NAME: string = 'expo.app-integrity.certificates';
 const MAX_KEY_ALIAS_BYTES: number = 128;
+const MAX_ATTESTATION_CHALLENGE_BYTES: number = 128;
 const KEY_OPTIONS: huks.HuksOptions = { properties: [] };
 
 interface StoredAttestation {
+  // Older releases compare this field before reading the chain.
   publicKey: string;
   certificates: string[];
 }
@@ -45,6 +48,7 @@ function serialized<T>(path: string, code: IntegrityErrorCode, operation: () => 
       throw new ExpoAppIntegrityError(code, 'Could not access the attestation store.', error as Object);
     }
   });
+
   queue = result.then(
     (): void => {},
     (): void => {},
@@ -58,8 +62,7 @@ export function isHardwareAttestationSupported(): boolean {
     canIUse('SystemCapability.Security.Huks.Core') &&
     canIUse('SystemCapability.Security.Huks.Extension') &&
     canIUse('SystemCapability.Security.Cert') &&
-    canIUse('SystemCapability.FileManagement.File.FileIO') &&
-    canIUse('SystemCapability.DistributedDataManager.Preferences.Core')
+    canIUse('SystemCapability.FileManagement.File.FileIO')
   );
 }
 
@@ -92,6 +95,7 @@ function keyGenerationOptions(): huks.HuksOptions {
       { tag: huks.HuksTag.HUKS_TAG_KEY_SIZE, value: huks.HuksKeySize.HUKS_ECC_KEY_SIZE_256 },
       { tag: huks.HuksTag.HUKS_TAG_PURPOSE, value: huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_SIGN },
       { tag: huks.HuksTag.HUKS_TAG_DIGEST, value: huks.HuksKeyDigest.HUKS_DIGEST_SHA256 },
+      { tag: huks.HuksTag.HUKS_TAG_PADDING, value: huks.HuksKeyPadding.HUKS_PADDING_NONE },
     ],
   };
 }
@@ -111,6 +115,7 @@ async function writeAttestation(path: string, record: StoredAttestation | null):
 
   try {
     const file = await fileIo.open(temp, fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC | fileIo.OpenMode.WRITE_ONLY);
+
     try {
       const value = JSON.stringify(record);
       if (await fileIo.write(file.fd, value) !== value.length) {
@@ -139,13 +144,37 @@ async function readAttestation(path: string): Promise<StoredAttestation | null |
   return JSON.parse(await fileIo.readText(path)) as StoredAttestation | null;
 }
 
-async function certificatesToBase64(chain: string[] | undefined, encoding: buffer.BufferEncoding): Promise<string[]> {
-  if (chain === undefined || chain.length === 0) {
+async function attestKey(alias: string, challenge: Uint8Array): Promise<huks.HuksReturnResult> {
+  const params: huks.HuksParam[] = [
+    { tag: huks.HuksTag.HUKS_TAG_ATTESTATION_CHALLENGE, value: challenge },
+    { tag: huks.HuksTag.HUKS_TAG_ATTESTATION_ID_ALIAS, value: new util.TextEncoder().encodeInto(alias) },
+  ];
+
+  if (typeof huks.anonAttestKeyItemOffline === 'function') {
+    try {
+      return await huks.anonAttestKeyItemOffline(alias, params);
+    } catch (error) {
+      if ((error as BusinessError).code !== huks.HuksExceptionErrCode.HUKS_ERR_CODE_NOT_SUPPORTED_API) {
+        throw new ExpoAppIntegrityError(IntegrityErrorCode.ATTESTATION_FAILED, 'Offline key attestation failed.', error as Object);
+      }
+    }
+  }
+
+  return await huks.anonAttestKeyItem(alias, { properties: params });
+}
+
+async function certificatesToBase64(
+  chain: string[] | undefined,
+  encoding: buffer.BufferEncoding,
+  publicKey: string,
+): Promise<string[]> {
+  if (!Array.isArray(chain) || chain.length === 0) {
     throw new ExpoAppIntegrityError(IntegrityErrorCode.CERTIFICATE_CHAIN_INVALID, 'No attestation certificates are available.');
   }
 
   try {
-    const result: string[] = [];
+    const encoded: string[] = [];
+
     for (const value of chain) {
       const bytes = buffer.from(value, encoding);
       const certificate = await cert.createX509Cert({
@@ -153,11 +182,19 @@ async function certificatesToBase64(chain: string[] | undefined, encoding: buffe
         encodingFormat: value.startsWith('-----BEGIN CERTIFICATE-----') ? cert.EncodingFormat.FORMAT_PEM : cert.EncodingFormat.FORMAT_DER,
       });
 
-      const encoded = await certificate.getEncoded();
-      result.push(buffer.from(encoded.data).toString('base64'));
+      // HUKS returns the leaf first, including in legacy records.
+      if (encoded.length === 0) {
+        const key = certificate.getPublicKey().getEncoded()?.data;
+        if (key === undefined || buffer.from(key).toString('base64') !== publicKey) {
+          throw new Error('The leaf certificate does not match the attested public key.');
+        }
+      }
+
+      const der = await certificate.getEncoded();
+      encoded.push(buffer.from(der.data).toString('base64'));
     }
 
-    return result;
+    return encoded;
   } catch (error) {
     throw new ExpoAppIntegrityError(IntegrityErrorCode.CERTIFICATE_CHAIN_INVALID, 'Failed to read attestation certificates.', error as Object);
   }
@@ -175,9 +212,14 @@ export class HardwareAttestation {
   async generate(name: string, challenge: string): Promise<void> {
     const alias = checkedAlias(name);
     const bytes = new util.TextEncoder().encodeInto(challenge);
-    if (bytes.length === 0) {
-      throw new ExpoAppIntegrityError(IntegrityErrorCode.INVALID_INPUT, 'The attestation challenge must be nonempty.');
+
+    if (bytes.length === 0 || bytes.length > MAX_ATTESTATION_CHALLENGE_BYTES) {
+      throw new ExpoAppIntegrityError(
+        IntegrityErrorCode.INVALID_INPUT,
+        `The attestation challenge must contain 1 to ${MAX_ATTESTATION_CHALLENGE_BYTES} UTF-8 bytes.`,
+      );
     }
+
     const path = this.recordPath(alias);
     const options = keyGenerationOptions();
 
@@ -187,6 +229,7 @@ export class HardwareAttestation {
 
       try {
         const exists = await huks.hasKeyItem(alias, KEY_OPTIONS);
+
         // Persist invalidation before replacement so an interrupted write cannot expose the old chain.
         await writeAttestation(path, null);
 
@@ -197,21 +240,21 @@ export class HardwareAttestation {
         // IPC can reject after HUKS has created the key; include that case in cleanup.
         attempted = true;
         await huks.generateKeyItem(alias, options);
+
         const publicKey = await getPublicKey(alias);
 
         stage = IntegrityErrorCode.ATTESTATION_FAILED;
-        const attestation = await huks.anonAttestKeyItem(alias, {
-          properties: [{ tag: huks.HuksTag.HUKS_TAG_ATTESTATION_CHALLENGE, value: bytes }],
-        });
+        const attestation = await attestKey(alias, bytes);
 
         stage = IntegrityErrorCode.CERTIFICATE_CHAIN_INVALID;
         // HUKS N-API transports certificate bytes as Latin-1 strings, including PEM output.
-        const chain = await certificatesToBase64(attestation.certChains, 'latin1');
+        const chain = await certificatesToBase64(attestation.certChains, 'latin1', publicKey);
 
         stage = IntegrityErrorCode.ATTESTATION_FAILED;
         await writeAttestation(path, { publicKey, certificates: chain });
       } catch (error) {
         let message = 'Failed to generate or attest the key.';
+
         if (attempted) {
           try {
             if (await huks.hasKeyItem(alias, KEY_OPTIONS)) {
@@ -232,22 +275,27 @@ export class HardwareAttestation {
 
     return serialized(this.lockPath, IntegrityErrorCode.CERTIFICATE_CHAIN_INVALID, async (): Promise<string[]> => {
       const record = await readAttestation(this.recordPath(alias));
+
       if (record !== undefined) {
-        if (record === null || record.publicKey !== await getPublicKey(alias)) {
+        if (record === null) {
           throw new ExpoAppIntegrityError(IntegrityErrorCode.CERTIFICATE_CHAIN_INVALID, 'No attestation chain matches this key.');
         }
 
-        return await certificatesToBase64(record.certificates, 'base64');
+        return await certificatesToBase64(record.certificates, 'base64', await getPublicKey(alias));
       }
 
-      // Previous releases wrote only the chain to preferences.
-      const store = await preferences.getPreferences(this.context, { name: PREFERENCES_NAME });
-      const legacy = await store.get(alias, []);
-      if (!(await huks.hasKeyItem(alias, KEY_OPTIONS)) || !Array.isArray(legacy)) {
+      // Older releases stored the chain in Preferences without a separate public key.
+      if (!canIUse('SystemCapability.DistributedDataManager.Preferences.Core')) {
         throw new ExpoAppIntegrityError(IntegrityErrorCode.CERTIFICATE_CHAIN_INVALID, 'No attestation chain exists for this key.');
       }
 
-      return await certificatesToBase64(legacy as string[], 'base64');
+      const store = await preferences.getPreferences(this.context, { name: PREFERENCES_NAME });
+      const legacy = await store.get(alias, []);
+      if (!Array.isArray(legacy)) {
+        throw new ExpoAppIntegrityError(IntegrityErrorCode.CERTIFICATE_CHAIN_INVALID, 'No attestation chain exists for this key.');
+      }
+
+      return await certificatesToBase64(legacy as string[], 'base64', await getPublicKey(alias));
     });
   }
 
