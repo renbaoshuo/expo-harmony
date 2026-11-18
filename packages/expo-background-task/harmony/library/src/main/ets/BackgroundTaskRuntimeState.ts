@@ -35,6 +35,7 @@ export class StoredPendingWork extends ScheduledWork {
   requestId: string;
   startedAt: number;
   phase: string;
+  expirationNotified: boolean = false;
 
   constructor(
     requestId: string,
@@ -150,7 +151,7 @@ export class BackgroundTaskRuntimeState {
     return pending.requestId;
   }
 
-  async stop(work: ScheduledWork, id: string | undefined, now: number): Promise<void> {
+  async stop(work: ScheduledWork, id: string | undefined, stoppedAt: number): Promise<void> {
     const works = await this.driver.read();
 
     if (id !== undefined) {
@@ -162,8 +163,9 @@ export class BackgroundTaskRuntimeState {
       return;
     }
 
+    // Use the callback time so lock contention cannot expire a newer invocation.
     for (const pending of works) {
-      if (sameWork(pending, work) && isPendingWorkExpired(pending, now)) {
+      if (sameWork(pending, work) && pending.startedAt <= stoppedAt) {
         await this.requestExpirationBestEffort(pending, true);
       }
     }
@@ -180,12 +182,25 @@ export class BackgroundTaskRuntimeState {
     await this.stopAndRemove(pending);
   }
 
-  async expire(id: string): Promise<void> {
+  async expire(id: string, notify: () => void): Promise<void> {
     const works = await this.driver.read();
     const pending = works.find((work: StoredPendingWork): boolean => work.requestId === id);
     if (pending === undefined) return;
 
-    await this.stopAndRemove(pending);
+    const shouldNotify = !pending.expirationNotified;
+    if (shouldNotify) {
+      pending.phase = PENDING_PHASE_EXPIRING;
+      pending.expirationNotified = true;
+
+      await this.driver.save(pending);
+    }
+
+    // WorkScheduler can end the extension after stop(), so send the event first.
+    try {
+      if (shouldNotify) notify();
+    } finally {
+      await this.stopAndRemove(pending);
+    }
   }
 
   private async completeBestEffort(pending: StoredPendingWork): Promise<void> {
@@ -275,7 +290,10 @@ function pendingWorkFromValue(value: ESObject): StoredPendingWork | undefined {
     return undefined;
   }
 
-  return new StoredPendingWork(request, id, bundle, ability, started, phase, generation);
+  const work = new StoredPendingWork(request, id, bundle, ability, started, phase, generation);
+  work.expirationNotified = item['expirationNotified'] === true;
+
+  return work;
 }
 
 function isPendingPhase(value: ESObject): boolean {

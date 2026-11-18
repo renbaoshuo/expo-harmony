@@ -83,16 +83,21 @@ class ExpoBackgroundTaskConsumer implements ExpoTaskConsumer {
   }
 
   async onExecutionExpired(context: ExpoModuleContext, requestId?: string): Promise<void> {
-    try {
+    const notify = (): void => {
       const module = context.getModule(BACKGROUND_TASK_MODULE_NAME);
       if (module instanceof ExpoBackgroundTaskModule) module.notifyTasksExpired();
-    } finally {
-      await BackgroundTaskRuntime.expire(context.uiAbilityContext, ExpoTaskManagerRegistry.ownerKey(context), requestId);
+    };
+
+    if (requestId === undefined) {
+      notify();
+      return;
     }
+
+    await BackgroundTaskRuntime.expire(context.uiAbilityContext, ExpoTaskManagerRegistry.ownerKey(context), requestId, notify);
   }
 
   private async reconcile(context: ExpoModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
-    if (tasks.length > 0) requireConfigured();
+    if (tasks.length > 0) await requireConfigured();
     else if (!canIUse(WORK_SCHEDULER_CAPABILITY)) return;
 
     const owner = ExpoTaskManagerRegistry.ownerKey(context);
@@ -159,48 +164,41 @@ export class ExpoBackgroundTaskWorkSchedulerExtension extends WorkSchedulerExten
 
   override onWorkStart(work: workScheduler.WorkInfo): void {
     const startedAt = Date.now();
-    console.info(`Expo BackgroundTask received WorkScheduler start for work ${work.workId}.`);
+    if (!this.accepts(work)) return;
 
-    try {
-      ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
-      const ability = this.context.extensionAbilityInfo;
-      if (!isBackgroundTaskWork(work, ability.bundleName, ability.name)) {
-        console.warn(`Expo BackgroundTask ignored WorkScheduler work ${work.workId} with invalid ownership metadata.`);
-        return;
-      }
+    const key = `${work.workId}:${schedulerGenerationFromWork(work)}`;
+    const runs = this.requests.get(key) ?? [];
+    const run = new WorkCallback();
 
-      const callback = new WorkCallback();
-      callback.request = BackgroundTaskRuntime.start(
-        this.context,
-        work,
-        startedAt,
-        (): boolean => callback.stopped,
-      );
+    runs.push(run);
+    this.requests.set(key, runs);
 
-      const key = `${work.workId}:${schedulerGenerationFromWork(work)}`;
-      const requests = this.requests.get(key) ?? [];
-      requests.push(callback);
-      this.requests.set(key, requests);
-    } catch (error) {
-      console.error(`Unable to start Expo BackgroundTask WorkScheduler callback: ${String(error)}`);
-    }
+    run.request = BackgroundTaskRuntime.start(this.context, work, startedAt, (): boolean => run.stopped);
   }
 
   override onWorkStop(work: workScheduler.WorkInfo): void {
+    if (!this.accepts(work)) return;
+
+    const key = `${work.workId}:${schedulerGenerationFromWork(work)}`;
+    const runs = this.requests.get(key);
+    const run = runs?.shift();
+
+    if (run !== undefined) run.stopped = true;
+    if (runs !== undefined && runs.length === 0) this.requests.delete(key);
+
+    BackgroundTaskRuntime.stop(this.context, work, run?.request);
+  }
+
+  private accepts(work: workScheduler.WorkInfo): boolean {
+    if (!isBackgroundTaskWork(work, work.bundleName, WORK_SCHEDULER_EXTENSION_NAME)) return false;
+
     try {
       ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
       const ability = this.context.extensionAbilityInfo;
-      if (!isBackgroundTaskWork(work, ability.bundleName, ability.name)) return;
-
-      const key = `${work.workId}:${schedulerGenerationFromWork(work)}`;
-      const requests = this.requests.get(key);
-      const callback = requests?.shift();
-      if (callback !== undefined) callback.stopped = true;
-      if (requests !== undefined && requests.length === 0) this.requests.delete(key);
-
-      BackgroundTaskRuntime.stop(this.context, work, callback?.request);
+      return work.bundleName === ability.bundleName && work.abilityName === ability.name;
     } catch (error) {
-      console.error(`Unable to stop Expo BackgroundTask WorkScheduler callback: ${String(error)}`);
+      console.error(`Unable to initialize Expo BackgroundTask WorkScheduler: ${String(error)}`);
+      return false;
     }
   }
 }
@@ -236,7 +234,7 @@ export class ExpoBackgroundTaskModule extends ExpoModule {
           ExpoValueTypes.string(),
           BACKGROUND_TASK_OPTIONS_TYPE,
           async (taskName: string, options: ESObject): Promise<void> => {
-            requireConfigured();
+            await requireConfigured();
             requireAvailable(this.context);
 
             await ExpoTaskManagerRegistry.registerTask(this.context, requireTaskName(taskName), BACKGROUND_TASK_TYPE, options);
@@ -256,18 +254,20 @@ export class ExpoBackgroundTaskModule extends ExpoModule {
   }
 }
 
-function status(context: ExpoModuleContext): number {
-  return hasWorkSchedulerExtension() && ExpoTaskManagerRegistry.hasRuntimeLoader(ExpoTaskManagerRegistry.ownerKey(context))
+async function status(context: ExpoModuleContext): Promise<number> {
+  const configured = await hasWorkSchedulerExtension();
+
+  return configured && ExpoTaskManagerRegistry.hasRuntimeLoader(ExpoTaskManagerRegistry.ownerKey(context))
     ? BACKGROUND_TASK_STATUS_AVAILABLE
     : BACKGROUND_TASK_STATUS_RESTRICTED;
 }
 
-function hasWorkSchedulerExtension(): boolean {
+async function hasWorkSchedulerExtension(): Promise<boolean> {
   if (!canIUse(WORK_SCHEDULER_CAPABILITY)) return false;
 
   try {
     const flags = bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_HAP_MODULE | bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_EXTENSION_ABILITY;
-    const info = bundleManager.getBundleInfoForSelfSync(flags);
+    const info = await bundleManager.getBundleInfoForSelf(flags);
 
     return info.hapModulesInfo.some((module: bundleManager.HapModuleInfo): boolean => {
       return module.extensionAbilitiesInfo.some(
@@ -291,8 +291,8 @@ function requireAvailable(context: ExpoModuleContext): void {
   }
 }
 
-function requireConfigured(): void {
-  if (!hasWorkSchedulerExtension()) {
+async function requireConfigured(): Promise<void> {
+  if (!(await hasWorkSchedulerExtension())) {
     throw new ExpoBackgroundTaskError(
       'ERR_BACKGROUND_TASK_NOT_CONFIGURED',
       `HarmonyOS WorkScheduler or extension '${WORK_SCHEDULER_EXTENSION_NAME}' is unavailable. ` +

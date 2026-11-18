@@ -167,6 +167,7 @@ export class BackgroundTaskRuntime {
             console.warn(`Expo BackgroundTask ignored replaced or removed WorkScheduler work ${work.workId}.`);
             return;
           }
+
           // The execution window includes time spent waiting for the lock.
           if (startedAt + PENDING_WORK_MAXIMUM_AGE_MS <= Date.now()) {
             throw new Error('Expo BackgroundTask callback expired before it reached TaskManager.');
@@ -194,11 +195,15 @@ export class BackgroundTaskRuntime {
     work: workScheduler.WorkInfo,
     request: Promise<string | undefined> | undefined,
   ): void {
+    const time = Date.now();
+
     Promise.resolve(request)
       .then(async (requestId: string | undefined): Promise<void> => {
+        if (request !== undefined && requestId === undefined) return;
+
         await BackgroundTaskRuntime.serialize(context, async (): Promise<void> => {
           await withState(context, work.bundleName, async (state: BackgroundTaskRuntimeState): Promise<void> => {
-            await state.stop(toScheduledWork(work), requestId, Date.now());
+            await state.stop(toScheduledWork(work), requestId, time);
           });
         });
       })
@@ -215,11 +220,9 @@ export class BackgroundTaskRuntime {
     });
   }
 
-  static async expire(context: common.Context, ownerKey: string, requestId?: string): Promise<void> {
-    if (requestId === undefined) return;
-
+  static async expire(context: common.Context, ownerKey: string, requestId: string, notify: () => void): Promise<void> {
     await BackgroundTaskRuntime.serialize(context, async (): Promise<void> => {
-      await withState(context, ownerKey, (state: BackgroundTaskRuntimeState): Promise<void> => state.expire(requestId));
+      await withState(context, ownerKey, (state: BackgroundTaskRuntimeState): Promise<void> => state.expire(requestId, notify));
     });
   }
 
@@ -233,7 +236,7 @@ export class BackgroundTaskRuntime {
           await file.lock(true);
           await action();
         } finally {
-          fs.closeSync(file);
+          await fs.close(file);
         }
       });
 
