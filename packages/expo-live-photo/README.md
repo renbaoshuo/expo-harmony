@@ -56,7 +56,7 @@ npm install @expo-harmony/expo-live-photo expo-live-photo@~57.0.2
 
 #### `onPlaybackStop`
 
-视频停止播放时调用，包括播放结束、暂停，以及更换资源或缩放方式导致的停止。
+视频停止播放时调用，包括播放结束、暂停，以及更换资源导致的停止。
 
 ### Types
 
@@ -78,7 +78,7 @@ npm install @expo-harmony/expo-live-photo expo-live-photo@~57.0.2
 
 ##### `contentFit`
 
-类型：`ContentFit`，默认 `'contain'`。控制静态图片的缩放方式。修改后会重新加载资源。
+类型：`ContentFit`，默认 `'contain'`。控制实况照片的缩放方式，可在播放期间修改。
 
 ##### `useDefaultGestureRecognizer`
 

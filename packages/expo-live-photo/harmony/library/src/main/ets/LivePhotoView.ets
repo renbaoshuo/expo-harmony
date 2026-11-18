@@ -34,25 +34,23 @@ class RenderedPhoto {
   readonly id: number;
   readonly photo: photoAccessHelper.MovingPhoto;
   readonly controller: MovingPhotoViewController = new MovingPhotoViewController();
-  readonly fit: ImageFit;
   previewLoaded: boolean = false;
   prepared: boolean = false;
   playing: boolean = false;
 
-  constructor(id: number, photo: photoAccessHelper.MovingPhoto, fit: ContentFit) {
+  constructor(id: number, photo: photoAccessHelper.MovingPhoto) {
     this.id = id;
     this.photo = photo;
-    this.fit = fit === ContentFit.Cover ? ImageFit.Cover : ImageFit.Contain;
   }
 }
 
 @Observed
 export class LivePhotoView extends ExpoView {
   items: RenderedPhoto[] = [];
+  objectFit: ImageFit = ImageFit.Contain;
   muted: boolean = true;
   gestureEnabled: boolean = true;
   private source: LivePhotoAsset | null = null;
-  private fit: ContentFit = ContentFit.Contain;
   private sourceDirty: boolean = false;
   private loadId: number = 0;
   private destroyed: boolean = false;
@@ -75,10 +73,7 @@ export class LivePhotoView extends ExpoView {
   }
 
   setContentFit(fit: ContentFit): void {
-    if (fit === this.fit) return;
-
-    this.fit = fit;
-    this.sourceDirty = true;
+    this.objectFit = fit === ContentFit.Cover ? ImageFit.Cover : ImageFit.Contain;
   }
 
   setMuted(muted: boolean): void {
@@ -150,11 +145,13 @@ export class LivePhotoView extends ExpoView {
       return;
     }
 
-    // Expo has no playback-error event; keep the loaded preview available.
+    // Expo has no playback-error event; retain the preview for a later retry.
+    this.loadFailed = true;
     if (item.playing) {
       this.onStop(item);
       this.stopRenderedPhoto(item);
     }
+
     console.warn('ExpoLivePhoto: HarmonyOS MovingPhotoView failed to play the loaded live photo.');
   }
 
@@ -180,34 +177,39 @@ export class LivePhotoView extends ExpoView {
     this.sendEvent('onLoadStart');
 
     try {
+      const image = source.photoUri;
+      const video = source.pairedVideoUri;
+      if (!image || !video) {
+        throw new Error('Provided source is not a valid LivePhotoAsset: the `photoUri` and `pairedVideoUri` have to be provided.');
+      }
+
       const context = this.context.rnComponentContext.uiAbilityContext;
       const uris = await Promise.all([
-        this.localFileUri(source.photoUri, 'photoUri'),
-        this.localFileUri(source.pairedVideoUri, 'pairedVideoUri'),
+        this.localFileUri(image, 'photoUri'),
+        this.localFileUri(video, 'pairedVideoUri'),
       ]);
       if (!this.isCurrentLoad(id)) return;
 
       const photo = await photoAccessHelper.MediaAssetManager.loadMovingPhoto(context, uris[0], uris[1]);
 
-      if (this.isCurrentLoad(id)) this.items = [new RenderedPhoto(id, photo, this.fit)];
+      if (this.isCurrentLoad(id)) this.items = [new RenderedPhoto(id, photo)];
     } catch (error) {
       this.failLoad(id, error);
     }
   }
 
-  private async localFileUri(value: string | null | undefined, field: string): Promise<string> {
-    if (!value) throw new Error(`Provided source is not a valid LivePhotoAsset: the \`${field}\` has to be provided.`);
-
+  private async localFileUri(value: string, field: string): Promise<string> {
     let file: fileIo.File | undefined;
+
     try {
       const context = this.context.moduleContext;
       const uri = /^file:\/(?!\/)/i.test(value) ? `file://${value.slice('file:'.length)}` : value;
-      const source = context.filePathForRead(uri);
+      const path = context.filePathForRead(uri);
 
-      file = await fileIo.open(source, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
+      file = await fileIo.open(path, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
       if (!(await fileIo.stat(file.fd)).isFile()) throw new Error('Expected a regular file.');
 
-      return fileUri.getUriFromPath(context.readPathForDescriptor(source, file));
+      return fileUri.getUriFromPath(context.readPathForDescriptor(path, file));
     } catch (error) {
       const message = (error as Error).message || String(error);
       throw new Error(`Unable to read \`${field}\`: ${message}`);
@@ -277,7 +279,7 @@ struct LivePhotoViewContent {
       .width('100%')
       .height('100%')
       .muted(this.view.muted)
-      .objectFit(item.fit)
+      .objectFit(this.view.objectFit)
       .enableAnalyzer(false)
       .hitTestBehavior(this.view.gestureEnabled ? HitTestMode.Default : HitTestMode.None)
       .onComplete((): void => this.view.onPreview(item))
