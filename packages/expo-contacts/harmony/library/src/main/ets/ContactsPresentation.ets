@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ExpoModuleContext, ExpoModuleError } from '@expo-harmony/expo-modules-core';
+import { ExpoAppLifecycleState, ExpoModuleContext, ExpoModuleError } from '@expo-harmony/expo-modules-core';
 import { contact } from '@kit.ContactsKit';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { uniformTypeDescriptor } from '@kit.ArkData';
@@ -27,11 +27,24 @@ export class ContactsPresentation {
   private readonly context: ExpoModuleContext;
   private readonly repository: ContactsRepository;
   private readonly service: ExpoContactsService;
+  private finishShare?: () => void;
 
   constructor(context: ExpoModuleContext, repository: ContactsRepository, service: ExpoContactsService) {
     this.context = context;
     this.repository = repository;
     this.service = service;
+  }
+
+  dispose(): void {
+    this.finishShare?.();
+  }
+
+  private ensureForeground(): void {
+    this.context.assertActive();
+
+    if (this.context.isHeadless || this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) {
+      throw new ExpoContactsError('ERR_CONTACTS_UI_UNAVAILABLE', 'Contacts UI requires a foreground UIAbility.');
+    }
   }
 
   async presentPicker(): Promise<ExpoContactRecord | null> {
@@ -45,7 +58,7 @@ export class ContactsPresentation {
       throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', 'The contact picker is unavailable on this device.');
     }
 
-    this.context.assertActive();
+    this.ensureForeground();
 
     return await this.service.present(async (): Promise<contact.Contact | null> => {
       try {
@@ -86,7 +99,7 @@ export class ContactsPresentation {
       throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', 'The HarmonyOS system form cannot prefill a contact image.');
     }
 
-    this.context.assertActive();
+    this.ensureForeground();
 
     return await this.service.present(async (): Promise<boolean> => {
       try {
@@ -116,13 +129,13 @@ export class ContactsPresentation {
   async shareContact(id: string, message?: string | null): Promise<void> {
     if (!canIUse(SHARE_CAPABILITY)) throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', 'System sharing is unavailable on this device.');
 
-    this.context.assertActive();
+    this.ensureForeground();
 
     await this.service.present(async (): Promise<void> => {
       const uri = await this.repository.writeVCard(readContactQuery({ id }));
       if (uri === undefined) throw new ExpoContactsError('ERR_CONTACTS_NOT_FOUND', `No contact exists for identifier '${id}'.`);
 
-      this.context.assertActive();
+      this.ensureForeground();
       this.repository.ensureReadable();
 
       // JS consumes standard file URLs; system sharing needs an app-scoped URI.
@@ -134,10 +147,25 @@ export class ContactsPresentation {
       };
       const controller = new systemShare.ShareController(new systemShare.SharedData(record));
 
-      await controller.show(this.context.uiAbilityContext, {
-        selectionMode: systemShare.SelectionMode.SINGLE,
-        previewMode: systemShare.SharePreviewMode.DEFAULT,
+      let dismiss: () => void = (): void => {};
+      const closed = new Promise<void>((resolve: () => void): void => {
+        dismiss = resolve;
       });
+
+      controller.on('dismiss', dismiss);
+      this.finishShare = dismiss;
+
+      try {
+        const shown = controller.show(this.context.uiAbilityContext, {
+          selectionMode: systemShare.SelectionMode.SINGLE,
+          previewMode: systemShare.SharePreviewMode.DEFAULT,
+        });
+
+        await Promise.race([closed, shown.then((): Promise<void> => closed)]);
+      } finally {
+        this.finishShare = undefined;
+        controller.off('dismiss', dismiss);
+      }
     });
   }
 }

@@ -265,7 +265,9 @@ export function patchNativeNextRow(field: NextListField, original: ESObject, mer
 
     const event = original as contact.Event;
     const label = nextLabel(provided['label']);
-    return { 'eventDate': event.eventDate, 'labelId': dateEventLabelId(label), 'labelName': label } as contact.Event;
+    const labelId = dateEventLabelId(label);
+
+    return { 'eventDate': event.eventDate, 'labelId': labelId, 'labelName': labelId === contact.Event.CUSTOM_LABEL ? label : undefined } as contact.Event;
   }
   const next = newNativeNextRow(field, merged) as Record<string, ESObject>;
   const previous = original as Record<string, ESObject>;

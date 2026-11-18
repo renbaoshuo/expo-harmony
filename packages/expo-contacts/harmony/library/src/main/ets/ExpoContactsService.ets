@@ -1,5 +1,4 @@
 import { ExpoModuleContext, ExpoService, ExpoServiceContext, ExpoServiceKey } from '@expo-harmony/expo-modules-core';
-import { Permissions } from '@kit.AbilityKit';
 import { ContactsPermissions } from './ContactsPermissions';
 import { ContactsRepository } from './ContactsRepository';
 import { ExpoContactsError } from './ContactsError';
@@ -10,14 +9,13 @@ export class ExpoContactsService extends ExpoService {
   private writes: Promise<void> = Promise.resolve();
   private permissionRequests: Promise<void> = Promise.resolve();
   private presenting: boolean = false;
-  private readonly denials: Map<Permissions, boolean> = new Map<Permissions, boolean>();
 
   constructor(context?: ExpoServiceContext) {
     super(context);
   }
 
   createPermissions(context: ExpoModuleContext): ContactsPermissions {
-    return new ContactsPermissions(context, this, this.denials);
+    return new ContactsPermissions(context, this);
   }
 
   createRepository(context: ExpoModuleContext, permissions: ContactsPermissions): ContactsRepository {

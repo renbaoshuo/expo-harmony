@@ -9,9 +9,10 @@ import { util } from '@kit.ArkTS';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
+import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { ExpoImageRecord } from './ContactsRecords';
 import { ExpoModuleContext, ExpoModuleError, fileUriFromPath } from '@expo-harmony/expo-modules-core';
-import { ExpoContactsError } from './ContactsError';
+import { ContactsNativeError, ExpoContactsError } from './ContactsError';
 
 const CACHE_DIRECTORY: string = 'expo-contacts';
 export const CONTACT_THUMBNAIL_MAX_DIMENSION: number = 256;
@@ -59,18 +60,28 @@ async function withCleanup<Result>(operation: () => Promise<Result>, releases: (
   }
 }
 
-export async function writeCacheFile(context: ExpoModuleContext, extension: string, bytes: ArrayBuffer, validate?: () => void): Promise<string> {
+export async function writeCacheFile(
+  context: ExpoModuleContext,
+  extension: string,
+  bytes: ArrayBuffer,
+  validate?: () => void,
+  key?: string,
+): Promise<string> {
   const directory = `${context.cachePath}/${CACHE_DIRECTORY}`;
   context.assertFileAccess(directory, 'write');
 
   try {
     await fileIo.mkdir(directory, true);
   } catch (error) {
-    if ((error as BusinessError).code !== FILE_EXISTS || !(await fileIo.stat(directory)).isDirectory()) throw error as Error;
+    if ((error as BusinessError).code !== FILE_EXISTS || !(await fileIo.stat(directory)).isDirectory()) {
+      throw new ContactsNativeError(error as Object);
+    }
   }
 
   const path = `${directory}/${util.generateRandomUUID()}.${extension}`;
+  const destination = key === undefined ? path : `${directory}/${key}.${extension}`;
   context.assertFileAccess(path, 'write');
+  context.assertFileAccess(destination, 'write');
 
   const file = await fileIo.open(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC);
 
@@ -89,7 +100,9 @@ export async function writeCacheFile(context: ExpoModuleContext, extension: stri
         await fileIo.close(file);
       },
     ]);
+
     validate?.();
+    if (destination !== path) await fileIo.rename(path, destination);
   } catch (error) {
     try {
       await fileIo.unlink(path);
@@ -97,12 +110,17 @@ export async function writeCacheFile(context: ExpoModuleContext, extension: stri
       console.warn('[expo-contacts] Unable to remove an incomplete cache file.', failure);
     }
 
-    if (error instanceof ExpoModuleError) throw error;
+    if (error instanceof ExpoContactsError) {
+      throw new ExpoContactsError(error.code, error.message, error.cause ?? error);
+    }
+    if (error instanceof ExpoModuleError) {
+      throw new ExpoModuleError(error.code, error.message, error.cause ?? error, error.path);
+    }
 
     throw new ExpoContactsError('ERR_CONTACTS_FILE_WRITE', 'Unable to write the contacts cache file.', error as Object);
   }
 
-  return fileUriFromPath(path);
+  return fileUriFromPath(destination);
 }
 
 async function encodePortrait(context: ExpoModuleContext, uri: string, maxDimension?: number): Promise<EncodedPortrait | undefined> {
@@ -147,7 +165,7 @@ async function encodePortrait(context: ExpoModuleContext, uri: string, maxDimens
         return undefined;
       }
 
-      throw error as Error;
+      throw new ExpoContactsError('ERR_CONTACTS_FILE', 'The contact file operation failed.', error as Object);
     }
   }, [
     async (): Promise<void> => {
@@ -170,8 +188,14 @@ export async function cachePortrait(context: ExpoModuleContext, uri: string, max
   context.assertActive();
   if (portrait === undefined) return undefined;
 
+  // Key the file by its contents so a changed portrait produces a different URI.
+  const hash = cryptoFramework.createMd('SHA256');
+  await hash.update({ data: new Uint8Array(portrait.bytes) });
+  const digest = (await hash.digest()).data;
+  const key = Array.from(digest).map((value: number): string => value.toString(16).padStart(2, '0')).join('');
+
   const result = new ExpoImageRecord();
-  result.uri = await writeCacheFile(context, 'jpg', portrait.bytes, (): void => context.assertActive());
+  result.uri = await writeCacheFile(context, 'jpg', portrait.bytes, (): void => context.assertActive(), key);
   result.width = portrait.width;
   result.height = portrait.height;
 

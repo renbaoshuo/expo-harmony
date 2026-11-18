@@ -48,11 +48,12 @@ export class ExpoContactsModule extends ExpoModule {
   definition(): ExpoModuleDefinition {
     const module = new ExpoModuleDefinition()
       .name('ExpoContacts')
+      .onDestroy((): void => this.presentation.dispose())
       .events([CHANGE_EVENT])
       .onStartObserving(CHANGE_EVENT, (): void => {
         throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', 'Contacts Kit does not expose contact-store change notifications.');
       })
-      .asyncFunction('getPermissionsAsync', async (): Promise<ContactsPermissionResponse> => await this.permissions.get())
+      .asyncFunction('getPermissionsAsync', async (): Promise<ContactsPermissionResponse> => this.permissions.get())
       .asyncFunction('requestPermissionsAsync', async (): Promise<ContactsPermissionResponse> => await this.permissions.request())
       .asyncFunction('presentAccessPickerAsync', async (): Promise<void> => {
         throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', 'Limited contact access is only available on iOS.');

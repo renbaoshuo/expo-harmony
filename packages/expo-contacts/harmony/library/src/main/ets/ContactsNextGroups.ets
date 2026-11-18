@@ -128,8 +128,9 @@ export class NextGroupClasses {
         const records = await repository.getContainers({ 'containerId': container.id });
         return records[0]?.name ?? null;
       }).returns(ExpoValueTypes.string().nullable()))
-      .asyncFunction('getType', ExpoFunction.ownedTyped0(async (container: NextContainerObject): Promise<string> => {
-        await repository.getContainers({ 'containerId': container.id });
+      .asyncFunction('getType', ExpoFunction.ownedTyped0(async (_container: NextContainerObject): Promise<string> => {
+        repository.ensureReadable();
+
         return 'unknown';
       }).returns(ExpoValueTypes.string()))
       .asyncFunction('getGroups', ExpoFunction.ownedTyped0(

@@ -1,11 +1,11 @@
-import { ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoSharedObject, ExpoSharedObjectClassDefinition, ExpoValueType, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
+import { ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoModuleError, ExpoSharedObject, ExpoSharedObjectClassDefinition, ExpoValueType, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
 import { contact } from '@kit.ContactsKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { ContactsPermissions, ContactsPermissionResponse } from './ContactsPermissions';
 import { ContactsRepository, pageNextContacts, updateAttributes, validateWritableContact } from './ContactsRepository';
 import { RequestedFields } from './ContactsRecords';
 import { contactIdentifier, isBirthdayEvent, mapContact, mergeExpoContact } from './ContactsMapper';
-import { ExpoContactsError } from './ContactsError';
+import { ContactsNativeError, ExpoContactsError } from './ContactsError';
 import { ContactsPresentation } from './ContactsPresentation';
 import { ExpoContactsService } from './ExpoContactsService';
 import { cachePortrait, CONTACT_THUMBNAIL_MAX_DIMENSION } from './ContactsFiles';
@@ -94,25 +94,42 @@ export class NextContactObject extends ExpoSharedObject {
     } catch (error) {
       if (error instanceof ExpoContactsError && error.code === 'ERR_CONTACTS_MISSING_PERMISSION') return snapshot;
       if ((error as BusinessError).code === PERMISSION_DENIED) return snapshot;
-      throw error as Error;
+
+      if (error instanceof ExpoContactsError) {
+        throw new ExpoContactsError(error.code, error.message, error.cause ?? error);
+      }
+      if (error instanceof ExpoModuleError) {
+        throw new ExpoModuleError(error.code, error.message, error.cause ?? error, error.path);
+      }
+
+      throw new ContactsNativeError(error as Object);
     }
   }
 
   async details(fields?: string[] | null): Promise<Record<string, ESObject>> {
     const requested = detailFields(fields);
     const entry = await this.getEntry();
-    const details = await readDetails(this.context, entry, requested);
+
+    const result = await readDetails(this.context, entry, requested);
     const snapshot = this.pickerEntry;
-    if (entry === snapshot) return details;
+    if (entry === snapshot) return result;
 
     try {
       this.repository.ensureReadable();
-      return details;
+      return result;
     } catch (error) {
       if (snapshot !== undefined && error instanceof ExpoContactsError && error.code === 'ERR_CONTACTS_MISSING_PERMISSION') {
         return await readDetails(this.context, snapshot, requested);
       }
-      throw error as Error;
+
+      if (error instanceof ExpoContactsError) {
+        throw new ExpoContactsError(error.code, error.message, error.cause ?? error);
+      }
+      if (error instanceof ExpoModuleError) {
+        throw new ExpoModuleError(error.code, error.message, error.cause ?? error, error.path);
+      }
+
+      throw new ContactsNativeError(error as Object);
     }
   }
 
@@ -344,7 +361,7 @@ export class ExpoContactsNextModule extends ExpoModule {
       .onStartObserving('contactsDidChange', (): void => {
         throw new ExpoContactsError('ERR_CONTACTS_UNSUPPORTED', 'HarmonyOS Contacts Kit does not expose contact-store change notifications.');
       })
-      .asyncFunction('getPermissionsAsync', async (): Promise<ContactsPermissionResponse> => await this.permissions.get())
+      .asyncFunction('getPermissionsAsync', async (): Promise<ContactsPermissionResponse> => this.permissions.get())
       .asyncFunction('requestPermissionsAsync', async (): Promise<ContactsPermissionResponse> => await this.permissions.request());
   }
 }

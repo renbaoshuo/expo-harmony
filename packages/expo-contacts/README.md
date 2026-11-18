@@ -72,7 +72,7 @@ npm install @expo-harmony/expo-contacts expo-contacts@~57.0.8
 
 #### `Contacts.shareContactAsync(contactId, message, shareOptions?)`
 
-返回 `Promise<void>`。将联系人导出为 vCard 并打开系统分享界面。需要读权限和 SystemShare 系统能力。联系人不存在时抛出 `ERR_CONTACTS_NOT_FOUND`；`shareOptions` 在 HarmonyOS 上无效。
+返回 `Promise<void>`。将联系人导出为 vCard 并打开系统分享界面，界面关闭时完成。需要读权限和 SystemShare 系统能力。联系人不存在时抛出 `ERR_CONTACTS_NOT_FOUND`。`message` 用作 vCard 的分享预览标题。`shareOptions` 在 HarmonyOS 上无效。
 
 #### `Contacts.presentFormAsync(contactId?, contact?, formOptions?)`
 
@@ -343,6 +343,7 @@ HarmonyOS 只支持 `Gregorian: 'gregorian'`；写入其他格式会抛出 `ERR_
 | `ERR_CONTACTS_OPERATION` | 联系人操作失败。 |
 | `ERR_CONTACTS_DESTROYED` | 通讯录模块已销毁。 |
 | `ERR_CONTACTS_UI_IN_PROGRESS` | 已有联系人选择器、表单或分享界面正在显示。 |
+| `ERR_CONTACTS_UI_UNAVAILABLE` | 联系人选择器、表单和分享界面需要前台 UIAbility。 |
 
 ### Permissions
 

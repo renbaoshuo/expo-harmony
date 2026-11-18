@@ -160,19 +160,28 @@ export function mergeExpoContact(target: contact.Contact, record: Record<string,
     const given = fieldString(record, 'firstName', name?.givenName);
     const middle = fieldString(record, 'middleName', name?.middleName);
     const family = fieldString(record, 'lastName', name?.familyName);
-    const changed = ['firstName', 'middleName', 'lastName'].some((key: string): boolean => hasConcreteField(record, key));
-    const full = changed ? formattedName(given, middle, family) : (name?.fullName ?? formattedName(given, middle, family));
+    const prefix = fieldString(record, 'namePrefix', name?.namePrefix);
+    const suffix = fieldString(record, 'nameSuffix', name?.nameSuffix);
+
+    const givenPhonetic = fieldString(record, 'phoneticFirstName', name?.givenNamePhonetic);
+    const middlePhonetic = fieldString(record, 'phoneticMiddleName', name?.middleNamePhonetic);
+    const familyPhonetic = fieldString(record, 'phoneticLastName', name?.familyNamePhonetic);
+
+    const changed = ['firstName', 'middleName', 'lastName', 'namePrefix', 'nameSuffix']
+      .some((key: string): boolean => hasConcreteField(record, key));
+    const full = (!changed ? nonEmpty(name?.fullName) : undefined) ??
+      (formattedName(prefix, given, middle, family, suffix) || formattedName(givenPhonetic, middlePhonetic, familyPhonetic));
 
     target.name = {
       fullName: full,
       givenName: given,
       middleName: middle,
       familyName: family,
-      namePrefix: fieldString(record, 'namePrefix', name?.namePrefix),
-      nameSuffix: fieldString(record, 'nameSuffix', name?.nameSuffix),
-      givenNamePhonetic: fieldString(record, 'phoneticFirstName', name?.givenNamePhonetic),
-      middleNamePhonetic: fieldString(record, 'phoneticMiddleName', name?.middleNamePhonetic),
-      familyNamePhonetic: fieldString(record, 'phoneticLastName', name?.familyNamePhonetic),
+      namePrefix: prefix,
+      nameSuffix: suffix,
+      givenNamePhonetic: givenPhonetic,
+      middleNamePhonetic: middlePhonetic,
+      familyNamePhonetic: familyPhonetic,
     };
   }
 
@@ -253,8 +262,8 @@ function optionalContactString(value: ESObject, name: string): string | undefine
   return nonEmpty(value);
 }
 
-function formattedName(first?: string, middle?: string, last?: string): string {
-  return [first, middle, last].filter((part: string | undefined): boolean => part !== undefined && part.length > 0).join(' ');
+function formattedName(...parts: (string | undefined)[]): string {
+  return parts.filter((part: string | undefined): boolean => !!part).join(' ');
 }
 
 function arrayRecords(value: ESObject, name: string): Record<string, ESObject>[] {
@@ -275,7 +284,9 @@ function nativeEmails(value: ESObject): contact.Email[] {
     if (email === undefined) return;
 
     const label = optionalContactString(item['label'], 'contact.emails.label');
-    result.push({ email, labelName: label, labelId: emailLabelId(label) });
+    const labelId = emailLabelId(label);
+
+    result.push({ email, labelId, labelName: labelId === contact.Email.CUSTOM_LABEL ? label : undefined });
   });
 
   return result;
@@ -289,7 +300,9 @@ function nativePhones(value: ESObject): contact.PhoneNumber[] {
     if (number === undefined) return;
 
     const label = optionalContactString(item['label'], 'contact.phoneNumbers.label');
-    result.push({ phoneNumber: number, labelName: label, labelId: phoneLabelId(label) });
+    const labelId = phoneLabelId(label);
+
+    result.push({ phoneNumber: number, labelId, labelName: labelId === contact.PhoneNumber.CUSTOM_LABEL ? label : undefined });
   });
 
   return result;
@@ -300,6 +313,7 @@ function nativeAddresses(value: ESObject): contact.PostalAddress[] {
 
   arrayRecords(value, 'contact.addresses').forEach((item: Record<string, ESObject>): void => {
     const label = optionalContactString(item['label'], 'contact.addresses.label');
+    const labelId = addressLabelId(label);
     const street = optionalContactString(item['street'], 'contact.addresses.street');
     const city = optionalContactString(item['city'], 'contact.addresses.city');
     const country = optionalContactString(item['country'], 'contact.addresses.country');
@@ -328,8 +342,8 @@ function nativeAddresses(value: ESObject): contact.PostalAddress[] {
       neighborhood: area,
       postcode,
       pobox,
-      labelName: label,
-      labelId: addressLabelId(label),
+      labelId,
+      labelName: labelId === contact.PostalAddress.CUSTOM_LABEL ? label : undefined,
     });
   });
 
@@ -344,10 +358,12 @@ function nativeImAddresses(value: ESObject): contact.ImAddress[] {
     if (address === undefined) return;
 
     const label = optionalContactString(item['service'], 'contact.instantMessageAddresses.service');
+    const labelId = imLabelId(label);
+
     result.push({
       imAddress: address,
-      labelName: label,
-      labelId: imLabelId(label),
+      labelId,
+      labelName: labelId === contact.ImAddress.CUSTOM_LABEL ? label : undefined,
     });
   });
 
@@ -373,10 +389,12 @@ function nativeRelations(value: ESObject): contact.Relation[] {
     if (name === undefined) return;
 
     const label = optionalContactString(item['label'], 'contact.relationships.label');
+    const labelId = relationLabelId(label);
+
     result.push({
       relationName: name,
-      labelName: label,
-      labelId: relationLabelId(label),
+      labelId,
+      labelName: labelId === contact.Relation.CUSTOM_LABEL ? label : undefined,
     });
   });
 
@@ -396,11 +414,9 @@ function nativeEvent(record: Record<string, ESObject>, labelId: number): contact
     throw new ExpoContactsError('ERR_CONTACTS_INVALID_DATE', 'Contact date does not exist in the Gregorian calendar.');
   }
 
-  return {
-    eventDate: year === undefined ? `--${padDatePart(month)}-${padDatePart(day)}` : `${padDateYear(year)}-${padDatePart(month)}-${padDatePart(day)}`,
-    labelName: optionalContactString(record['label'], 'contact.date.label'),
-    labelId,
-  };
+  const date = year === undefined ? `--${padDatePart(month)}-${padDatePart(day)}` : `${padDateYear(year)}-${padDatePart(month)}-${padDatePart(day)}`;
+
+  return { eventDate: date, labelId, labelName: labelId === contact.Event.CUSTOM_LABEL ? optionalContactString(record['label'], 'contact.date.label') : undefined };
 }
 
 function requiredDatePart(value: ESObject, name: string, min: number, max: number): number {
@@ -465,7 +481,7 @@ export function padDateYear(value: number): string {
 }
 
 function nonEmpty(value?: string): string | undefined {
-  return value !== undefined && value.length > 0 ? value : undefined;
+  return value || undefined;
 }
 
 export function contactIdentifier(entry: contact.Contact): string {
@@ -511,7 +527,7 @@ export function sortNativeContacts(values: contact.Contact[], sort?: string): vo
 export function nativeDisplayName(value: contact.Contact): string {
   return (
     nonEmpty(value.name?.fullName) ??
-    nonEmpty(formattedName(value.name?.givenName, value.name?.middleName, value.name?.familyName)) ??
+    nonEmpty(formattedName(value.name?.namePrefix, value.name?.givenName, value.name?.middleName, value.name?.familyName, value.name?.nameSuffix)) ??
     nonEmpty(value.organization?.name) ??
     ''
   );
@@ -525,7 +541,7 @@ function emailLabelId(label?: string): number {
   const normalized = normalizedLabel(label);
   if (normalized === 'home') return contact.Email.EMAIL_HOME;
   if (normalized === 'work') return contact.Email.EMAIL_WORK;
-  if (normalized === 'other') return contact.Email.EMAIL_OTHER;
+  if (normalized === undefined || normalized === 'other') return contact.Email.EMAIL_OTHER;
   return contact.Email.CUSTOM_LABEL;
 }
 
@@ -550,7 +566,7 @@ function phoneLabelId(label?: string): number {
   if (normalized === 'workpager') return contact.PhoneNumber.NUM_WORK_PAGER;
   if (normalized === 'assistant') return contact.PhoneNumber.NUM_ASSISTANT;
   if (normalized === 'mms') return contact.PhoneNumber.NUM_MMS;
-  if (normalized === 'other') return contact.PhoneNumber.NUM_OTHER;
+  if (normalized === undefined || normalized === 'other') return contact.PhoneNumber.NUM_OTHER;
   return contact.PhoneNumber.CUSTOM_LABEL;
 }
 
@@ -558,7 +574,7 @@ function addressLabelId(label?: string): number {
   const normalized = normalizedLabel(label);
   if (normalized === 'home') return contact.PostalAddress.ADDR_HOME;
   if (normalized === 'work') return contact.PostalAddress.ADDR_WORK;
-  if (normalized === 'other') return contact.PostalAddress.ADDR_OTHER;
+  if (normalized === undefined || normalized === 'other') return contact.PostalAddress.ADDR_OTHER;
   return contact.PostalAddress.CUSTOM_LABEL;
 }
 
@@ -597,7 +613,7 @@ export function dateEventLabelId(label?: string): number {
   const normalized = normalizedLabel(label);
   if (normalized === 'birthday') return contact.Event.EVENT_BIRTHDAY;
   if (normalized === 'anniversary') return contact.Event.EVENT_ANNIVERSARY;
-  if (normalized === 'other') return contact.Event.EVENT_OTHER;
+  if (normalized === undefined || normalized === 'other') return contact.Event.EVENT_OTHER;
   return contact.Event.CUSTOM_LABEL;
 }
 
