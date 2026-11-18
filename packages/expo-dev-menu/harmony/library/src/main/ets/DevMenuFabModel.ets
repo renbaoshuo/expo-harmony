@@ -197,15 +197,20 @@ export class DevMenuFabModel {
 
   private finishTouch(cancelled: boolean): void {
     if (this.pointerId === undefined) return;
+
     this.pointerId = undefined;
     this.lastTouchUp = Date.now();
     this.press(false);
     this.interact();
-    if (this.drag.dragging || cancelled) {
-      const velocity = cancelled ? new FabPoint() : this.drag.velocity(Date.now());
-      this.resting = fabTarget(new FabPoint(this.x, this.y), velocity, this.bounds);
+
+    if (cancelled) {
+      this.springTo(this.resting, new FabPoint(), 0.65);
+    } else if (this.drag.dragging) {
+      const velocity = this.drag.velocity(Date.now());
+      this.resting = fabTarget(this.drag.position, velocity, this.bounds);
       this.normalized = normalizeFabPosition(this.resting, this.bounds);
       this.springTo(this.resting, velocity, 0.65);
+
       this.preferences.saveFabPosition(this.normalized).catch((error: Error): void => console.warn(`Expo Dev Menu: ${error.message}`));
     } else this.open();
   }

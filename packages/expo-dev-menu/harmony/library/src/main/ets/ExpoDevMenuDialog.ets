@@ -6,7 +6,7 @@
  */
 
 import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
-import { ComponentContent, UIContext } from '@kit.ArkUI';
+import { ComponentContent, UIContext, window } from '@kit.ArkUI';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
 import { DevMenuDialogItem } from './DevMenuTypes';
 import { DevMenuAppInfo } from './DevMenuAppInfo';
@@ -182,8 +182,7 @@ export class DevMenuDialogModel {
       this.filterSources('');
     } else {
       this.selectedSource = entry.file;
-      this.sourceText = entry.file.content ?? '';
-      this.sourceTokens = highlightSource(this.sourceText);
+      this.setSourceText(entry.file.content ?? '');
       this.sourceEditing = false;
     }
   }
@@ -192,6 +191,11 @@ export class DevMenuDialogModel {
     const parent = this.sourceFolder.slice(0, -1).lastIndexOf('/');
     this.sourceFolder = parent < 0 ? '' : this.sourceFolder.slice(0, parent + 1);
     this.filterSources('');
+  }
+
+  setSourceText(value: string): void {
+    this.sourceText = value;
+    this.sourceTokens = highlightSource(value);
   }
 
   lineNumbers(): string {
@@ -384,30 +388,19 @@ struct ExpoDevMenuDialog {
             .width('100%')
             .fontFamily('monospace')
             .fontSize(this.model.sourceFontSize)
-            .onChange((value: string): void => {
-              this.model.sourceText = value;
-              this.model.sourceTokens = highlightSource(value);
-            });
+            .onChange((value: string): void => this.model.setSourceText(value));
         } else if (this.model.sourceWrap) {
-          Row({ space: 12 }) {
-            Text(this.model.lineNumbers())
-              .fontFamily('monospace')
-              .fontSize(this.model.sourceFontSize)
-              .lineHeight(this.model.sourceFontSize * 1.5)
-              .fontColor($r('sys.color.font_secondary'))
-            Text() {
-              ForEach(this.model.sourceTokens, (token: SourceToken): void => {
-                Span(token.value).fontColor(this.tokenColor(token.kind));
-              })
-            }
+          // The gutter and the code have different row heights when lines wrap.
+          Text() {
+            ForEach(this.model.sourceTokens, (token: SourceToken): void => {
+              Span(token.value).fontColor(this.tokenColor(token.kind));
+            })
+          }
             .fontFamily('monospace')
             .fontSize(this.model.sourceFontSize)
             .lineHeight(this.model.sourceFontSize * 1.5)
             .copyOption(CopyOptions.LocalDevice)
-            .layoutWeight(1)
-          }
-          .alignItems(VerticalAlign.Top)
-          .width('100%');
+            .width('100%');
         } else {
           Scroll() {
             Row({ space: 12 }) {
@@ -565,6 +558,8 @@ export class ExpoDevMenuPresenter {
   private readonly report: (error: Error) => void;
   private dismissed?: Promise<void>;
   private resolveDismissed?: () => void;
+  private unwatchWindow?: () => void;
+
   constructor(onVisibility: () => void, report: (error: Error) => void) {
     this.onVisibility = onVisibility;
     this.report = report;
@@ -577,7 +572,7 @@ export class ExpoDevMenuPresenter {
   }
 
   async open(ui: UIContext, model: DevMenuDialogModel): Promise<boolean> {
-    let attachedContent: ComponentContent<DevMenuDialogModel> | undefined;
+    let attached: ComponentContent<DevMenuDialogModel> | undefined;
     let pending: Promise<void> | undefined;
 
     try {
@@ -588,13 +583,24 @@ export class ExpoDevMenuPresenter {
       }
 
       const content = new ComponentContent<DevMenuDialogModel>(ui, wrapBuilder(buildExpoDevMenuDialog), model);
-      attachedContent = content;
+      attached = content;
       this.content = content;
       this.ui = ui;
       this.model = model;
       this.dismissed = new Promise<void>((resolve: () => void): void => {
         this.resolveDismissed = resolve;
       });
+
+      const name = ui.getWindowName();
+      if (name !== undefined) {
+        const target = window.findWindow(name);
+        const watch = (event: window.WindowEventType): void => {
+          if (event === window.WindowEventType.WINDOW_DESTROYED) this.release(content);
+        };
+        target.on('windowEvent', watch);
+        this.unwatchWindow = (): void => target.off('windowEvent', watch);
+      }
+
       this.onVisibility();
 
       pending = ui.openBindSheet(content, {
@@ -610,8 +616,9 @@ export class ExpoDevMenuPresenter {
 
       return this.content === content;
     } catch (error) {
-      if (attachedContent === undefined) model.dispose();
-      else this.release(attachedContent);
+      if (attached === undefined) model.dispose();
+      else this.release(attached);
+
       throw new ExpoModuleError(
         error instanceof ExpoModuleError ? error.code : 'ERR_DEV_MENU_WINDOW',
         error instanceof Error ? error.message : String(error),
@@ -650,6 +657,7 @@ export class ExpoDevMenuPresenter {
         await dismissed;
       })
       .catch((error: BusinessError): void => {
+        if (this.content !== content) return;
         if (error.code !== BIND_SHEET_NOT_FOUND) throw new ExpoModuleError('ERR_DEV_MENU_WINDOW', error.message, error);
 
         this.release(content);
@@ -675,6 +683,7 @@ export class ExpoDevMenuPresenter {
 
   private release(content: ComponentContent<DevMenuDialogModel>): void {
     if (this.content !== content) return;
+
     this.model?.dispose();
     this.content = undefined;
     this.ui = undefined;
@@ -682,10 +691,21 @@ export class ExpoDevMenuPresenter {
     this.resolveDismissed?.();
     this.resolveDismissed = undefined;
     this.dismissed = undefined;
+
+    const unwatch = this.unwatchWindow;
+    this.unwatchWindow = undefined;
+    try {
+      unwatch?.();
+    } catch (error) {
+      this.report(error instanceof Error ? error : new Error(String(error)));
+    }
+
     try {
       content.dispose();
-    } finally {
-      this.onVisibility();
+    } catch (error) {
+      this.report(error instanceof Error ? error : new Error(String(error)));
     }
+
+    this.onVisibility();
   }
 }

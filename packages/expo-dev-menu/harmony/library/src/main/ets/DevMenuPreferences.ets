@@ -169,9 +169,10 @@ export class DevMenuPreferences {
   }
 
   dispose(): void {
+    this.listeners.clear();
+
     if (this.store === undefined) DevMenuPreferences.sessionListeners.delete(this.onChange);
     else this.store.off('change', this.onChange);
-    this.listeners.clear();
   }
 
   private metadata(): Map<string, boolean> {

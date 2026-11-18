@@ -65,7 +65,6 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
   private reloadTimer?: number;
   private keyboardVisible: boolean = false;
   private callbacks: DevMenuCallback[] = [];
-  private callbacksByName: Map<string, DevMenuCallback> = new Map<string, DevMenuCallback>();
   private openGeneration: number = 0;
   private opening?: Promise<boolean> = undefined;
   private active: boolean = true;
@@ -696,10 +695,6 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
   updateCallbacks(callbacks: DevMenuCallback[]): void {
     this.assertActive();
     this.callbacks = callbacks.slice();
-    this.callbacksByName = new Map<string, DevMenuCallback>();
-    callbacks.forEach((callback: DevMenuCallback): void => {
-      this.callbacksByName.set(callback.name, callback);
-    });
     this.presenter.update(this.menuItems());
   }
 
@@ -800,7 +795,8 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
   }
 
   private emitCallback(name: string): void {
-    if (!this.active || !this.callbacksByName.has(name)) return;
+    if (!this.active || !this.callbacks.some((callback: DevMenuCallback): boolean => callback.name === name)) return;
+
     this.runtime.instance.emitDeviceEvent(REGISTERED_CALLBACK_EVENT, name);
   }
 
@@ -833,7 +829,6 @@ export class ExpoDevMenuRuntime implements DevMenuManagerProtocol, DevMenuUIResp
     this.ui = undefined;
     ++this.openGeneration;
     this.callbacks = [];
-    this.callbacksByName.clear();
     this.delegate = null;
     try {
       this.windowCleanup?.();
@@ -985,11 +980,22 @@ class ExpoDevMenuRnohBridge {
   private async openFirstAvailableRuntime(): Promise<void> {
     let failure: Error | undefined = undefined;
     const candidates: ExpoDevMenuRuntime[] = [];
+
+    try {
+      // RNOH displays its menu in the ability's top window.
+      const top = await window.getLastWindow(this.core.uiAbilityContext);
+      const name = top.getUIContext().getWindowName();
+      const runtime = name === undefined ? undefined : this.windows.get(name)?.availableRuntime();
+      if (runtime !== undefined) candidates.push(runtime);
+    } catch (_error) {
+      // The originating window can disappear while the menu is dismissing.
+    }
+
     const recent = this.lastWindow === undefined ? undefined : this.windows.get(this.lastWindow)?.availableRuntime();
-    if (recent !== undefined) candidates.push(recent);
+    if (recent !== undefined && !candidates.includes(recent)) candidates.push(recent);
     this.windows.forEach((group: DevMenuWindowGroup): void => {
       const candidate = group.availableRuntime();
-      if (candidate !== undefined && candidate !== recent) candidates.push(candidate);
+      if (candidate !== undefined && !candidates.includes(candidate)) candidates.push(candidate);
     });
 
     for (const runtime of candidates) {
@@ -999,6 +1005,7 @@ class ExpoDevMenuRnohBridge {
         failure = error instanceof Error ? error : new Error(String(error));
       }
     }
+
     throw new ExpoModuleError(
       failure instanceof ExpoModuleError ? failure.code : 'ERR_DEV_MENU_RUNTIME',
       failure?.message ?? 'Expo Dev Menu cannot find a runtime with an available window.',

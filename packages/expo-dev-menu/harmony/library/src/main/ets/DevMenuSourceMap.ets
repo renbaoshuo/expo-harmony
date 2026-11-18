@@ -14,6 +14,7 @@ import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
 // NetStack's documented maximum; its 5 MiB default is too small for Metro maps.
 const MAX_SOURCE_MAP_BYTES: number = 100 * 1024 * 1024;
 const METRO_BUNDLE_EXTENSION: string = '.bundle';
+const INLINE_SOURCE_MAP = /^[\t ]*\/\/[@#][\t ]*sourceMappingURL=data:application\/json(?:;charset=utf-8)?;base64,([A-Za-z0-9+/]+={0,2})[\t ]*\r?$/gim;
 
 export class DevMenuSourceFile {
   readonly index: number;
@@ -67,7 +68,7 @@ export class DevMenuSourceMap {
           return this.parseInline(util.TextDecoder.create('utf-8').decodeToString(bytes));
         }
       } catch (error) {
-        failure = error as Object;
+        failure = failure ?? (error as Object);
       }
     }
 
@@ -84,6 +85,7 @@ export class DevMenuSourceMap {
     const address = new url.URL(bundle);
     const path = address.pathname;
     address.pathname = (path.endsWith(METRO_BUNDLE_EXTENSION) ? path.slice(0, -METRO_BUNDLE_EXTENSION.length) : path) + '.map';
+    address.hash = '';
 
     const request = http.createHttp();
     this.request = request;
@@ -118,11 +120,22 @@ export class DevMenuSourceMap {
 
   private parseInline(content: string): DevMenuSourceFile[] {
     this.assertActive();
-    const match = /\/\/[@#]\s*sourceMappingURL=data:application\/json(?:;charset=utf-8)?;base64,([^\r\n]+)/.exec(content);
-    if (match === null) throw new ExpoModuleError('ERR_DEV_MENU_SOURCE_MAP', 'The local bundle does not contain an inline source map.');
 
-    const bytes = new util.Base64Helper().decodeSync(match[1].trim());
-    return this.parse(util.TextDecoder.create('utf-8').decodeToString(bytes));
+    INLINE_SOURCE_MAP.lastIndex = 0;
+    let encoded: string | undefined;
+    let match = INLINE_SOURCE_MAP.exec(content);
+
+    while (match !== null) {
+      encoded = match[1];
+      match = INLINE_SOURCE_MAP.exec(content);
+    }
+
+    if (encoded === undefined) throw new ExpoModuleError('ERR_DEV_MENU_SOURCE_MAP', 'The local bundle does not contain an inline source map.');
+
+    const bytes = new util.Base64Helper().decodeSync(encoded);
+    const text = util.TextDecoder.create('utf-8').decodeToString(bytes);
+
+    return this.parse(text);
   }
 
   dispose(): void {
