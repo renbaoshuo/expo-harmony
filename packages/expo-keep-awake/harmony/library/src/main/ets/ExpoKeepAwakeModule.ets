@@ -77,7 +77,11 @@ class AbilityKeepAwakeController {
         if (!owner.released && owner.context.isValid) owner.tags.add(tag);
         this.refresh();
 
-        throw error as ExpoModuleError;
+        if (error instanceof ExpoModuleError) {
+          throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
+        }
+
+        throw new Error(error instanceof Error ? error.message : String(error));
       }
     });
   }
@@ -152,13 +156,13 @@ class AbilityKeepAwakeController {
     this.assertStage(generation);
     owner.assertActive();
 
-    let target: window.Window;
+    let win: window.Window;
 
     try {
-      target = await owner.context.getReactNativeWindow();
+      win = await owner.context.getReactNativeWindow();
     } catch (error) {
       owner.assertActive();
-      throw new ExpoModuleError(ERROR_WINDOW, `Unable to find the React Native window: ${String(error)}`);
+      throw new ExpoModuleError(ERROR_WINDOW, 'Unable to find the React Native window.', error as Object);
     }
 
     this.assertStage(generation);
@@ -167,14 +171,18 @@ class AbilityKeepAwakeController {
     let id: number;
 
     try {
-      id = target.getWindowProperties().id;
+      id = win.getWindowProperties().id;
+
+      // Retire the old lease even if enabling the new one fails.
+      if (owner.windowId !== id) owner.windowId = undefined;
+
       if (this.foreground) {
         // A write can fail or finish after the runtime or stage changes. Keep its cleanup target.
-        this.windows.set(id, target);
-        await ExpoWindowKeepAwake.acquire(target, this);
+        this.windows.set(id, win);
+        await ExpoWindowKeepAwake.acquire(win, this);
       }
     } catch (error) {
-      throw new ExpoModuleError(ERROR_WINDOW, `Unable to enable keep-screen-on: ${String(error)}`);
+      throw new ExpoModuleError(ERROR_WINDOW, 'Unable to enable keep-screen-on.', error as Object);
     }
 
     this.assertStage(generation);
@@ -184,7 +192,7 @@ class AbilityKeepAwakeController {
     if (tag !== undefined) owner.tags.add(tag);
   }
 
-  private async releaseUnusedWindows(strictWindowId?: number): Promise<void> {
+  private async releaseUnusedWindows(strictId?: number): Promise<void> {
     for (const entry of this.windows.entries()) {
       const id: number = entry[0];
       if (this.foreground && this.stage !== undefined && this.hasWindowTags(id)) continue;
@@ -193,10 +201,11 @@ class AbilityKeepAwakeController {
         await ExpoWindowKeepAwake.release(entry[1], this);
         this.windows.delete(id);
       } catch (error) {
-        const message: string = `Unable to release Expo KeepAwake window: ${String(error)}`;
-        if (id === strictWindowId) throw new ExpoModuleError(ERROR_WINDOW, message);
+        if (id === strictId) {
+          throw new ExpoModuleError(ERROR_WINDOW, 'Unable to release the Expo KeepAwake window.', error as Object);
+        }
 
-        console.warn(message);
+        console.warn(`Unable to release Expo KeepAwake window: ${String(error)}`);
       }
     }
   }
@@ -291,9 +300,6 @@ export class ExpoKeepAwakeModule extends ExpoModule {
 
     if (!context.isHeadless) {
       this.controller = controllers.get(context.uiAbilityContext);
-      if (this.controller === undefined) {
-        throw new ExpoModuleError(ERROR_DESTROYED, 'Expo KeepAwake requires its autolinked Ability lifecycle subscriber.');
-      }
     }
 
     this.owner = new KeepAwakeOwner(context);
@@ -329,7 +335,7 @@ export class ExpoKeepAwakeModule extends ExpoModule {
   private requireController(): AbilityKeepAwakeController {
     const controller: AbilityKeepAwakeController | undefined = this.controller;
     if (controller === undefined || !canIUse(WINDOW_CAPABILITY)) {
-      throw new ExpoModuleError(ERROR_WINDOW, 'KeepAwake requires a supported UIAbility window.');
+      throw new ExpoModuleError(ERROR_WINDOW, 'KeepAwake requires a supported UIAbility window and an Expo Ability lifecycle subscriber.');
     }
 
     return controller;

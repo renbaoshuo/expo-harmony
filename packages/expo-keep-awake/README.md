@@ -44,7 +44,7 @@ npm install @expo-harmony/expo-keep-awake expo-keep-awake@~57.0.2
 
 #### `isAvailableAsync(): Promise<boolean>`
 
-返回 `Promise<boolean>`。设备支持窗口管理、且当前运行时关联有界面的 UIAbility 时返回 `true`。`true` 不表示窗口已就绪；在无界面任务中激活或释放常亮会导致 Promise 拒绝。
+返回 `Promise<boolean>`。设备支持窗口管理，且当前运行时关联了已注册 Expo Ability 生命周期订阅器的 UIAbility 时返回 `true`。`true` 不表示窗口已就绪；在无界面任务中激活或释放常亮会导致 Promise 拒绝。
 
 ### Event subscriptions
 
