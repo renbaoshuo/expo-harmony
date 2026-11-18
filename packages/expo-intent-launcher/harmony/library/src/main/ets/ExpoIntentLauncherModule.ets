@@ -14,6 +14,7 @@ import { ExpoFunction, ExpoModule, ExpoModuleAbilityResult, ExpoModuleContext, E
 import { createWant, INTENT_PARAMS } from './IntentLauncherParams';
 
 const REQUEST_CODE: number = 12;
+const LAUNCH_WANT_FOR_BUNDLE_API: number = 24;
 const ABILITY_CAPABILITY: string = 'SystemCapability.Ability.AbilityRuntime.Core';
 const BUNDLE_CAPABILITY: string = 'SystemCapability.BundleManager.BundleFramework.Core';
 const IMAGE_PACKER_CAPABILITY: string = 'SystemCapability.Multimedia.Image.ImagePacker';
@@ -161,11 +162,13 @@ export class ExpoIntentLauncherModule extends ExpoModule {
     assertCanQueryBundles();
 
     const logger = this.context.logger;
+    const ability = this.context.uiAbilityContext;
+    const self = ability.applicationInfo.name;
     let info: bundleManager.BundleInfo;
 
     try {
       info =
-        bundle === this.context.uiAbilityContext.abilityInfo.bundleName
+        bundle === self
           ? await bundleManager.getBundleInfoForSelf(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION)
           : await bundleManager.getBundleInfo(bundle, bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
     } catch (error) {
@@ -184,6 +187,7 @@ export class ExpoIntentLauncherModule extends ExpoModule {
     }
 
     this.assertActive();
+
     if (!canIUse(IMAGE_PACKER_CAPABILITY)) return '';
 
     let pixels: image.PixelMap | undefined;
@@ -191,14 +195,15 @@ export class ExpoIntentLauncherModule extends ExpoModule {
     let icon = '';
 
     try {
-      const ability = this.context.uiAbilityContext;
       const resource = info.appInfo.iconResource;
+
       if (!resource || resource.id <= 0) return '';
 
-      if (resource.bundleName === ability.abilityInfo.bundleName) {
-        const owner = resource.moduleName.length === 0 || resource.moduleName === ability.abilityInfo.moduleName
+      if ((resource.bundleName || info.name) === self) {
+        const owner = resource.moduleName.length === 0 || resource.moduleName === ability.currentHapModuleInfo?.name
           ? ability
           : await application.createModuleContext(ability, resource.moduleName);
+
         this.assertActive();
         pixels = owner.resourceManager.getDrawableDescriptor(resource.id).getPixelMap();
       } else {
@@ -207,6 +212,7 @@ export class ExpoIntentLauncherModule extends ExpoModule {
 
       packer = image.createImagePacker();
       const bytes = await packer.packToData(pixels, { format: PNG_MIME_TYPE, quality: 100 });
+
       if (bytes.byteLength > 0) {
         const base64 = await new util.Base64Helper().encodeToString(new Uint8Array(bytes));
         icon = `data:${PNG_MIME_TYPE};base64,${base64}`;
@@ -260,6 +266,7 @@ function assertWantFileAccess(context: ExpoModuleContext, want: Want): void {
   const flags = want.flags ?? 0;
   const read = (flags & wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION) !== 0;
   const write = (flags & wantConstant.Flags.FLAG_AUTH_WRITE_URI_PERMISSION) !== 0;
+
   if (!read && !write) return;
 
   const uris: string[] = [];
@@ -281,9 +288,18 @@ function assertWantFileAccess(context: ExpoModuleContext, want: Want): void {
   }
 
   for (const uri of uris) {
-    const source = resolveFileReadSource(uri, context.uiAbilityContext.cacheDir);
-    if (read) context.assertFileAccess(source, 'read');
-    if (write) context.assertFileAccess(source, 'write');
+    try {
+      const source = resolveFileReadSource(uri, context.uiAbilityContext.cacheDir);
+
+      if (read) context.assertFileAccess(source, 'read');
+      if (write) context.assertFileAccess(source, 'write');
+    } catch (error) {
+      throw new ExpoModuleError(
+        'ERR_INTENT_LAUNCHER_INVALID_ARGUMENT',
+        'The Want file URI could not be granted to the target.',
+        error as Object,
+      );
+    }
   }
 }
 
@@ -297,7 +313,7 @@ function applicationWant(bundle: string, currentBundle: string): Want {
   if (bundle === currentBundle) {
     return bundleManager.getLaunchWant();
   }
-  if (deviceInfo.sdkApiVersion >= 24) {
+  if (deviceInfo.sdkApiVersion >= LAUNCH_WANT_FOR_BUNDLE_API) {
     return bundleManager.getLaunchWantForBundleSync(bundle);
   }
 

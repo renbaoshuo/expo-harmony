@@ -24,7 +24,7 @@ npm install @expo-harmony/expo-intent-launcher expo-intent-launcher@~57.0.1
 
 `className` 指定目标 UIAbility 名称。指定 `className` 时，`packageName` 指定目标应用的 bundleName；省略 `packageName` 时使用当前应用。未指定 `className` 时，`packageName` 不生效。`data`、`type`、`category` 和 `extra` 分别对应 Want 的 URI、MIME 类型、单个实体和附加参数；URI 与 MIME 类型可以同时指定。action、实体、URI 和 `flags` 需符合目标应用支持的 HarmonyOS Want 约定。若要临时授予目标 Ability 读取文件 URI 的权限，可传入相应的 Want 标志，例如 `FLAG_AUTH_READ_URI_PERMISSION`（`0x00000001`）。[HarmonyOS Want Flags 参考](https://developer.huawei.com/consumer/en/doc/harmonyos-references/js-apis-app-ability-wantconstant/#flags)
 
-`extra` 只支持 HarmonyOS Want 可传递的类型。函数和 `bigint` 会在发起启动前被拒绝。顶层数值会向零取整并限制在 64 位整数范围内，嵌套对象和数组中的数值不取整。超出 JavaScript 安全整数范围的值不能保证精确表示。`flags` 会向零取整并限制在 32 位整数范围内。设置文件授权标志时，`data` 和 Want 文件列表中的文件 URI 须满足当前运行时的文件访问策略。[HarmonyOS Want 参考](https://developer.huawei.com/consumer/en/doc/harmonyos-references/js-apis-app-ability-want/)
+`extra` 接受 HarmonyOS Want 可传递的普通数据。数组必须包含同一类型的非空值，可以包含对象。函数、`bigint`、二进制缓冲区、嵌套数组和原生文件描述符会在启动前被拒绝。系统可能省略空数组和空值。顶层数值会向零取整并限制在 64 位整数范围内，嵌套对象和数组中的数值不取整。超出 JavaScript 安全整数范围的值不能保证精确表示。`flags` 会向零取整并限制在 32 位整数范围内。设置文件授权标志时，`data` 和 Want 文件列表中的文件 URI 须满足当前运行时的文件访问策略。 [HarmonyOS Want 参考](https://developer.huawei.com/consumer/en/doc/harmonyos-references/js-apis-app-ability-want/)
 
 返回对象中的 `resultCode` 按 HarmonyOS 返回值原样传回。目标 UIAbility 被系统终止等异常情况也可能返回 `-1`，请按目标应用和系统的协议解释结果码。系统未设置结果 URI 或附加参数时，`data` 或 `extra` 可能省略。[HarmonyOS UIAbilityContext 参考](https://developer.huawei.com/consumer/en/doc/harmonyos-references/js-apis-inner-application-uiabilitycontext/)
 
@@ -87,6 +87,10 @@ npm install @expo-harmony/expo-intent-launcher expo-intent-launcher@~57.0.1
 #### `ERR_INTENT_LAUNCHER_START_ACTIVITY`
 
 HarmonyOS 无法启动目标 UIAbility 时抛出。
+
+#### `ERR_INTENT_LAUNCHER_INVALID_ARGUMENT`
+
+附加参数包含系统无法传递的类型，或请求授权的文件 URI 无效或不符合运行时访问策略时抛出。
 
 #### `ERR_PACKAGE_NOT_FOUND`
 

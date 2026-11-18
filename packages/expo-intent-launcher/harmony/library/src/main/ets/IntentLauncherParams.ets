@@ -11,6 +11,8 @@ import { ExpoModuleError, ExpoRecordShape, ExpoValueTypes } from '@expo-harmony/
 const MIN_INT32: number = -2147483648;
 const MAX_INT32: number = 2147483647;
 const MIN_INT64: number = -(2 ** 63);
+// WantParams interprets objects of this type as native file descriptors.
+const WANT_FILE_DESCRIPTOR_TYPE: string = 'FD';
 
 // Long.MAX_VALUE rounds outside int64. Use the closest lower integer that a
 // JavaScript number can represent with its 53-bit significand.
@@ -78,12 +80,43 @@ function toInteger(value: number, min: number, max: number): number {
 }
 
 function validateWantParameter(value: ESObject, path: string): void {
-  if (typeof value === 'function' || typeof value === 'bigint') {
+  if (typeof value === 'function' || typeof value === 'bigint' ||
+    value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
     throw new ExpoModuleError('ERR_INTENT_LAUNCHER_INVALID_ARGUMENT', `${path} cannot be transferred in a HarmonyOS Want.`, undefined, path);
   }
   if (value === null || typeof value !== 'object') return;
 
+  if (Array.isArray(value)) {
+    const items: ESObject[] = value as ESObject[];
+    const type = typeof items[0];
+
+    for (let index = 0; index < items.length; index++) {
+      const item: ESObject = items[index];
+      if (item == null || typeof item !== type || Array.isArray(item)) {
+        throw new ExpoModuleError(
+          'ERR_INTENT_LAUNCHER_INVALID_ARGUMENT',
+          `${path} must contain only non-null values of one type. Nested arrays cannot be transferred in a HarmonyOS Want.`,
+          undefined,
+          path,
+        );
+      }
+
+      validateWantParameter(item, `${path}[${index}]`);
+    }
+
+    return;
+  }
+
   const fields = value as Record<string, ESObject>;
+  if (fields['type'] === WANT_FILE_DESCRIPTOR_TYPE && typeof fields['value'] === 'number') {
+    throw new ExpoModuleError(
+      'ERR_INTENT_LAUNCHER_INVALID_ARGUMENT',
+      `${path} cannot transfer a native file descriptor. Use a file URI with a Want access flag.`,
+      undefined,
+      path,
+    );
+  }
+
   for (const key of Object.keys(fields)) {
     validateWantParameter(fields[key], `${path}.${key}`);
   }
