@@ -32,7 +32,7 @@ HarmonyOS SDK API 20 及以上可直接查询完整权限状态。API 13–19 �
 
 #### `TrackingTransparency.requestTrackingPermissionsAsync()`
 
-无参数，返回 `Promise<PermissionResponse>`，请求跨应用跟踪权限。已授权时返回当前状态；未授权时由系统处理请求。用户拒绝或系统不再允许请求后，`canAskAgain` 为 `false`。并发调用共用一次请求结果。
+无参数，返回 `Promise<PermissionResponse>`，请求跨应用跟踪权限。已授权或系统明确禁止再次请求时，直接返回当前状态。其他情况下由系统处理请求。用户拒绝或系统不再允许请求后，`canAskAgain` 为 `false`。并发调用共用一次请求结果。
 
 #### `TrackingTransparency.isAvailable()`
 
@@ -76,7 +76,7 @@ HarmonyOS SDK API 20 及以上可直接查询完整权限状态。API 13–19 �
 
 #### `ERR_TRACKING_TRANSPARENCY_BACKGROUND`
 
-应用未处于前台或没有界面时，请求尚未授权的跨应用跟踪权限会以此错误码拒绝。
+尚可请求授权时，应用未处于前台或没有界面会以此错误码拒绝。
 
 #### `ERR_TRACKING_TRANSPARENCY_PERMISSION`
 

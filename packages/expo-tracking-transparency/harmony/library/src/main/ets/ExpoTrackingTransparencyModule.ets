@@ -6,7 +6,7 @@
  */
 
 import { ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoModuleError, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
-import { identifier } from '@kit.AdsKit';
+import lazy { identifier } from '@kit.AdsKit';
 import { isTrackingAvailable, TrackingPermissions, TrackingPermissionResponse, TRACKING_PERMISSION } from './TrackingPermissions';
 
 const EMPTY_ADVERTISING_ID: string = '00000000-0000-0000-0000-000000000000';
@@ -48,8 +48,8 @@ export class ExpoTrackingTransparencyModule extends ExpoModule {
       throw new ExpoModuleError('ERR_TRACKING_TRANSPARENCY_ADVERTISING_ID', 'Unable to read the HarmonyOS advertising identifier.', error as Object);
     }
 
+    // The user can revoke consent while the SDK request is pending.
     if (this.context.permissionStatus(TRACKING_PERMISSION) !== ExpoPermissionStatus.GRANTED) return null;
-
     return id.length === 0 || id === EMPTY_ADVERTISING_ID ? null : id;
   }
 }
