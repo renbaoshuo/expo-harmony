@@ -99,6 +99,7 @@ async function resolveIcon(root: string, source: string): Promise<IconFile> {
 
   try {
     const response = await fetch(source);
+
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
     const mime = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
@@ -109,7 +110,14 @@ async function resolveIcon(root: string, source: string): Promise<IconFile> {
 
     return { extension, media: { content } };
   } catch (cause) {
-    if (cause instanceof HarmonyPrebuildError) throw cause;
+    if (cause instanceof HarmonyPrebuildError) {
+      throw new HarmonyPrebuildError(cause.code, cause.message, {
+        cause: cause.cause,
+        file: cause.file,
+        operation: cause.operation,
+      });
+    }
+
     throw new HarmonyPrebuildError(
       'ERR_HARMONY_CONFIG_INVALID',
       `Cannot download the Harmony icon: ${source}`,
@@ -159,15 +167,11 @@ function withEntryMods(config) {
           path: './src/main/cpp/CMakeLists.txt',
         },
       },
-      targets: upsertNamed(
-        upsertNamed(mod.modResults.targets, 'default', existing => ({
-          ...existing,
-          name: 'default',
-          runtimeOS: 'HarmonyOS',
-        })),
-        'ohosTest',
-        existing => ({ ...existing, name: 'ohosTest' })
-      ),
+      targets: upsertNamed(mod.modResults.targets, 'default', existing => ({
+        ...existing,
+        name: 'default',
+        runtimeOS: 'HarmonyOS',
+      })),
     };
 
     return mod;
