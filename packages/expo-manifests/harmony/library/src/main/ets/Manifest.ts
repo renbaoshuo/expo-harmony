@@ -9,10 +9,22 @@ import { JSONObjectUtils, JSONUtilsError } from '@expo-harmony/expo-json-utils';
 
 export class ExpoManifestError extends Error {
   readonly code = 'ERR_MANIFEST_INVALID';
+  readonly cause?: unknown;
 
-  constructor(message: string) {
+  constructor(message: string, cause?: unknown) {
     super(message);
     this.name = 'ExpoManifestError';
+    this.cause = cause;
+  }
+}
+
+class ManifestAccessError extends Error {
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = cause instanceof Error ? cause.name : 'Error';
+    this.cause = cause;
   }
 }
 
@@ -26,6 +38,7 @@ function isRecord(value: unknown): value is Record<string, ESObject> {
 
 function ownDataProperty(value: object, key: string | number): PropertyDescriptor | undefined {
   const field = Object.getOwnPropertyDescriptor(value, key);
+
   if (field !== undefined && !Object.prototype.hasOwnProperty.call(field, 'value')) {
     throw new ExpoManifestError(`Manifest field '${key}' must be a data property.`);
   }
@@ -33,37 +46,18 @@ function ownDataProperty(value: object, key: string | number): PropertyDescripto
   return field;
 }
 
-function clonePluginProperties(value: Record<string, ESObject>): Record<string, ESObject> {
-  const ancestors = new Set<object>();
-
-  function clone(item: ESObject): ESObject {
-    if (!Array.isArray(item) && !isRecord(item)) return item;
-    if (ancestors.has(item)) throw new ExpoManifestError('Plugin properties must not contain circular references.');
-
-    ancestors.add(item);
-
-    try {
-      if (Array.isArray(item)) {
-        const copy = new Array<ESObject>(item.length);
-        for (let index = 0; index < item.length; index++) {
-          const field = ownDataProperty(item, index);
-          if (field !== undefined) copy[index] = clone(field.value);
-        }
-
-        return copy;
-      }
-
-      return Object.fromEntries(Object.keys(item).map(key => [key, clone(ownDataProperty(item, key)?.value)]));
-    } finally {
-      ancestors.delete(item);
-    }
-  }
+function clonePluginProperties(properties: Record<string, ESObject>): Record<string, ESObject> {
+  let json: string;
 
   try {
-    return clone(value);
+    json = JSONObjectUtils.requireString({ properties }, 'properties');
   } catch (error) {
-    throw new ExpoManifestError(error instanceof ExpoManifestError ? error.message : 'Plugin properties could not be copied.');
+    if (error instanceof JSONUtilsError) throw new ExpoManifestError(error.message, error);
+
+    throw new ManifestAccessError(error);
   }
+
+  return JSON.parse(json);
 }
 
 type FieldType = 'object' | 'array' | 'string' | 'boolean';
@@ -72,17 +66,19 @@ function requiredField(value: Record<string, ESObject>, key: string): ESObject {
   try {
     return JSONObjectUtils.require(value, key);
   } catch (error) {
-    if (error instanceof JSONUtilsError) throw new ExpoManifestError(error.message);
-    throw error;
+    if (error instanceof JSONUtilsError) throw new ExpoManifestError(error.message, error);
+
+    throw new ManifestAccessError(error);
   }
 }
 
-function appearanceField(value: Record<string, ESObject>, key: string): ESObject {
+function optionalDataField(value: Record<string, ESObject>, key: string): ESObject {
   try {
     return JSONObjectUtils.getNullable(value, key);
   } catch (error) {
     if (error instanceof JSONUtilsError) return null;
-    throw error;
+
+    throw new ManifestAccessError(error);
   }
 }
 
@@ -116,17 +112,17 @@ export abstract class Manifest {
   abstract getExpoGoSDKVersion(): string | null;
   abstract getExpoGoConfigRootObject(): Record<string, ESObject> | null;
   abstract getExpoClientConfigRootObject(): Record<string, ESObject> | null;
-  abstract getSlug(): string | null;
-  abstract getAppKey(): string | null;
 
   isDevelopmentMode(): boolean {
     try {
       const config = this.getExpoGoConfigRootObject();
-      return config !== null && JSONObjectUtils.hasValue(config, 'developer')
+
+      return this.value(config, 'developer', 'object') !== null
         && (this.value(this.value(config, 'packagerOpts', 'object'), 'dev', 'boolean') ?? false);
     } catch (error) {
       if (error instanceof ExpoManifestError) return false;
-      throw error;
+
+      throw new ManifestAccessError(error);
     }
   }
 
@@ -134,7 +130,7 @@ export abstract class Manifest {
   isUsingDeveloperTool(): boolean {
     const developer = this.value(this.getExpoGoConfigRootObject(), 'developer', 'object');
 
-    return developer !== null && JSONObjectUtils.hasValue(developer, 'tool');
+    return developer !== null && typeof optionalDataField(developer, 'tool') === 'string';
   }
   getRevisionId(): string { return this.string(this.getExpoClientConfigRootObject(), 'revisionId'); }
   getDebuggerHost(): string { return this.string(this.getExpoGoConfigRootObject(), 'debuggerHost'); }
@@ -144,6 +140,8 @@ export abstract class Manifest {
     return config === null ? 'main' : this.string(config, 'mainModuleName');
   }
   getHostUri(): string | null { return this.value(this.getExpoClientConfigRootObject(), 'hostUri', 'string'); }
+  getSlug(): string | null { return this.value(this.getExpoClientConfigRootObject(), 'slug', 'string'); }
+  getAppKey(): string | null { return this.value(this.getExpoClientConfigRootObject(), 'appKey', 'string'); }
   getExpoGoUsername(): string | null { return this.value(this.getExpoGoConfigRootObject(), 'username', 'string'); }
   getName(): string | null { return this.value(this.getExpoClientConfigRootObject(), 'name', 'string'); }
   getVersion(): string | null { return this.value(this.getExpoClientConfigRootObject(), 'version', 'string'); }
@@ -163,24 +161,26 @@ export abstract class Manifest {
 
   private platformStringOrRoot(key: string): string | null {
     let config: Record<string, ESObject> | null;
+
     try {
       config = this.getExpoClientConfigRootObject();
     } catch (error) {
       if (error instanceof ExpoManifestError) return null;
-      throw error;
+
+      throw new ManifestAccessError(error);
     }
 
     if (config === null) return null;
 
-    const platform = appearanceField(config, 'harmony');
+    const platform = optionalDataField(config, 'harmony');
     if (isRecord(platform)) {
-      const override = appearanceField(platform, key);
+      const override = optionalDataField(platform, key);
       if (typeof override === 'string') return override;
     }
 
-    const fallback = appearanceField(config, key);
+    const value = optionalDataField(config, key);
 
-    return typeof fallback === 'string' ? fallback : null;
+    return typeof value === 'string' ? value : null;
   }
 
   getUserInterfaceStyle(): string | null { return this.platformStringOrRoot('userInterfaceStyle'); }
@@ -199,8 +199,8 @@ export abstract class Manifest {
       if (!Array.isArray(plugin) || plugin.length === 0) throw new ExpoManifestError(`Manifest plugins entry ${index} must contain a name or nonempty array.`);
 
       if (result === null && plugin.length === 2 && ownDataProperty(plugin, 0)?.value === name) {
-        const properties = ownDataProperty(plugin, 1)?.value;
-        if (isRecord(properties)) result = clonePluginProperties(properties);
+        const props = ownDataProperty(plugin, 1)?.value;
+        if (isRecord(props)) result = clonePluginProperties(props);
       }
     }
 
@@ -238,8 +238,6 @@ export class ExpoUpdatesManifest extends Manifest {
   getCreatedAt(): string { return this.string(this.json, 'createdAt'); }
   getExpoGoConfigRootObject(): Record<string, ESObject> | null { return this.value(this.value(this.json, 'extra', 'object'), 'expoGo', 'object'); }
   getExpoClientConfigRootObject(): Record<string, ESObject> | null { return this.value(this.value(this.json, 'extra', 'object'), 'expoClient', 'object'); }
-  getSlug(): null { return null; }
-  getAppKey(): null { return null; }
 
   getLaunchAsset(): Record<string, ESObject> {
     const asset = this.value(this.json, 'launchAsset', 'object');
@@ -257,16 +255,16 @@ export class EmbeddedManifest extends Manifest {
   getExpoGoSDKVersion(): string | null { return this.value(this.json, 'sdkVersion', 'string'); }
   getExpoGoConfigRootObject(): Record<string, ESObject> { return this.json; }
   getExpoClientConfigRootObject(): Record<string, ESObject> { return this.json; }
-  getSlug(): string | null { return this.value(this.json, 'slug', 'string'); }
-  getAppKey(): string | null { return this.value(this.json, 'appKey', 'string'); }
 
   getCommitTimeLong(): number {
     let time: number;
+
     try {
       time = Math.trunc(JSONObjectUtils.requireNumber(this.json, 'commitTime'));
     } catch (error) {
-      if (error instanceof JSONUtilsError) throw new ExpoManifestError(`Invalid embedded manifest commitTime: ${error.message}.`);
-      throw error;
+      if (error instanceof JSONUtilsError) throw new ExpoManifestError(`Invalid embedded manifest commitTime: ${error.message}.`, error);
+
+      throw new ManifestAccessError(error);
     }
 
     if (!Number.isSafeInteger(time)) throw new ExpoManifestError('An embedded manifest requires a safely representable integer commitTime.');

@@ -8,7 +8,7 @@
 
 本包适配 Expo SDK 57。
 
-引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 12（HarmonyOS 5.0.0）。
 
 ```bash
 npm install @expo-harmony/expo-manifests
@@ -82,19 +82,15 @@ npm install @expo-harmony/expo-manifests
 
 #### `Manifest.getSlug()`
 
-内置清单返回 `slug`，缺失时返回 `null`。
-
-- 远程更新清单没有 `slug` 字段，因此返回 `null`。
+内置清单读取根字段 `slug`，远程更新清单读取 `extra.expoClient.slug`。字段缺失时返回 `null`。
 
 #### `Manifest.getAppKey()`
 
-内置清单返回 `appKey`，缺失时返回 `null`。
-
-- 远程更新清单没有 `appKey` 字段，因此返回 `null`。
+内置清单读取根字段 `appKey`，远程更新清单读取 `extra.expoClient.appKey`。字段缺失时返回 `null`。
 
 #### `Manifest.isDevelopmentMode()`
 
-仅当 Expo Go 配置包含 `developer` 且 `packagerOpts.dev` 为 `true` 时返回 `true`；其他情况返回 `false`。
+仅当 Expo Go 配置中 `developer` 为对象且 `packagerOpts.dev` 为 `true` 时返回 `true`。其他情况返回 `false`。
 
 #### `Manifest.isDevelopmentSilentLaunch()`
 
@@ -102,7 +98,7 @@ npm install @expo-harmony/expo-manifests
 
 #### `Manifest.isUsingDeveloperTool()`
 
-当 Expo Go 配置中的 `developer.tool` 存在时返回 `true`，否则返回 `false`。
+当 Expo Go 配置中的 `developer.tool` 为字符串时返回 `true`，否则返回 `false`。
 
 #### `Manifest.getRevisionId()`
 
