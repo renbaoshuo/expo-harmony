@@ -8,9 +8,6 @@
 import {
   ExpoAbilityLifecycleSubscriber,
   ExpoAppLifecycleState,
-  ExpoFileAccessKey,
-  ExpoFileAccessPolicy,
-  ExpoFileAccessRegistry,
   ExpoFunction,
   ExpoModule,
   ExpoModuleContext,
@@ -20,7 +17,6 @@ import {
   ExpoValueTypes,
   copyWant,
   fileUriFromPath,
-  resolveFileReadSource,
 } from '@expo-harmony/expo-modules-core';
 import { util } from '@kit.ArkTS';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
@@ -73,8 +69,8 @@ interface ResolvedSharePayload extends SharePayload {
 }
 
 interface ShareSession {
-  cancelled: boolean;
-  finish?: () => void;
+  cancellation?: ExpoSharingError;
+  cancelPanel?: (error: ExpoSharingError) => void;
 }
 
 class SharingAnchor {
@@ -126,6 +122,7 @@ class IncomingGeneration {
   resolving?: Promise<void> = undefined;
   ready: boolean = false;
   cancelled: boolean = false;
+  cancelRequest?: () => void;
   readonly files: Set<string> = new Set<string>();
 }
 
@@ -133,14 +130,12 @@ const states: WeakMap<Object, IncomingShareState> = new WeakMap<Object, Incoming
 
 class IncomingShareState {
   private readonly cache: string;
-  private readonly access?: ExpoFileAccessPolicy;
   private destroyed: boolean = false;
   private generation: IncomingGeneration = new IncomingGeneration();
   private readonly listeners: Set<() => void> = new Set<() => void>();
 
-  constructor(cache: string, access?: ExpoFileAccessPolicy) {
+  constructor(cache: string) {
     this.cache = cache;
-    this.access = access;
     this.generation.ready = true;
   }
 
@@ -252,7 +247,7 @@ class IncomingShareState {
       for (const record of generation.records) {
         this.assertCurrent(generation);
 
-        const result = await resolvedPayloadFromRecord(record, this.cache, this.access);
+        const result = await resolvedPayloadFromRecord(record, this.cache, generation);
 
         if (result.file !== undefined) generation.files.add(result.file);
         this.assertCurrent(generation);
@@ -274,6 +269,7 @@ class IncomingShareState {
 
     previous.cancelled = true;
     this.generation = generation;
+    previous.cancelRequest?.();
 
     // Keep returned cache URIs usable after another share or clear.
     if (previous.resolved === undefined) this.cleanup(previous).catch((): void => {});
@@ -342,31 +338,27 @@ export class ExpoSharingLifecycleSubscriber extends ExpoAbilityLifecycleSubscrib
 
 function incomingState(context: ExpoModuleContext): IncomingShareState {
   const session = context.session;
-  const owner: Object = session ?? context.uiAbilityContext;
-  let state = states.get(owner);
+  const existing = session === undefined ? undefined : states.get(session);
 
-  if (state === undefined && session !== undefined) {
-    state = new IncomingShareState(context.cachePath, context.services.get(ExpoFileAccessKey));
-    states.set(owner, state);
-    if (session.initialWant !== undefined) state.receive(session.initialWant);
+  if (existing !== undefined) return existing;
 
-    const owned = state;
+  const state = new IncomingShareState(context.cachePath);
+  if (context.initialWant !== undefined) state.receive(context.initialWant);
 
-    session.onClose((): void => {
-      owned.destroy();
-      states.delete(owner);
-    });
-  }
+  if (session === undefined) return state;
 
-  if (state === undefined) {
-    throw new ExpoSharingError('ERR_SHARING_ABILITY_NOT_INITIALIZED', 'Expo Sharing requires its autolinked Ability lifecycle subscriber.');
-  }
+  states.set(session, state);
+  session.onClose((): void => {
+    state.destroy();
+    states.delete(session);
+  });
 
   return state;
 }
 
 export class ExpoSharingModule extends ExpoModule {
   private readonly incoming?: IncomingShareState;
+  private readonly receivesModuleWants: boolean;
   private observing: boolean = false;
   private destroyed: boolean = false;
   private session: ShareSession | undefined = undefined;
@@ -376,7 +368,11 @@ export class ExpoSharingModule extends ExpoModule {
 
   constructor(context: ExpoModuleContext) {
     super(context);
-    if (!context.isHeadless) this.incoming = incomingState(context);
+
+    // The subscriber owns the original Wants before the host rewrites their URI for Linking.
+    const state = context.isHeadless ? undefined : states.get(context.uiAbilityContext);
+    this.receivesModuleWants = !context.isHeadless && state === undefined;
+    if (!context.isHeadless) this.incoming = state ?? incomingState(context);
   }
 
   definition(): ExpoModuleDefinition {
@@ -398,7 +394,6 @@ export class ExpoSharingModule extends ExpoModule {
           !this.destroyed &&
           this.context.isValid &&
           !this.context.isHeadless &&
-          this.context.appLifecycleState === ExpoAppLifecycleState.FOREGROUND &&
           canIUse(SHARE_CAPABILITY)
         );
       })
@@ -410,7 +405,10 @@ export class ExpoSharingModule extends ExpoModule {
       .onStartObserving(INCOMING_SHARE_EVENT, (): void => this.startObserving())
       .onStopObserving(INCOMING_SHARE_EVENT, (): void => this.stopObserving())
       .onNewWant((want: Want): void => {
-        if (this.context.session !== undefined) this.incoming?.receive(want);
+        if (this.receivesModuleWants) this.incoming?.receive(want);
+      })
+      .onWindowStageWillDestroy((): void => {
+        this.cancelShare(new ExpoSharingError('ERR_SHARING_UNAVAILABLE', 'The sharing window was closed.'));
       })
       .onDestroy((): void => this.destroy());
   }
@@ -435,19 +433,29 @@ export class ExpoSharingModule extends ExpoModule {
     this.destroyed = true;
     this.stopObserving();
 
-    if (this.session !== undefined) {
-      this.session.cancelled = true;
-      this.session.finish?.();
+    if (this.receivesModuleWants && this.context.session === undefined) {
+      this.incoming?.destroy();
     }
+
+    this.cancelShare(new ExpoSharingError('ERR_SHARING_RUNTIME_DESTROYED', 'The Expo Sharing runtime has already been destroyed.'));
+  }
+
+  private cancelShare(error: ExpoSharingError): void {
+    const session = this.session;
+    if (session === undefined || session.cancellation !== undefined) return;
+
+    session.cancellation = error;
+    session.cancelPanel?.(error);
   }
 
   private async share(url: string, options: SharingOptions): Promise<void> {
     if (this.session !== undefined) {
       throw new ExpoSharingError('ERR_SHARING_IN_PROGRESS', 'Another share request is being processed now.');
     }
+
     this.assertActive();
 
-    const session: ShareSession = { cancelled: false };
+    const session: ShareSession = {};
     this.session = session;
 
     try {
@@ -460,6 +468,10 @@ export class ExpoSharingModule extends ExpoModule {
       const file = await prepareShareFile(url, this.context);
       const preview = resolvePreview(file.name, mime);
 
+      const cancellation = session.cancellation;
+      if (cancellation !== undefined) {
+        throw new ExpoSharingError(cancellation.code, cancellation.message, cancellation.cause);
+      }
       this.assertActive();
 
       try {
@@ -472,14 +484,16 @@ export class ExpoSharingModule extends ExpoModule {
         const config: systemShare.ShareControllerOptions = {
           selectionMode: systemShare.SelectionMode.SINGLE,
           previewMode: preview.mode,
+          anchor: await readAnchor(options.anchor, this.context),
         };
-        if (options.anchor !== undefined) {
-          config.anchor = await readAnchor(options.anchor, this.context);
-          this.assertActive();
-        }
 
+        this.assertActive();
         await showShare(controller, this.context, config, session);
       } catch (error) {
+        if (error instanceof ExpoSharingError) {
+          throw new ExpoSharingError(error.code, error.message, error.cause);
+        }
+
         throw new ExpoSharingError('ERR_SHARING_FAILED', `Failed to share the file: ${errorMessage(error as Object)}`, error as Object);
       }
     } finally {
@@ -506,22 +520,25 @@ async function showShare(
   config: systemShare.ShareControllerOptions,
   session: ShareSession,
 ): Promise<void> {
-  if (session.cancelled) return;
+  const cancellation = session.cancellation;
+  if (cancellation !== undefined) {
+    throw new ExpoSharingError(cancellation.code, cancellation.message, cancellation.cause);
+  }
 
   let dismiss: () => void = (): void => {};
-  const done = new Promise<void>((resolve: () => void): void => {
+  const done = new Promise<void>((resolve: () => void, reject: (error: Error) => void): void => {
     dismiss = resolve;
+    session.cancelPanel = reject;
   });
 
-  controller.on('dismiss', dismiss);
-  session.finish = dismiss;
-
   try {
+    controller.on('dismiss', dismiss);
+
     // show() can remain pending after dismissal or teardown.
     const shown = controller.show(context.uiAbilityContext, config).then((): Promise<void> => done);
     await Promise.race([done, shown]);
   } finally {
-    session.finish = undefined;
+    session.cancelPanel = undefined;
 
     try {
       controller.off('dismiss', dismiss);
@@ -568,7 +585,7 @@ async function prepareShareFile(url: string, context: ExpoModuleContext): Promis
     }
   } catch (error) {
     if (error instanceof ExpoSharingError) {
-      throw error;
+      throw new ExpoSharingError(error.code, error.message, error.cause);
     }
 
     throw new ExpoSharingError(
@@ -635,10 +652,10 @@ function isShareWant(want: Want): boolean {
 async function readIncomingRecords(want: Want): Promise<IncomingRecord[]> {
   try {
     if (canIUse(SHARE_CAPABILITY)) {
-      const result = await systemShare.getSharedData(want);
+      const data = await systemShare.getSharedData(want);
       const records: IncomingRecord[] = [];
 
-      for (const source of result.getRecords()) {
+      for (const source of data.getRecords()) {
         const record = recordFromShareKit(source);
         if (record !== undefined) records.push(record);
       }
@@ -649,7 +666,7 @@ async function readIncomingRecords(want: Want): Promise<IncomingRecord[]> {
     const records = recordsFromFileWant(want);
     if (records.length > 0) return records;
 
-    throw error as Error;
+    throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', errorMessage(error as Object), error as Object);
   }
 
   return recordsFromFileWant(want);
@@ -704,7 +721,7 @@ function recordFromShareKit(record: systemShare.SharedRecord): IncomingRecord | 
 async function resolvedPayloadFromRecord(
   record: IncomingRecord,
   cache: string,
-  access?: ExpoFileAccessPolicy,
+  generation: IncomingGeneration,
 ): Promise<ResolvedRecord> {
   const payload = record.payload;
 
@@ -723,16 +740,16 @@ async function resolvedPayloadFromRecord(
     };
   }
 
-  if (payload.shareType === 'url') return await resolveURLPayload(payload);
+  if (payload.shareType === 'url') return await resolveURLPayload(payload, generation);
 
-  return await resolveFilePayload(payload, record.originalName, cache, access);
+  return await resolveFilePayload(payload, record.originalName, cache);
 }
 
-async function resolveURLPayload(payload: SharePayload): Promise<ResolvedRecord> {
+async function resolveURLPayload(payload: SharePayload, generation: IncomingGeneration): Promise<ResolvedRecord> {
   try {
     if (!isWebURL(payload.value)) throw new Error('Shared links must have an HTTP or HTTPS URL.');
 
-    const response = await streamURLHeaders(payload.value);
+    const response = await streamURLHeaders(payload.value, generation);
     const headers = response.headers;
     const url = response.url;
 
@@ -765,13 +782,14 @@ interface URLResponse {
   headers: Object;
 }
 
-async function streamURLHeaders(url: string): Promise<URLResponse> {
+async function streamURLHeaders(url: string, generation: IncomingGeneration): Promise<URLResponse> {
   const request = http.createHttp();
 
   try {
     return await new Promise<URLResponse>((resolve: (response: URLResponse) => void, reject: (error: Error) => void): void => {
       let headers: Object = new Object();
       let current = url;
+      generation.cancelRequest = (): void => reject(new Error('Incoming share resolution was superseded by a newer payload.'));
 
       request.on('headersReceive', (value: Object): void => {
         try {
@@ -800,6 +818,7 @@ async function streamURLHeaders(url: string): Promise<URLResponse> {
         );
     });
   } finally {
+    generation.cancelRequest = undefined;
     request.off('headersReceive');
     request.off('dataReceive');
     request.destroy();
@@ -810,37 +829,31 @@ async function resolveFilePayload(
   payload: SharePayload,
   originalName: string | undefined,
   cache: string,
-  access?: ExpoFileAccessPolicy,
 ): Promise<ResolvedRecord> {
   const url = payload.value;
   const uriName = nameFromURI(url);
   const name = originalName ?? uriName ?? 'unknown';
   const dir = `${cache}/expo-sharing`;
   const file = `${dir}/${cacheFileName(uriName ?? name)}`;
+
   let source: fileIo.File | undefined;
   let copying = false;
 
   try {
-    access?.assertAccess(file, 'write');
-
-    const path = resolveFileReadSource(url, cache);
-    access?.assertAccess(path, 'read');
-
-    source = await fileIo.open(path, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
+    // Opening the native Want URI directly lets Core File Kit check the OS grant without granting JS access.
+    source = await fileIo.open(url, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
     const stat = await fileIo.stat(source.fd);
     if (!stat.isFile()) {
       throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', 'Shared file URI does not point to a regular file.');
     }
 
-    if (access !== undefined) ExpoFileAccessRegistry.assertReadDescriptor(undefined, path, source, access);
-
-    // The system grant is sufficient for copying. JS receives the cache file,
-    // so the source URI does not need to become a runtime capability.
     if (!(await fileIo.access(dir))) {
       try {
         await fileIo.mkdir(dir, true);
       } catch (error) {
-        if (!(await fileIo.stat(dir)).isDirectory()) throw error as Error;
+        if (!(await fileIo.stat(dir)).isDirectory()) {
+          throw new ExpoSharingError('ERR_FAILED_TO_RESOLVE_SHARED_DATA', errorMessage(error as Object), error as Object);
+        }
       }
     }
 
@@ -1021,8 +1034,19 @@ function nameFromDisposition(value: string | undefined): string | null {
   return safeFileName((plain[1] ?? plain[2]).trim());
 }
 
-async function readAnchor(anchor: SharingAnchor, context: ExpoModuleContext): Promise<systemShare.ShareControllerAnchor> {
+async function readAnchor(anchor: SharingAnchor | undefined, context: ExpoModuleContext): Promise<systemShare.ShareControllerAnchor> {
   const window = await context.getReactNativeWindow();
+
+  if (anchor === undefined) {
+    // Older Share Kit versions require an anchor on tablets and 2-in-1 devices.
+    const rect = window.getWindowProperties().windowRect;
+
+    return {
+      windowOffset: { x: Math.round(rect.width / 2), y: Math.round(rect.height / 2) },
+      size: { width: 0, height: 0 },
+    };
+  }
+
   const ui = window.getUIContext();
 
   return {

@@ -54,7 +54,7 @@ Bare 工程还需按[接入说明](https://github.com/renbaoshuo/expo-harmony/bl
 
 #### `Sharing.isAvailableAsync()`
 
-返回 `Promise<boolean>`。应用位于前台且设备支持系统分享时为 `true`，否则为 `false`。
+返回 `Promise<boolean>`。当前运行时具有 UIAbility 且设备支持系统分享时为 `true`。打开分享面板时，应用还需位于前台。
 
 #### `Sharing.getSharedPayloads()`
 
@@ -128,7 +128,7 @@ Bare 工程还需按[接入说明](https://github.com/renbaoshuo/expo-harmony/bl
 
 | 选项          | 说明                                                                                                                       |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `anchor`      | 分享面板的弹出位置。以 React Native 的布局单位指定相对窗口的 `x`、`y` 及区域的 `width`、`height`，负的尺寸按 0 处理。省略时位置由系统决定 |
+| `anchor`      | 分享面板的弹出位置。以 React Native 的布局单位指定相对窗口的 `x`、`y` 及区域的 `width`、`height`，负的尺寸按 0 处理。省略时使用窗口中心作为锚点 |
 | `mimeType`    | 分享内容的 MIME 类型，用于判定面板中的展示形态，未提供时按文件扩展名判定                                                   |
 
 不支持以下选项：
@@ -176,10 +176,6 @@ Bare 工程还需按[接入说明](https://github.com/renbaoshuo/expo-harmony/bl
 #### `ERR_FAILED_TO_RESOLVE_SHARED_DATA`
 
 读取或解析接收的数据失败时抛出，例如 URL 请求失败、文件地址不可读或缓存副本无法创建。
-
-#### `ERR_SHARING_ABILITY_NOT_INITIALIZED`
-
-宿主 Ability 尚未启用本包的分享接收能力时抛出。
 
 #### `ERR_INVALID_ARGUMENT_TYPE`
 
