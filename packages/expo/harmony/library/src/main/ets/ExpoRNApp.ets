@@ -81,6 +81,7 @@ struct ExpoReactRootView {
       onSetUp: this.context.onSetUp,
       ready: this.ready,
       isCustomRoot: this.context.isCustomRoot,
+      showsNativeContentBeforeReact: this.context.showsNativeContentBeforeReact,
       defaultRoot: this.context.defaultRoot,
     });
   }
@@ -97,6 +98,7 @@ class AppRootViewContext implements ReactRootViewContext {
   readonly onSetUp: (instance: RNInstance) => Promise<void> | void;
   readonly ready: boolean;
   readonly isCustomRoot: boolean | undefined;
+  readonly showsNativeContentBeforeReact: boolean;
   readonly defaultRoot: WrappedBuilder<[ReactRootViewContext]>;
 
   constructor(
@@ -110,6 +112,7 @@ class AppRootViewContext implements ReactRootViewContext {
     wrappedCustomRNComponentBuilder: WrappedCustomRNComponentBuilder | undefined,
     ready: boolean,
     isCustomRoot: boolean | undefined,
+    showsNativeContentBeforeReact: boolean,
     defaultRoot: WrappedBuilder<[ReactRootViewContext]>,
   ) {
     this.owner = owner;
@@ -123,6 +126,7 @@ class AppRootViewContext implements ReactRootViewContext {
     this.onSetUp = (): void => {};
     this.ready = ready;
     this.isCustomRoot = isCustomRoot;
+    this.showsNativeContentBeforeReact = showsNativeContentBeforeReact;
     this.defaultRoot = defaultRoot;
   }
 }
@@ -135,6 +139,7 @@ export struct ExpoRNApp {
   public jsBundleProvider: JSBundleProvider | undefined = undefined;
   public wrappedCustomRNComponentBuilder: WrappedCustomRNComponentBuilder | undefined = undefined;
   public rootViewBuilder: ReactRootViewBuilder | undefined = undefined;
+  public rootViewShowsNativeContentBeforeReact: boolean = false;
   public onDelayLoadError: ((error: Object) => void) | undefined = undefined;
   public onSetUp: (rnInstance: RNInstance) => Promise<void> | void = (): void => {};
   public replaceRNInstance: ExpoRNInstanceReplacement | undefined = undefined;
@@ -148,6 +153,7 @@ export struct ExpoRNApp {
   private mounted: boolean = false;
   private preparationSerial: number = 0;
   private selectedRoot: ReactRootViewBuilder | undefined = undefined;
+  private showsNativeContentBeforeReact: boolean = false;
   private activityHandlers: ReactActivityHandler[] = [];
 
   aboutToAppear(): void {
@@ -159,6 +165,7 @@ export struct ExpoRNApp {
     const serial = ++this.preparationSerial;
     if (this.core === undefined) {
       this.reportDelayError(new ExpoModuleError('ERR_REACT_HOST_CONTEXT', 'The RNOH context is not available.') as Object);
+
       return;
     }
 
@@ -168,22 +175,34 @@ export struct ExpoRNApp {
       const handlers: ReactActivityHandler[] = this.reactHost.activityHandlers
         .map((registration) => registration.create(context.core.uiAbilityContext))
         .sort((left, right) => (right.priority ?? 0) - (left.priority ?? 0));
+
       this.activityHandlers = handlers;
-      this.selectedRoot = this.rootViewBuilder ?? ExpoReactRootViewFactory.create(handlers, context);
+
+      if (this.rootViewBuilder !== undefined) {
+        this.selectedRoot = this.rootViewBuilder;
+        this.showsNativeContentBeforeReact = this.rootViewShowsNativeContentBeforeReact;
+      } else {
+        const root = ExpoReactRootViewFactory.select(handlers, context);
+        this.selectedRoot = root?.builder;
+        this.showsNativeContentBeforeReact = root?.showsNativeContentBeforeReact ?? false;
+      }
       this.rootPrepared = true;
 
       const delay = ExpoReactRootViewFactory.getDelayLoadAppHandler(handlers, context);
       if (delay !== undefined) await delay;
+
       if (!this.mounted || serial !== this.preparationSerial) return;
 
       const runtime = this.reactHost.createRuntime(context.core, this.rnInstanceConfig, this.jsBundleProvider, this.replaceRNInstance);
       this.runtime = runtime;
+
       const listener: ReactRuntimeListener = {
         prepare: async (instance: RNInstance): Promise<void> => {
           if (this.mounted && serial === this.preparationSerial) await this.onSetUp(instance);
         },
         changed: (instance: RNInstance | undefined): void => {
           if (!this.mounted || serial !== this.preparationSerial) return;
+
           this.instance = instance;
           this.ready = instance !== undefined;
           this.generation += 1;
@@ -226,10 +245,14 @@ export struct ExpoRNApp {
     this.unregister = undefined;
     this.runtime = undefined;
     this.instance = undefined;
+
+    this.selectedRoot = undefined;
+    this.showsNativeContentBeforeReact = false;
   }
 
   private rootContext(ready: boolean): ReactRootViewContext {
     if (this.core === undefined) throw new ExpoModuleError('ERR_REACT_HOST_CONTEXT', 'The RNOH context is not available.');
+
     return new AppRootViewContext(
       this,
       this.core,
@@ -241,6 +264,7 @@ export struct ExpoRNApp {
       this.wrappedCustomRNComponentBuilder,
       ready,
       this.selectedRoot !== undefined,
+      this.showsNativeContentBeforeReact,
       wrapBuilder(buildExpoDefaultRoot),
     );
   }

@@ -6,10 +6,14 @@
  */
 
 import { ExpoModuleContext, ExpoNetworkInspection, ExpoNetworkObservation } from '@expo-harmony/expo-modules-core';
+import deviceInfo from '@ohos.deviceInfo';
 import fs from '@ohos.file.fs';
+import connection from '@ohos.net.connection';
 import { rcp } from '@kit.RemoteCommunicationKit';
+import type { BusinessError } from '@kit.BasicServicesKit';
 import util from '@ohos.util';
 import url from '@ohos.url';
+import legacyFetch, { LegacyFetchEvent } from 'libexpo_fetch_legacy.so';
 import { ExpoFetchError } from './ExpoFetchError';
 import { FetchInit, FetchResult, StreamPacket, EMPTY_BYTES } from './FetchTypes';
 import {
@@ -33,14 +37,16 @@ import {
 } from './FetchUtils';
 import { filePathFromUrl, headersForDecodedResponse, requestMethodPolicy } from './FetchHeaderPolicy';
 
-export class FetchTask {
+const LOCAL_FILE_CHUNK_SIZE = 64 * 1024;
+const FILE_NOT_FOUND = 13900002;
+const PATH_COMPONENT_NOT_DIRECTORY = 13900018;
+const RCP_STATUS_CALLBACK_API = 20;
+
+class FetchTask {
   observation?: ExpoNetworkObservation;
-  session: rcp.Session | null = null;
-  url: string;
   queued: ArrayBuffer[] = [];
   readers: Array<(packet: StreamPacket) => void> = [];
   completionWaiters: Array<() => void> = [];
-  headers: string[][] = [];
   completed: boolean = false;
   streaming: boolean = false;
   error: ExpoFetchError | null = null;
@@ -50,15 +56,11 @@ export class FetchTask {
   localFileOffset: number = 0;
   localFileSize: number = 0;
   activeAttempt: FetchAttempt | null = null;
-
-  constructor(url: string) {
-    this.url = url;
-  }
 }
 
-export class FetchAttempt {
+class FetchAttempt {
   inspection?: ExpoNetworkInspection;
-  request: rcp.Request;
+  cancel?: () => void;
   status: number = 0;
   statusText: string | null = null;
   headers: string[][] = [];
@@ -72,8 +74,7 @@ export class FetchAttempt {
   private resolveMetadata: () => void = (): void => {};
   private rejectMetadata: (error: Error) => void = (_error: Error): void => {};
 
-  constructor(request: rcp.Request) {
-    this.request = request;
+  constructor() {
     this.metadataReady = new Promise<void>((resolve: () => void, reject: (error: Error) => void): void => {
       this.resolveMetadata = resolve;
       this.rejectMetadata = reject;
@@ -104,10 +105,15 @@ export class FetchAttempt {
       throw new ExpoFetchError('ERR_FETCH_REQUEST', `Fetch received no final response (HTTP ${response.statusCode}).`);
     }
 
-    // Completion provides the matching status and headers together. A status
-    // callback can have been delayed or paired with informational headers.
+    // Status callbacks can arrive late or pair with informational headers.
     this.status = response.statusCode;
     this.receiveHeaders(headerPairs(response.headers));
+  }
+
+  receiveLegacyResponse(status: number, headers: string[][], statusText?: string): void {
+    this.statusText = statusText ?? null;
+    this.receiveStatus(status);
+    this.receiveHeaders(headers);
   }
 
   private settleMetadata(): void {
@@ -133,6 +139,7 @@ export class FetchAttempt {
 
   failMetadata(error: ExpoFetchError): void {
     if (this.metadataSettled) return;
+
     this.metadataSettled = true;
     this.rejectMetadata(new Error(formatError(error)));
   }
@@ -142,6 +149,7 @@ export class ExpoFetchRuntime {
   private readonly context: ExpoModuleContext;
 
   private readonly tasks: Map<string, FetchTask> = new Map<string, FetchTask>();
+  private session?: rcp.Session;
   private destroyed: boolean = false;
   private nextRequestId: number = 1;
 
@@ -151,6 +159,7 @@ export class ExpoFetchRuntime {
 
   allocateRequestId(): string {
     this.assertActive();
+
     const id = `expo-fetch-${this.nextRequestId}`;
     this.nextRequestId += 1;
 
@@ -166,10 +175,15 @@ export class ExpoFetchRuntime {
       this.cancel(id, new ExpoFetchError('ERR_FETCH_RUNTIME_DESTROYED', 'The Harmony fetch runtime has been destroyed'));
     });
     this.tasks.clear();
+
+    const session = this.session;
+    this.session = undefined;
+    session?.close();
   }
 
   async start(id: string, input: string, init: FetchInit, data: Uint8Array | null): Promise<FetchResult> {
     this.assertActive();
+
     if (isFileURL(input)) {
       return await this.startLocalFile(id, input, init, data);
     }
@@ -177,17 +191,17 @@ export class ExpoFetchRuntime {
       throw new ExpoFetchError('ERR_FETCH_INVALID_URL', `Invalid fetch URL: ${input}`);
     }
 
-    let target = input;
     let method = requestMethodPolicy(init.method);
     if (data !== null && (method === 'GET' || method === 'HEAD')) {
       throw new ExpoFetchError('ERR_FETCH_BODY', `The ${method} method cannot have a body`);
     }
 
+    let target = input;
     let body: ArrayBuffer | null = data === null ? null : copyBytes(data);
     let headers = makeHeaders(init);
     let redirects = 0;
 
-    const task = new FetchTask(input);
+    const task = new FetchTask();
     task.observation = ExpoNetworkObservation.start(this.context.runtimeId, input, method);
     this.tasks.set(id, task);
 
@@ -196,16 +210,13 @@ export class ExpoFetchRuntime {
         const sent = await withStoredCookies(headers, target, init.credentials);
         this.assertTaskActive(task);
 
-        const request = new rcp.Request(target, method, sent);
-        if (body !== null) request.content = body;
-        else if (requestMethodRequiresBody(method)) request.content = new ArrayBuffer(0);
-
-        const attempt = new FetchAttempt(request);
+        const attempt = new FetchAttempt();
         attempt.inspection = ExpoNetworkInspection.start(target, method, ExpoNetworkInspection.headers(sent), body ?? undefined);
         task.activeAttempt = attempt;
-        this.startAttempt(task, attempt);
 
-        // Waiting for the body here would stall streaming responses.
+        const payload = body ?? (requestMethodRequiresBody(method) ? new ArrayBuffer(0) : null);
+        this.startAttempt(task, attempt, target, method, sent, payload);
+
         await attempt.metadataReady;
         const status = attempt.status;
         this.assertNotCancelled(task);
@@ -213,43 +224,33 @@ export class ExpoFetchRuntime {
         if (init.credentials === 'include') {
           await storeResponseCookies(target, attempt.headers);
         }
+
         this.assertNotCancelled(task);
 
         const location = headerFromPairs(attempt.headers, 'location');
-        const redirect = isRedirectStatus(status) && location !== null;
+        const redirect = isRedirectStatus(status);
 
-        if (redirect && init.redirect === 'follow' && location.trim().length === 0) {
-          attempt.discarded = true;
-          const error = new ExpoFetchError('ERR_FETCH_REDIRECT', 'Redirect Location must not be empty');
-          this.failTask(task, error);
-
-          throw new ExpoFetchError(error.code, error.message, error.cause);
-        }
         if (redirect && init.redirect === 'error') {
           attempt.discarded = true;
-          const error = new ExpoFetchError('ERR_FETCH_REDIRECT', "Redirect is not allowed when redirect mode is 'error'");
-          this.failTask(task, error);
 
-          throw new ExpoFetchError(error.code, error.message, error.cause);
+          throw new ExpoFetchError('ERR_FETCH_REDIRECT', "Redirect is not allowed when redirect mode is 'error'");
         }
-        if (redirect && init.redirect === 'follow') {
+
+        if (redirect && init.redirect === 'follow' && location !== null) {
           this.assertTaskActive(task);
           redirects += 1;
 
           if (redirects > 20) {
             attempt.discarded = true;
-            const error = new ExpoFetchError('ERR_FETCH_TOO_MANY_REDIRECTS', 'The fetch request exceeded 20 redirects');
-            this.failTask(task, error);
 
-            throw new ExpoFetchError(error.code, error.message, error.cause);
+            throw new ExpoFetchError('ERR_FETCH_TOO_MANY_REDIRECTS', 'The fetch request exceeded 20 redirects');
           }
 
-          // A redirect can arrive before its body finishes. Discard its buffered prefix.
           attempt.inspection?.finish(false);
           attempt.discarded = true;
-          this.destroySession(task);
+          this.cancelAttempt(task);
 
-          const next = url.URL.parseURL(location ?? '', target).toString();
+          const next = url.URL.parseURL(location, target).toString();
           if (!isHttpURL(next)) {
             throw new ExpoFetchError('ERR_FETCH_INVALID_URL', `Invalid redirect URL: ${next}`);
           }
@@ -277,15 +278,14 @@ export class ExpoFetchRuntime {
           continue;
         }
 
-        task.url = target;
-        task.headers = headersForDecodedResponse(attempt.headers, method, status);
+        const received = headersForDecodedResponse(attempt.headers, method, status);
         attempt.accepted = true;
 
         attempt.chunks.forEach((chunk: ArrayBuffer): void => this.receiveChunk(task, chunk));
         attempt.chunks = [];
-        if (attempt.ended) this.finishAttempt(task);
+        if (attempt.ended) this.completeTask(task);
 
-        return new FetchResult(status, target, redirects > 0, task.headers, attempt.statusText);
+        return new FetchResult(status, target, redirects > 0, received, attempt.statusText);
       }
     } catch (error) {
       const failure =
@@ -297,7 +297,6 @@ export class ExpoFetchRuntime {
         );
 
       if (!task.completed) this.failTask(task, failure);
-      else this.disposeTask(task);
       this.tasks.delete(id);
 
       throw new ExpoFetchError(failure.code, failure.message, failure.cause);
@@ -333,7 +332,7 @@ export class ExpoFetchRuntime {
       return new StreamPacket(EMPTY_BYTES, true, task.error);
     }
 
-    // Do not yield while draining the prefix: incoming chunks must stay behind it.
+    // Drain the prefix synchronously to preserve chunk order.
     const data = chunksToBuffer(task.queued);
     task.queued = [];
 
@@ -379,9 +378,13 @@ export class ExpoFetchRuntime {
       return new StreamPacket(EMPTY_BYTES, true, task.error);
     }
 
-    return await new Promise<StreamPacket>((resolve: (packet: StreamPacket) => void): void => {
+    const packet = await new Promise<StreamPacket>((resolve: (packet: StreamPacket) => void): void => {
       task.readers.push(resolve);
     });
+
+    if (packet.done) this.tasks.delete(id);
+
+    return packet;
   }
 
   async consumeArrayBuffer(id: string): Promise<ArrayBuffer> {
@@ -392,12 +395,14 @@ export class ExpoFetchRuntime {
     try {
       if (task.localFilePath !== null) {
         const data = new Uint8Array(task.localFileSize);
-        const chunk = new ArrayBuffer(Math.min(64 * 1024, data.byteLength));
+        const chunk = new ArrayBuffer(Math.min(LOCAL_FILE_CHUNK_SIZE, data.byteLength));
+
         while (task.localFileOffset < data.byteLength) {
           const offset = task.localFileOffset;
           const count = await this.readLocalFileInto(task, chunk);
           data.set(new Uint8Array(chunk, 0, count), offset);
         }
+
         this.assertTaskActive(task);
         this.completeTask(task);
 
@@ -439,28 +444,19 @@ export class ExpoFetchRuntime {
   cancel(id: string, error: ExpoFetchError): void {
     const task = this.tasks.get(id);
     if (task === undefined) return;
-    if (!task.completed) this.failTask(task, error);
+
+    if (task.completed) {
+      task.error = task.error ?? error;
+      task.queued = [];
+    } else {
+      this.failTask(task, error);
+    }
+
     this.closeLocalFile(task).catch((_error: Object): void => {});
   }
 
-  cancelStreaming(id: string): void {
-    const task = this.tasks.get(id);
-    if (task === undefined) return;
-
-    if (!task.completed) task.observation?.finish(task.activeAttempt?.status || null, 'Request cancelled');
-    task.error = null;
-    this.completeTask(task);
-    this.disposeTask(task);
-    this.tasks.delete(id);
-  }
-
   discard(id: string): void {
-    const task = this.tasks.get(id);
-    if (task === undefined) return;
-
-    if (!task.completed) task.observation?.finish(task.activeAttempt?.status || null, 'Request cancelled');
-    this.completeTask(task);
-    this.disposeTask(task);
+    this.cancel(id, new ExpoFetchError('ERR_FETCH_REQUEST_CANCELED', 'Fetch request has been canceled'));
     this.tasks.delete(id);
   }
 
@@ -468,10 +464,8 @@ export class ExpoFetchRuntime {
     const path = filePathFromUrl(input);
     this.context.assertFileAccess(path);
 
-    const task = new FetchTask(input);
-    task.headers = [['content-type', mimeType(path)]];
-
     const method = init.method.toUpperCase();
+
     if (method !== 'GET' && method !== 'HEAD') {
       throw new ExpoFetchError('ERR_FETCH_METHOD', `The ${method} method is not supported for file URLs`);
     }
@@ -479,50 +473,119 @@ export class ExpoFetchRuntime {
       throw new ExpoFetchError('ERR_FETCH_BODY', 'A file URL request cannot have a body');
     }
 
+    const task = new FetchTask();
+    this.tasks.set(id, task);
+
+    let file: fs.File | undefined;
+
     try {
-      const exists = await fs.access(path);
-      this.assertActive();
-      if (!exists) {
+      try {
+        file = await fs.open(path, fs.OpenMode.READ_ONLY | fs.OpenMode.NONBLOCK);
+      } catch (error) {
+        this.assertTaskActive(task);
+
+        const code = (error as BusinessError).code;
+        if (code !== FILE_NOT_FOUND && code !== PATH_COMPONENT_NOT_DIRECTORY) {
+          throw new ExpoFetchError('ERR_FETCH_FILE_READ', `${path}: ${errorMessage(error as Object)}`, error as Object);
+        }
+
         const body = encodeString('File not found');
-        task.headers = [
+        const headers = [
           ['content-type', 'text/plain'],
           ['content-length', String(body.byteLength)],
         ];
-        if (method !== 'HEAD') task.queued = [copyBytes(body)];
-        task.completed = true;
-        this.tasks.set(id, task);
 
-        return new FetchResult(404, input, false, task.headers, 'File not found');
+        if (method !== 'HEAD') task.queued = [copyBytes(body)];
+        this.completeTask(task);
+
+        return new FetchResult(404, input, false, headers, 'File not found');
       }
 
-      const stat = await fs.stat(path);
-      this.assertActive();
+      this.assertTaskActive(task);
+
+      const stat = await fs.stat(file.fd);
+
+      this.assertTaskActive(task);
       if (!stat.isFile()) throw new Error(`Path is not a regular file: ${path}`);
 
-      task.localFilePath = path;
-      task.localFileSize = stat.size;
-      task.headers.push(['content-length', String(task.localFileSize)]);
-      if (method === 'HEAD') {
-        task.localFilePath = null;
-        task.completed = true;
+      if (method === 'HEAD' || stat.size === 0) {
+        this.completeTask(task);
+      } else {
+        // Retain the same descriptor used to determine the body size.
+        task.localFilePath = path;
+        task.localFileSize = stat.size;
+        task.localFile = file;
+        file = undefined;
       }
-      this.tasks.set(id, task);
 
-      return new FetchResult(200, input, false, task.headers);
+      return new FetchResult(200, input, false, [['content-type', mimeType(path)], ['content-length', String(stat.size)]]);
     } catch (error) {
+      this.tasks.delete(id);
+
       throw new ExpoFetchError(
         error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_FILE_READ',
         error instanceof ExpoFetchError ? error.message : `${path}: ${errorMessage(error as Object)}`,
         error instanceof ExpoFetchError ? error.cause : (error as Object),
       );
+    } finally {
+      if (file !== undefined) {
+        try {
+          await fs.close(file.fd);
+        } catch (_error) {}
+      }
     }
   }
 
-  private startAttempt(task: FetchTask, attempt: FetchAttempt): void {
-    const session = rcp.createSession();
-    task.session = session;
+  private startAttempt(
+    task: FetchTask,
+    attempt: FetchAttempt,
+    target: string,
+    method: string,
+    headers: rcp.RequestHeaders,
+    body: ArrayBuffer | null,
+  ): void {
+    const transfer = deviceInfo.sdkApiVersion >= RCP_STATUS_CALLBACK_API
+      ? this.startRcpAttempt(task, attempt, target, method, headers, body)
+      : this.startLegacyAttempt(task, attempt, target, method, headers, body);
 
-    attempt.request.configuration = {
+    transfer
+      .then((): void => {
+        if (attempt.discarded || task.completed) return;
+
+        attempt.ended = true;
+        attempt.inspection?.finish();
+        if (attempt.accepted) this.completeTask(task);
+      })
+      .catch((error: Object): void => {
+        attempt.inspection?.fail(false);
+
+        if (attempt.discarded || task.completed) return;
+
+        this.failTask(
+          task,
+          error instanceof ExpoFetchError ? error : new ExpoFetchError('ERR_FETCH_UNKNOWN', errorMessage(error), error),
+        );
+      });
+  }
+
+  private async startRcpAttempt(
+    task: FetchTask,
+    attempt: FetchAttempt,
+    target: string,
+    method: string,
+    headers: rcp.RequestHeaders,
+    body: ArrayBuffer | null,
+  ): Promise<void> {
+    const session = this.session ?? rcp.createSession();
+    this.session = session;
+
+    const request = new rcp.Request(target, method, headers);
+    if (body !== null) request.content = body;
+    attempt.cancel = (): void => {
+      session.cancel(request);
+    };
+
+    request.configuration = {
       transfer: {
         autoRedirect: false,
         timeout: { connectMs: 0, transferMs: 0 },
@@ -541,47 +604,72 @@ export class ExpoFetchRuntime {
           },
           // Supplying onDataReceive also disables RCP's whole-body buffering.
           onDataReceive: (chunk: ArrayBuffer): void => {
-            if (attempt.discarded || task.completed) return;
-
-            attempt.inspection?.data(chunk);
-            if (attempt.accepted) this.receiveChunk(task, chunk);
-            else attempt.chunks.push(chunk);
+            this.receiveAttemptChunk(task, attempt, chunk);
           },
         },
       },
     };
 
-    session
-      .fetch(attempt.request)
-      .then((response: rcp.Response): void => {
-        if (attempt.discarded || task.completed) return;
+    const response = await session.fetch(request);
 
-        // Also handle responses completed before their event callbacks run.
-        attempt.receiveCompletedResponse(response);
-        attempt.ended = true;
-        attempt.inspection?.finish();
-        if (attempt.accepted) this.finishAttempt(task);
-      })
-      .catch((error: Object): void => {
-        attempt.inspection?.fail(false);
-        // Closing a redirect's session must not fail the next request.
-        if (attempt.discarded || task.completed) return;
+    if (!attempt.discarded && !task.completed) attempt.receiveCompletedResponse(response);
+  }
 
-        this.failTask(
-          task,
-          new ExpoFetchError(
-            error instanceof ExpoFetchError ? error.code : 'ERR_FETCH_UNKNOWN',
-            error instanceof ExpoFetchError ? error.message : errorMessage(error as Object),
-            error instanceof ExpoFetchError ? error.cause : (error as Object),
-          ),
-        );
+  private async startLegacyAttempt(
+    task: FetchTask,
+    attempt: FetchAttempt,
+    target: string,
+    method: string,
+    headers: rcp.RequestHeaders,
+    body: ArrayBuffer | null,
+  ): Promise<void> {
+    const proxy = await connection.getDefaultHttpProxy();
+
+    if (attempt.discarded || task.completed) return;
+
+    const host = url.URL.parseURL(target).hostname.toLowerCase();
+    const bypass = proxy.exclusionList.some((entry: string): boolean => {
+      const pattern = entry.toLowerCase().trim().replace(/[.+?^$\x7b\x7d()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+      return new RegExp(`^${pattern}$`).test(host);
+    });
+
+    return new Promise<void>((resolve: () => void, reject: (error: Object) => void): void => {
+      attempt.cancel = legacyFetch.start({
+        url: target,
+        method,
+        headers: headerPairs(headers),
+        body,
+        proxyHost: bypass ? '' : proxy.host,
+        proxyPort: proxy.port,
+        proxyUsername: proxy.username ?? '',
+        proxyPassword: proxy.password ?? '',
+      }, (event: LegacyFetchEvent): void => {
+        if (event.error !== undefined) {
+          reject(new ExpoFetchError('ERR_FETCH_REQUEST', event.error));
+        } else if (event.status !== undefined && event.headers !== undefined) {
+          if (!attempt.discarded && !task.completed) {
+            attempt.receiveLegacyResponse(event.status, event.headers, event.statusText);
+          }
+        } else if (event.data !== undefined) {
+          this.receiveAttemptChunk(task, attempt, event.data);
+        } else {
+          resolve();
+        }
       });
+    });
+  }
+
+  private receiveAttemptChunk(task: FetchTask, attempt: FetchAttempt, chunk: ArrayBuffer): void {
+    if (attempt.discarded || task.completed) return;
+
+    attempt.inspection?.data(chunk);
+    if (attempt.accepted) this.receiveChunk(task, chunk);
+    else attempt.chunks.push(chunk);
   }
 
   private receiveChunk(task: FetchTask, data: ArrayBuffer): void {
     if (task.completed) return;
 
-    // NativeResponse emits these reads after the buffered prefix, preserving event order.
     if (task.streaming && task.readers.length > 0) {
       const resolve = task.readers.shift();
       if (resolve !== undefined) {
@@ -633,14 +721,16 @@ export class ExpoFetchRuntime {
   }
 
   private async readLocalFileChunk(task: FetchTask): Promise<ArrayBuffer> {
-    const buffer = new ArrayBuffer(Math.min(64 * 1024, task.localFileSize - task.localFileOffset));
+    const buffer = new ArrayBuffer(Math.min(LOCAL_FILE_CHUNK_SIZE, task.localFileSize - task.localFileOffset));
     const count = await this.readLocalFileInto(task, buffer);
+
     return count === buffer.byteLength ? buffer : buffer.slice(0, count);
   }
 
   private async readLocalFileInto(task: FetchTask, buffer: ArrayBuffer): Promise<number> {
     const pending = this.readLocalFile(task, buffer);
     task.localFileRead = pending;
+
     try {
       return await pending;
     } finally {
@@ -650,16 +740,13 @@ export class ExpoFetchRuntime {
 
   private async readLocalFile(task: FetchTask, buffer: ArrayBuffer): Promise<number> {
     this.assertTaskActive(task);
-    const length = Math.min(buffer.byteLength, task.localFileSize - task.localFileOffset);
-    if (task.localFilePath === null || length <= 0) return 0;
 
-    if (task.localFile === null) {
-      this.context.assertFileAccess(task.localFilePath);
-      task.localFile = await fs.open(task.localFilePath, fs.OpenMode.READ_ONLY);
-      this.assertTaskActive(task);
-    }
+    const length = Math.min(buffer.byteLength, task.localFileSize - task.localFileOffset);
+    if (length <= 0) return 0;
+    if (task.localFile === null) throw new Error('The response file is closed.');
 
     const count = await fs.read(task.localFile.fd, buffer, { length });
+
     this.assertTaskActive(task);
     if (count <= 0) throw new Error(`Unable to read file: ${task.localFilePath}`);
 
@@ -670,12 +757,12 @@ export class ExpoFetchRuntime {
 
   private async closeLocalFile(task: FetchTask): Promise<void> {
     if (task.localFileRead !== null) {
-      // A cancel may run while open/read owns the descriptor. Let that work
-      // settle before closing it, even if open has yet to assign localFile.
+      // An in-flight read still owns the descriptor.
       try {
         await task.localFileRead;
       } catch (_error) {}
     }
+
     if (task.localFile === null) return;
 
     const file = task.localFile;
@@ -695,7 +782,6 @@ export class ExpoFetchRuntime {
     await this.closeLocalFile(task);
     this.tasks.delete(id);
 
-    if (error instanceof ExpoFetchError) throw error;
     throw new ExpoFetchError(failure.code, failure.message, failure.cause);
   }
 
@@ -704,7 +790,7 @@ export class ExpoFetchRuntime {
 
     task.completed = true;
     task.observation?.finish(task.activeAttempt?.status || null, task.error?.message ?? null);
-    this.destroySession(task);
+    this.cancelAttempt(task);
 
     while (task.readers.length > 0) {
       const resolve = task.readers.shift();
@@ -723,41 +809,25 @@ export class ExpoFetchRuntime {
     if (task.completed) return;
 
     task.error = error;
+    task.queued = [];
     task.activeAttempt?.inspection?.fail(error.code === 'ERR_FETCH_REQUEST_CANCELED');
     task.activeAttempt?.failMetadata(error);
     this.completeTask(task);
   }
 
-  private finishAttempt(task: FetchTask): void {
-    this.completeTask(task);
-  }
-
-  private destroySession(task: FetchTask): void {
+  private cancelAttempt(task: FetchTask): void {
     const attempt = task.activeAttempt;
-    if (attempt !== null) {
-      attempt.inspection?.fail(true);
-      attempt.discarded = true;
-      attempt.chunks = [];
-      attempt.failMetadata(task.error ?? new ExpoFetchError('ERR_FETCH_REQUEST_CANCELED', 'Fetch request has been canceled'));
-    }
+    if (attempt === null) return;
 
-    const session = task.session;
-    task.session = null;
-    if (session === null) return;
+    attempt.inspection?.fail(true);
+    attempt.discarded = true;
+    attempt.chunks = [];
+    attempt.failMetadata(task.error ?? new ExpoFetchError('ERR_FETCH_REQUEST_CANCELED', 'Fetch request has been canceled'));
 
-    if (attempt !== null && !attempt.ended) {
+    if (!attempt.ended) {
       try {
-        session.cancel(attempt.request);
+        attempt.cancel?.();
       } catch (_error) {}
     }
-
-    try {
-      session.close();
-    } catch (_error) {}
-  }
-
-  private disposeTask(task: FetchTask): void {
-    this.destroySession(task);
-    this.closeLocalFile(task).catch((_error: Object): void => {});
   }
 }

@@ -171,13 +171,13 @@ export abstract class ExpoRNAbility extends RnohAbility {
     return result ?? (await super.onSaveStateAsync(reason, params));
   }
 
-  override onDestroy(): void {
+  override async onDestroy(): Promise<void> {
     const provider = this.getExpoHarmonyHostProvider();
 
     try {
       provider.lifecycle.onDestroy(this.context);
     } finally {
-      super.onDestroy();
+      await super.onDestroy();
     }
   }
 

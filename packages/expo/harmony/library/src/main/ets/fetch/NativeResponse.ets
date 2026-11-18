@@ -105,7 +105,8 @@ export class NativeResponse extends ExpoSharedObject {
     this.streamingCancelled = true;
 
     const id = this.requestId;
-    if (id !== undefined) this.runtime.cancelStreaming(id);
+    if (id !== undefined) this.runtime.discard(id);
+
     this.finalize();
   }
 

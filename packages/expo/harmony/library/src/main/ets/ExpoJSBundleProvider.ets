@@ -11,6 +11,7 @@ import {
   FileJSBundleProvider,
   HotReloadConfig,
   JSBundleProvider,
+  JSBundleProviderError,
   JsBundle,
   RawFileJSBundle,
   ResourceJSBundleProvider,
@@ -29,8 +30,9 @@ export class ExpoResourceBundle extends ResourceJSBundleProvider {
   }
 
   override async getBundle(): Promise<ArrayBuffer | RawFileJSBundle> {
-    const rnohCoreContext: RNOHCoreContext | undefined = AppStorage.get<RNOHCoreContext>('RNOHCoreContext');
-    if (rnohCoreContext !== undefined && rnohCoreContext.uiAbilityContext.resourceManager === this.context.resourceManager) {
+    const core = AppStorage.get<RNOHCoreContext>('RNOHCoreContext');
+
+    if (core !== undefined && core.uiAbilityContext.resourceManager === this.context.resourceManager) {
       try {
         const fd = this.context.resourceManager.getRawFdSync(this.asset);
         if (fd) {
@@ -41,9 +43,17 @@ export class ExpoResourceBundle extends ResourceJSBundleProvider {
       } catch (_error) {}
     }
 
-    const bytes = await this.context.resourceManager.getRawFileContent(this.asset);
+    try {
+      const bytes = await this.context.resourceManager.getRawFileContent(this.asset);
 
-    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    } catch (error) {
+      throw new JSBundleProviderError({
+        whatHappened: `Couldn't access JSBundle in ${this.asset}`,
+        extraData: error,
+        howCanItBeFixed: [`Check if a bundle exists at "${this.asset}" on your device.`],
+      });
+    }
   }
 }
 

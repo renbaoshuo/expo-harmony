@@ -7,6 +7,15 @@
 
 {
   "apiType": "stageMode",
+  "buildOption": {
+    "arkOptions": {
+      "types": ["./src/main/ets/fetch/LegacyFetchBinding"]
+    },
+    "externalNativeOptions": {
+      "path": "./src/main/cpp/fetch/CMakeLists.txt",
+      "abiFilters": ["arm64-v8a", "x86_64"]
+    }
+  },
   "targets": [
     {
       "name": "default",

@@ -7,12 +7,24 @@
 
 import type { ReactActivityHandler, ReactRootViewBuilder, ReactRootViewContext } from '@expo-harmony/expo-modules-core';
 
+export interface ExpoReactRootViewSelection {
+  readonly builder: ReactRootViewBuilder;
+  readonly showsNativeContentBeforeReact: boolean;
+}
+
 export class ExpoReactRootViewFactory {
   static create(handlers: ReactActivityHandler[], context: ReactRootViewContext): ReactRootViewBuilder | undefined {
+    return ExpoReactRootViewFactory.select(handlers, context)?.builder;
+  }
+
+  static select(handlers: ReactActivityHandler[], context: ReactRootViewContext): ExpoReactRootViewSelection | undefined {
     for (const handler of handlers) {
       const builder = handler.createReactRootViewContainer?.(context);
-      if (builder !== undefined) return builder;
+      if (builder !== undefined) {
+        return { builder, showsNativeContentBeforeReact: handler.showsNativeContentBeforeReact === true };
+      }
     }
+
     return undefined;
   }
 

@@ -182,8 +182,10 @@ export class ExpoReactHostDelegate {
       waitForRnohInitialization(instance).then(initialized, (): void => {});
 
       const handlers = this.handlers.filter((handler: ReactNativeHostHandler): boolean => handler.onReactInstanceException !== undefined);
+
       const report = (error: Error): void => {
         if (!active || destroyed) return;
+
         for (const handler of handlers) {
           try {
             handler.onReactInstanceException?.(debug, instance, error);
@@ -192,17 +194,22 @@ export class ExpoReactHostDelegate {
           }
         }
       };
-      waitForRnohBundle(instance).catch(report);
-      subscriptions.push(
-        await ExpoRuntimeErrors.observe(instance, (error: Error): void => {
-          reportRnohBundleError(instance, error);
-          if (hasLoadedRnohBundle(instance)) report(error);
-        }),
-      );
+
+      if (handlers.length > 0) {
+        waitForRnohBundle(instance).catch(report);
+        subscriptions.push(
+          await ExpoRuntimeErrors.observe(instance, (error: Error): void => {
+            reportRnohBundleError(instance, error);
+
+            if (hasLoadedRnohBundle(instance)) report(error);
+          }),
+        );
+      }
 
       return cleanup;
     } catch (error) {
       cleanup();
+
       throw new ExpoModuleError('ERR_REACT_HOST_BIND', 'Unable to bind React host handlers.', error as Object);
     }
   }

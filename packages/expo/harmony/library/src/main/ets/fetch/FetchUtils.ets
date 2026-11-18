@@ -10,11 +10,14 @@ import util from '@ohos.util';
 import url from '@ohos.url';
 import webview from '@ohos.web.webview';
 import uniformTypeDescriptor from '@ohos.data.uniformTypeDescriptor';
+import type { BusinessError } from '@kit.BasicServicesKit';
 import type { rcp } from '@kit.RemoteCommunicationKit';
 import { ExpoFetchError } from './ExpoFetchError';
 import { EMPTY_BYTES, FetchInit } from './FetchTypes';
 import { collectRequestHeaders, mergeCookieHeaders } from './FetchHeaderPolicy';
 import { createHeaderRecord } from './FetchHeaderRecord';
+
+const COOKIE_UNAVAILABLE = 17100002;
 
 export const HEADER_PAIRS_TYPE: ExpoValueType<string[][]> = ExpoValueTypes.array(ExpoValueTypes.array(ExpoValueTypes.string()));
 
@@ -203,8 +206,12 @@ export async function withStoredCookies(headers: rcp.RequestHeaders, target: str
   try {
     stored = await webview.WebCookieManager.fetchCookie(target, false);
   } catch (error) {
-    throw new ExpoFetchError('ERR_FETCH_COOKIE_READ', `Unable to read cookies for ${target}: ${errorMessage(error as Object)}`, error as Object);
+    const code = (error as BusinessError).code;
+    if (code !== COOKIE_UNAVAILABLE) console.warn(`[expo-fetch] Unable to read stored cookies (Harmony code ${code}).`);
+
+    return headers;
   }
+
   if (stored.length === 0) return headers;
 
   const result = withoutHeaders(headers, ['cookie']);
@@ -227,15 +234,15 @@ export async function storeResponseCookies(target: string, headers: string[][]):
     try {
       await webview.WebCookieManager.configCookie(target, cookie, false, true);
     } catch (error) {
-      console.warn(`[expo-fetch] Ignoring an invalid Set-Cookie value for ${target}: ${errorMessage(error as Object)}`);
+      console.warn(`[expo-fetch] Unable to store a response cookie (Harmony code ${(error as BusinessError).code}).`);
     }
   }
 
-  try {
-    await webview.WebCookieManager.saveCookieAsync();
-  } catch (error) {
-    console.warn(`[expo-fetch] Unable to persist cookies for ${target}: ${errorMessage(error as Object)}`);
-  }
+  Promise.resolve()
+    .then((): Promise<void> => webview.WebCookieManager.saveCookieAsync())
+    .catch((error: BusinessError): void => {
+      console.warn(`[expo-fetch] Unable to persist response cookies (Harmony code ${error.code}).`);
+    });
 }
 
 export function formatError(error: ExpoFetchError): string {

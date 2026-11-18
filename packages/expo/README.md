@@ -8,7 +8,7 @@
 
 本包适配 Expo SDK 57。
 
-引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 20（HarmonyOS 6.0.0）。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 14（HarmonyOS 5.0.2）。
 
 ```bash
 npm install @expo-harmony/expo expo@~57.0.30
