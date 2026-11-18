@@ -17,6 +17,8 @@ const DOCUMENT_MARKER_PREFIX: string = '__EXPO_DOM_WEBVIEW_DOCUMENT__';
 const EVAL_REQUEST: string = 'ExpoDomWebView.eval';
 const EVAL_CANCEL: string = 'ExpoDomWebView.evalCancel';
 const EVAL_RESULT: string = 'ExpoDomWebView.evalResult';
+const EVAL_RETIRE: string = 'ExpoDomWebView.retireDocument';
+const NATIVE_DOCUMENTS: string = '$$DomWebViewDocuments';
 const MESSAGE_BRIDGE_NAME: string = 'ReactNativeWebView';
 const SCROLL_ANIMATION_DURATION_MS: number = 250;
 const EVAL_TIMEOUT_MS: number = 30000;
@@ -199,37 +201,69 @@ export class DomWebView extends ExpoView {
 
     // The upstream listener interpolates its document ID inside a template literal.
     const install = INSTALL_GLOBALS_SCRIPT.split('"%%WEBVIEW_ID%%"').join('${webViewId}');
+    const bridge = this.bridgeEnabled ? `
+      if (window === window.top) {
+        const prompt = window.prompt.bind(window);
+        let active;
 
-    // Completing the prompt asynchronously avoids a UI/Hermes sync-call deadlock.
+        function installBridge() {
+          const json = prompt(${JSON.stringify(this.registerPrompt)});
+          if (json === null) throw new Error('Expo DOM WebView registration was cancelled');
+
+          const { id: webViewId, token } = JSON.parse(json);
+          if (!Number.isSafeInteger(webViewId) || webViewId < 0 || typeof token !== 'string') {
+            throw new Error('Invalid Expo DOM WebView registration');
+          }
+
+          const marker = ${JSON.stringify(DOCUMENT_MARKER_PREFIX)} + token;
+          active = { marker, token };
+          Object.defineProperty(window, marker, { value: true, configurable: true });
+          window.ExpoDomWebViewBridge = { webViewId, eval: function(params) {
+            let succeeded = false;
+
+            try {
+              const json = prompt(${JSON.stringify(EVAL_PROMPT_HEADER)} + token + ':' + params);
+              if (json === null) throw new Error('Expo DOM WebView evaluation was cancelled');
+
+              const result = JSON.parse(json);
+              if (result.error !== undefined) throw new Error(result.error);
+
+              succeeded = true;
+              return json;
+            } finally {
+              if (!succeeded) window.ExpoDomWebView?.removeDeferred(JSON.parse(params).deferredId);
+            }
+          } };
+
+          ${install}
+        }
+
+        window.addEventListener('pagehide', function() {
+          if (!active) return;
+
+          const { marker, token } = active;
+          active = undefined;
+
+          delete window[marker];
+          delete window.ExpoDomWebView;
+          delete window.ExpoDomWebViewBridge;
+          window.ReactNativeWebView?.retireExpoDomDocument(token);
+        });
+        window.addEventListener('pageshow', function(event) {
+          if (event.persisted && !active) installBridge();
+        });
+
+        installBridge();
+      }
+    ` : '';
+
     return `
       (function() {
-      try {
-      ${this.bridgeEnabled ? `if (window === window.top) {
-      const prompt = window.prompt.bind(window);
-      const registration = prompt(${JSON.stringify(this.registerPrompt)});
-      if (registration === null) throw new Error('Expo DOM WebView registration was cancelled');
-      const { id: webViewId, token } = JSON.parse(registration);
-      if (!Number.isSafeInteger(webViewId) || webViewId < 0 || typeof token !== 'string') {
-        throw new Error('Invalid Expo DOM WebView registration');
-      }
-      const marker = ${JSON.stringify(DOCUMENT_MARKER_PREFIX)} + token;
-      Object.defineProperty(window, marker, { value: true, configurable: true });
-      window.addEventListener('pagehide', function() {
-        delete window[marker];
-        window.ReactNativeWebView?.retireExpoDomDocument(token);
-      }, { once: true });
-      window.ExpoDomWebViewBridge = { webViewId, eval: function(params) {
-        var result = prompt(${JSON.stringify(EVAL_PROMPT_HEADER)} + token + ':' + params);
-        if (result === null) throw new Error('Expo DOM WebView evaluation was cancelled');
-        var parsed = JSON.parse(result);
-        if (parsed.error !== undefined) throw new Error(parsed.error);
-        return result;
-      } };
-      ${install}
-      }` : ''}
-      } finally {
-      ${this.script ? `(function() { ${this.script}\n})();` : ''}
-      }
+        try {
+          ${bridge}
+        } finally {
+          ${this.script ? `(function() { ${this.script}\n})();` : ''}
+        }
       })();
       true;
     `;
@@ -399,38 +433,67 @@ export class DomWebView extends ExpoView {
   }
 
   handlePrompt(event: OnPromptEvent): boolean {
-    if (this.destroyed || !this.attached || this.rendererGone || !this.bridgeEnabled) return false;
+    const message = event.message;
+    const result = event.result;
+    const registering = message.startsWith(`${REGISTER_PROMPT}${this.registrationKey}:`);
+    if (!registering && !message.startsWith(EVAL_PROMPT_HEADER)) return false;
 
-    if (event.message === this.registerPrompt) {
+    if (this.destroyed || !this.attached || this.rendererGone || !this.bridgeEnabled) {
+      this.cancelPrompt(result);
+      return true;
+    }
+
+    if (registering) {
+      if (message !== this.registerPrompt) {
+        this.cancelPrompt(result);
+        return true;
+      }
+
       // onPageBegin can arrive after document-start scripts; replace the route here.
       this.retireDocument();
+
       const registration: DocumentRegistration = { id: nextId++, token: util.generateRandomUUID() };
       this.document = registration;
       this.register(registration.id, this);
-      if (!this.confirmPrompt(event.result, JSON.stringify(registration))) this.retireDocument();
 
+      if (!this.confirmPrompt(result, JSON.stringify(registration))) this.retireDocument();
       return true;
     }
 
     const document = this.document;
-    if (document === undefined) return false;
-
-    const prefix = `${EVAL_PROMPT_HEADER}${document.token}:`;
-    if (!event.message.startsWith(prefix)) return false;
+    const prefix = `${EVAL_PROMPT_HEADER}${document?.token ?? ''}:`;
+    if (document === undefined || !message.startsWith(prefix)) {
+      this.cancelPrompt(result);
+      return true;
+    }
 
     let request: string | undefined;
+    // Confirming after the runtime responds avoids a synchronous ArkUI/Hermes deadlock.
     try {
-      const args = JSON.parse(event.message.slice(prefix.length)) as EvalParams;
+      const args = JSON.parse(message.slice(prefix.length)) as EvalParams;
       if (args === null || typeof args.source !== 'string' || !Number.isSafeInteger(args.deferredId) || args.deferredId < 0) {
         throw new Error('Invalid Expo DOM WebView evaluation parameters.');
       }
 
-      const source = NATIVE_EVAL_WRAPPER_SCRIPT.split('"%%DEFERRED_ID%%"')
+      const wrapper = NATIVE_EVAL_WRAPPER_SCRIPT.split('"%%DEFERRED_ID%%"')
         .join(String(args.deferredId))
         .split('"%%WEBVIEW_ID%%"')
         .join(String(document.id))
         .split('"%%SOURCE%%"')
         .join(args.source);
+      const source = `
+        (function() {
+          const documents = globalThis.expo.${NATIVE_DOCUMENTS} ??= new Map();
+          let expoDomDocument = documents.get(${document.id});
+          if (expoDomDocument === undefined) {
+            expoDomDocument = { sharedObjects: new Map(), subscriptions: new Map() };
+            documents.set(${document.id}, expoDomDocument);
+          }
+          return (
+            ${wrapper}
+          );
+        })()
+      `;
 
       const id = `${this.id}:${this.sequence++}`;
       request = id;
@@ -442,7 +505,7 @@ export class DomWebView extends ExpoView {
         this.cancelNativeEval(id);
         this.confirmPrompt(pending.result, JSON.stringify({ error: 'Expo DOM WebView runtime evaluation timed out.' }));
       }, EVAL_TIMEOUT_MS);
-      this.pending.set(id, { result: event.result, timer });
+      this.pending.set(id, { result, timer });
 
       this.context.rnComponentContext.rnInstance.postMessageToCpp(EVAL_REQUEST, {
         requestId: id,
@@ -459,7 +522,7 @@ export class DomWebView extends ExpoView {
         this.cancelNativeEval(request);
       }
 
-      this.confirmPrompt(event.result, JSON.stringify({ error: String(error) }));
+      this.confirmPrompt(result, JSON.stringify({ error: String(error) }));
     }
 
     return true;
@@ -488,18 +551,48 @@ export class DomWebView extends ExpoView {
     requests.forEach((pending: PendingEval, id: string): void => {
       clearTimeout(pending.timer);
       this.cancelNativeEval(id);
-      // A navigation or ArkUI detach may already have invalidated JsResult.
-      try {
-        pending.result.handleCancel();
-      } catch (_) {}
+      this.cancelPrompt(pending.result);
     });
+  }
+
+  private cancelPrompt(result: JsResult): void {
+    // A navigation or ArkUI detach may already have invalidated JsResult.
+    try {
+      result.handleCancel();
+    } catch (_) {}
   }
 
   private retireDocument(): void {
     const document = this.document;
     this.document = undefined;
-    if (document !== undefined) this.unregister(document.id);
     this.cancelPending();
+
+    if (document === undefined) return;
+    this.unregister(document.id);
+
+    const source = `
+      (() => {
+        const documents = globalThis.expo.${NATIVE_DOCUMENTS};
+        const document = documents?.get(${document.id});
+        if (!document) return;
+
+        documents.delete(${document.id});
+        for (const events of document.subscriptions.values()) {
+          for (const subscription of events.values()) {
+            try { subscription.remove(); } catch (error) { console.error(error); }
+          }
+        }
+      })()
+    `;
+
+    try {
+      this.context.rnComponentContext.rnInstance.postMessageToCpp(EVAL_RETIRE, {
+        runtimeEpoch: this.context.moduleContext.runtimeEpoch,
+        source,
+      });
+    } catch (_) {
+      // The React instance owns the registry and may already have been torn down.
+    }
   }
 
   retireDocumentWithToken(token: string): void {

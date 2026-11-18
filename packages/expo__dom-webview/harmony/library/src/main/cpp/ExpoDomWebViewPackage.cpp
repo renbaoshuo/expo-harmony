@@ -20,6 +20,7 @@ namespace {
 constexpr auto kEvalRequest = "ExpoDomWebView.eval";
 constexpr auto kEvalCancel = "ExpoDomWebView.evalCancel";
 constexpr auto kEvalResult = "ExpoDomWebView.evalResult";
+constexpr auto kEvalRetire = "ExpoDomWebView.retireDocument";
 constexpr auto kRuntimeScheduler = "RuntimeScheduler";
 
 // Main owns incoming requests and cancellation. Hermes claims a request just
@@ -32,12 +33,13 @@ struct PendingEvaluations {
 class EvalHandler final : public rnoh::ArkTSMessageHandler {
 public:
   void handleArkTSMessage(const Context &context) override {
-    if ((context.messageName != kEvalRequest && context.messageName != kEvalCancel) ||
+    const bool retiring = context.messageName == kEvalRetire;
+    if ((!retiring && context.messageName != kEvalRequest && context.messageName != kEvalCancel) ||
         !context.messagePayload.isObject()) return;
 
     const auto &payload = context.messagePayload;
     const auto id = payload.getDefault("requestId", nullptr);
-    if (!id.isString()) return;
+    if (!retiring && !id.isString()) return;
 
     if (context.messageName == kEvalCancel) {
       const std::lock_guard lock(pending_->mutex);
@@ -45,13 +47,31 @@ public:
       return;
     }
 
-    const auto source = payload.getDefault("source", nullptr);
-    const auto epoch = payload.getDefault("runtimeEpoch", nullptr);
-    const auto tag = payload.getDefault("tag", nullptr);
-    const auto component = payload.getDefault("componentName", nullptr);
     const auto instance = context.rnInstance.lock();
     if (!instance) return;
 
+    const auto source = payload.getDefault("source", nullptr);
+    const auto epoch = payload.getDefault("runtimeEpoch", nullptr);
+    const auto service = instance->getContextContainer()
+        .find<std::weak_ptr<facebook::react::RuntimeScheduler>>(kRuntimeScheduler);
+    const auto scheduler = service ? service->lock() : nullptr;
+
+    if (retiring) {
+      // Cleanup runs in the same runtime even if the view has already unmounted.
+      if (!scheduler || !source.isString() || !epoch.isString()) return;
+
+      scheduler->scheduleWork([source = source.asString(), epoch = epoch.asString()](facebook::jsi::Runtime &runtime) {
+        const auto expo = expo::harmony::RuntimeInstaller::installedContext(runtime);
+        if (!expo || expo->runtimeEpochString() != epoch) return;
+
+        runtime.evaluateJavaScript(std::make_shared<facebook::jsi::StringBuffer>(source),
+                                   "expo-dom-webview://retire-document");
+      });
+      return;
+    }
+
+    const auto tag = payload.getDefault("tag", nullptr);
+    const auto component = payload.getDefault("componentName", nullptr);
     // ArkJS transports JavaScript numbers as folly doubles, including tags.
     if (!source.isString() || !epoch.isString() || !component.isString() ||
         !tag.isNumber() || !std::isfinite(tag.asDouble()) ||
@@ -62,9 +82,6 @@ public:
       return;
     }
 
-    const auto service = instance->getContextContainer()
-        .find<std::weak_ptr<facebook::react::RuntimeScheduler>>(kRuntimeScheduler);
-    const auto scheduler = service ? service->lock() : nullptr;
     if (!scheduler) {
       instance->postMessageToArkTS(kEvalResult, folly::dynamic::object
           ("requestId", id)("error", "The React runtime is unavailable."));

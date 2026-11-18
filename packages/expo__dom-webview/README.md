@@ -112,7 +112,7 @@ import { WebView } from '@expo/dom-webview';
 
 类型：`boolean`，默认 `false`。
 
-设为 `true` 后，网页的顶层页面可调用应用中已安装的 Expo 模块，支持同步调用、Promise、事件监听和 SharedObject。只应对可信网页开启。同步调用等待超过 30 秒会超时；页面跳转会取消尚未开始的调用，已开始的调用可能继续执行。页面离开前应取消事件订阅并释放 SharedObject。更新此属性会重新加载当前页面。
+设为 `true` 后，网页的顶层页面可调用应用中已安装的 Expo 模块，支持同步调用、Promise、事件监听和 SharedObject。只应对可信网页开启。同步调用等待超过 30 秒会超时。页面离开时会取消尚未开始的调用，释放此页面的事件订阅与 SharedObject 引用。通过浏览历史恢复缓存页面后会重新连接桥接，需要重新添加订阅和创建 SharedObject。更新此属性会重新加载当前页面。
 
 ### 事件
 
