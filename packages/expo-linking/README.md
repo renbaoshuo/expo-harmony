@@ -138,10 +138,6 @@ npm install @expo-harmony/expo-linking expo-linking@~57.0.13
 
 `openURL()` 或 `canOpenURL()` 收到空 URL 或缺少 scheme 的 URL 时抛出。系统拒绝查询无效链接时，`canOpenURL()` 也会抛出此错误。
 
-#### `ERR_LINKING_ABILITY_NOT_INITIALIZED`
-
-应用启动时的链接状态不可用时抛出。
-
 #### `ERR_LINKING_UNAVAILABLE`
 
 设备缺少拨号或短信能力，或当前无法打开系统界面时抛出。

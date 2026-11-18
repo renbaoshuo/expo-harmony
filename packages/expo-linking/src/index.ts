@@ -18,7 +18,8 @@ export function useURL(): string | null {
 
   useEffect(() => {
     const subscription = addEventListener('url', event => setURL(event.url));
-    setURL(native.getInitialURL());
+
+    setURL(getLinkingURL() ?? native.getInitialURL());
 
     return () => subscription.remove();
   }, []);

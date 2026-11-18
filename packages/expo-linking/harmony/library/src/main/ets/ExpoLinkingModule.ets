@@ -31,6 +31,8 @@ const TEL_URI_API_VERSION: number = 15;
 const SETTINGS_BUNDLE_NAME: string = 'com.huawei.hmos.settings';
 const SETTINGS_ABILITY_NAME: string = 'com.huawei.hmos.settings.MainAbility';
 const APPLICATION_DETAILS_URI: string = 'application_info_entry';
+const SETTINGS_BUNDLE_PARAMETER: string = 'settingsParamBundleName';
+const SETTINGS_LEGACY_BUNDLE_PARAMETER: string = 'pushParams';
 
 // https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/telephony-sms
 const SMS_BUNDLE_NAME: string = 'com.ohos.mms';
@@ -52,12 +54,14 @@ class URLReceivedEvent {
 
 class AbilityLinkingState {
   readonly initialURL: string | null;
+  readonly receivesModuleWants: boolean;
   private url: string | null;
   private destroyed: boolean = false;
   private readonly listeners: Set<(url: string) => void> = new Set();
 
-  constructor(initialURL: string | null) {
+  constructor(initialURL: string | null, receivesModuleWants: boolean = false) {
     this.initialURL = initialURL;
+    this.receivesModuleWants = receivesModuleWants;
     this.url = initialURL;
   }
 
@@ -121,23 +125,19 @@ export class ExpoLinkingLifecycleSubscriber extends ExpoAbilityLifecycleSubscrib
 
 function linkingState(context: ExpoModuleContext): AbilityLinkingState {
   const session = context.session;
-  const owner: Object = session ?? context.uiAbilityContext;
-  let state = states.get(owner);
+  const existing = states.get(session ?? context.uiAbilityContext);
 
-  if (state === undefined && session !== undefined) {
-    state = new AbilityLinkingState(nonEmptyURL(session.initialWant?.uri));
-    states.set(owner, state);
+  if (existing !== undefined) return existing;
 
-    const owned = state;
+  // Custom hosts and isolated sessions receive Wants through module lifecycle events.
+  const state = new AbilityLinkingState(nonEmptyURL(context.initialWant?.uri ?? context.launchUri), true);
 
+  if (session !== undefined) {
     session.onClose((): void => {
-      owned.destroy();
-      states.delete(owner);
+      state.destroy();
+      states.delete(session);
     });
-  }
-
-  if (state === undefined) {
-    throw new ExpoModuleError('ERR_LINKING_ABILITY_NOT_INITIALIZED', 'Expo Linking requires its autolinked Ability lifecycle subscriber.');
+    states.set(session, state);
   }
 
   return state;
@@ -207,7 +207,7 @@ export class ExpoLinkingModule extends ExpoModule {
         this.state?.removeListener(this.onURL);
       })
       .onNewWant((want: Want): void => {
-        if (this.context.session !== undefined) this.receiveWant(want);
+        if (this.state?.receivesModuleWants) this.receiveWant(want);
       })
       .onDestroy((): void => {
         this.destroyed = true;
@@ -322,14 +322,16 @@ export class ExpoLinkingModule extends ExpoModule {
 
     try {
       const context = this.context.uiAbilityContext;
-      const parameters: Record<string, Object> = {};
-      parameters['settingsParamBundleName'] = context.abilityInfo.bundleName;
+      const bundle = context.abilityInfo.bundleName;
+      const params: Record<string, Object> = {};
+      params[SETTINGS_BUNDLE_PARAMETER] = bundle;
+      params[SETTINGS_LEGACY_BUNDLE_PARAMETER] = bundle;
 
       await context.startAbility({
         bundleName: SETTINGS_BUNDLE_NAME,
         abilityName: SETTINGS_ABILITY_NAME,
         uri: APPLICATION_DETAILS_URI,
-        parameters,
+        parameters: params,
       });
     } catch (error) {
       throw new ExpoModuleError('ERR_LINKING_OPEN_SETTINGS', 'Unable to open the HarmonyOS application settings page.', error as Object);
