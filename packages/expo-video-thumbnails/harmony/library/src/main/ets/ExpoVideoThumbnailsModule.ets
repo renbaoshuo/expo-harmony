@@ -10,7 +10,7 @@ import {
   fileUriFromPath, isRnohRawfileResourceUri, rawResourcePathFromUri,
 } from '@expo-harmony/expo-modules-core';
 import { util } from '@kit.ArkTS';
-import { BusinessError } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
 import { resourceManager } from '@kit.LocalizationKit';
@@ -21,6 +21,8 @@ import { VIDEO_THUMBNAILS_OPTIONS, VideoThumbnailsOptions, timeInMicroseconds } 
 const CACHE_DIRECTORY = 'VideoThumbnails';
 const JPEG_MIME_TYPE = 'image/jpeg';
 const ERROR_CODE = 'E_VIDEO_THUMBNAILS';
+const GENERATION_ERROR = 'Could not generate or save the video thumbnail.';
+const NETWORK_THUMBNAIL_API = 20;
 const FILE_ALREADY_EXISTS = 13900015;
 const RAW_RESOURCE_NOT_FOUND = 9001005;
 
@@ -50,56 +52,30 @@ export class ExpoVideoThumbnailsModule extends ExpoModule {
 
   private async getThumbnail(source: string, options: VideoThumbnailsOptions): Promise<VideoThumbnailsResult> {
     this.context.assertActive();
-    if (!canIUse('SystemCapability.Multimedia.Media.AVMetadataExtractor')) {
-      throw new ExpoModuleError(ERROR_CODE, 'This device does not support video thumbnail extraction.');
-    }
-    if (!canIUse('SystemCapability.Multimedia.Image.ImagePacker')) {
-      throw new ExpoModuleError(ERROR_CODE, 'This device does not support JPEG thumbnail encoding.');
-    }
 
     // URI schemes are case-insensitive, but the system media implementation matches lowercase prefixes.
     const uri = source.replace(/^(https?|file):/i, (scheme: string): string => scheme.toLowerCase());
     const remote = /^https?:\/\//.test(uri);
     const packaged = isRnohRawfileResourceUri(uri) || /^(asset|rawfile):/i.test(uri);
+
     if (!remote && !packaged && !uri.startsWith('/') && !uri.startsWith('file://')) {
       throw new ExpoModuleError('ERR_INVALID_SOURCE_FILENAME', 'Use HTTP(S), a file URI, an absolute path, or a packaged resource URI.');
     }
+    if (!canIUse('SystemCapability.Multimedia.Image.ImagePacker')) {
+      throw new ExpoModuleError(ERROR_CODE, 'This device does not support JPEG thumbnail encoding.');
+    }
 
-    let input: fileIo.File | undefined;
-    let extractor: media.AVMetadataExtractor | undefined;
     let pixel: image.PixelMap | undefined;
     let packer: image.ImagePacker | undefined;
     let output: fileIo.File | undefined;
-    let destination: string | undefined;
+    let target: string | undefined;
 
     try {
       let result: VideoThumbnailsResult;
       try {
-        extractor = await media.createAVMetadataExtractor();
-        this.context.assertActive();
+        const time = timeInMicroseconds(options);
+        pixel = remote ? await this.fetchNetworkFrame(uri, time, options.headers) : await this.fetchLocalFrame(uri, time, packaged);
 
-        if (remote) {
-          extractor.setUrlSource(uri, options.headers);
-        } else if (packaged) {
-          const resource = openPackagedVideo(this.context.uiAbilityContext.resourceManager, uri);
-          input = resource.file;
-          extractor.fdSrc = { fd: input.fd, offset: resource.offset, length: resource.length };
-        } else {
-          const target = this.context.fileSourceForRead(uri);
-          // Open without blocking so a FIFO cannot stall the regular-file check.
-          input = await fileIo.open(target, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
-
-          const stat = await fileIo.stat(input.fd);
-          this.context.assertActive();
-          if (!stat.isFile() || stat.size <= 0) {
-            throw new ExpoModuleError('ERR_THUMBNAIL_FILE', "Can't read file: the video must be a nonempty regular file.");
-          }
-          this.context.readPathForDescriptor(target, input);
-
-          extractor.fdSrc = { fd: input.fd, offset: 0, length: stat.size };
-        }
-
-        pixel = await extractor.fetchFrameByTime(timeInMicroseconds(options), media.AVImageQueryOptions.AV_IMAGE_QUERY_CLOSEST_SYNC, {});
         this.context.assertActive();
 
         const size = (await pixel.getImageInfo()).size;
@@ -114,7 +90,7 @@ export class ExpoVideoThumbnailsModule extends ExpoModule {
         const path = `${dir}/${util.generateRandomUUID(true)}.jpg`;
         const temp = `${path}.tmp`;
         output = await fileIo.open(temp, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
-        destination = temp;
+        target = temp;
         this.context.assertActive();
 
         packer = image.createImagePacker();
@@ -128,34 +104,89 @@ export class ExpoVideoThumbnailsModule extends ExpoModule {
 
         this.context.assertActive();
         await fileIo.rename(temp, path);
-        destination = path;
+        target = path;
 
         result = { uri: fileUriFromPath(path), width: size.width, height: size.height };
       } finally {
         if (packer !== undefined) await cleanup((): Promise<void> => packer!.release());
         if (output !== undefined) await cleanup((): Promise<void> => fileIo.close(output!));
         if (pixel !== undefined) await cleanup((): Promise<void> => pixel!.release());
-        if (extractor !== undefined) await cleanup((): Promise<void> => extractor!.release());
-        if (input !== undefined) await cleanup((): Promise<void> => fileIo.close(input!));
       }
 
       this.context.assertActive();
 
       return result;
     } catch (error) {
-      if (destination !== undefined) await cleanup((): Promise<void> => fileIo.unlink(destination!));
+      if (target !== undefined) await cleanup((): Promise<void> => fileIo.unlink(target!));
 
       if (error instanceof ExpoModuleError) {
-        throw new ExpoModuleError(error.code, error.message, error, error.path);
+        throw new ExpoModuleError(error.code, error.message, error.cause ?? error, error.path);
       }
 
-      throw new ExpoModuleError(ERROR_CODE, 'Could not generate or save the video thumbnail.', error as Object);
+      throw new ExpoModuleError(ERROR_CODE, GENERATION_ERROR, error as Object);
+    }
+  }
+
+  private async fetchNetworkFrame(uri: string, time: number, headers: Record<string, string>): Promise<image.PixelMap> {
+    if (deviceInfo.sdkApiVersion < NETWORK_THUMBNAIL_API || !canIUse('SystemCapability.Multimedia.Media.AVMetadataExtractor')) {
+      throw new ExpoModuleError(ERROR_CODE, 'Network video thumbnails require HarmonyOS API 20 and AVMetadataExtractor support.');
+    }
+
+    const extractor = await media.createAVMetadataExtractor();
+
+    try {
+      this.context.assertActive();
+      extractor.setUrlSource(uri, headers);
+
+      return await extractor.fetchFrameByTime(time, media.AVImageQueryOptions.AV_IMAGE_QUERY_CLOSEST_SYNC, {});
+    } finally {
+      await cleanup((): Promise<void> => extractor.release());
+    }
+  }
+
+  private async fetchLocalFrame(uri: string, time: number, packaged: boolean): Promise<image.PixelMap> {
+    if (!canIUse('SystemCapability.Multimedia.Media.AVImageGenerator')) {
+      throw new ExpoModuleError(ERROR_CODE, 'This device does not support local video thumbnail extraction.');
+    }
+
+    let input: fileIo.File | undefined;
+    let generator: media.AVImageGenerator | undefined;
+
+    try {
+      let descriptor: media.AVFileDescriptor;
+      if (packaged) {
+        const resource = openPackagedVideo(this.context.uiAbilityContext.resourceManager, uri);
+        input = resource.file;
+        descriptor = { fd: input.fd, offset: resource.offset, length: resource.length };
+      } else {
+        // Open without blocking so a FIFO cannot stall the regular-file check.
+        const path = this.context.fileSourceForRead(uri);
+        input = await fileIo.open(path, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NONBLOCK);
+
+        const stat = await fileIo.stat(input.fd);
+        if (!stat.isFile() || stat.size <= 0) {
+          throw new ExpoModuleError('ERR_THUMBNAIL_FILE', "Can't read file: the video must be a nonempty regular file.");
+        }
+        this.context.readPathForDescriptor(path, input);
+        descriptor = { fd: input.fd, offset: 0, length: stat.size };
+      }
+
+      this.context.assertActive();
+      generator = await media.createAVImageGenerator();
+      this.context.assertActive();
+      generator.fdSrc = descriptor;
+
+      return await generator.fetchFrameByTime(time, media.AVImageQueryOptions.AV_IMAGE_QUERY_CLOSEST_SYNC, {});
+    } finally {
+      if (generator !== undefined) await cleanup((): Promise<void> => generator!.release());
+      if (input !== undefined) await cleanup((): Promise<void> => fileIo.close(input!));
     }
   }
 }
 
 function openPackagedVideo(resources: resourceManager.ResourceManager, uri: string): PackagedVideoSource {
   let name: string;
+
   try {
     name = rawResourcePathFromUri(uri);
   } catch (error) {
@@ -166,15 +197,15 @@ function openPackagedVideo(resources: resourceManager.ResourceManager, uri: stri
   try {
     raw = resources.getRawFdSync(name);
   } catch (error) {
-    if (!/^asset:/i.test(uri) || (error as BusinessError).code !== RAW_RESOURCE_NOT_FOUND) throw error as Error;
-
     let fallback = name;
-    try {
-      fallback = rawResourcePathFromUri(uri, true);
-    } catch (_) {
-      // Older asset URLs may be escaped, but Metro can also emit literal percent signs.
+    if (/^asset:/i.test(uri) && (error as BusinessError).code === RAW_RESOURCE_NOT_FOUND) {
+      try {
+        fallback = rawResourcePathFromUri(uri, true);
+      } catch (_) {
+        // Metro asset names can contain literal percent signs.
+      }
     }
-    if (fallback === name) throw error as Error;
+    if (fallback === name) throw new ExpoModuleError(ERROR_CODE, GENERATION_ERROR, error as Object);
 
     name = fallback;
     raw = resources.getRawFdSync(name);
@@ -193,7 +224,8 @@ function openPackagedVideo(resources: resourceManager.ResourceManager, uri: stri
       resources.closeRawFdSync(name);
     } catch (error) {
       if (file !== undefined) fileIo.closeSync(file);
-      throw error as Error;
+
+      throw new ExpoModuleError(ERROR_CODE, GENERATION_ERROR, error as Object);
     }
   }
 }

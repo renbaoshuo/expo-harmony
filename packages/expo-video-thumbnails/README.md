@@ -8,7 +8,7 @@
 
 本包适配 Expo SDK 57。
 
-引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 20（HarmonyOS 6.0.0）。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。HTTP(S) 视频取帧需要 API 20（HarmonyOS 6.0.0）。
 
 ```bash
 npm install @expo-harmony/expo-video-thumbnails expo-video-thumbnails@~57.0.2
