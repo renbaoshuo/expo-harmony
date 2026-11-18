@@ -88,25 +88,27 @@ function decodeBlurhashPixels(hash: string, width: number, height: number): Uint
 }
 
 async function readRgba(pixel: image.PixelMap): Promise<Uint8Array> {
-  const info = await pixel.getImageInfo();
+  const rgba = new Uint8Array(pixel.getPixelBytesNumber());
+  await pixel.readPixelsToBuffer(rgba.buffer);
+  return rgba;
+}
+
+function unpremultiply(rgba: Uint8Array): void {
+  // Hash algorithms consume straight alpha; native drawing uses premultiplied RGB.
+  for (let offset = 0; offset < rgba.length; offset += 4) {
+    const alpha = rgba[offset + 3];
+    if (alpha > 0 && alpha < 255) {
+      for (let channel = 0; channel < 3; channel += 1) rgba[offset + channel] = Math.min(255, Math.round((rgba[offset + channel] * 255) / alpha));
+    }
+  }
+}
+
+function rgbaInfo(pixel: image.PixelMap): image.ImageInfo {
+  const info = pixel.getImageInfoSync();
   if (info.pixelFormat !== image.PixelMapFormat.RGBA_8888) {
     throw new ExpoImageError('ERR_IMAGE_PIXEL_FORMAT', 'Hash generation requires RGBA pixels.');
   }
-
-  const rgba = new Uint8Array(pixel.getPixelBytesNumber());
-  await pixel.readPixelsToBuffer(rgba.buffer);
-
-  // Hash algorithms consume straight alpha; native drawing uses premultiplied RGB.
-  if (info.alphaType === image.AlphaType.PREMUL) {
-    for (let offset = 0; offset < rgba.length; offset += 4) {
-      const alpha = rgba[offset + 3];
-      if (alpha > 0 && alpha < 255) {
-        for (let channel = 0; channel < 3; channel += 1) rgba[offset + channel] = Math.min(255, Math.round((rgba[offset + channel] * 255) / alpha));
-      }
-    }
-  }
-
-  return rgba;
+  return info;
 }
 
 export async function encodeBlurhash(pixel: image.PixelMap, columns: number, rows: number): Promise<string> {
@@ -114,30 +116,38 @@ export async function encodeBlurhash(pixel: image.PixelMap, columns: number, row
     throw new ExpoImageError('ERR_IMAGE_INVALID_HASH_COMPONENTS', 'Blurhash component counts must be integers between 1 and 9.');
   }
 
-  const info = await pixel.getImageInfo();
+  const info = rgbaInfo(pixel);
   const rgba = await readRgba(pixel);
 
-  return (await taskpool.execute(encodeBlurhashData, rgba, info.size.width, info.size.height, columns, rows)) as string;
+  return (await taskpool.execute(
+    encodeBlurhashData, rgba, info.size.width, info.size.height, columns, rows, info.alphaType === image.AlphaType.PREMUL,
+  )) as string;
 }
 
 @Concurrent
-function encodeBlurhashData(rgba: Uint8Array, width: number, height: number, columns: number, rows: number): string {
+function encodeBlurhashData(rgba: Uint8Array, width: number, height: number, columns: number, rows: number, premultiplied: boolean): string {
+  if (premultiplied) unpremultiply(rgba);
   return blurhash(rgba, width, height, columns, rows);
 }
 
 export async function encodeThumbhash(pixel: image.PixelMap): Promise<string> {
-  const info = await pixel.getImageInfo();
+  const info = rgbaInfo(pixel);
   const width = info.size.width;
   const height = info.size.height;
   if (width > 100 || height > 100) {
     throw new ExpoImageError('ERR_IMAGE_HASH_TOO_LARGE', 'Thumbhash input must be at most 100 by 100 pixels.');
   }
 
-  return (await taskpool.execute(encodeThumbhashData, await readRgba(pixel), width, height)) as string;
+  const rgba = await readRgba(pixel);
+
+  return (await taskpool.execute(
+    encodeThumbhashData, rgba, width, height, info.alphaType === image.AlphaType.PREMUL,
+  )) as string;
 }
 
 @Concurrent
-function encodeThumbhashData(rgba: Uint8Array, width: number, height: number): string {
+function encodeThumbhashData(rgba: Uint8Array, width: number, height: number, premultiplied: boolean): string {
+  if (premultiplied) unpremultiply(rgba);
   return thumbhash(rgba, width, height);
 }
 

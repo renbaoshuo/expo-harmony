@@ -188,7 +188,7 @@ function chooseSource(sources: ImageSourceRecord[], width: number, height: numbe
   return best ?? sources[0];
 }
 
-function eventError(error: Object): string {
+function errorMessage(error: Object): string {
   if (error instanceof ExpoImageError) return `${error.code}: ${error.message}`;
   return String(error).replace(/^(?:Error:\s*)+/, '');
 }
@@ -287,9 +287,10 @@ export class ExpoImageView extends ExpoView {
       priority: this.props.priority,
       tintColor: this.props.tintColor,
     });
-
     const changed = signature !== this.signature || ref !== this.sourceRef;
-    if (!changed && this.current !== undefined) {
+
+    // Update presentation on the current layer even while loading or locked.
+    if (this.current !== undefined) {
       this.currentLayer = this.makeLayer(this.current, this.currentPlaceholder, this.displayId);
     }
 
@@ -453,7 +454,7 @@ export class ExpoImageView extends ExpoView {
       this.display(displayed, false);
     } catch (error) {
       if (generation !== this.generation || this.destroyed) return;
-      this.emit('onError', { error: eventError(error as Object) });
+      this.emit('onError', { error: errorMessage(error as Object) });
     } finally {
       lease?.release();
       if (cancellation !== undefined && this.sourceCancel === cancellation) {
@@ -484,7 +485,7 @@ export class ExpoImageView extends ExpoView {
       this.display(lease, true);
     } catch (error) {
       if (generation === this.generation && !cancellation.isCancelled()) {
-        console.warn(`Expo Image placeholder failed: ${eventError(error as Object)}`);
+        console.warn(`Expo Image placeholder failed: ${errorMessage(error as Object)}`);
       }
     } finally {
       if (this.placeholderCancel === cancellation) {
@@ -637,8 +638,8 @@ class LayerLayout {
 }
 
 function layerLayout(layer: ExpoImageLayer, containerWidth: number, containerHeight: number): LayerLayout {
-  const sourceWidth = Math.max(1, layer.resource.width);
-  const sourceHeight = Math.max(1, layer.resource.height);
+  const sourceWidth = layer.resource.width;
+  const sourceHeight = layer.resource.height;
   let width = sourceWidth;
   let height = sourceHeight;
 
@@ -730,6 +731,7 @@ struct ExpoImageSurface {
             layout: layerLayout(this.activeLayer(layer), this.surfaceWidth, this.surfaceHeight),
             playing: this.renderState.playing && layer.id === this.renderState.current?.id,
             blurRadius: this.activeLayer(layer).blurRadius,
+            preferHighDynamicRange: this.activeLayer(layer).preferHighDynamicRange,
           }).opacity(layer.id === this.renderState.current?.id ? this.currentOpacity : this.previousOpacity);
         },
         (layer: ExpoImageLayer): string => String(layer.id),
@@ -770,6 +772,8 @@ struct ExpoImageLayerContent {
   @Prop layout: LayerLayout = new LayerLayout(0, 0, 0, 0);
   @Prop playing: boolean = true;
   @Prop blurRadius: number = 0;
+  @Prop preferHighDynamicRange: boolean = false;
+  @State private animationStarted: boolean = false;
   private lease?: ExpoImageLease;
   private animationFrames: ImageFrameInfo[] = [];
 
@@ -791,25 +795,37 @@ struct ExpoImageLayerContent {
     this.lease = undefined;
   }
 
+  private animationHeight(): number {
+    // ImageAnimator has no objectFit. Size at the native aspect ratio before scaling.
+    const resource = this.layer.resource;
+    return this.layout.width * (resource.pixelHeight / resource.pixelWidth);
+  }
+
   build(): void {
     Stack() {
-      Image(this.layer.resource.frames[0])
-        .width('100%')
-        .height('100%')
-        .objectFit(ImageFit.Fill)
-        .dynamicRangeMode(this.layer.preferHighDynamicRange ? DynamicRangeMode.CONSTRAINT : DynamicRangeMode.STANDARD)
-        .onComplete((event): void => {
-          if (event?.loadingStatus === 1) this.view.onDisplay(this.layer.id);
-        })
       if (this.layer.resource.isAnimated) {
         ImageAnimator()
           .images(this.animationFrames)
           .fixedSize(true)
           .iterations(this.layer.resource.iterations)
           .fillMode(FillMode.Forwards)
-          .state(this.playing ? AnimationStatus.Running : AnimationStatus.Paused)
+          .state(this.playing ? AnimationStatus.Running : (this.animationStarted ? AnimationStatus.Paused : AnimationStatus.Initial))
+          .onStart((): void => {
+            if (!this.animationStarted) this.animationStarted = true;
+          })
+          .onAppear((): void => this.view.onDisplay(this.layer.id))
           .width('100%')
-          .height('100%');
+          .height(this.animationHeight())
+          .scale({ y: this.animationHeight() > 0 ? this.layout.height / this.animationHeight() : 1, centerY: '0%' });
+      } else {
+        Image(this.layer.resource.frames[0])
+          .width('100%')
+          .height('100%')
+          .objectFit(ImageFit.Fill)
+          .dynamicRangeMode(this.preferHighDynamicRange ? DynamicRangeMode.CONSTRAINT : DynamicRangeMode.STANDARD)
+          .onComplete((event): void => {
+            if (event?.loadingStatus === 1) this.view.onDisplay(this.layer.id);
+          });
       }
     }
     .width(this.layout.width)

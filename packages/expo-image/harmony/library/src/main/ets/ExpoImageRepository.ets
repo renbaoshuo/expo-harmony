@@ -380,6 +380,9 @@ export class ExpoImageResource {
     this.mediaType = mediaType;
     this.isAnimated = isAnimated;
     this.memoryBytes = frames.reduce((bytes: number, pixel: image.PixelMap): number => bytes + pixel.getPixelBytesNumber(), 0);
+    if (this.memoryBytes > MAX_DECODED_BYTES) {
+      throw new ExpoImageError('ERR_IMAGE_TOO_LARGE', 'Decoded image frames exceed the 256 MiB memory limit.');
+    }
     this.cacheType = cacheType;
   }
 
@@ -595,17 +598,17 @@ async function readPackagedResource(
       descriptor = resources.getRawFdSync(name);
     } catch (error) {
       tracker.throwIfCancelled();
-      if (!/^asset:\/\//i.test(uri) || (error as BusinessError).code !== RAW_RESOURCE_NOT_FOUND) throw error as Error;
 
       // Older Metro asset URLs may encode characters that RNOH now preserves literally.
       let fallback = name;
-
-      try {
-        fallback = rawResourcePathFromUri(uri, true);
-      } catch (_) {
-        // A literal rawfile name need not have a valid URL-encoded spelling.
+      if (/^asset:\/\//i.test(uri) && (error as BusinessError).code === RAW_RESOURCE_NOT_FOUND) {
+        try {
+          fallback = rawResourcePathFromUri(uri, true);
+        } catch (_) {}
       }
-      if (fallback === name) throw error as Error;
+      if (fallback === name) {
+        throw new ExpoImageError('ERR_IMAGE_RESOURCE', `The packaged image '${name}' could not be read: ${String(error)}`);
+      }
 
       name = fallback;
       descriptor = resources.getRawFdSync(name);
@@ -694,15 +697,20 @@ async function download(
   progress?: ImageProgressCallback,
 ): Promise<DownloadResult> {
   tracker.throwIfCancelled();
+
   const request = http.createHttp();
   let unsubscribe: (() => void) | undefined;
+  let received = 0;
 
   try {
-    request.on('dataReceiveProgress', (value: http.DataReceiveProgressInfo): void => {
-      if (!tracker.isCancelled()) {
-        progress?.({ loaded: value.receiveSize, total: value.totalSize < 0 ? 0 : value.totalSize });
-      }
-    });
+    if (progress !== undefined) {
+      request.on('dataReceiveProgress', (event: http.DataReceiveProgressInfo): void => {
+        if (tracker.isCancelled() || event.totalSize <= 0 || event.receiveSize <= received) return;
+
+        received = event.receiveSize;
+        progress({ loaded: received, total: event.totalSize });
+      });
+    }
 
     const response = await new Promise<http.HttpResponse>((resolve, reject): void => {
       // Network Kit documents resource destruction but does not promise to settle the request.
@@ -728,10 +736,6 @@ async function download(
     }
     if (response.result.byteLength > MAX_SOURCE_BYTES) {
       throw new ExpoImageError('ERR_IMAGE_TOO_LARGE', 'The downloaded image exceeds the 100 MB safety limit.');
-    }
-
-    if (!tracker.isCancelled()) {
-      progress?.({ loaded: response.result.byteLength, total: response.result.byteLength });
     }
 
     return new DownloadResult(response.result, contentType(headerValue(response.header, 'content-type')));
@@ -946,7 +950,8 @@ export class ExpoImageRepository {
       }
 
       this.assertAlive();
-      fs.moveFileSync(temporary, path, 0);
+      // Same-directory rename replaces the cache entry without invalidating open readers.
+      fs.renameSync(temporary, path);
       DiskPathProtection.didWrite(path);
 
       for (const guard of this.cacheRequests) {
@@ -1030,27 +1035,31 @@ export class ExpoImageRepository {
   }
 
   adoptPixelMap(pixel: image.PixelMap): ExpoImageLease {
-    if (this.destroyed) {
-      pixel.release().catch((): void => {});
+    try {
       this.assertAlive();
+
+      const info = pixel.getImageInfoSync();
+      const resource = new ExpoImageResource(
+        util.generateRandomUUID(),
+        '',
+        [pixel],
+        [],
+        info.size.width,
+        info.size.height,
+        1,
+        info.mimeType || null,
+        false,
+        'none',
+      );
+      this.resources.add(resource);
+
+      return new ExpoImageLease(this, resource);
+    } catch (error) {
+      pixel.release().catch((): void => {});
+
+      if (error instanceof ExpoImageError) throw new ExpoImageError(error.code, error.message);
+      throw new ExpoImageError('ERR_IMAGE_INVALID_REF', String(error));
     }
-
-    const info = pixel.getImageInfoSync();
-    const resource = new ExpoImageResource(
-      util.generateRandomUUID(),
-      '',
-      [pixel],
-      [],
-      info.size.width,
-      info.size.height,
-      1,
-      info.mimeType || null,
-      false,
-      'none',
-    );
-    this.resources.add(resource);
-
-    return new ExpoImageLease(this, resource);
   }
 
   async tintLease(lease: ExpoImageLease, color: number | string): Promise<ExpoImageLease> {
@@ -1415,7 +1424,7 @@ export class ExpoImageRepository {
       // A seed or clear can change the cache revision during the write.
       if (!guard.valid || !DiskPathProtection.isCurrentRevision(path, revision) || (fs.accessSync(path) && !DiskPathProtection.isInvalid(path))) return;
 
-      fs.moveFileSync(temp, path, 0);
+      fs.renameSync(temp, path);
       DiskPathProtection.didWrite(path);
     } catch (error) {
       if (error instanceof ExpoImageError) throw new ExpoImageError(error.code, error.message);
@@ -1450,7 +1459,7 @@ export class ExpoImageRepository {
       throw new ExpoImageError('ERR_IMAGE_DECODE', 'The image source could not be opened.');
     }
 
-    let transient: image.PixelMap[] = [];
+    let owned: image.PixelMap[] = [];
 
     try {
       const info = await decoder.getImageInfo();
@@ -1473,10 +1482,14 @@ export class ExpoImageRepository {
       const maxHeight = finitePositive(options.maxHeight);
       const bounds = this.desiredSize(width, height, maxWidth, maxHeight, options.contentFit, mime === SVG_MEDIA_TYPE);
       const size: image.Size | undefined = swapped && bounds !== undefined ? { width: bounds.height, height: bounds.width } : bounds;
+
       const tint = options.tintColor == null ? undefined : colorComponents(options.tintColor);
+      const hdr = options.preferHighDynamicRange === true && tint === undefined && mime !== SVG_MEDIA_TYPE;
+      const rgb565 = !animated && !hdr && options.decodeFormat === 'rgb' && tint === undefined;
+      const bytesPerPixel = rgb565 ? 2 : 4;
       const decoded = size ?? info.size;
 
-      if (decoded.width * decoded.height * 4 * count > MAX_DECODED_BYTES) {
+      if (decoded.width * decoded.height * bytesPerPixel * count > MAX_DECODED_BYTES) {
         throw new ExpoImageError('ERR_IMAGE_TOO_LARGE', 'Decoded image frames exceed the 256 MiB memory limit.');
       }
 
@@ -1487,63 +1500,47 @@ export class ExpoImageRepository {
         const iterations = await animationIterations(decoder, mime);
         tracker?.throwIfCancelled();
 
-        let frames = await decoder.createPixelMapList({
+        const frames = await decoder.createPixelMapList({
           editable: orientation !== ExifOrientation.Normal,
           desiredSize: size,
           desiredPixelFormat: image.PixelMapFormat.RGBA_8888,
         });
-        transient = frames.slice();
-
-        for (const frame of frames) {
-          tracker?.throwIfCancelled();
-          await orientPixelMap(frame, orientation);
-        }
+        owned = frames;
 
         if (frames.length === 0) {
           throw new ExpoImageError('ERR_IMAGE_DECODE', 'The animated image did not contain any decodable frames.');
         }
 
-        if (tint !== undefined) {
-          const tinted: image.PixelMap[] = [];
+        for (let index = 0; index < frames.length; index += 1) {
+          tracker?.throwIfCancelled();
 
-          for (const frame of frames) {
-            tracker?.throwIfCancelled();
-            const pixel = await tintPixelMap(frame, tint);
-            tinted.push(pixel);
-            transient.push(pixel);
-          }
+          const frame = frames[index];
+          await orientPixelMap(frame, orientation);
 
-          for (const frame of frames) {
+          if (tint !== undefined) {
+            frames[index] = await tintPixelMap(frame, tint);
             try {
               await frame.release();
             } catch (_) {}
           }
-
-          frames = tinted;
-          transient = tinted.slice();
         }
 
         const output: image.Size = options.contentFit === undefined ? frames[0].getImageInfoSync().size : { width, height };
         const resource = new ExpoImageResource(key, uri, frames, delays, output.width, output.height, scale, mime, true, cache, iterations, source.cacheKey ?? uri);
 
-        transient = [];
+        owned = [];
 
         return resource;
       }
 
       tracker?.throwIfCancelled();
-      const hdr = options.preferHighDynamicRange === true && tint === undefined && mime !== SVG_MEDIA_TYPE;
       let pixel = await decoder.createPixelMap({
         editable: orientation !== ExifOrientation.Normal,
         desiredSize: size,
         desiredDynamicRange: hdr ? image.DecodingDynamicRange.AUTO : image.DecodingDynamicRange.SDR,
-        desiredPixelFormat: hdr
-          ? undefined
-          : options.decodeFormat === 'rgb' && tint === undefined
-            ? image.PixelMapFormat.RGB_565
-            : image.PixelMapFormat.RGBA_8888,
+        desiredPixelFormat: hdr ? undefined : (rgb565 ? image.PixelMapFormat.RGB_565 : image.PixelMapFormat.RGBA_8888),
       });
-      transient = [pixel];
+      owned = [pixel];
 
       tracker?.throwIfCancelled();
       await orientPixelMap(pixel, orientation);
@@ -1556,14 +1553,14 @@ export class ExpoImageRepository {
         } catch (_) {}
 
         pixel = tinted;
-        transient = [tinted];
+        owned = [tinted];
       }
 
       // Only view requests set contentFit; ImageRef needs the decoded layout size.
       const output: image.Size = options.contentFit === undefined ? pixel.getImageInfoSync().size : { width, height };
       const resource = new ExpoImageResource(key, uri, [pixel], [], output.width, output.height, scale, mime, false, cache, -1, source.cacheKey ?? uri);
 
-      transient = [];
+      owned = [];
 
       return resource;
     } catch (error) {
@@ -1575,7 +1572,7 @@ export class ExpoImageRepository {
 
       throw new ExpoImageError('ERR_IMAGE_DECODE', 'The image could not be decoded.');
     } finally {
-      for (const pixel of transient) {
+      for (const pixel of owned) {
         try {
           await pixel.release();
         } catch (_) {}

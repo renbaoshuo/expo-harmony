@@ -178,7 +178,7 @@ npm install @expo-harmony/expo-image expo-image@~57.0.5
 
 控制动画图片是否自动播放。应用进入后台时暂停，回到前台后恢复。
 
-GIF 循环次数取自文件；没有循环扩展时播放一次。API 24 及以上可读取 WebP 循环次数；更早的系统版本会循环播放。
+支持 GIF 和动画 WebP。GIF 循环次数取自文件，没有循环扩展时播放一次。API 24 及以上可读取 WebP 循环次数，更早的系统版本会循环播放。APNG 按静态 PNG 显示。
 
 ##### `decodeFormat`
 
@@ -218,7 +218,7 @@ GIF 循环次数取自文件；没有循环扩展时播放一次。API 24 及以
 
 类型：`(event: ImageProgressEventData) => void`
 
-远程图片下载过程中调用，可能触发多次。`loaded` 为已下载字节数，`total` 为总字节数；长度未知时 `total` 为 `0`。
+远程图片下载过程中调用，可能触发多次。`loaded` 为已下载字节数，`total` 为总字节数。服务器未提供总字节数时不发送进度事件。
 
 ##### `onLoad`
 
@@ -487,7 +487,7 @@ GIF 循环次数取自文件；没有循环扩展时播放一次。API 24 及以
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
 | `loaded` | `number` | 已下载字节数。 |
-| `total` | `number` | 总字节数；未知时为 `0`。 |
+| `total` | `number` | 总字节数。 |
 
 #### `ImageErrorEventData`
 

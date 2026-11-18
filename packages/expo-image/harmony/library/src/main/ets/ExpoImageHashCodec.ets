@@ -63,19 +63,30 @@ function encode83(value: number, length: number): string {
   return result;
 }
 
-function basisFactor(rgba: Uint8Array, width: number, height: number, column: number, row: number): ColorFactor {
-  const normalization = column === 0 && row === 0 ? 1 : 2;
+function basisFactor(
+  rgba: Uint8Array,
+  width: number,
+  height: number,
+  column: number,
+  row: number,
+  linear: Float64Array,
+  cosines: Float64Array,
+): ColorFactor {
+  const weight = column === 0 && row === 0 ? 1 : 2;
   let red = 0;
   let green = 0;
   let blue = 0;
 
+  for (let x = 0; x < width; x += 1) cosines[x] = Math.cos((Math.PI * column * x) / width);
+
   for (let y = 0; y < height; y += 1) {
+    const vertical = Math.cos((Math.PI * row * y) / height);
     for (let x = 0; x < width; x += 1) {
-      const basis = normalization * Math.cos((Math.PI * column * x) / width) * Math.cos((Math.PI * row * y) / height);
       const offset = (y * width + x) * 4;
-      red += basis * srgbToLinear(rgba[offset]);
-      green += basis * srgbToLinear(rgba[offset + 1]);
-      blue += basis * srgbToLinear(rgba[offset + 2]);
+      const basis = weight * cosines[x] * vertical;
+      red += basis * linear[rgba[offset]];
+      green += basis * linear[rgba[offset + 1]];
+      blue += basis * linear[rgba[offset + 2]];
     }
   }
 
@@ -85,10 +96,16 @@ function basisFactor(rgba: Uint8Array, width: number, height: number, column: nu
 }
 
 export function blurhash(rgba: Uint8Array, width: number, height: number, columns: number, rows: number): string {
+  const linear = new Float64Array(256);
+  const cosines = new Float64Array(width);
+  for (let value = 0; value < linear.length; value += 1) {
+    linear[value] = srgbToLinear(value);
+  }
+
   const factors: ColorFactor[] = [];
   for (let y = 0; y < rows; y += 1) {
     for (let x = 0; x < columns; x += 1) {
-      factors.push(basisFactor(rgba, width, height, x, y));
+      factors.push(basisFactor(rgba, width, height, x, y, linear, cosines));
     }
   }
 
