@@ -13,8 +13,9 @@ import {
   ExpoModuleError,
   ExpoValueTypes,
 } from '@expo-harmony/expo-modules-core';
-import { deviceInfo, settings, systemDateTime } from '@kit.BasicServicesKit';
-import { hidebug } from '@kit.PerformanceAnalysisKit';
+import { deviceInfo, systemDateTime } from '@kit.BasicServicesKit';
+import lazy { settings } from '@kit.BasicServicesKit';
+import lazy { hidebug } from '@kit.PerformanceAnalysisKit';
 
 enum DeviceType {
   UNKNOWN = 0,
@@ -26,6 +27,10 @@ enum DeviceType {
 
 const BYTES_PER_KIBIBYTE: number = 1024;
 const MEMORY_CAPABILITY = 'SystemCapability.HiviewDFX.HiProfiler.HiDebug';
+const SETTINGS_CAPABILITY = 'SystemCapability.Applications.Settings.Core';
+// Huawei documents this product model for DevEco Studio's emulator.
+const EMULATOR_PRODUCT_MODEL = 'emulator';
+const DEFAULT_INCREMENTAL_VERSION = 'default';
 
 export class ExpoDeviceModule extends ExpoModule {
   constructor(context: ExpoModuleContext) {
@@ -35,8 +40,7 @@ export class ExpoDeviceModule extends ExpoModule {
   definition(): ExpoModuleDefinition {
     return new ExpoModuleDefinition()
       .name('ExpoDevice')
-      // DevEco Studio's emulator reports this product model through the public API.
-      .constant('isDevice', (): boolean => deviceInfo.productModel !== 'emulator')
+      .constant('isDevice', (): boolean => deviceInfo.productModel !== EMULATOR_PRODUCT_MODEL)
       .constant('brand', (): string | null => nonEmptyOrNull(deviceInfo.brand))
       .constant('manufacturer', (): string | null => nonEmptyOrNull(deviceInfo.manufacture))
       .constant('modelName', (): string | null => nonEmptyOrNull(deviceInfo.marketName) ?? nonEmptyOrNull(deviceInfo.productModel))
@@ -47,7 +51,10 @@ export class ExpoDeviceModule extends ExpoModule {
       .constant('totalMemory', (): number | null => this.totalMemory())
       .constant('deviceType', (): DeviceType => getDeviceType())
       .constant('supportedCpuArchitectures', (): string[] | null => {
-        const abis = deviceInfo.abiList
+        const list = nonEmptyOrNull(deviceInfo.abiList);
+        if (list === null) return null;
+
+        const abis = list
           .split(',')
           .map((abi: string): string => abi.trim())
           .filter((abi: string): boolean => abi.length > 0);
@@ -59,11 +66,14 @@ export class ExpoDeviceModule extends ExpoModule {
       .constant('osBuildId', (): string | null => nonEmptyOrNull(deviceInfo.displayVersion))
       .constant('osInternalBuildId', (): string | null => {
         const version = deviceInfo.incrementalVersion;
-        return (version === 'default' ? null : nonEmptyOrNull(version)) ?? nonEmptyOrNull(deviceInfo.osFullName);
+
+        return (version === DEFAULT_INCREMENTAL_VERSION ? null : nonEmptyOrNull(version)) ?? nonEmptyOrNull(deviceInfo.osFullName);
       })
       .constant('osBuildFingerprint', (): string | null => nonEmptyOrNull(deviceInfo.versionId))
       .constant('platformApiLevel', (): number | null => positiveIntegerOrNull(deviceInfo.sdkApiVersion))
       .constant('deviceName', (): string | null => {
+        if (!canIUse(SETTINGS_CAPABILITY)) return null;
+
         try {
           return nonEmptyOrNull(settings.getValueSync(this.context.uiAbilityContext, settings.general.DEVICE_NAME, ''));
         } catch {
@@ -134,7 +144,7 @@ function kibibytesToBytes(value: bigint): number | null {
 }
 
 function nonEmptyOrNull(value: string): string | null {
-  return value.length > 0 ? value : null;
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
 }
 
 function getDeviceType(): DeviceType {
