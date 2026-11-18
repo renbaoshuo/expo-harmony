@@ -115,6 +115,7 @@ export class ImageManipulatorContext extends ExpoSharedObject {
   private readonly source: string | image.PixelMap;
   private task: ManipulatorTask;
   private disposed: boolean = false;
+  private readers: number = 0;
   private unsubscribe?: () => void;
 
   constructor(context: ExpoModuleContext, source: string | ExpoSharedRef<image.PixelMap>) {
@@ -143,7 +144,7 @@ export class ImageManipulatorContext extends ExpoSharedObject {
       const x = width / size.width;
       const y = height / size.height;
 
-      if (deviceInfo.apiAvailable('26.0.0')) {
+      if (typeof deviceInfo.apiAvailable === 'function' && deviceInfo.apiAvailable('26.0.0')) {
         await pixel.applyScale(x, y, image.AntiAliasingLevel.LOW);
       } else {
         await pixel.scale(x, y, image.AntiAliasingLevel.LOW);
@@ -166,7 +167,7 @@ export class ImageManipulatorContext extends ExpoSharedObject {
 
       const size = angle === 90 || angle === 270 ? pixel.getImageInfoSync().size : undefined;
 
-      if (deviceInfo.apiAvailable('26.0.0')) {
+      if (typeof deviceInfo.apiAvailable === 'function' && deviceInfo.apiAvailable('26.0.0')) {
         await pixel.applyRotate(angle);
       } else {
         await pixel.rotate(angle);
@@ -188,7 +189,10 @@ export class ImageManipulatorContext extends ExpoSharedObject {
     this.task.transform((pixel: image.PixelMap): Promise<void> => {
       const horizontal = type === FlipType.HORIZONTAL;
       const vertical = type === FlipType.VERTICAL;
-      if (deviceInfo.apiAvailable('26.0.0')) return pixel.applyFlip(horizontal, vertical);
+
+      if (typeof deviceInfo.apiAvailable === 'function' && deviceInfo.apiAvailable('26.0.0')) {
+        return pixel.applyFlip(horizontal, vertical);
+      }
       return pixel.flip(horizontal, vertical);
     });
     return this;
@@ -218,7 +222,7 @@ export class ImageManipulatorContext extends ExpoSharedObject {
 
       const region: image.Region = { x, y, size: { width, height } };
 
-      if (deviceInfo.apiAvailable('26.0.0')) {
+      if (typeof deviceInfo.apiAvailable === 'function' && deviceInfo.apiAvailable('26.0.0')) {
         await pixel.applyCrop(region);
       } else {
         await pixel.crop(region);
@@ -251,7 +255,7 @@ export class ImageManipulatorContext extends ExpoSharedObject {
     this.unsubscribe = undefined;
 
     this.task.close();
-    if (typeof this.source !== 'string') releasePixelMap(this.source);
+    if (typeof this.source !== 'string' && this.readers === 0) releasePixelMap(this.source);
   }
 
   private createTask(): ManipulatorTask {
@@ -260,7 +264,18 @@ export class ImageManipulatorContext extends ExpoSharedObject {
 
   private async load(): Promise<image.PixelMap> {
     this.context.assertActive();
-    if (typeof this.source !== 'string') return copyPixelMap(this.source);
+
+    const source = this.source;
+    if (typeof source !== 'string') {
+      // Native cloning can outlive a reset or release of the context.
+      this.readers += 1;
+      try {
+        return await snapshotPixelMap(source);
+      } finally {
+        this.readers -= 1;
+        if (this.disposed && this.readers === 0) releasePixelMap(source);
+      }
+    }
 
     const loader = this.context.services.get(ImageLoaderInterfaceKey);
     if (loader === undefined) {
@@ -271,7 +286,7 @@ export class ImageManipulatorContext extends ExpoSharedObject {
     }
 
     try {
-      return await loader.loadImageForManipulationFromURL(this.source);
+      return await loader.loadImageForManipulationFromURL(source);
     } catch (error) {
       throw new ExpoModuleError('ERR_IMAGE_LOADING_FAILED', 'Could not load the image.', error as Object);
     }

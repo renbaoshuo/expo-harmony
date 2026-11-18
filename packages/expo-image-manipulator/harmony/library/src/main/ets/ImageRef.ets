@@ -71,39 +71,38 @@ export class ImageRef extends ExpoSharedRef<image.PixelMap> {
 
     const format = options.format === ImageFormat.JPG ? ImageFormat.JPEG : options.format;
     const extension = format === ImageFormat.JPEG ? 'jpg' : format;
-    const directory = `${this.context.cachePath}/ImageManipulator`;
-    let path: string | undefined;
+    const dir = `${this.context.cachePath}/ImageManipulator`;
+    const path = `${dir}/${util.generateRandomUUID(true)}.${extension}`;
+    const temp = `${path}.tmp`;
+    let incomplete: string | undefined;
     let file: fileIo.File | undefined;
-    let created: boolean = false;
-    let saved: boolean = false;
 
     try {
       const size = this.value.getImageInfoSync().size;
-      const mimeType = `image/${format}`;
+      const mime = `image/${format}`;
       const packer = image.createImagePacker();
 
       try {
-        if (!packer.supportedFormats.includes(mimeType)) {
-          throw new ExpoModuleError('ERR_IMAGE_UNSUPPORTED_FORMAT', `The device does not support encoding ${mimeType} images.`);
+        if (!packer.supportedFormats.includes(mime)) {
+          throw new ExpoModuleError('ERR_IMAGE_UNSUPPORTED_FORMAT', `The device does not support encoding ${mime} images.`);
         }
 
-        path = `${directory}/${util.generateRandomUUID(true)}.${extension}`;
         try {
-          await fileIo.mkdir(directory, true);
+          await fileIo.mkdir(dir, true);
         } catch (error) {
-          if (!(await fileIo.stat(directory)).isDirectory()) {
+          if (!(await fileIo.stat(dir)).isDirectory()) {
             throw new ExpoModuleError('ERR_IMAGE_WRITE_FAILED', 'Could not create the image cache directory.', error as Object);
           }
         }
 
         this.context.assertActive();
 
-        file = await fileIo.open(path, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
-        created = true;
+        file = await fileIo.open(temp, fileIo.OpenMode.CREATE | fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
+        incomplete = temp;
 
         this.context.assertActive();
 
-        const packing: image.PackingOption = { format: mimeType, quality: Math.trunc(options.compress * 100) };
+        const packing: image.PackingOption = { format: mime, quality: Math.trunc(options.compress * 100) };
         // packToFile avoids packToData's default 25 MiB output limit.
         await packer.packToFile(this.value, file.fd, packing);
       } finally {
@@ -127,11 +126,17 @@ export class ImageRef extends ExpoSharedRef<image.PixelMap> {
 
       this.context.assertActive();
       const result: ImageResult = { uri: fileUriFromPath(path), width: size.width, height: size.height, base64 };
-      saved = true;
+
+      await fileIo.rename(temp, path);
+      incomplete = path;
+      this.context.assertActive();
+      incomplete = undefined;
 
       return result;
     } catch (error) {
-      if (error instanceof ExpoModuleError) throw error;
+      if (error instanceof ExpoModuleError) {
+        throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
+      }
       throw new ExpoModuleError('ERR_IMAGE_WRITE_FAILED', 'Writing image data to the file has failed.', error as Object);
     } finally {
       if (file !== undefined) {
@@ -142,9 +147,9 @@ export class ImageRef extends ExpoSharedRef<image.PixelMap> {
         }
       }
 
-      if (created && !saved && path !== undefined) {
+      if (incomplete !== undefined) {
         try {
-          await fileIo.unlink(path);
+          await fileIo.unlink(incomplete);
         } catch (error) {
           console.warn(`ImageManipulator could not remove its incomplete output: ${String(error)}`);
         }
