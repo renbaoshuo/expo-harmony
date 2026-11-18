@@ -32,10 +32,7 @@ export class ExpoApplicationModule extends ExpoModule {
       })
       .constant('applicationId', (): string | null => nonEmptyOrNull(this.readConstantInfo()?.name))
       .constant('nativeApplicationVersion', (): string | null => nonEmptyOrNull(this.readConstantInfo()?.versionName))
-      .constant('nativeBuildVersion', (): string | null => {
-        const code = this.readConstantInfo()?.versionCode;
-        return code !== undefined && Number.isSafeInteger(code) && code >= 0 ? String(code) : null;
-      })
+      .constant('nativeBuildVersion', (): string | null => nativeBuildVersion(this.readConstantInfo()))
       .asyncFunction('getInstallationTimeAsync', async (): Promise<number> => {
         const info = await this.readBundleInfo('ERR_APPLICATION_INSTALLATION_TIME', 'installation time');
         return installationTime(info);
@@ -78,6 +75,18 @@ export class ExpoApplicationModule extends ExpoModule {
 
 function nonEmptyOrNull(value: string | undefined): string | null {
   return value !== undefined && value.length > 0 ? value : null;
+}
+
+function nativeBuildVersion(info: bundleManager.BundleInfo | undefined): string | null {
+  if (info === undefined) return null;
+
+  if (deviceInfo.sdkApiVersion >= 23) {
+    const build = nonEmptyOrNull(info.buildVersion);
+    if (build !== null) return build;
+  }
+
+  const code = info.versionCode;
+  return Number.isSafeInteger(code) && code >= 0 ? String(code) : null;
 }
 
 function installationTime(info: bundleManager.BundleInfo): number {

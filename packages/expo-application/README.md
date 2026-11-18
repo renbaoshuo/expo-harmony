@@ -40,7 +40,7 @@ HarmonyOS 应用版本号。系统未提供非空版本号时返回 `null`。
 
 类型：`string | null`
 
-HarmonyOS 应用构建版本号，以字符串返回。系统未提供有效版本号时返回 `null`。
+HarmonyOS 应用构建版本号，以字符串返回。API 23 及以上优先读取应用显式配置的 `buildVersion`，其余情况使用 `versionCode`。系统未提供有效版本号时返回 `null`。
 
 ### Methods
 
