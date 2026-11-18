@@ -11,7 +11,7 @@ import { bundleManager } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { window } from '@kit.ArkUI';
-import nativeFonts from 'libexpo_constants_fonts.so';
+import lazy nativeFonts from 'libexpo_constants_fonts.so';
 
 const APP_CONFIG_RAW_FILE: string = 'app.config';
 const INVALID_RAW_FILE_PATH: number = 9001005;
@@ -87,7 +87,7 @@ export class ExpoConstantsService extends ExpoService implements ExpoConstantsPr
       'sessionId': runtime.sessionId,
       'statusBarHeight': (): number => isHeadless ? 0 : this.readStatusBarHeight(context),
       'systemFonts': (): string[] => this.readSystemFonts(context),
-      'systemVersion': deviceInfo.displayVersion,
+      'systemVersion': deviceInfo.distributionOSVersion,
       'platform': (): PlatformConstants | undefined => this.readPlatformConstants(context),
     };
   }
@@ -137,6 +137,7 @@ export class ExpoConstantsService extends ExpoService implements ExpoConstantsPr
 
     try {
       const names = nativeFonts.getSystemFontFamilies();
+
       return Array.from(new Set<string>(names)).sort();
     } catch (error) {
       context.logger.warn(`Unable to enumerate HarmonyOS system fonts; returning an empty list: ${String(error)}`);
@@ -147,7 +148,8 @@ export class ExpoConstantsService extends ExpoService implements ExpoConstantsPr
 
   private readPlatformConstants(context: ExpoModuleContext): PlatformConstants | undefined {
     try {
-      const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
+      const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT);
+
       if (info.name.length === 0 || info.versionName.length === 0 || !Number.isSafeInteger(info.versionCode)) {
         throw new Error('HarmonyOS returned invalid bundle information.');
       }

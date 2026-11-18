@@ -34,16 +34,18 @@ class ExpoConstantsPluginError extends HarmonyConfigPluginError {
 }
 
 async function writeResourceAsync(root, config) {
+  const source = path.posix.dirname(HarmonyPaths.HARMONY_PATHS.moduleJson);
   const file = await HarmonyPaths.resolveHarmonyPath(
     root,
-    'entry/src/main/resources/rawfile/app.config'
+    path.posix.join(source, 'resources/rawfile/app.config')
   );
+
   const content = JSON.stringify(config);
 
   try {
     const previous = await readFile(file, 'utf8').catch((cause) => {
       if (cause.code === 'ENOENT') return undefined;
-      throw cause;
+      return Promise.reject(cause);
     });
 
     if (previous !== content) await atomicWrite(file, content);
