@@ -32,7 +32,7 @@ npm install @expo-harmony/expo-mail-composer expo-mail-composer@~57.0.2
 
 返回 `Promise<MailComposerResult>`，打开系统邮件选择界面并将选项中的内容交给用户选择的邮件客户端。系统报告用户取消选择时返回 `{ status: 'cancelled' }`；客户端启动成功或系统只返回通用结果时返回 `{ status: 'undetermined' }`。结果不代表邮件已发送或保存。设备没有可用邮件客户端时，系统可能提示用户，但 Promise 可能一直等待系统回调。
 
-应用必须处于前台才能调用。同一 UIAbility 一次只能处理一个请求；请求仍在进行时再次调用会以 `ERR_MAIL_COMPOSER_IN_PROGRESS` 拒绝。发起请求的运行时重载或销毁时会以 `ERR_MAIL_COMPOSER_DESTROYED` 拒绝。启动客户端失败时以 `ERR_MAIL_COMPOSER_COMPOSE` 拒绝。
+应用必须处于前台才能调用。同一 UIAbility 一次只能处理一个请求。请求仍在进行时再次调用会以 `ERR_MAIL_COMPOSER_IN_PROGRESS` 拒绝。窗口关闭、发起请求的运行时重载或销毁时会以 `ERR_MAIL_COMPOSER_DESTROYED` 拒绝。启动客户端失败时以 `ERR_MAIL_COMPOSER_COMPOSE` 拒绝。
 
 ### Types
 
@@ -58,7 +58,7 @@ npm install @expo-harmony/expo-mail-composer expo-mail-composer@~57.0.2
 
 所有选项均可省略；地址和附件可传空数组。附件必须是可读取的普通文件，并位于应用的文件、缓存、临时或分布式文件目录中。系统文件选择器提供的文件需先复制到应用目录。用户选择邮件客户端后，附件会获得临时读取权限；应用需在客户端完成读取前保留文件。
 
-- HarmonyOS 仅支持纯文本正文；`isHtml: true` 会以 `ERR_MAIL_COMPOSER_HTML_UNSUPPORTED` 拒绝。
+- HarmonyOS 仅支持纯文本正文。传入非空正文且设置 `isHtml: true` 时，请求以 `ERR_MAIL_COMPOSER_HTML_UNSUPPORTED` 拒绝。
 - 无法读取或不在应用上述目录中的附件会以 `ERR_MAIL_COMPOSER_ATTACHMENT` 拒绝。
 
 #### `MailComposerResult`
@@ -98,11 +98,11 @@ npm install @expo-harmony/expo-mail-composer expo-mail-composer@~57.0.2
 
 #### `ERR_MAIL_COMPOSER_DESTROYED`
 
-邮件请求尚未完成时应用重载或销毁。
+邮件请求尚未完成时窗口关闭，或运行时重载或销毁。
 
 #### `ERR_MAIL_COMPOSER_HTML_UNSUPPORTED`
 
-`MailComposerOptions.isHtml` 设为 `true`；HarmonyOS 邮件撰写仅支持纯文本。
+传入非空正文且 `MailComposerOptions.isHtml` 设为 `true`。HarmonyOS 邮件撰写仅支持纯文本。
 
 #### `ERR_MAIL_COMPOSER_IN_PROGRESS`
 

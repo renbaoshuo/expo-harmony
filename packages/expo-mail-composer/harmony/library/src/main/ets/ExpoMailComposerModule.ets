@@ -48,6 +48,7 @@ export class ExpoMailComposerModule extends ExpoModule {
   private static readonly openRequests = new WeakMap<common.UIAbilityContext, MailComposerRequest>();
   private pending?: MailComposerRequest;
   private destroyed: boolean = false;
+  private closing: boolean = false;
 
   definition(): ExpoModuleDefinition {
     return new ExpoModuleDefinition()
@@ -58,6 +59,13 @@ export class ExpoMailComposerModule extends ExpoModule {
         'composeAsync',
         ExpoFunction.typed1(MAIL_COMPOSER_OPTIONS, (options: MailComposerOptions): Promise<MailComposerResult> => this.compose(options)),
       )
+      .onWindowStageSetup((): void => {
+        this.closing = false;
+      })
+      .onWindowStageWillDestroy((): void => {
+        this.closing = true;
+        this.rejectPending('The mail composer window was closed while a request was pending.');
+      })
       .onPrepareForReload(async (): Promise<void> => this.destroy())
       .onAbilityDestroy((): void => this.destroy())
       .onDestroy((): void => this.destroy());
@@ -80,9 +88,10 @@ export class ExpoMailComposerModule extends ExpoModule {
 
   private assertForeground(): void {
     if (this.destroyed) throw new ExpoModuleError('ERR_MAIL_COMPOSER_DESTROYED', 'The mail composer host was destroyed.');
-    if (this.context.isHeadless || this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) {
+    if (this.closing || this.context.isHeadless || this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) {
       throw new ExpoModuleError('ERR_MAIL_COMPOSER_BACKGROUND', 'The mail composer requires a foreground application.');
     }
+
     if (!canIUse(ABILITY_CAPABILITY)) {
       throw new ExpoModuleError('ERR_MAIL_COMPOSER_UNAVAILABLE', 'The system mail composer is unavailable.');
     }
@@ -96,7 +105,8 @@ export class ExpoMailComposerModule extends ExpoModule {
     if (this.pending !== undefined || ExpoMailComposerModule.openRequests.has(ability)) {
       throw new ExpoModuleError('ERR_MAIL_COMPOSER_IN_PROGRESS', 'Another mail composer request is in progress.');
     }
-    if (options.isHtml) {
+
+    if (options.isHtml && options.body !== undefined && options.body.length > 0) {
       throw new ExpoModuleError('ERR_MAIL_COMPOSER_HTML_UNSUPPORTED', 'The HarmonyOS mail composer protocol only supports plain text bodies.');
     }
 
@@ -178,12 +188,15 @@ export class ExpoMailComposerModule extends ExpoModule {
     );
   }
 
-  private destroy(): void {
-    this.destroyed = true;
-
+  private rejectPending(message: string): void {
     const request = this.pending;
     if (request !== undefined) {
-      this.fail(request, new ExpoModuleError('ERR_MAIL_COMPOSER_DESTROYED', 'The mail composer host was destroyed while a request was pending.'));
+      this.fail(request, new ExpoModuleError('ERR_MAIL_COMPOSER_DESTROYED', message));
     }
+  }
+
+  private destroy(): void {
+    this.destroyed = true;
+    this.rejectPending('The mail composer host was destroyed while a request was pending.');
   }
 }
