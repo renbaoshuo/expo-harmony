@@ -49,7 +49,7 @@ export function Player({ uri }: { uri: string }) {
 
 #### `getCurrentVideoCacheSize()`
 
-返回 `0`。HarmonyOS 上不提供持久化视频缓存。
+返回 `0`。本包在 HarmonyOS 上不提供 Expo 的持久化视频缓存。Media Kit 支持播放缓冲，API 23 起也提供离线缓存开关，但该开关未提供 Expo 所需的大小查询、配额和清理能力。[MediaSource API](https://developer.huawei.com/consumer/en/doc/harmonyos-references/arkts-apis-media-mediasource/)
 
 #### `clearVideoCacheAsync()`
 
@@ -61,7 +61,7 @@ export function Player({ uri }: { uri: string }) {
 
 #### `VideoPlayer.play()`
 
-开始播放。播放器可以在数据源准备完成前接收播放请求；视频视图准备好后按该请求播放。
+开始播放。播放器可以在数据源准备完成前接收播放请求，准备好后按该请求播放。
 
 #### `VideoPlayer.pause()`
 
@@ -73,7 +73,7 @@ export function Player({ uri }: { uri: string }) {
 
 #### `VideoPlayer.seekBy(seconds)`
 
-相对当前位置前进或后退指定秒数。直播源不支持跳转，会抛出 `ERR_VIDEO_UNSUPPORTED`。
+相对当前位置前进或后退指定秒数。实际位置可能对齐到关键帧。直播源不支持跳转，会抛出 `ERR_VIDEO_UNSUPPORTED`。
 
 #### `VideoPlayer.replace(source)`
 
@@ -81,7 +81,7 @@ export function Player({ uri }: { uri: string }) {
 
 #### `VideoPlayer.replaceAsync(source)`
 
-异步替换当前数据源，返回 `Promise<void>`；加载失败时拒绝。传入 `null` 或不含 `uri` 的对象会清空数据源。没有挂载视图时也可换源；视频准备在视图挂载且有尺寸后进行。再次换源会取消前一次加载。
+异步替换当前数据源，返回 `Promise<void>`；数据源初始化失败时拒绝。传入 `null` 或不含 `uri` 的对象会清空数据源。没有挂载视图时也可换源。准备失败通过 `statusChange` 报告。再次换源会取消前一次加载并结束其 Promise。
 
 #### `VideoPlayer.release()`
 
@@ -245,7 +245,7 @@ export function Player({ uri }: { uri: string }) {
 
 ##### `VideoViewProps.surfaceType`
 
-- HarmonyOS 只接受 `'surfaceView'`；设为 `'textureView'` 会抛出 `ERR_VIDEO_UNSUPPORTED`。
+默认使用 `'surfaceView'`。布局需要与视频画面合成时可选 `'textureView'`。系统画中画只支持 `'surfaceView'`。
 
 ##### `VideoViewProps.allowsVideoFrameAnalysis`
 
@@ -269,7 +269,7 @@ export function Player({ uri }: { uri: string }) {
 
 #### `VideoPlayer`
 
-播放器的数据源准备在 `VideoView` 挂载且视图有尺寸后完成。之前 `status` 为 `loading`，`duration` 和轨道列表为空。播放器在应用进入后台时暂停，并在回到前台后恢复之前的播放请求；画中画或已获系统后台播放许可时可以继续播放。
+播放器通常在 `VideoView` 挂载且视图有尺寸后准备。若 Media Kit 确认本地文件含音频且不含视频轨道，播放器可以在没有视图时准备并播放。准备之前 `status` 为 `loading`，`duration` 和轨道列表为空。播放器在应用进入后台时暂停，并在回到前台后恢复之前的播放请求；画中画或已获系统后台播放许可时可以继续播放。[Media Kit 音频播放](https://developer.huawei.com/consumer/en/doc/harmonyos-guides/using-avplayer-for-playback/)
 
 ##### `VideoPlayer.playing`
 
@@ -293,7 +293,7 @@ export function Player({ uri }: { uri: string }) {
 
 ##### `VideoPlayer.bufferedPosition`
 
-只读 `number`，已缓冲位置（秒）；未设置数据源时为 `-1`，尚无缓存时长或正在缓冲时为 `0`。
+只读 `number`，已缓冲位置（秒）；未设置数据源时为 `-1`，尚无缓存时长或正在缓冲时为 `0`。直接读取的本地视频准备后返回视频总时长。
 
 ##### `VideoPlayer.loop`
 
@@ -405,7 +405,7 @@ export function Player({ uri }: { uri: string }) {
 - `assetId`：应用中的视频资源编号。
 - `headers`：网络请求头，类型为 `Record<string, string>`。
 - `metadata`：媒体信息，见 `VideoMetadata`。
-- `contentType`：内容类型，见 `ContentType`。省略或设为 `'auto'` 时交由系统识别；本地或打包的 HLS 播放列表可指定 `'hls'`。
+- `contentType`：内容类型，见 `ContentType`。省略或设为 `'auto'` 时交由系统识别；本地或打包的 HLS 播放列表可指定 `'hls'`，本地普通媒体文件可指定 `'progressive'`。
 
 打包资源可使用 `asset://`、`rawfile://` 或 `resource://RAWFILE/` 地址。网络视频需要网络访问权限；本地文件须在应用可读目录中，或已通过系统文件选择器取得访问授权。可播放的格式由设备和 HarmonyOS 版本决定。[HarmonyOS 播放地址设置](https://developer.huawei.com/consumer/en/doc/harmonyos-guides/playback-url-setting-method/)
 
@@ -419,7 +419,7 @@ export function Player({ uri }: { uri: string }) {
 
 ##### `VideoSourceObject.contentType`
 
-- HarmonyOS 只接受省略、`'auto'` 或本地/打包 HLS 播放列表上的 `'hls'`；显式指定其他类型会抛出 `ERR_VIDEO_UNSUPPORTED`。
+- HarmonyOS 对网络视频使用系统格式检测。网络 HLS 和 DASH 使用 `'auto'`。Media Kit 的显式 MIME 类型用于本地或打包的 HLS 播放列表；本地普通媒体文件可指定 `'progressive'`。[Media Kit 播放地址设置](https://developer.huawei.com/consumer/en/doc/harmonyos-guides/playback-url-setting-method/)
 
 #### `VideoMetadata`
 

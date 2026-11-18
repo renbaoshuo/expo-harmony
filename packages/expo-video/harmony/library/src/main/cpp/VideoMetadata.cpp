@@ -17,11 +17,12 @@ namespace {
 constexpr double MAX_SAFE_INTEGER = 9007199254740991.0;
 constexpr const char *ERROR_CODE = "ERR_VIDEO_METADATA";
 
-struct RangeRequest {
+struct TrackMetadataRequest {
   int32_t fd = -1;
   int64_t offset = 0;
   int64_t length = 0;
   std::map<uint32_t, const char *> ranges;
+  bool audioOnly = false;
   bool failed = false;
   napi_async_work work = nullptr;
   napi_deferred deferred = nullptr;
@@ -38,8 +39,8 @@ const char *videoRange(int32_t transfer) {
   }
 }
 
-void readRanges(napi_env, void *data) {
-  auto &request = *static_cast<RangeRequest *>(data);
+void readTracks(napi_env, void *data) {
+  auto &request = *static_cast<TrackMetadataRequest *>(data);
   try {
     Source source(OH_AVSource_CreateWithFD(request.fd, request.offset, request.length), OH_AVSource_Destroy);
     if (!source) return;
@@ -48,15 +49,25 @@ void readRanges(napi_env, void *data) {
     int32_t count = 0;
     if (!format || !OH_AVFormat_GetIntValue(format.get(), OH_MD_KEY_TRACK_COUNT, &count)) return;
 
+    bool complete = true;
+    bool hasAudio = false;
     for (int32_t index = 0; index < count; ++index) {
       Format track(OH_AVSource_GetTrackFormat(source.get(), index), OH_AVFormat_Destroy);
-      int32_t type = MEDIA_TYPE_AUD;
-      if (!track || !OH_AVFormat_GetIntValue(track.get(), OH_MD_KEY_TRACK_TYPE, &type) || type != MEDIA_TYPE_VID) continue;
+      int32_t type = 0;
+      if (!track || !OH_AVFormat_GetIntValue(track.get(), OH_MD_KEY_TRACK_TYPE, &type)) {
+        complete = false;
+        continue;
+      }
+
+      if (type == MEDIA_TYPE_AUD) hasAudio = true;
+      if (type != MEDIA_TYPE_VID) continue;
 
       int32_t transfer = TRANSFER_CHARACTERISTIC_UNSPECIFIED;
       OH_AVFormat_GetIntValue(track.get(), OH_MD_KEY_TRANSFER_CHARACTERISTICS, &transfer);
       request.ranges.emplace(static_cast<uint32_t>(index), videoRange(transfer));
     }
+
+    request.audioOnly = complete && hasAudio && request.ranges.empty();
   } catch (...) {
     request.failed = true;
   }
@@ -78,7 +89,7 @@ void reject(napi_env env, napi_deferred deferred, const char *message) {
 }
 
 void complete(napi_env env, napi_status status, void *data) {
-  std::unique_ptr<RangeRequest> request(static_cast<RangeRequest *>(data));
+  std::unique_ptr<TrackMetadataRequest> request(static_cast<TrackMetadataRequest *>(data));
   napi_delete_async_work(env, request->work);
 
   if (status != napi_ok || request->failed) {
@@ -86,16 +97,19 @@ void complete(napi_env env, napi_status status, void *data) {
     return;
   }
 
-  napi_value result = nullptr;
-  if (napi_create_object(env, &result) != napi_ok) {
-    reject(env, request->deferred, "Could not create video range metadata.");
+  napi_value result = nullptr, ranges = nullptr, audioOnly = nullptr;
+  if (napi_create_object(env, &result) != napi_ok || napi_create_object(env, &ranges) != napi_ok ||
+      napi_get_boolean(env, request->audioOnly, &audioOnly) != napi_ok ||
+      napi_set_named_property(env, result, "ranges", ranges) != napi_ok ||
+      napi_set_named_property(env, result, "audioOnly", audioOnly) != napi_ok) {
+    reject(env, request->deferred, "Could not create video track metadata.");
     return;
   }
 
   for (const auto &[index, range] : request->ranges) {
     napi_value value = nullptr;
     if (napi_create_string_utf8(env, range, NAPI_AUTO_LENGTH, &value) != napi_ok ||
-        napi_set_element(env, result, index, value) != napi_ok) {
+        napi_set_element(env, ranges, index, value) != napi_ok) {
       reject(env, request->deferred, "Could not create video range metadata.");
       return;
     }
@@ -112,7 +126,7 @@ bool integer(napi_env env, napi_value value, double min, double max, int64_t &ou
   return true;
 }
 
-napi_value readVideoRanges(napi_env env, napi_callback_info info) {
+napi_value readTrackMetadata(napi_env env, napi_callback_info info) {
   size_t count = 4;
   napi_value args[4] = {};
   if (napi_get_cb_info(env, info, &count, args, nullptr, nullptr) != napi_ok) return nullptr;
@@ -124,9 +138,9 @@ napi_value readVideoRanges(napi_env env, napi_callback_info info) {
     return nullptr;
   }
 
-  std::unique_ptr<RangeRequest> request;
+  std::unique_ptr<TrackMetadataRequest> request;
   try {
-    request = std::make_unique<RangeRequest>();
+    request = std::make_unique<TrackMetadataRequest>();
   } catch (const std::exception &error) {
     napi_throw_error(env, ERROR_CODE, error.what());
     return nullptr;
@@ -139,7 +153,8 @@ napi_value readVideoRanges(napi_env env, napi_callback_info info) {
   napi_value promise = nullptr, name = nullptr;
   if (napi_create_string_utf8(env, "ExpoVideoMetadata", NAPI_AUTO_LENGTH, &name) != napi_ok ||
       napi_create_promise(env, &request->deferred, &promise) != napi_ok) return nullptr;
-  if (napi_create_async_work(env, nullptr, name, readRanges, complete, request.get(), &request->work) != napi_ok ||
+
+  if (napi_create_async_work(env, nullptr, name, readTracks, complete, request.get(), &request->work) != napi_ok ||
       napi_queue_async_work(env, request->work) != napi_ok) {
     if (request->work) napi_delete_async_work(env, request->work);
     reject(env, request->deferred, "Could not schedule video metadata extraction.");
@@ -152,7 +167,7 @@ napi_value readVideoRanges(napi_env env, napi_callback_info info) {
 
 napi_value initialize(napi_env env, napi_value exports) {
   napi_property_descriptor methods[] = {
-    {"readVideoRanges", nullptr, readVideoRanges, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"readTrackMetadata", nullptr, readTrackMetadata, nullptr, nullptr, nullptr, napi_default, nullptr},
   };
   if (napi_define_properties(env, exports, 1, methods) != napi_ok) return nullptr;
   return exports;

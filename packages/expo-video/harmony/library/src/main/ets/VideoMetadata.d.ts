@@ -6,8 +6,13 @@
  */
 
 declare module 'libexpo_video_metadata.so' {
+  export interface VideoTrackMetadata {
+    ranges: Record<string, 'sdr' | 'hlg' | 'pq'>;
+    audioOnly: boolean;
+  }
+
   const metadata: {
-    readVideoRanges(fd: number, offset: number, length: number): Promise<Record<string, 'sdr' | 'hlg' | 'pq'>>;
+    readTrackMetadata(fd: number, offset: number, length: number): Promise<VideoTrackMetadata>;
   };
 
   export default metadata;

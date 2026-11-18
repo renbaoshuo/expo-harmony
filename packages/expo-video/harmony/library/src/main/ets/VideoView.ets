@@ -34,6 +34,8 @@ export interface ContentPosition {
   dy?: number;
 }
 
+export type SurfaceType = 'surfaceView' | 'textureView';
+
 export class VideoScreenOn {
   private readonly holders: Set<VideoView> = new Set<VideoView>();
   private tail: Promise<void> = Promise.resolve();
@@ -123,12 +125,12 @@ export class VideoView extends ExpoView implements VideoObserver {
   videoWidth: number = 0;
   videoHeight: number = 0;
   frameReady: boolean = false;
+  surfaceType: SurfaceType = 'surfaceView';
   surfaceRevision: number = 0;
   private surface?: string;
   private surfaceController?: XComponentController;
   private allowsPictureInPicture: boolean = false;
   private startsPictureInPictureAutomatically: boolean = false;
-  private pictureInPictureActive: boolean = false;
   private readonly pictureInPicture: VideoPictureInPicture;
   private destroyed: boolean = false;
   private announced: boolean = false;
@@ -139,11 +141,10 @@ export class VideoView extends ExpoView implements VideoObserver {
     this.screen = screen;
     this.pictureInPicture = new VideoPictureInPicture(
       context.moduleContext.uiAbilityContext,
-      (active: boolean, event?: string): void => {
+      (owner: XComponentController, active: boolean, event?: string): void => {
         if (this.destroyed) return;
-        this.pictureInPictureActive = active;
-        this.player?.setPictureInPictureActive(active);
-        if (event !== undefined) this.sendEvent(event);
+        if (owner === this.surfaceController) this.player?.setPictureInPictureActive(active);
+        if (event !== undefined && (!active || owner === this.surfaceController)) this.sendEvent(event);
       },
       (play: boolean): void => {
         if (play) this.player?.play();
@@ -164,7 +165,6 @@ export class VideoView extends ExpoView implements VideoObserver {
     previous?.releaseView(this);
     this.surface = undefined;
     this.surfaceController = undefined;
-    this.pictureInPictureActive = false;
     this.surfaceRevision += 1;
     this.player = player;
     player?.addObserver(this);
@@ -210,6 +210,7 @@ export class VideoView extends ExpoView implements VideoObserver {
 
     this.surface = undefined;
     this.surfaceController = undefined;
+    this.player?.setPictureInPictureActive(false);
     this.player?.detachSurface(this, surface);
     this.updatePictureInPicture();
   }
@@ -217,6 +218,15 @@ export class VideoView extends ExpoView implements VideoObserver {
   setAllowsPictureInPicture(allowed: boolean): void {
     this.allowsPictureInPicture = allowed;
     this.updatePictureInPicture();
+  }
+
+  setSurfaceType(surfaceType: SurfaceType): void {
+    if (this.destroyed || this.surfaceType === surfaceType) return;
+
+    if (this.surface !== undefined) this.detach(this.surface);
+
+    this.surfaceType = surfaceType;
+    this.surfaceRevision += 1;
   }
 
   setStartsPictureInPictureAutomatically(enabled: boolean): void {
@@ -228,7 +238,11 @@ export class VideoView extends ExpoView implements VideoObserver {
     if (!this.allowsPictureInPicture) {
       throw new ExpoModuleError('ERR_VIDEO_PIP_DISABLED', 'Enable allowsPictureInPicture before starting Picture in Picture.');
     }
+    if (this.surfaceType === 'textureView') {
+      throw new ExpoModuleError('ERR_VIDEO_PIP_UNAVAILABLE', 'Picture in Picture requires a surfaceView on HarmonyOS.');
+    }
     if (!this.frameReady) throw new ExpoModuleError('ERR_VIDEO_PIP_NOT_READY', 'Wait for the first video frame before starting Picture in Picture.');
+
     return this.pictureInPicture.start();
   }
 
@@ -237,8 +251,9 @@ export class VideoView extends ExpoView implements VideoObserver {
   }
 
   private updatePictureInPicture(): void {
-    const enabled = this.allowsPictureInPicture || this.startsPictureInPictureAutomatically;
-    const autoStart = this.startsPictureInPictureAutomatically && this.frameReady && this.playbackRequested;
+    const enabled = this.surfaceType === 'surfaceView' && (this.allowsPictureInPicture || this.startsPictureInPictureAutomatically);
+    const autoStart = enabled && this.startsPictureInPictureAutomatically && this.frameReady && this.playbackRequested;
+
     this.pictureInPicture.update(this.videoWidth, this.videoHeight, this.playing);
     this.pictureInPicture.configure(enabled && this.player ? this.surfaceController : undefined, autoStart);
   }
@@ -412,7 +427,10 @@ struct VideoSurface {
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
       Stack({ alignContent: Alignment.Center }) {
-        XComponent({ type: XComponentType.SURFACE, controller: this.controller })
+        XComponent({
+          type: this.state.surfaceType === 'textureView' ? XComponentType.TEXTURE : XComponentType.SURFACE,
+          controller: this.controller,
+        })
           .width(this.areaWidth > 0 && this.areaHeight > 0 ? this.surfaceWidth() : '100%')
           .height(this.areaWidth > 0 && this.areaHeight > 0 ? this.surfaceHeight() : '100%')
           .scale({
@@ -484,7 +502,7 @@ struct VideoSurface {
                 .fontColor(Color.White)
                 .fontSize(12);
             }
-            Slider({ value: this.seeking ? this.seekValue : this.state.position, min: 0, max: Math.max(1, this.state.duration), step: 0.1 })
+            Slider({ value: this.seeking ? this.seekValue : this.state.position, min: 0, max: this.state.duration || 1, step: 0.1 })
               .layoutWeight(1)
               .enabled(!this.state.requiresLinearPlayback && !this.state.isLive && this.state.duration > 0)
               .onChange((value: number, mode: SliderChangeMode): void => {

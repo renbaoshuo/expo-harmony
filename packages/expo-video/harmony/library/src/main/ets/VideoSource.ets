@@ -82,12 +82,15 @@ export function validateSource(source: VideoSource | null): void {
   if (source.contentType === 'smoothStreaming')
     throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'SmoothStreaming is not supported by expo-video on HarmonyOS.');
 
-  const contentType = source.contentType ?? 'auto';
-  if (!['auto', 'progressive', 'hls', 'dash'].includes(contentType)) {
+  const type = source.contentType ?? 'auto';
+  if (!['auto', 'progressive', 'hls', 'dash'].includes(type)) {
     throw new ExpoModuleError('ERR_VIDEO_INVALID_SOURCE', 'Invalid video contentType.');
   }
-  if (contentType !== 'auto' && !isLocalHlsPlaylist(source)) {
-    throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'HarmonyOS supports an explicit HLS type for local playlists. Use auto detection for other sources.');
+  if (type !== 'auto' && !isLocalHlsPlaylist(source) && (type !== 'progressive' || isRemote(source.uri))) {
+    throw new ExpoModuleError(
+      'ERR_VIDEO_UNSUPPORTED',
+      'HarmonyOS supports explicit HLS and progressive types for local sources. Use auto detection for network sources.',
+    );
   }
 }
 
@@ -122,6 +125,15 @@ export class VideoFile {
   }
 }
 
+class VideoResourceError extends Error {
+  readonly cause: Object;
+
+  constructor(cause: Object) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.cause = cause;
+  }
+}
+
 export function openVideoFile(context: ExpoModuleContext, uri: string): VideoFile {
   if (isRnohRawfileResourceUri(uri) || /^(asset|rawfile):\/\//i.test(uri)) {
     let name: string;
@@ -137,15 +149,15 @@ export function openVideoFile(context: ExpoModuleContext, uri: string): VideoFil
     try {
       raw = resources.getRawFdSync(name);
     } catch (error) {
-      if (!/^asset:\/\//i.test(uri) || (error as BusinessError).code !== RAW_RESOURCE_NOT_FOUND) throw error as Error;
-
       let fallback = name;
-      try {
-        fallback = rawResourcePathFromUri(uri, true);
-      } catch (_) {
-        // RNOH can use literal percent signs that are not valid URL escapes.
+      if (/^asset:\/\//i.test(uri) && (error as BusinessError).code === RAW_RESOURCE_NOT_FOUND) {
+        try {
+          fallback = rawResourcePathFromUri(uri, true);
+        } catch (_) {
+          // Metro asset names can contain literal percent signs.
+        }
       }
-      if (fallback === name) throw error as Error;
+      if (fallback === name) throw new VideoResourceError(error as Object);
 
       name = fallback;
       raw = resources.getRawFdSync(name);

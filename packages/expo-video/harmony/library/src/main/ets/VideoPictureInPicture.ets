@@ -26,12 +26,12 @@ export class VideoPictureInPicture {
   private height: number = 0;
   private playing: boolean = false;
   private readonly context: common.UIAbilityContext;
-  private readonly onState: (active: boolean, event?: string) => void;
+  private readonly onState: (owner: XComponentController, active: boolean, event?: string) => void;
   private readonly onPlayPause: (play: boolean) => void;
 
   constructor(
     context: common.UIAbilityContext,
-    onState: (active: boolean, event?: string) => void,
+    onState: (owner: XComponentController, active: boolean, event?: string) => void,
     onPlayPause: (play: boolean) => void,
   ) {
     this.context = context;
@@ -73,22 +73,32 @@ export class VideoPictureInPicture {
 
   start(): Promise<void> {
     const target = this.target;
+
     return this.enqueue(async (): Promise<void> => {
       if (!isPictureInPictureSupported()) throw new ExpoModuleError('ERR_VIDEO_PIP_UNAVAILABLE', 'Picture in Picture is unavailable on this device.');
       if (!target || this.target !== target) {
         throw new ExpoModuleError('ERR_VIDEO_PIP_NOT_READY', 'Picture in Picture requires a ready VideoView surface.');
       }
+
       if (this.owner !== target) await this.release();
       const controller = await this.getController(target);
       if (!controller) throw new ExpoModuleError('ERR_VIDEO_PIP_NOT_READY', 'The VideoView surface changed while starting Picture in Picture.');
       if (this.active || this.starting) return;
+
       this.starting = true;
-      this.onState(true);
+      this.onState(target, true);
+
       try {
         await controller.startPiP();
       } catch (error) {
         this.finish();
-        throw error as Error;
+
+        throw new ExpoModuleError(
+          error instanceof ExpoModuleError ? error.code : 'ERR_ARKTS_MODULE',
+          error instanceof Error ? error.message : String(error),
+          error as Object,
+          error instanceof ExpoModuleError ? error.path : undefined,
+        );
       }
     });
   }
@@ -118,25 +128,28 @@ export class VideoPictureInPicture {
       config.contentWidth = Math.round(this.width);
       config.contentHeight = Math.round(this.height);
     }
+
     const controller = await PiPWindow.create(config);
     if (this.target !== target) return undefined;
 
     this.owner = target;
     this.controller = controller;
+
     controller.on('stateChange', (state: PiPWindow.PiPState, _reason: string): void => {
       if (this.controller !== controller) return;
+
       const detached = this.target !== target;
       if (state === PiPWindow.PiPState.ABOUT_TO_START) {
         if (this.starting || this.active) return;
         this.starting = true;
-        if (!detached) this.onState(true);
+        if (!detached) this.onState(target, true);
       } else if (state === PiPWindow.PiPState.STARTED && !this.active) {
         if (detached) {
           this.starting = true;
         } else {
           this.starting = false;
           this.active = true;
-          this.onState(true, 'onPictureInPictureStart');
+          this.onState(target, true, 'onPictureInPictureStart');
           this.updatePlaybackStatus(this.playing);
         }
       } else if (state === PiPWindow.PiPState.ABOUT_TO_STOP) {
@@ -144,6 +157,7 @@ export class VideoPictureInPicture {
       } else if (state === PiPWindow.PiPState.STOPPED || state === PiPWindow.PiPState.ERROR) {
         this.finish();
       }
+
       if (detached && [PiPWindow.PiPState.STARTED, PiPWindow.PiPState.STOPPED, PiPWindow.PiPState.ERROR].includes(state)) {
         // A native auto-start can complete after the surface has been detached.
         this.enqueue(async (): Promise<void> => {
@@ -174,17 +188,25 @@ export class VideoPictureInPicture {
     this.active = false;
     this.starting = false;
     this.stopping = false;
-    if (announced || pending) this.onState(false, announced ? 'onPictureInPictureStop' : undefined);
+    if (this.owner && (announced || pending)) this.onState(this.owner, false, announced ? 'onPictureInPictureStop' : undefined);
   }
 
   private async stopController(controller: PiPWindow.PiPController): Promise<void> {
     if ((!this.active && !this.starting) || this.stopping) return;
+
     this.stopping = true;
+
     try {
       await controller.stopPiP();
     } catch (error) {
       this.stopping = false;
-      throw error as Error;
+
+      throw new ExpoModuleError(
+        error instanceof ExpoModuleError ? error.code : 'ERR_ARKTS_MODULE',
+        error instanceof Error ? error.message : String(error),
+        error as Object,
+        error instanceof ExpoModuleError ? error.path : undefined,
+      );
     }
   }
 
@@ -195,8 +217,8 @@ export class VideoPictureInPicture {
     // Keep listening if a native start is still in progress and rejects a stop request.
     await this.stopController(controller);
     this.controller = undefined;
-    this.owner = undefined;
     this.finish();
+    this.owner = undefined;
     controller.off('stateChange');
     controller.off('controlEvent');
   }

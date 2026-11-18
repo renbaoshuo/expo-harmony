@@ -25,7 +25,7 @@ import { BufferOptions, MediaTrack, PlayerBuilderOptions, SeekTolerance, VideoPl
 import { requireFinite, VIDEO_SOURCE, VideoSource } from './VideoSource';
 import { supportsBackgroundVideoPlayback, VideoSystemMedia } from './VideoSystemMedia';
 import { ThumbnailOptions, VideoThumbnail } from './VideoThumbnail';
-import { buildVideoView, ButtonOptions, ContentPosition, FullscreenOptions, VideoScreenOn, VideoView } from './VideoView';
+import { buildVideoView, ButtonOptions, ContentPosition, FullscreenOptions, SurfaceType, VideoScreenOn, VideoView } from './VideoView';
 
 function record<T>(name: string, shape: ExpoRecordShape): ExpoValueType<T> {
   return ExpoValueTypes.shapedRecord<T>(
@@ -92,6 +92,10 @@ const POSITION = record<ContentPosition>('ContentPosition', new ExpoRecordShape(
 const SCRUBBING = ExpoValueTypes.record(ExpoValueTypes.boolean());
 const FIT_VALUES: Record<string, string> = { 'contain': 'contain', 'cover': 'cover', 'fill': 'fill' };
 const FIT = ExpoValueTypes.enumerable<string>('VideoContentFit', FIT_VALUES);
+const SURFACE_TYPE = ExpoValueTypes.enumerable<SurfaceType>('SurfaceType', {
+  surfaceView: 'surfaceView',
+  textureView: 'textureView',
+});
 
 export class ExpoVideoModule extends ExpoModule {
   private readonly players: Set<VideoPlayer> = new Set<VideoPlayer>();
@@ -340,11 +344,8 @@ export class ExpoVideoModule extends ExpoModule {
       )
       .prop(
         'surfaceType',
-        ExpoValueTypes.string(),
-        (_view: VideoView, value: string): void => {
-          if (value !== 'surfaceView')
-            throw new ExpoModuleError('ERR_VIDEO_UNSUPPORTED', 'TextureView rendering is not supported by expo-video on HarmonyOS.');
-        },
+        SURFACE_TYPE,
+        (view: VideoView, value: SurfaceType): void => view.setSurfaceType(value),
         'surfaceView',
       )
       .prop(
