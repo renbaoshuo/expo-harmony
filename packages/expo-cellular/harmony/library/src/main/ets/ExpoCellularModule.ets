@@ -7,7 +7,7 @@
 
 import { ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoModuleError } from '@expo-harmony/expo-modules-core';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { call, data, radio, sim, sms } from '@kit.TelephonyKit';
+import lazy { call, data, radio, sim, sms } from '@kit.TelephonyKit';
 
 enum CellularGeneration {
   UNKNOWN = 0,
@@ -25,6 +25,7 @@ enum SimField {
 
 const PERMISSION_DENIED: number = 201;
 const CAPABILITY_NOT_SUPPORTED: number = 801;
+const SLOT_OUT_OF_RANGE: number = 8300001;
 const NO_SIM_CARD: number = 8300004;
 const SIM_NOT_ACTIVATED: number = 8301001;
 const NO_DEFAULT_SLOT: number = -1;
@@ -69,38 +70,36 @@ export class ExpoCellularModule extends ExpoModule {
   }
 
   private async getCellularGeneration(): Promise<CellularGeneration> {
-    try {
-      if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
-        if (canIUse(CELLULAR_DATA_CAPABILITY)) {
-          const slot = await findReadySlot(() => data.getDefaultCellularDataSlotId(), sim.getMaxSimCount());
-
-          if (slot === NO_DEFAULT_SLOT) return CellularGeneration.UNKNOWN;
-
-          const tech = await radio.getRadioTech(slot);
-
-          switch (tech.psRadioTech) {
-            case radio.RadioTechnology.RADIO_TECHNOLOGY_GSM:
-            case radio.RadioTechnology.RADIO_TECHNOLOGY_1XRTT:
-              return CellularGeneration.CELLULAR_2G;
-            case radio.RadioTechnology.RADIO_TECHNOLOGY_WCDMA:
-            case radio.RadioTechnology.RADIO_TECHNOLOGY_HSPA:
-            case radio.RadioTechnology.RADIO_TECHNOLOGY_HSPAP:
-            case radio.RadioTechnology.RADIO_TECHNOLOGY_TD_SCDMA:
-            case radio.RadioTechnology.RADIO_TECHNOLOGY_EVDO:
-            case radio.RadioTechnology.RADIO_TECHNOLOGY_EHRPD:
-              return CellularGeneration.CELLULAR_3G;
-            case radio.RadioTechnology.RADIO_TECHNOLOGY_LTE:
-            case radio.RadioTechnology.RADIO_TECHNOLOGY_LTE_CA:
-              return await readLteGeneration(slot);
-            case radio.RadioTechnology.RADIO_TECHNOLOGY_NR:
-              return CellularGeneration.CELLULAR_5G;
-            default:
-              return CellularGeneration.UNKNOWN;
-          }
-        }
-      }
-
+    if (!canIUse(TELEPHONY_CORE_CAPABILITY) || !canIUse(CELLULAR_DATA_CAPABILITY)) {
       return CellularGeneration.UNKNOWN;
+    }
+
+    try {
+      const slot = await findReadySlot(() => data.getDefaultCellularDataSlotId());
+
+      if (slot === NO_DEFAULT_SLOT) return CellularGeneration.UNKNOWN;
+
+      const tech = (await radio.getRadioTech(slot)).psRadioTech;
+
+      switch (tech) {
+        case radio.RadioTechnology.RADIO_TECHNOLOGY_GSM:
+        case radio.RadioTechnology.RADIO_TECHNOLOGY_1XRTT:
+          return CellularGeneration.CELLULAR_2G;
+        case radio.RadioTechnology.RADIO_TECHNOLOGY_WCDMA:
+        case radio.RadioTechnology.RADIO_TECHNOLOGY_HSPA:
+        case radio.RadioTechnology.RADIO_TECHNOLOGY_HSPAP:
+        case radio.RadioTechnology.RADIO_TECHNOLOGY_TD_SCDMA:
+        case radio.RadioTechnology.RADIO_TECHNOLOGY_EVDO:
+        case radio.RadioTechnology.RADIO_TECHNOLOGY_EHRPD:
+          return CellularGeneration.CELLULAR_3G;
+        case radio.RadioTechnology.RADIO_TECHNOLOGY_LTE:
+        case radio.RadioTechnology.RADIO_TECHNOLOGY_LTE_CA:
+          return await readLteGeneration(slot);
+        case radio.RadioTechnology.RADIO_TECHNOLOGY_NR:
+          return CellularGeneration.CELLULAR_5G;
+        default:
+          return CellularGeneration.UNKNOWN;
+      }
     } catch (error) {
       const code = (error as BusinessError).code;
 
@@ -113,33 +112,29 @@ export class ExpoCellularModule extends ExpoModule {
   }
 
   private async readSimValue(field: SimField): Promise<string | null> {
+    if (!canIUse(TELEPHONY_CORE_CAPABILITY)) return null;
+
     try {
-      if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
-        const count = sim.getMaxSimCount();
-        const slot = field === SimField.OPERATOR_NUMERIC
-          ? await getOperatorSlot(count)
-          : await getDefaultSubscriptionSlot(count);
+      const slot = field === SimField.OPERATOR_NUMERIC
+        ? await getOperatorSlot()
+        : await getDefaultSubscriptionSlot();
 
-        if (slot === NO_DEFAULT_SLOT) return null;
+      if (slot === NO_DEFAULT_SLOT) return null;
 
-        let value: string;
-
-        switch (field) {
-          case SimField.ISO_COUNTRY_CODE:
-            value = await sim.getISOCountryCodeForSim(slot);
-            break;
-          case SimField.CARRIER_NAME:
-            value = await sim.getSimSpn(slot);
-            break;
-          case SimField.OPERATOR_NUMERIC:
-            value = await sim.getSimOperatorNumeric(slot);
-            break;
-        }
-
-        return value.length > 0 ? value : null;
+      let value: string;
+      switch (field) {
+        case SimField.ISO_COUNTRY_CODE:
+          value = await sim.getISOCountryCodeForSim(slot);
+          break;
+        case SimField.CARRIER_NAME:
+          value = await sim.getSimSpn(slot);
+          break;
+        case SimField.OPERATOR_NUMERIC:
+          value = await sim.getSimOperatorNumeric(slot);
+          break;
       }
 
-      return null;
+      return value.length > 0 ? value : null;
     } catch (error) {
       const code = (error as BusinessError).code;
 
@@ -157,69 +152,63 @@ export class ExpoCellularModule extends ExpoModule {
 }
 
 async function readLteGeneration(slot: number): Promise<CellularGeneration> {
-  if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
-    try {
-      const state = await radio.getNetworkState(slot);
+  try {
+    const state = await radio.getNetworkState(slot);
 
-      // In NSA the packet-switched RAT can still be LTE while NR is connected.
-      if (state.nsaState === radio.NsaState.NSA_STATE_DUAL_CONNECTED) {
-        return CellularGeneration.CELLULAR_5G;
-      }
-    } catch (_) {
+    if (state.regState === radio.RegState.REG_STATE_POWER_OFF) return CellularGeneration.UNKNOWN;
+
+    // In NSA the packet-switched RAT can still be LTE while NR is connected.
+    if (state.nsaState === radio.NsaState.NSA_STATE_DUAL_CONNECTED) {
+      return CellularGeneration.CELLULAR_5G;
     }
+  } catch (error) {
+    if (isMissingSim((error as BusinessError).code)) return CellularGeneration.UNKNOWN;
   }
 
   return CellularGeneration.CELLULAR_4G;
 }
 
-async function getOperatorSlot(count: number): Promise<number> {
+async function getOperatorSlot(): Promise<number> {
   // AOSP resolves PLMN through data/SMS/voice defaults, unlike SPN and country code.
   if (canIUse(CELLULAR_DATA_CAPABILITY)) {
-    const slot = await findReadySlot(() => data.getDefaultCellularDataSlotId(), count);
+    const slot = await findReadySlot(() => data.getDefaultCellularDataSlotId());
 
     if (slot !== NO_DEFAULT_SLOT) return slot;
   }
 
   if (canIUse(SMS_CAPABILITY)) {
-    const slot = await findReadySlot(() => sms.getDefaultSmsSlotId(), count);
+    const slot = await findReadySlot(() => sms.getDefaultSmsSlotId());
 
     if (slot !== NO_DEFAULT_SLOT) return slot;
   }
 
-  if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
-    return await findReadySlot(() => sim.getDefaultVoiceSlotId(), count);
-  }
-
-  return NO_DEFAULT_SLOT;
+  return await findReadySlot(() => sim.getDefaultVoiceSlotId());
 }
 
-async function getDefaultSubscriptionSlot(count: number): Promise<number> {
-  if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
-    if (canIUse(CALL_MANAGER_CAPABILITY) && call.hasVoiceCapability()) {
-      const slot = await findReadySlot(() => sim.getDefaultVoiceSlotId(), count);
+async function getDefaultSubscriptionSlot(): Promise<number> {
+  if (canIUse(CALL_MANAGER_CAPABILITY) && call.hasVoiceCapability()) {
+    const slot = await findReadySlot(() => sim.getDefaultVoiceSlotId());
 
-      if (slot !== NO_DEFAULT_SLOT) return slot;
-    }
+    if (slot !== NO_DEFAULT_SLOT) return slot;
   }
 
   if (canIUse(CELLULAR_DATA_CAPABILITY)) {
-    return await findReadySlot(() => data.getDefaultCellularDataSlotId(), count);
+    return await findReadySlot(() => data.getDefaultCellularDataSlotId());
   }
 
   return NO_DEFAULT_SLOT;
 }
 
-async function findReadySlot(getSlot: () => Promise<number>, count: number): Promise<number> {
+async function findReadySlot(getSlot: () => Promise<number>): Promise<number> {
   try {
     const slot = await getSlot();
 
-    if (!Number.isInteger(slot) || slot < 0 || slot >= count) return NO_DEFAULT_SLOT;
+    if (!Number.isInteger(slot) || slot < 0) return NO_DEFAULT_SLOT;
 
-    if (canIUse(TELEPHONY_CORE_CAPABILITY)) {
-      const state = await sim.getSimState(slot);
+    // Let Telephony Kit validate logical slots returned for eSIM and virtual SIM configurations.
+    const state = await sim.getSimState(slot);
 
-      if (state === sim.SimState.SIM_STATE_READY || state === sim.SimState.SIM_STATE_LOADED) return slot;
-    }
+    if (state === sim.SimState.SIM_STATE_READY || state === sim.SimState.SIM_STATE_LOADED) return slot;
   } catch (error) {
     const code = (error as BusinessError).code;
 
@@ -231,5 +220,9 @@ async function findReadySlot(getSlot: () => Promise<number>, count: number): Pro
 }
 
 function isUnavailableSim(code: number): boolean {
-  return code === CAPABILITY_NOT_SUPPORTED || code === NO_SIM_CARD || code === SIM_NOT_ACTIVATED;
+  return code === CAPABILITY_NOT_SUPPORTED || isMissingSim(code);
+}
+
+function isMissingSim(code: number): boolean {
+  return code === SLOT_OUT_OF_RANGE || code === NO_SIM_CARD || code === SIM_NOT_ACTIVATED;
 }

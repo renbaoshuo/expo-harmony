@@ -26,7 +26,7 @@ npm install @expo-harmony/expo-cellular expo-cellular@~57.0.2
 
 #### `Cellular.getCellularGenerationAsync()`
 
-返回 `Promise<CellularGeneration>`，表示当前蜂窝网络代际。使用默认数据 SIM 卡的网络类型。设备通过 Wi-Fi 联网时仍可返回蜂窝网络代际。SIM 卡未就绪、权限不可用、蜂窝网络信息不可用或网络类型无法识别时返回 `UNKNOWN`。系统上报 NR 或 LTE 与 NR 双连接时返回 5G，未映射的网络类型（包括 IWLAN）返回 `UNKNOWN`。
+返回 `Promise<CellularGeneration>`，表示当前蜂窝网络代际。使用默认数据 SIM 卡的网络类型，逻辑卡槽由系统校验。设备通过 Wi-Fi 联网时仍可返回蜂窝网络代际。SIM 卡未就绪、无线电已关闭、权限不可用、蜂窝网络信息不可用或网络类型无法识别时返回 `UNKNOWN`。系统上报 NR 或 LTE 与 NR 双连接时返回 5G，未映射的网络类型（包括 IWLAN）返回 `UNKNOWN`。
 
 #### `Cellular.allowsVoipAsync()`
 
