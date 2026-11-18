@@ -10,7 +10,9 @@ import { deviceInfo } from '@kit.BasicServicesKit';
 import { ExpoAppLifecycleState, ExpoModule, ExpoModuleDefinition, ExpoModuleError } from '@expo-harmony/expo-modules-core';
 
 const SCREENSHOT_EVENT: string = 'onScreenshot';
+const SCREENSHOT_ACTION_API: number = 20;
 const WINDOW_MANAGER_CAPABILITY: string = 'SystemCapability.WindowManager.WindowManager.Core';
+const WINDOW_SESSION_CAPABILITY: string = 'SystemCapability.Window.SessionManager';
 
 interface WindowBinding {
   id: number;
@@ -33,6 +35,8 @@ class WindowPrivacyLease {
   private pending: Promise<void> = Promise.resolve();
   private pendingRetains: number = 0;
   private enabledByExpo: boolean = false;
+  private destroyed: boolean = false;
+  private stopWatching?: () => void;
 
   constructor(id: number) {
     this.id = id;
@@ -44,9 +48,12 @@ class WindowPrivacyLease {
     return this.serialize(async (): Promise<void> => {
       try {
         assertWindowCurrent();
+        this.assertWindowAlive();
+        this.watchDestruction(target);
 
         if (!target.getWindowProperties().isPrivacyMode) {
           await target.setWindowPrivacyMode(true);
+          this.assertWindowAlive();
           this.enabledByExpo = true;
         }
 
@@ -64,7 +71,12 @@ class WindowPrivacyLease {
       if (!this.owners.has(owner)) return;
 
       if (this.owners.size === 1 && this.enabledByExpo) {
-        await target.setWindowPrivacyMode(false);
+        try {
+          await target.setWindowPrivacyMode(false);
+        } catch (error) {
+          if (!this.destroyed) throw new Error(String(error));
+        }
+
         this.enabledByExpo = false;
       }
 
@@ -82,8 +94,45 @@ class WindowPrivacyLease {
   }
 
   private deleteIfIdle(): void {
-    if (this.owners.size === 0 && this.pendingRetains === 0 && privacyLeases.get(this.id) === this) {
-      privacyLeases.delete(this.id);
+    if (this.owners.size === 0 && this.pendingRetains === 0) this.removeLease();
+  }
+
+  private watchDestruction(target: window.Window): void {
+    if (this.stopWatching !== undefined || !canIUse(WINDOW_SESSION_CAPABILITY)) return;
+
+    const listener = (event: window.WindowEventType): void => {
+      if (event !== window.WindowEventType.WINDOW_DESTROYED) return;
+
+      this.destroyed = true;
+      this.enabledByExpo = false;
+      this.owners.clear();
+      this.removeLease();
+    };
+
+    try {
+      target.on('windowEvent', listener);
+      this.stopWatching = (): void => target.off('windowEvent', listener);
+    } catch (error) {
+      console.warn(`Unable to observe screen-capture window destruction: ${String(error)}`);
+    }
+  }
+
+  private removeLease(): void {
+    if (privacyLeases.get(this.id) === this) privacyLeases.delete(this.id);
+
+    const stop = this.stopWatching;
+    this.stopWatching = undefined;
+
+    try {
+      stop?.();
+    } catch (error) {
+      if (!this.destroyed) console.warn(`Unable to detach screen-capture window listener: ${String(error)}`);
+    }
+  }
+
+  private assertWindowAlive(): void {
+    if (this.destroyed) {
+      throw new ExpoModuleError('ERR_SCREEN_CAPTURE_WINDOW', 'The React Native window has been destroyed.');
     }
   }
 
@@ -103,6 +152,7 @@ interface WindowProtection {
 export class ExpoScreenCaptureModule extends ExpoModule {
   private pending: Promise<void> = Promise.resolve();
   private readonly windows: Map<number, WindowProtection> = new Map<number, WindowProtection>();
+  private readonly privacyOwner: Object = new Object();
   private readonly retiredObservers: Set<ScreenshotObserver> = new Set<ScreenshotObserver>();
   private observer: ScreenshotObserver | null = null;
   private protecting: boolean = false;
@@ -184,9 +234,10 @@ export class ExpoScreenCaptureModule extends ExpoModule {
 
   private async protectWindow(binding: WindowBinding): Promise<void> {
     this.assertCurrentWindow(binding);
+    this.refreshObserver(binding);
 
-    const target: window.Window = binding.target;
-    const id: number = binding.id;
+    const win = binding.target;
+    const id = binding.id;
     let lease: WindowPrivacyLease | undefined = privacyLeases.get(id);
 
     if (lease === undefined) {
@@ -194,12 +245,11 @@ export class ExpoScreenCaptureModule extends ExpoModule {
       privacyLeases.set(id, lease);
     }
 
-    await lease.retain(this, target, (): void => this.assertCurrentWindow(binding));
-    this.windows.set(id, { target, generation: binding.generation, lease });
+    await lease.retain(this.privacyOwner, win, (): void => this.assertCurrentWindow(binding));
+    this.windows.set(id, { target: win, generation: binding.generation, lease });
     this.assertCurrentWindow(binding);
 
     this.protecting = true;
-
     try {
       await this.releaseWindows(id);
     } catch (error) {
@@ -214,7 +264,7 @@ export class ExpoScreenCaptureModule extends ExpoModule {
       if (state.generation !== generation) continue;
 
       // Keep the departing window protected until the system destroys it.
-      await state.lease.retire(this);
+      await state.lease.retire(this.privacyOwner);
       this.windows.delete(entry[0]);
     }
   }
@@ -223,11 +273,13 @@ export class ExpoScreenCaptureModule extends ExpoModule {
     let failure: string | undefined;
 
     for (const entry of this.windows.entries()) {
-      const id: number = entry[0];
+      const id = entry[0];
       if (id === except) continue;
 
+      const state = entry[1];
+
       try {
-        await entry[1].lease.release(this, entry[1].target);
+        await state.lease.release(this.privacyOwner, state.target);
         this.windows.delete(id);
       } catch (error) {
         failure = String(error);
@@ -251,8 +303,11 @@ export class ExpoScreenCaptureModule extends ExpoModule {
         const binding: WindowBinding = await this.currentWindow();
         this.assertCurrentWindow(binding);
 
-        this.refreshObserver(binding);
-        if (this.protecting) await this.protectWindow(binding);
+        if (this.protecting) {
+          await this.protectWindow(binding);
+        } else {
+          this.refreshObserver(binding);
+        }
       } finally {
         if (!this.protecting && !this.destroyed) await this.releaseWindows();
       }
@@ -282,16 +337,16 @@ export class ExpoScreenCaptureModule extends ExpoModule {
   }
 
   private subscribeToScreenshots(target: window.Window, callback: () => void): () => void {
-    if (deviceInfo.sdkApiVersion >= 20) {
+    if (deviceInfo.sdkApiVersion >= SCREENSHOT_ACTION_API) {
       try {
         const listener = (event: window.ScreenshotEventType): void => {
           if (event === window.ScreenshotEventType.SYSTEM_SCREENSHOT || event === window.ScreenshotEventType.SCROLL_SHOT_END) callback();
         };
+
         // The legacy event overlaps with the Control Panel event. Use one listener per window.
         target.on('screenshotAppEvent', listener);
-        return (): void => {
-          if (deviceInfo.sdkApiVersion >= 20) target.off('screenshotAppEvent', listener);
-        };
+
+        return (): void => target.off('screenshotAppEvent', listener);
       } catch (error) {
         this.warn('attach the screenshot action listener', error);
       }

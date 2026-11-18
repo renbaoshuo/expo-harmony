@@ -42,15 +42,15 @@ npm install @expo-harmony/expo-screen-capture expo-screen-capture@~57.0.4
 
 #### `allowScreenCaptureAsync(key?)`
 
-释放对应 `key` 的保护，返回 `Promise<void>`。默认 `key` 为 `'default'`；释放最后一项保护后，窗口恢复可截屏和录屏。释放失败时 Promise 以 `ERR_SCREEN_CAPTURE_RELEASE` 拒绝，可以再次调用重试。
+释放对应 `key` 的保护，返回 `Promise<void>`。默认 `key` 为 `'default'`。释放最后一项保护后，本包会关闭自己启用的隐私模式，并保留宿主预先启用的隐私模式。释放失败时 Promise 以 `ERR_SCREEN_CAPTURE_RELEASE` 拒绝，可以再次调用重试。
 
 #### `enableAppSwitcherProtectionAsync(blurIntensity?)`
 
-- HarmonyOS 不提供应用切换器模糊保护，调用会抛出 `UnavailabilityError`。
+- 本包的应用切换器预览保护随窗口隐私模式一同启用。此独立接口返回的 Promise 会以 `UnavailabilityError` 拒绝。
 
 #### `disableAppSwitcherProtectionAsync()`
 
-- HarmonyOS 不提供应用切换器模糊保护，调用会抛出 `UnavailabilityError`。
+- 可以通过 `allowScreenCaptureAsync()` 释放本包启用的保护。此独立接口返回的 Promise 会以 `UnavailabilityError` 拒绝。
 
 ### Event subscriptions
 
@@ -113,7 +113,7 @@ npm install @expo-harmony/expo-screen-capture expo-screen-capture@~57.0.4
 
 #### `ohos.permission.PRIVACY_WINDOW`
 
-用于开启窗口隐私模式。系统在应用安装时授予此权限，不会弹出授权对话框。截图监听不需要相册、存储或其他运行时权限。[HarmonyOS 权限说明](https://developer.huawei.com/consumer/cn/doc/HarmonyOS-Guides/permissions-for-all/)
+用于开启窗口隐私模式。自 API 11 起，该权限为普通系统授权，由应用清单声明，在安装时授予。截图监听无需相册、存储或其他运行时授权。[HarmonyOS 权限说明](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/permissions-for-all/)
 
 ## Author
 
