@@ -9,7 +9,7 @@ import { ExpoModuleContext, ExpoModuleError, ExpoSharedObject, ExpoValueTypes } 
 import { dataSharePredicates } from '@kit.ArkData';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
-import { ASSET_FETCH_COLUMNS, memberNumber } from './MediaLibraryAssets';
+import { ASSET_FETCH_COLUMNS, memberBoolean, memberNumber } from './MediaLibraryAssets';
 import { optionalRecord } from './MediaLibraryQuery';
 import { MediaLibraryRepository } from './MediaLibraryRepository';
 
@@ -98,6 +98,7 @@ class QueryFilter {
 }
 
 const MAX_NATIVE_PAGE_SIZE: number = 2147483647;
+const NATIVE_RANGE_PREDICATES_API: number = 23;
 
 export class MediaLibraryNativeQuery extends ExpoSharedObject {
   private filters: QueryFilter[] = [];
@@ -117,16 +118,17 @@ export class MediaLibraryNativeQuery extends ExpoSharedObject {
     this.repository.assertActive();
 
     const numbers: number[] = [];
+    const equality = operator === QueryOperator.EQ || operator === QueryOperator.WITHIN;
 
     for (const value of values) {
-      if (field === AssetField.MEDIA_TYPE) {
+      if (equality && field === AssetField.MEDIA_TYPE) {
         // PhotoAccessHelper exposes only images and videos. Other types match nothing.
         if (value === 'image') numbers.push(photoAccessHelper.PhotoType.IMAGE);
         else if (value === 'video') numbers.push(photoAccessHelper.PhotoType.VIDEO);
         else if (value !== 'audio' && value !== 'unknown') {
           throw new ExpoMediaLibraryQueryError('mediaType must be image, video, audio or unknown.');
         }
-      } else if (field === AssetField.IS_FAVORITE) {
+      } else if (equality && field === AssetField.IS_FAVORITE) {
         if (typeof value !== 'boolean') throw new ExpoMediaLibraryQueryError('isFavorite requires a boolean.');
         numbers.push(value ? 1 : 0);
       } else {
@@ -204,9 +206,12 @@ export class MediaLibraryNativeQuery extends ExpoSharedObject {
 
         if (localFilters.length > 0) {
           const assets = await fetch.getAllObjects();
-          return assets.filter((asset: photoAccessHelper.PhotoAsset): boolean => localFilters.every((filter: QueryFilter): boolean =>
-            matches(memberNumber(asset, nativeColumn(filter.field)), filter)))
-            .slice(start, maximum === undefined ? undefined : start + maximum);
+          const end = maximum === undefined ? undefined : start + maximum;
+
+          return assets
+            .filter((asset: photoAccessHelper.PhotoAsset): boolean => localFilters.every((filter: QueryFilter): boolean =>
+              matches(queryValue(asset, filter.field), filter)))
+            .slice(start, end);
         }
 
         const end = maximum === undefined ? count : Math.min(count, start + maximum);
@@ -275,7 +280,7 @@ function applyFilter(predicates: dataSharePredicates.DataSharePredicates, filter
     return true;
   }
 
-  if (deviceInfo.sdkApiVersion >= 23) {
+  if (deviceInfo.sdkApiVersion >= NATIVE_RANGE_PREDICATES_API) {
     switch (filter.operator) {
       case QueryOperator.GT: predicates.greaterThan(column, value); break;
       case QueryOperator.GTE: predicates.greaterThanOrEqualTo(column, value); break;
@@ -286,6 +291,11 @@ function applyFilter(predicates: dataSharePredicates.DataSharePredicates, filter
   }
 
   return false;
+}
+
+function queryValue(asset: photoAccessHelper.PhotoAsset, field: AssetField): number {
+  if (field === AssetField.IS_FAVORITE) return memberBoolean(asset, photoAccessHelper.PhotoKeys.FAVORITE) ? 1 : 0;
+  return memberNumber(asset, nativeColumn(field));
 }
 
 function matches(value: number, filter: QueryFilter): boolean {

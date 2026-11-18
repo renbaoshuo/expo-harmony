@@ -11,7 +11,7 @@ import {
 } from '@expo-harmony/expo-modules-core';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
-import { ImageMetadata, LocationRecord, NextMediaLibraryChangeEvent, readAssetImageMetadata } from './MediaLibraryAssets';
+import { LocationRecord, NextMediaLibraryChangeEvent, readAssetExif, readAssetLocation } from './MediaLibraryAssets';
 import { CHANGE_EVENT_NAME, mediaLibraryDefinition } from './MediaLibraryModuleDefinition';
 import {
   AssetField, MediaLibraryNativeQuery, QUERY_FIELD, QUERY_PAGE_SIZE, QUERY_SORT, QUERY_VALUE, QueryOperator, QuerySort,
@@ -28,11 +28,13 @@ const IDENTIFIER = ExpoValueTypes.custom<string>('non-empty identifier', require
 class MediaLibraryAsset extends ExpoSharedObject {
   readonly id: string;
   readonly repository: MediaLibraryRepository;
+  private readonly createdByLibrary: boolean;
 
-  constructor(context: ExpoModuleContext, id: string, repository: MediaLibraryRepository) {
+  constructor(context: ExpoModuleContext, id: string, repository: MediaLibraryRepository, createdByLibrary: boolean = false) {
     super(context);
     this.id = id;
     this.repository = repository;
+    this.createdByLibrary = createdByLibrary;
   }
 
   metadata(): Promise<NextAssetMetadata> {
@@ -53,25 +55,42 @@ class MediaLibraryAsset extends ExpoSharedObject {
     });
   }
 
-  imageMetadata(): Promise<ImageMetadata | undefined> {
-    return this.repository.run(async (): Promise<ImageMetadata | undefined> => await readAssetImageMetadata(
-      await this.repository.requireAsset(this.id), this.repository.permissions.canReadLocation(),
+  uri(): Promise<string> {
+    return this.repository.run(async (): Promise<string> => {
+      // A save confirmation grants write access to the new asset's URI without a library read grant.
+      if (this.createdByLibrary && !this.repository.permissions.canReadLibrary()) return this.id;
+
+      return (await this.repository.requireAsset(this.id, [])).uri;
+    });
+  }
+
+  exif(): Promise<Record<string, ESObject>> {
+    return this.repository.run(async (): Promise<Record<string, ESObject>> => readAssetExif(
+      await this.repository.requireAsset(this.id, []), this.repository.permissions.canReadLocation(),
     ));
   }
 
-  favorite(value: boolean): Promise<void> {
-    return this.repository.writeOnly(async (): Promise<void> => {
-      if (deviceInfo.sdkApiVersion >= PUBLIC_SET_FAVORITE_API) {
-        if (deviceInfo.apiAvailable('26.0.0')) {
-          const request = new photoAccessHelper.MediaAssetChangeRequest(await this.repository.requireAsset(this.id));
-          request.setFavorite(value);
+  location(): Promise<LocationRecord | null> {
+    return this.repository.run(async (): Promise<LocationRecord | null> => {
+      const asset = await this.repository.requireAsset(this.id, []);
 
-          await this.repository.helper.applyChanges(request);
-          return;
-        }
+      return this.repository.permissions.canReadLocation() ? await readAssetLocation(asset) : null;
+    });
+  }
+
+  favorite(value: boolean): Promise<void> {
+    return this.repository.run(async (): Promise<void> => {
+      if (deviceInfo.sdkApiVersion < PUBLIC_SET_FAVORITE_API || typeof deviceInfo.apiAvailable !== 'function' ||
+        !deviceInfo.apiAvailable('26.0.0')) {
+        throw new ExpoModuleError('ERR_MEDIA_LIBRARY_UNAVAILABLE', 'Setting favorites requires the public HarmonyOS API 26 or newer.');
       }
 
-      throw new ExpoModuleError('ERR_MEDIA_LIBRARY_UNAVAILABLE', 'Setting favorites requires the public HarmonyOS API 26 or newer.');
+      this.repository.permissions.ensureGranted([WRITE_PERMISSION]);
+      const asset = await this.repository.requireAsset(this.id, []);
+
+      const request = new photoAccessHelper.MediaAssetChangeRequest(asset);
+      request.setFavorite(value);
+      await this.repository.helper.applyChanges(request);
     });
   }
 }
@@ -116,13 +135,13 @@ export class ExpoMediaLibraryNextModule extends ExpoModule {
       .asyncFunction('getFilename', async (object: MediaLibraryAsset): Promise<string> => (await object.metadata()).filename)
       .asyncFunction('getMediaType', async (object: MediaLibraryAsset): Promise<string> => (await object.metadata()).mediaType)
       .asyncFunction('getFavorite', async (object: MediaLibraryAsset): Promise<boolean> => (await object.metadata()).isFavorite)
-      .asyncFunction('getUri', async (object: MediaLibraryAsset): Promise<string> => object.id)
+      .asyncFunction('getUri', (object: MediaLibraryAsset): Promise<string> => object.uri())
       .asyncFunction('getWidth', async (object: MediaLibraryAsset): Promise<number> => (await object.shape(true))!.width)
       .asyncFunction('getHeight', async (object: MediaLibraryAsset): Promise<number> => (await object.shape(true))!.height)
       .asyncFunction('getShape', (object: MediaLibraryAsset): Promise<AssetShape | null> => object.shape(false))
       .asyncFunction('getInfo', (object: MediaLibraryAsset): Promise<NextAssetInfo> => object.info())
-      .asyncFunction('getExif', async (object: MediaLibraryAsset): Promise<Record<string, ESObject>> => (await object.imageMetadata())?.exif ?? {})
-      .asyncFunction('getLocation', async (object: MediaLibraryAsset): Promise<LocationRecord | null> => (await object.imageMetadata())?.location ?? null)
+      .asyncFunction('getExif', (object: MediaLibraryAsset): Promise<Record<string, ESObject>> => object.exif())
+      .asyncFunction('getLocation', (object: MediaLibraryAsset): Promise<LocationRecord | null> => object.location())
       .asyncFunction('setFavorite', ExpoFunction.ownedTyped1(ExpoValueTypes.boolean(),
         (object: MediaLibraryAsset, value: boolean): Promise<void> => object.favorite(value)))
       .asyncFunction('getAlbums', ExpoFunction.ownedTyped0((object: MediaLibraryAsset): Promise<MediaLibraryAlbum[]> => repository.read(async (): Promise<MediaLibraryAlbum[]> => {
@@ -135,7 +154,10 @@ export class ExpoMediaLibraryNextModule extends ExpoModule {
       .staticAsyncFunction('create', ExpoFunction.ownedTyped2(IDENTIFIER, album.valueType().nullable().optional(),
         (_context: ExpoModuleContext, uri: string, target?: MediaLibraryAlbum | null): Promise<MediaLibraryAsset> => repository.run(async (): Promise<MediaLibraryAsset> => {
           if (target != null) repository.permissions.ensureGranted([READ_PERMISSION, WRITE_PERMISSION]);
-          return makeAsset(await repository.createAssetId(uri, target?.id));
+
+          const id = await repository.createAssetId(uri, target?.id);
+
+          return asset.instance(new MediaLibraryAsset(this.context, id, repository, true));
         })).returns(asset.valueType()))
       .staticAsyncFunction('delete', ExpoFunction.ownedTyped1(ExpoValueTypes.array(asset.valueType()),
         (_context: ExpoModuleContext, assets: MediaLibraryAsset[]): Promise<void> => repository.writeOnly(async (): Promise<void> => {

@@ -80,7 +80,7 @@ npm install @expo-harmony/expo-media-library expo-media-library@~57.0.5
 
 #### `Asset.getUri()`
 
-返回 `Promise<string>`，即构造资源对象时使用的系统媒体 URI。此方法无需查询图库。
+返回 `Promise<string>`，即资源的系统媒体 URI。通常会查询图库以确认资源仍然存在。通过 `Asset.create()` 保存资源但没有图库读权限时，新对象直接返回系统授予的写入 URI。
 
 #### `Asset.getWidth()`
 
@@ -200,7 +200,7 @@ npm install @expo-harmony/expo-media-library expo-media-library@~57.0.5
 
 #### `Query.gt(field, value)`
 
-按大于筛选数值字段，返回当前查询对象。时间字段的值为毫秒；数值参数须为安全整数。
+按大于筛选字段，返回当前查询对象。时间字段的值为毫秒，数值参数须为安全整数。范围比较使用系统媒体类型值（图片为 1，视频为 2）和收藏状态值（未收藏为 0，已收藏为 1）。
 
 #### `Query.gte(field, value)`
 

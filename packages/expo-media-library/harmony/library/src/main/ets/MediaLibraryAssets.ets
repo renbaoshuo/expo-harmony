@@ -10,6 +10,12 @@ import { image } from '@kit.ImageKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 
 export const MEDIA_URI_PREFIX: string = `${photoAccessHelper.DefaultChangeUri.DEFAULT_PHOTO_URI}/`;
+const GPS_COORDINATE_KEYS: image.PropertyKey[] = [
+  image.PropertyKey.GPS_LATITUDE,
+  image.PropertyKey.GPS_LATITUDE_REF,
+  image.PropertyKey.GPS_LONGITUDE,
+  image.PropertyKey.GPS_LONGITUDE_REF,
+];
 
 export const ASSET_FETCH_COLUMNS: string[] = [
   photoAccessHelper.PhotoKeys.URI,
@@ -154,10 +160,11 @@ export async function mapAsset(asset: photoAccessHelper.PhotoAsset, details: boo
     record.location = null;
     record.isFavorite = memberBoolean(asset, photoAccessHelper.PhotoKeys.FAVORITE);
 
-    const info = await readAssetImageMetadata(asset, readLocation);
-    if (info !== undefined) {
-      record.exif = info.exif;
-      record.location = info.location ?? null;
+    const keys = exifKeys(readLocation);
+    const props = await readImageProperties(asset, keys);
+    if (props !== undefined) {
+      record.exif = decodeExif(keys, props);
+      if (readLocation) record.location = decodeLocation(props);
     }
   }
 
@@ -170,12 +177,26 @@ function assetMediaType(asset: photoAccessHelper.PhotoAsset): string {
   return 'unknown';
 }
 
-export interface ImageMetadata {
-  exif: Record<string, ESObject>;
-  location?: LocationRecord;
+export async function readAssetExif(asset: photoAccessHelper.PhotoAsset, readLocation: boolean): Promise<Record<string, ESObject>> {
+  const keys = exifKeys(readLocation);
+  const props = await readImageProperties(asset, keys);
+  return props === undefined ? {} : decodeExif(keys, props);
 }
 
-export async function readAssetImageMetadata(asset: photoAccessHelper.PhotoAsset, readLocation: boolean): Promise<ImageMetadata | undefined> {
+export async function readAssetLocation(asset: photoAccessHelper.PhotoAsset): Promise<LocationRecord | null> {
+  const props = await readImageProperties(asset, GPS_COORDINATE_KEYS);
+  return props === undefined ? null : decodeLocation(props);
+}
+
+function exifKeys(readLocation: boolean): image.PropertyKey[] {
+  const keys = Object.values(image.PropertyKey);
+  return readLocation ? keys : keys.filter((key: image.PropertyKey): boolean => !key.startsWith('GPS'));
+}
+
+async function readImageProperties(
+  asset: photoAccessHelper.PhotoAsset,
+  keys: image.PropertyKey[],
+): Promise<Record<image.PropertyKey, string | null> | undefined> {
   if (asset.photoType !== photoAccessHelper.PhotoType.IMAGE) return undefined;
 
   let file: fileIo.File | undefined;
@@ -184,25 +205,8 @@ export async function readAssetImageMetadata(asset: photoAccessHelper.PhotoAsset
   try {
     file = await fileIo.open(asset.uri, fileIo.OpenMode.READ_ONLY);
     source = image.createImageSource(file.fd);
-    const keys: image.PropertyKey[] = Object.values(image.PropertyKey).filter((key: image.PropertyKey): boolean =>
-      readLocation || !key.startsWith('GPS'));
-    const props = await source.getImageProperties(keys);
 
-    const exif: Record<string, ESObject> = {};
-    keys.forEach((key: image.PropertyKey): void => {
-      const value = props[key];
-      if (value !== undefined && value !== null) exif[key] = decodedExifValue(key, value);
-    });
-
-    if (!readLocation) return { exif };
-
-    const lat = coordinate(props[image.PropertyKey.GPS_LATITUDE], props[image.PropertyKey.GPS_LATITUDE_REF], true);
-    const lon = coordinate(props[image.PropertyKey.GPS_LONGITUDE], props[image.PropertyKey.GPS_LONGITUDE_REF], false);
-
-    return {
-      exif,
-      location: lat === undefined || lon === undefined ? undefined : new LocationRecord(lat, lon),
-    };
+    return (await source.getImageProperties(keys)) ?? undefined;
   } catch (_) {
     return undefined;
   } finally {
@@ -218,6 +222,22 @@ export async function readAssetImageMetadata(asset: photoAccessHelper.PhotoAsset
       } catch (_) {}
     }
   }
+}
+
+function decodeExif(keys: image.PropertyKey[], props: Record<image.PropertyKey, string | null>): Record<string, ESObject> {
+  const exif: Record<string, ESObject> = {};
+  keys.forEach((key: image.PropertyKey): void => {
+    const value = props[key];
+    if (value !== undefined && value !== null) exif[key] = decodedExifValue(key, value);
+  });
+
+  return exif;
+}
+
+function decodeLocation(props: Record<image.PropertyKey, string | null>): LocationRecord | null {
+  const lat = coordinate(props[image.PropertyKey.GPS_LATITUDE], props[image.PropertyKey.GPS_LATITUDE_REF], true);
+  const lon = coordinate(props[image.PropertyKey.GPS_LONGITUDE], props[image.PropertyKey.GPS_LONGITUDE_REF], false);
+  return lat === undefined || lon === undefined ? null : new LocationRecord(lat, lon);
 }
 
 function decodedExifValue(key: image.PropertyKey, value: string): ESObject {
@@ -249,7 +269,7 @@ export function memberNumber(asset: photoAccessHelper.PhotoAsset, key: photoAcce
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
-function memberBoolean(asset: photoAccessHelper.PhotoAsset, key: photoAccessHelper.PhotoKeys): boolean {
+export function memberBoolean(asset: photoAccessHelper.PhotoAsset, key: photoAccessHelper.PhotoKeys): boolean {
   const value = asset.get(key);
   return value === true || value === 1;
 }

@@ -10,7 +10,7 @@ import { fileIo } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
 import { media } from '@kit.MediaKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
-import { memberNumber } from './MediaLibraryAssets';
+import { memberBoolean, memberNumber } from './MediaLibraryAssets';
 
 export class AssetShape {
   width: number;
@@ -48,12 +48,12 @@ export class NextAssetMetadata {
     this.duration = asset.photoType === photoAccessHelper.PhotoType.VIDEO
       ? positiveOrNull(memberNumber(asset, photoAccessHelper.PhotoKeys.DURATION)) : null;
 
-    const creationTime = memberNumber(asset, photoAccessHelper.PhotoKeys.DATE_TAKEN_MS);
-    const modificationTime = memberNumber(asset, photoAccessHelper.PhotoKeys.DATE_MODIFIED_MS);
-    this.creationTime = creationTime === 0 ? null : creationTime;
-    this.modificationTime = modificationTime === 0 ? null : modificationTime;
-    const favorite = asset.get(photoAccessHelper.PhotoKeys.FAVORITE);
-    this.isFavorite = favorite === true || favorite === 1;
+    const created = memberNumber(asset, photoAccessHelper.PhotoKeys.DATE_TAKEN_MS);
+    const modified = memberNumber(asset, photoAccessHelper.PhotoKeys.DATE_MODIFIED_MS);
+
+    this.creationTime = created === 0 ? null : created;
+    this.modificationTime = modified === 0 ? null : modified;
+    this.isFavorite = memberBoolean(asset, photoAccessHelper.PhotoKeys.FAVORITE);
   }
 }
 

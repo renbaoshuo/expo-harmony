@@ -8,7 +8,6 @@
 import { ExpoFunction, ExpoModule, ExpoModuleContext, ExpoModuleDefinition, ExpoModuleError, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
 import { AlbumRecord, AssetRecord, MediaLibraryChangeEvent, PagedAssetResult } from './MediaLibraryAssets';
 import { AlbumQueryOptions, AssetQueryOptions, readAlbumQueryOptions, readAssetQueryOptions, requireString, optionalRecord } from './MediaLibraryQuery';
-import { READ_PERMISSION, WRITE_PERMISSION } from './MediaLibraryPermissions';
 import { MediaLibraryRepository } from './MediaLibraryRepository';
 import { CHANGE_EVENT_NAME, mediaLibraryDefinition } from './MediaLibraryModuleDefinition';
 
@@ -51,11 +50,7 @@ export class ExpoMediaLibraryModule extends ExpoModule {
         ExpoFunction.typed1(
           ASSET_OPTIONS,
           (options: AssetQueryOptions): Promise<PagedAssetResult> =>
-            this.repository.run(async (): Promise<PagedAssetResult> => {
-              this.repository.permissions.ensureGranted([READ_PERMISSION]);
-
-              return await this.repository.getAssets(options);
-            }),
+            this.repository.read((): Promise<PagedAssetResult> => this.repository.getAssets(options)),
         ),
       )
       .asyncFunction(
@@ -72,11 +67,7 @@ export class ExpoMediaLibraryModule extends ExpoModule {
         ExpoFunction.typed1(
           ALBUM_OPTIONS,
           (options: AlbumQueryOptions): Promise<AlbumRecord[]> =>
-            this.repository.run(async (): Promise<AlbumRecord[]> => {
-              this.repository.permissions.ensureGranted([READ_PERMISSION]);
-
-              return await this.repository.getAlbums(options);
-            }),
+            this.repository.read((): Promise<AlbumRecord[]> => this.repository.getAlbums(options)),
         ),
       )
       .asyncFunction(
@@ -84,11 +75,7 @@ export class ExpoMediaLibraryModule extends ExpoModule {
         ExpoFunction.typed1(
           ExpoValueTypes.string(),
           (title: string): Promise<AlbumRecord | null> =>
-            this.repository.run(async (): Promise<AlbumRecord | null> => {
-              this.repository.permissions.ensureGranted([READ_PERMISSION]);
-
-              return await this.repository.getAlbum(title);
-            }),
+            this.repository.read((): Promise<AlbumRecord | null> => this.repository.getAlbum(title)),
         ),
       )
       .asyncFunction(
@@ -97,11 +84,7 @@ export class ExpoMediaLibraryModule extends ExpoModule {
           IDENTIFIER,
           IDENTIFIER.nullable().optional(),
           (uri: string, album?: string | null): Promise<AssetRecord> =>
-            this.repository.run(async (): Promise<AssetRecord> => {
-              this.repository.permissions.ensureGranted([READ_PERMISSION, WRITE_PERMISSION]);
-
-              return await this.repository.createAsset(uri, album ?? undefined);
-            }),
+            this.repository.write((): Promise<AssetRecord> => this.repository.createAsset(uri, album ?? undefined)),
         ),
       )
       .asyncFunction(
@@ -109,9 +92,7 @@ export class ExpoMediaLibraryModule extends ExpoModule {
         ExpoFunction.typed1(
           IDENTIFIER,
           (uri: string): Promise<void> =>
-            this.repository.run(async (): Promise<void> => {
-              await this.repository.saveToLibrary(uri);
-            }),
+            this.repository.run((): Promise<void> => this.repository.saveToLibrary(uri)),
         ),
       )
       .asyncFunction(
@@ -130,11 +111,7 @@ export class ExpoMediaLibraryModule extends ExpoModule {
           ExpoValueTypes.array(IDENTIFIER),
           IDENTIFIER,
           (ids: string[], album: string): Promise<boolean> =>
-            this.repository.run(async (): Promise<boolean> => {
-              this.repository.permissions.ensureGranted([READ_PERMISSION, WRITE_PERMISSION]);
-
-              return await this.repository.removeAssetsFromAlbum(ids, album);
-            }),
+            this.repository.write((): Promise<boolean> => this.repository.removeAssetsFromAlbum(ids, album)),
         ),
       )
       .asyncFunction(
@@ -142,11 +119,7 @@ export class ExpoMediaLibraryModule extends ExpoModule {
         ExpoFunction.typed1(
           ExpoValueTypes.array(IDENTIFIER),
           (ids: string[]): Promise<boolean> =>
-            this.repository.run(async (): Promise<boolean> => {
-              this.repository.permissions.ensureGranted([WRITE_PERMISSION]);
-
-              return await this.repository.deleteAssets(ids);
-            }),
+            this.repository.writeOnly((): Promise<boolean> => this.repository.deleteAssets(ids)),
         ),
       )
       .asyncFunction(

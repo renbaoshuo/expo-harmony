@@ -59,6 +59,10 @@ export class MediaLibraryPermissions {
     }
   }
 
+  canReadLibrary(): boolean {
+    return this.context.permissionStatus(READ_PERMISSION) === ExpoPermissionStatus.GRANTED;
+  }
+
   canReadLocation(): boolean {
     return this.context.permissionStatus(LOCATION_PERMISSION) === ExpoPermissionStatus.GRANTED;
   }

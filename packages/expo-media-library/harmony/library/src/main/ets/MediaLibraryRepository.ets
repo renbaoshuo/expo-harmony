@@ -51,11 +51,8 @@ export class MediaLibraryRepository {
   private refreshOnForeground: boolean = false;
   private destroyed: boolean = false;
   private pending: number = 0;
-  private idle?: () => void;
-  private release?: Promise<void>;
   private readonly changed = (change: photoAccessHelper.ChangeData): void => {
-    if (!this.destroyed && this.observing && this.foreground && this.context.isValid &&
-      this.context.permissionStatus(READ_PERMISSION) === ExpoPermissionStatus.GRANTED) {
+    if (!this.destroyed && this.observing && this.foreground && this.context.isValid && this.permissions.canReadLibrary()) {
       this.emitChange(change);
     }
   };
@@ -92,14 +89,16 @@ export class MediaLibraryRepository {
     }
 
     this.startSystemObservation();
-    if (this.refreshOnForeground && this.observing && this.context.isValid) {
+
+    if ((this.refreshOnForeground || this.registered) && this.observing && this.context.isValid) {
       this.emitChange();
     }
     this.refreshOnForeground = false;
   }
 
   permissionsChanged(): void {
-    this.startSystemObservation();
+    if (this.permissions.canReadLibrary()) this.startSystemObservation();
+    else this.stopSystemObservation();
   }
 
   assertActive(): void {
@@ -130,11 +129,16 @@ export class MediaLibraryRepository {
 
   get helper(): photoAccessHelper.PhotoAccessHelper {
     this.assertActive();
+
     if (!canIUse('SystemCapability.FileManagement.PhotoAccessHelper.Core')) {
       throw new ExpoModuleError('ERR_MEDIA_LIBRARY_UNAVAILABLE', 'The HarmonyOS photo library capability is unavailable on this device.');
     }
 
-    if (this.library === undefined) this.library = photoAccessHelper.getPhotoAccessHelper(this.context.uiAbilityContext);
+    if (this.library === undefined) {
+      const logger = this.context.logger;
+      this.warn = (message: string): void => logger.warn(message);
+      this.library = photoAccessHelper.getPhotoAccessHelper(this.context.uiAbilityContext);
+    }
 
     return this.library;
   }
@@ -150,19 +154,19 @@ export class MediaLibraryRepository {
 
       return result;
     } catch (error) {
-      if (error instanceof ExpoModuleError) throw new ExpoModuleError(error.code, error.message, error.cause);
+      if (error instanceof ExpoModuleError) throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
 
       const cause = error as BusinessError;
 
       throw new ExpoModuleError('ERR_MEDIA_LIBRARY_OPERATION', `HarmonyOS media library operation failed (${cause.code}): ${cause.message}`, error);
     } finally {
       this.pending--;
-      if (this.pending === 0) this.idle?.();
+      if (this.pending === 0 && this.destroyed) this.releaseHelper();
     }
   }
 
-  destroy(): Promise<void> {
-    if (this.release !== undefined) return this.release;
+  destroy(): void {
+    if (this.destroyed) return;
 
     this.destroyed = true;
     this.paging.destroy();
@@ -170,29 +174,26 @@ export class MediaLibraryRepository {
     this.observing = false;
     this.stopSystemObservation();
 
-    this.release = this.releaseWhenIdle();
-
-    return this.release;
+    // A pending system dialog retains the helper without blocking a JS reload.
+    if (this.pending === 0) this.releaseHelper();
   }
 
-  private async releaseWhenIdle(): Promise<void> {
-    // FetchResult and ImageSource cleanup finishes before releasing their helper.
-    if (this.pending > 0)
-      await new Promise<void>((resolve): void => {
-        this.idle = resolve;
-      });
-
-    await this.library?.release();
+  private async releaseHelper(): Promise<void> {
+    const helper = this.library;
     this.library = undefined;
+
+    try {
+      await helper?.release();
+    } catch (error) {
+      this.warn?.(`Unable to release MediaLibrary: ${(error as BusinessError).message}`);
+    }
   }
 
   private startSystemObservation(): void {
     if (this.destroyed || !this.foreground || !this.observing || this.registered) return;
-    if (this.context.permissionStatus(READ_PERMISSION) !== ExpoPermissionStatus.GRANTED) return;
+    if (!this.permissions.canReadLibrary()) return;
 
     try {
-      const logger = this.context.logger;
-      this.warn = (message: string): void => logger.warn(message);
       this.helper.registerChange(photoAccessHelper.DefaultChangeUri.DEFAULT_PHOTO_URI, true, this.changed);
       this.registered = true;
     } catch (error) {
@@ -207,7 +208,6 @@ export class MediaLibraryRepository {
       this.library?.unRegisterChange(photoAccessHelper.DefaultChangeUri.DEFAULT_PHOTO_URI, this.changed);
       this.registered = false;
     } catch (error) {
-      // Reload can close public context access before unregistering the observer.
       this.warn?.(`Unable to stop observing media library changes: ${(error as BusinessError).message}`);
     }
   }
@@ -241,7 +241,7 @@ export class MediaLibraryRepository {
       const locate =
         deviceInfo.sdkApiVersion >= FETCH_RESULT_INDEX_API
           ? async (uri: string): Promise<number> => {
-              const asset = await this.findAsset(uri);
+              const asset = await this.findAsset(uri, []);
 
               return asset === undefined ? -1 : await fetch.getIndex(asset);
             }
@@ -460,7 +460,8 @@ export class MediaLibraryRepository {
   }
 
   async getAssetAlbums(id: string): Promise<photoAccessHelper.Album[]> {
-    await this.requireAsset(id);
+    await this.requireAsset(id, []);
+
     const albums = await this.queryAlbums(photoAccessHelper.AlbumType.USER, photoAccessHelper.AlbumSubtype.USER_GENERIC);
     const matches: photoAccessHelper.Album[] = [];
 
@@ -524,14 +525,14 @@ export class MediaLibraryRepository {
     const unique = uniqueStrings(ids);
 
     for (let i = 0; i < unique.length; i += 1) {
-      assets.push(await this.requireAsset(unique[i]));
+      assets.push(await this.requireAsset(unique[i], []));
     }
 
     return assets;
   }
 
-  async requireAsset(id: string): Promise<photoAccessHelper.PhotoAsset> {
-    const asset = await this.findAsset(id);
+  async requireAsset(id: string, columns: string[] = ASSET_FETCH_COLUMNS): Promise<photoAccessHelper.PhotoAsset> {
+    const asset = await this.findAsset(id, columns);
     if (asset === undefined) {
       throw new ExpoModuleError('ERR_MEDIA_LIBRARY_ASSET_NOT_FOUND', `No media asset exists for identifier '${id}'.`);
     }
@@ -539,8 +540,8 @@ export class MediaLibraryRepository {
     return asset;
   }
 
-  async findAsset(id: string): Promise<photoAccessHelper.PhotoAsset | undefined> {
-    const scoped = this.context.permissionStatus(READ_PERMISSION) !== ExpoPermissionStatus.GRANTED;
+  async findAsset(id: string, columns: string[] = ASSET_FETCH_COLUMNS): Promise<photoAccessHelper.PhotoAsset | undefined> {
+    const scoped = !this.permissions.canReadLibrary();
     if (scoped) {
       // A URI grant must not bypass permissions masked by the runtime.
       if (this.context.services.get(ExpoRuntimePermissionsKey) !== undefined) {
@@ -557,7 +558,7 @@ export class MediaLibraryRepository {
 
     try {
       // PhotoAccessHelper honors the URI-specific grant from PhotoViewPicker.
-      const fetch = await this.helper.getAssets({ fetchColumns: ASSET_FETCH_COLUMNS, predicates });
+      const fetch = await this.helper.getAssets({ fetchColumns: columns, predicates });
 
       try {
         if (fetch.getCount() !== 1) return undefined;
@@ -567,11 +568,15 @@ export class MediaLibraryRepository {
         fetch.close();
       }
     } catch (error) {
-      const code = (error as BusinessError).code;
-      if (scoped && (code === PERMISSION_DENIED || code === LEGACY_PERMISSION_DENIED)) {
+      const cause = error as BusinessError;
+      if (scoped && (cause.code === PERMISSION_DENIED || cause.code === LEGACY_PERMISSION_DENIED)) {
         this.permissions.ensureGranted([READ_PERMISSION]);
       }
-      throw error as Error;
+
+      if (error instanceof ExpoModuleError) {
+        throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
+      }
+      throw new ExpoModuleError('ERR_MEDIA_LIBRARY_OPERATION', `HarmonyOS media library operation failed (${cause.code}): ${cause.message}`, error);
     }
   }
 
