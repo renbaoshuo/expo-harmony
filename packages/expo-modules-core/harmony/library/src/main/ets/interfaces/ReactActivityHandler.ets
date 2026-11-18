@@ -13,6 +13,9 @@ export interface ReactActivityHandler {
   /** Higher priorities run first. Unspecified priority is zero. */
   readonly priority?: number;
 
+  /** The root container supplied by this handler displays usable native content before React. */
+  readonly showsNativeContentBeforeReact?: boolean;
+
   createReactRootViewContainer?(context: ReactRootViewContext): ReactRootViewBuilder | undefined;
   getDelayLoadAppHandler?(context: ReactRootViewContext): Promise<void> | undefined;
   /** Adds native gestures without replacing another package's root container. */

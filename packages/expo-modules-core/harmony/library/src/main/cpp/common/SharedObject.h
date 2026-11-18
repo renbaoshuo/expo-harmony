@@ -38,10 +38,7 @@ typedef long ObjectId;
  */
 typedef std::function<void(const ObjectId)> ObjectReleaser;
 
-/**
- Installs a base JavaScript class for all shared object with a shared release block.
- */
-void installBaseClass(jsi::Runtime &runtime, const ObjectReleaser& releaser);
+void installBaseClass(jsi::Runtime &runtime);
 
 /**
  Returns the base JavaScript class for all shared objects, i.e. `global.expo.SharedObject`.

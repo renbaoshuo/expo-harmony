@@ -8,7 +8,6 @@
 #include "ExpoModulesCorePackage.h"
 
 #include <algorithm>
-#include <cctype>
 #include <exception>
 #include <string>
 
@@ -44,24 +43,6 @@ std::string limitedDiagnostic(const char *message) {
       ' ');
 
   return result;
-}
-
-std::string normalizeEventName(std::string name) {
-  size_t prefixLength = 0;
-  if (name.starts_with("on") && name.size() > 2) {
-    prefixLength = 2;
-  } else if (name.starts_with("top") && name.size() > 3) {
-    prefixLength = 3;
-  }
-  if (prefixLength == 0) {
-    return name;
-  }
-
-  name.erase(0, prefixLength);
-  name[0] = static_cast<char>(
-      std::tolower(static_cast<unsigned char>(name[0])));
-
-  return name;
 }
 
 // Unlike a TurboModule observer, a package handler exists before JS first uses
@@ -115,20 +96,20 @@ class ExpoViewEventEmitRequestHandler final
     : public rnoh::EventEmitRequestHandler {
 public:
   void handleEvent(const Context &context) override {
-    if (!context.shadowViewRegistry) {
+    if (!context.shadowViewRegistry || context.eventName.empty()) {
       return;
     }
 
-    auto eventEmitter = context.shadowViewRegistry
-                            ->getEventEmitter<expo::ExpoViewEventEmitter>(context.tag);
-    if (!eventEmitter) {
+    const auto emitter =
+        context.shadowViewRegistry->getEventEmitter<expo::ExpoViewEventEmitter>(context.tag);
+    if (!emitter) {
       return;
     }
 
     try {
       auto payload = ArkJS(context.env).getDynamic(context.payload);
-      eventEmitter->dispatch(
-          normalizeEventName(context.eventName),
+      emitter->dispatch(
+          context.eventName,
           [payload = std::move(payload)](facebook::jsi::Runtime &runtime) {
             return facebook::jsi::valueFromDynamic(runtime, payload);
           });

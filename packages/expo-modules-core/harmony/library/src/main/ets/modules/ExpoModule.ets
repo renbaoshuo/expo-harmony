@@ -9,7 +9,6 @@ import { waitForRnohBundle } from '../appcontext/RnohBundle';
 import { AbilityConstant, abilityAccessCtrl, common, PermissionRequestResult, Permissions, Want } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { lang } from '@kit.ArkTS';
-import deviceInfo from '@ohos.deviceInfo';
 import { ExpoRuntimeConfig } from '../appcontext/ExpoRuntimeConfig';
 import type { ExpoRuntimeSession } from '../appcontext/ExpoRuntimeSession';
 import {
@@ -18,8 +17,9 @@ import {
   ExpoPermissionResponse,
   ExpoPermissionStatus,
   ExpoRuntimePermissionsKey,
-  PERMISSION_STATUS_API,
   getLegacyDeniedPermissionStatus,
+  hasSystemPermissionHistory,
+  querySystemPermissionStatus,
   recordLegacyPermissionDenials,
 } from '../appcontext/ExpoRuntimePermissions';
 import { ExpoAppDirectories, ExpoRuntimeDirectoriesKey } from '../appcontext/ExpoRuntimeDirectories';
@@ -579,7 +579,8 @@ export class ExpoModuleContext {
   /** Optional OS history is only used to recover API <20's missing undetermined state. */
   permissionStatus(permission: Permissions, denied?: boolean): ExpoPermissionStatus {
     let system = this.systemPermissionStatus(permission);
-    if (deviceInfo.sdkApiVersion < PERMISSION_STATUS_API && system === ExpoPermissionStatus.DENIED && denied === false) {
+
+    if (!hasSystemPermissionHistory() && system === ExpoPermissionStatus.DENIED && denied === false) {
       system = ExpoPermissionStatus.NOT_DETERMINED;
     }
 
@@ -588,7 +589,8 @@ export class ExpoModuleContext {
 
   getPermissionResponse(permission: Permissions): ExpoPermissionResponse {
     let system = this.systemPermissionStatus(permission);
-    if (deviceInfo.sdkApiVersion < PERMISSION_STATUS_API && system === ExpoPermissionStatus.DENIED) {
+
+    if (!hasSystemPermissionHistory() && system === ExpoPermissionStatus.DENIED) {
       try {
         system = getLegacyDeniedPermissionStatus(this.uiAbilityContext, this.preferenceName(EXPO_PERMISSION_HISTORY), permission);
       } catch (error) {
@@ -611,18 +613,12 @@ export class ExpoModuleContext {
 
   systemPermissionStatus(permission: Permissions): ExpoPermissionStatus {
     this.assertValid();
-
-    const manager = abilityAccessCtrl.createAtManager();
-    if (deviceInfo.sdkApiVersion >= PERMISSION_STATUS_API) return manager.getSelfPermissionStatus(permission) as number as ExpoPermissionStatus;
-
-    const token = this.uiAbilityContext.applicationInfo.accessTokenId;
-    return manager.checkAccessTokenSync(token, permission) === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED
-      ? ExpoPermissionStatus.GRANTED
-      : ExpoPermissionStatus.DENIED;
+    return querySystemPermissionStatus(this.uiAbilityContext, permission);
   }
 
   async requestPermissions(permissions: Permissions[]): Promise<ExpoPermissionRequestResult> {
     this.assertValid();
+    if (permissions.length === 0) return new ExpoPermissionRequestResult([], [], []);
 
     const requested = permissions.slice();
     const results: PermissionRequestResult[] = [];
@@ -631,15 +627,15 @@ export class ExpoModuleContext {
       this.assertValid();
 
       const result = await abilityAccessCtrl.createAtManager().requestPermissionsFromUser(this.uiAbilityContext, requested.slice());
+
       this.assertValid();
 
       // The host may mutate the returned OS result, so keep a private snapshot.
       results.push(JSON.parse(JSON.stringify(result)) as PermissionRequestResult);
 
-      const api = deviceInfo.sdkApiVersion;
-      if (api < PERMISSION_STATUS_API) {
+      if (!hasSystemPermissionHistory()) {
         try {
-          await recordLegacyPermissionDenials(this.uiAbilityContext, this.preferenceName(EXPO_PERMISSION_HISTORY), result, api);
+          await recordLegacyPermissionDenials(this.uiAbilityContext, this.preferenceName(EXPO_PERMISSION_HISTORY), result);
         } catch (error) {
           console.warn(`Unable to save Expo permission history: ${String(error)}`);
         }
@@ -651,6 +647,7 @@ export class ExpoModuleContext {
     const service = this.services.get(ExpoRuntimePermissionsKey);
     if (service === undefined) await request();
     else await service.requestPermissions(requested.slice(), request);
+
     this.assertValid();
 
     return new ExpoPermissionRequestResult(
@@ -691,15 +688,18 @@ export class ExpoModuleContext {
   openFileForRead(value: string): fs.File {
     const source = this.fileSourceForRead(value);
     const file = fs.openSync(source, fs.OpenMode.READ_ONLY | fs.OpenMode.NONBLOCK);
+    let verified = false;
 
     try {
       this.readPathForDescriptor(source, file);
-
-      return file;
-    } catch (error) {
-      try { fs.closeSync(file.fd); } catch (_) {}
-      throw error as Error;
+      verified = true;
+    } finally {
+      if (!verified) {
+        try { fs.closeSync(file.fd); } catch (_) {}
+      }
     }
+
+    return file;
   }
 
   grantFileAccess(path: string, directory: boolean, writable: boolean): void {

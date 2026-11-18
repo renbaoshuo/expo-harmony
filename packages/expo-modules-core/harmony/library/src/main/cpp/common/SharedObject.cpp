@@ -14,6 +14,7 @@
 #endif
 
 #include "SharedObject.h"
+#include "JSI/RecordProperty.h"
 
 namespace expo::SharedObject {
 
@@ -34,7 +35,7 @@ bool NativeState::isReleased() const noexcept {
 
 #pragma mark - Utils
 
-void installBaseClass(jsi::Runtime &runtime, const ObjectReleaser& releaser) {
+void installBaseClass(jsi::Runtime &runtime) {
   jsi::Function baseClass = EventEmitter::getClass(runtime);
   jsi::Function klass = expo::common::createInheritingClass(runtime, "SharedObject", baseClass);
   jsi::Object prototype = klass.getPropertyAsObject(runtime, "prototype");
@@ -62,18 +63,19 @@ void installBaseClass(jsi::Runtime &runtime, const ObjectReleaser& releaser) {
     jsi::PropNameID::forAscii(runtime, "toJSON"),
     0,
     [](jsi::Runtime &runtime, const jsi::Value &thisValue, const jsi::Value *args, size_t count) -> jsi::Value {
-      jsi::Object thisObject = thisValue.getObject(runtime);
-      jsi::Object json = jsi::Object(runtime);
-      jsi::Array propertyNames = thisObject.getPropertyNames(runtime);
+      jsi::Object object = thisValue.getObject(runtime);
+      jsi::Array names = object.getPropertyNames(runtime);
+      jsi::Object json(runtime);
 
-      for (size_t i = 0, size = propertyNames.size(runtime); i < size; i++) {
-        jsi::String propertyName = propertyNames.getValueAtIndex(runtime, i).getString(runtime);
-        jsi::Value value = thisObject.getProperty(runtime, propertyName);
+      for (size_t i = 0, size = names.size(runtime); i < size; i++) {
+        jsi::String name = names.getValueAtIndex(runtime, i).getString(runtime);
+        jsi::Value value = object.getProperty(runtime, name);
 
         if (!value.isObject() || !value.getObject(runtime).isFunction(runtime)) {
-          json.setProperty(runtime, propertyName, value);
+          common::defineRecordProperty(runtime, json, name, std::move(value));
         }
       }
+
       return jsi::Value(runtime, json);
     });
 

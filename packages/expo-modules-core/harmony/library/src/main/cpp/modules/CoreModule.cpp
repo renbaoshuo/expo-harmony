@@ -10,7 +10,10 @@
 #include <algorithm>
 #include <string>
 
+#include <react/renderer/core/EventEmitter.h>
+
 #include "api/Version.h"
+#include "common/JSI/RecordProperty.h"
 #include "errors/CodedError.h"
 #include "modules/ExpoModulesCoreTurboModule.h"
 #include "modules/Uuid.h"
@@ -141,28 +144,28 @@ ModuleDefinition CoreModule::definition() {
                       }
 
                       auto &runtime = invocation.runtime();
-                      jsi::Object validAttributes(runtime);
+                      jsi::Object attributes(runtime);
                       for (const auto &prop : view->props) {
-                        validAttributes.setProperty(runtime, prop.name.c_str(), true);
+                        expo::common::defineRecordProperty(
+                            runtime, attributes, jsi::String::createFromUtf8(runtime, prop.name), true);
                       }
                       if (view->usesGenericFabricComponent) {
-                        validAttributes.setProperty(runtime, protocol::kViewModuleNameProp, true);
-                        validAttributes.setProperty(runtime, protocol::kViewNameProp, true);
-                        validAttributes.setProperty(runtime, protocol::kViewRevisionProp, true);
+                        attributes.setProperty(runtime, protocol::kViewModuleNameProp, true);
+                        attributes.setProperty(runtime, protocol::kViewNameProp, true);
+                        attributes.setProperty(runtime, protocol::kViewRevisionProp, true);
                       }
-                      jsi::Object directEventTypes(runtime);
+
+                      jsi::Object events(runtime);
                       for (const auto &event : view->events) {
-                        auto normalized = event.starts_with("on")
-                                            ? "top" + event.substr(2)
-                                            : event;
+                        const auto type = facebook::react::EventEmitter::normalizeEventType(event);
                         jsi::Object registration(runtime);
                         registration.setProperty(
                             runtime,
                             "registrationName",
                             jsi::String::createFromUtf8(runtime, event));
-                        directEventTypes.setProperty(
-                            runtime, normalized.c_str(), std::move(registration));
+                        events.setProperty(runtime, type.c_str(), std::move(registration));
                       }
+
                       jsi::Object result(runtime);
                       if (view->usesGenericFabricComponent) {
                         result.setProperty(
@@ -171,8 +174,9 @@ ModuleDefinition CoreModule::definition() {
                             jsi::String::createFromUtf8(
                                 runtime, protocol::kViewComponentName));
                       }
-                      result.setProperty(runtime, "validAttributes", std::move(validAttributes));
-                      result.setProperty(runtime, "directEventTypes", std::move(directEventTypes));
+                      result.setProperty(runtime, "validAttributes", std::move(attributes));
+                      result.setProperty(runtime, "directEventTypes", std::move(events));
+
                       return result;
                     }});
   builder.asyncFunction({.name = "reloadAppAsync",

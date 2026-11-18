@@ -149,21 +149,17 @@ bool RuntimeInstaller::install(
   try {
     expo::EventEmitter::installClass(runtime);
     expo::NativeModule::installClass(runtime);
-    expo::SharedObject::installBaseClass(
-        runtime,
-        [weakContext = std::weak_ptr<RuntimeContext>(context)](long objectId) {
-          if (auto locked = weakContext.lock()) {
-            locked->scheduleSharedObjectRelease(objectId);
-          }
-        });
+    expo::SharedObject::installBaseClass(runtime);
     expo::SharedRef::installBaseClass(runtime);
 
     expoObject = runtime.global().getPropertyAsObject(runtime, "expo");
     expoObject.setNativeState(
         runtime, std::make_shared<RuntimeContextNativeState>(context));
+
     if (!workletRuntime) {
       defineReadOnly(runtime, expoObject, "__expo_app_identifier__",
                      jsi::String::createFromUtf8(runtime, context->runtimeEpochString()));
+
       context->initializeModuleRegistry();
       auto modulesHost = std::make_shared<ModulesHostObject>(context);
       expoObject.setProperty(

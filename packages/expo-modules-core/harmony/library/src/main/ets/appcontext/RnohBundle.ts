@@ -70,6 +70,7 @@ export function installRnohBundleBarrier(instance: RNInstance): void {
     finish = resolve;
     reject = failure;
   });
+
   const fail = (error: Error): void => {
     if (!bundle.loaded && !bundle.failed) {
       bundle.failed = true;
@@ -86,20 +87,26 @@ export function installRnohBundleBarrier(instance: RNInstance): void {
     bundle.loaded = true;
     finish();
   };
-  // RNOH 0.86 emits this after the app bundle, separately from its resource bootstrap.
-  const unsubscribeLoaded = instance.subscribeToLifecycleEvents('JS_BUNDLE_EXECUTION_FINISH', loaded);
-  const unsubscribeError = instance.subscribeToRNOHErrors(error => fail(new RnohBundleError(error)));
-  const unsubscribeDestroy = observeRnohDestroy(instance, () => fail(new Error('The React runtime was destroyed before its first bundle completed.')));
 
-  const cleanup = (): void => {
-    unsubscribeLoaded();
-    unsubscribeError();
-    unsubscribeDestroy();
-  };
-  completion.then(cleanup, cleanup);
+  // RNOH 0.86 emits this after the app bundle, separately from its resource bootstrap.
+  const stopLoaded = instance.subscribeToLifecycleEvents('JS_BUNDLE_EXECUTION_FINISH', loaded);
+  let destroyed = false;
+  observeRnohDestroy(instance, () => {
+    destroyed = true;
+    fail(new Error('The React runtime was destroyed before its first bundle completed.'));
+  });
+  completion.then(stopLoaded, stopLoaded);
 
   const url = instance.getInitialBundleUrl();
-  if (url !== undefined && instance.getBundleExecutionStatus(url) === 'DONE') loaded();
+  const status = url === undefined ? undefined : instance.getBundleExecutionStatus(url);
+  if (status === 'DONE') loaded();
+  if (url !== undefined && status === 'RUNNING') {
+    // An externally owned instance can already have started its first bundle.
+    const stop = instance.subscribeToRNOHErrors(error => {
+      if (instance.getBundleExecutionStatus(url) === undefined) fail(new RnohBundleError(error));
+    });
+    completion.then(stop, stop);
+  }
 
   const run = instance.runJSBundle.bind(instance);
   let tail: Promise<void> = Promise.resolve();
@@ -110,34 +117,34 @@ export function installRnohBundleBarrier(instance: RNInstance): void {
     }
 
     const pending = tail.then(async () => {
+      if (destroyed) throw new Error('Cannot load a bundle in a destroyed React runtime.');
       if (bundle.failed) return completion;
 
-      if (bundle.loaded) {
-        let executed = false;
-        let failure: RNOHError | undefined;
-        const unsubscribeExecution = instance.subscribeToLifecycleEvents('JS_BUNDLE_EXECUTION_FINISH', () => { executed = true; });
-        const unsubscribeFailure = instance.subscribeToRNOHErrors(error => { failure = error; });
+      let executed = false;
+      let failure: RNOHError | undefined;
+      const stopExecution = instance.subscribeToLifecycleEvents('JS_BUNDLE_EXECUTION_FINISH', () => { executed = true; });
+      const stopFailure = instance.subscribeToRNOHErrors(error => { failure = error; });
 
-        try {
-          // RNOH reports load failures to its error emitter and resolves runJSBundle.
-          await run(provider);
-          if (executed) return;
-          if (failure !== undefined) throw new RnohBundleError(failure);
+      const execute = async (): Promise<void> => {
+        // A RNOH error can occur during a successful bundle. Check execution after RNOH settles.
+        await run(provider);
 
-          throw new Error('RNOH finished loading without executing the JavaScript bundle.');
-        } finally {
-          unsubscribeExecution();
-          unsubscribeFailure();
-        }
-      }
+        if (executed) return;
+        if (failure !== undefined) throw new RnohBundleError(failure);
+        throw new Error('RNOH finished loading without executing the JavaScript bundle.');
+      };
 
       try {
-        await Promise.all([run(provider), completion]);
+        await Promise.all([execute(), completion]);
       } catch (error) {
+        if (bundle.loaded) return Promise.reject(error);
+
         fail(error instanceof Error ? error : new Error(String(error)));
-        if (bundle.loaded) throw error;
 
         return completion;
+      } finally {
+        stopExecution();
+        stopFailure();
       }
     });
 
@@ -148,6 +155,7 @@ export function installRnohBundleBarrier(instance: RNInstance): void {
       };
       pending.then(clear, clear);
     }
+
     tail = pending.catch(() => {});
 
     return pending;
