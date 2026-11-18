@@ -61,7 +61,7 @@ class ParsedBackgroundColor {
 class RuntimeAppearance {
   readonly runtimeId: number;
   readonly style?: InterfaceStyle;
-  background?: ParsedBackgroundColor | null;
+  background: ParsedBackgroundColor | null = null;
 
   constructor(runtimeId: number, config: ReactRuntimeAppearance) {
     this.runtimeId = runtimeId;
@@ -85,6 +85,13 @@ class WindowBackgroundState {
 
   constructor(target: window.Window, color: ParsedBackgroundColor, followsSystem: boolean) {
     this.target = target;
+    this.color = color;
+    this.followsSystem = followsSystem;
+  }
+
+  apply(color: ParsedBackgroundColor, followsSystem: boolean): void {
+    applyWindowColor(this.target, color.argb);
+
     this.color = color;
     this.followsSystem = followsSystem;
   }
@@ -201,8 +208,7 @@ class AbilitySystemUIState {
         if (!background.followsSystem || background.color.argb === color.argb) return;
 
         try {
-          applyWindowColor(background.target, color.argb);
-          background.color = color;
+          background.apply(color, true);
         } catch (error) {
           console.warn(`Unable to refresh the Expo System UI window after a configuration change: ${String(error)}`);
         }
@@ -246,21 +252,34 @@ class AbilitySystemUIState {
     await this.serialize(async (): Promise<void> => {
       if (!valid() || appearance !== this.appearance) return;
 
-      const target = await stage.getMainWindow();
-      const color = appearance?.background === undefined
+      const color = appearance === undefined
         ? (await this.loadPersistedBackground()) ?? this.configured
         : appearance.background;
 
       if (!valid() || appearance !== this.appearance) return;
 
+      const win = stage.getMainWindowSync();
       const style = deviceInfo.sdkApiVersion >= UI_ABILITY_COLOR_MODE_API ? appearance?.style ?? this.style : this.style;
+
       try {
         this.applyInterfaceStyle(style);
       } catch (error) {
         console.warn(`Unable to apply Expo System UI interface style: ${String(error)}`);
       }
 
-      this.applyBackground(target, color);
+      const mainId = this.applyBackground(win, color);
+      const applied = color ?? this.systemBackgroundColor();
+
+      // RNOH can host its surface in a previously styled subwindow.
+      this.windows.forEach((background: WindowBackgroundState, id: number): void => {
+        if (id === mainId) return;
+
+        try {
+          background.apply(applied, color === null);
+        } catch (error) {
+          console.warn(`Unable to restore an Expo System UI window after a runtime change: ${String(error)}`);
+        }
+      });
     });
   }
 
@@ -348,20 +367,19 @@ class AbilitySystemUIState {
     await next;
   }
 
-  private applyBackground(target: window.Window, color: ParsedBackgroundColor | null): void {
-    const id = inspectWindowId(target);
+  private applyBackground(win: window.Window, color: ParsedBackgroundColor | null): number {
+    const id = inspectWindowId(win);
     const applied = color ?? this.systemBackgroundColor();
     const current = this.windows.get(id);
 
-    applyWindowColor(target, applied.argb);
-
     if (current !== undefined) {
-      current.color = applied;
-      current.followsSystem = color === null;
-      return;
+      current.apply(applied, color === null);
+      return id;
     }
 
-    const background = new WindowBackgroundState(target, applied, color === null);
+    applyWindowColor(win, applied.argb);
+
+    const background = new WindowBackgroundState(win, applied, color === null);
     this.windows.set(id, background);
     background.observeDestruction((): void => {
       if (this.windows.get(id) !== background) return;
@@ -369,6 +387,8 @@ class AbilitySystemUIState {
       this.windows.delete(id);
       background.close();
     });
+
+    return id;
   }
 
   private async loadPersistedBackground(): Promise<ParsedBackgroundColor | null> {
