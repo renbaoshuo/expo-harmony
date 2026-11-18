@@ -12,6 +12,8 @@ import { impactRecipe, notificationRecipe, selectionRecipe } from './HapticsSema
 import type { HapticNotification, HapticPresetName, HapticRecipe, HapticUsage } from './HapticsSemantics';
 
 const VIBRATOR_CAPABILITY: string = 'SystemCapability.Sensors.MiscDevice';
+const HD_HAPTICS_API: number = 18;
+const VIBRATOR_INFO_API: number = 19;
 const UNSUPPORTED_CODE: number = 801;
 const DEVICE_OPERATION_FAILED: number = 14600101;
 const ERROR_DESTROYED: string = 'ERR_HAPTICS_DESTROYED';
@@ -35,8 +37,8 @@ const ARGUMENT = new ExpoValueType<string>(
 );
 
 class ExpoHapticsError extends ExpoModuleError {
-  constructor(code: string, message: string) {
-    super(code, message);
+  constructor(code: string, message: string, cause?: Object) {
+    super(code, message, cause);
     this.name = 'ExpoHapticsError';
   }
 }
@@ -106,9 +108,10 @@ export class ExpoHapticsModule extends ExpoModule {
       try {
         await this.vibrate(recipe);
       } catch (error) {
-        if (this.destroyed || isUnavailable(error)) return;
+        const cause = error instanceof ExpoHapticsError ? error.cause ?? error : error as Object;
+        if (this.destroyed || isUnavailable(cause)) return;
 
-        throw new ExpoHapticsError(ERROR_VIBRATION, `Unable to trigger HarmonyOS haptic feedback: ${errorMessage(error)}`);
+        throw new ExpoHapticsError(ERROR_VIBRATION, `Unable to trigger HarmonyOS haptic feedback: ${errorMessage(cause)}`, cause);
       }
     });
 
@@ -123,7 +126,9 @@ export class ExpoHapticsModule extends ExpoModule {
 
     if (this.destroyed) return;
 
-    if (recipe.pattern !== undefined && deviceInfo.apiAvailable(18)) {
+    if (recipe.pattern !== undefined && deviceInfo.sdkApiVersion >= HD_HAPTICS_API) {
+      let pattern: vibrator.VibratorPattern | undefined;
+
       try {
         if (vibrator.isHdHapticSupported()) {
           const builder = new vibrator.VibratorPatternBuilder();
@@ -131,11 +136,15 @@ export class ExpoHapticsModule extends ExpoModule {
             builder.addContinuousEvent(pulse.startMs, pulse.durationMs, { intensity: pulse.intensity });
           }
 
-          if (await this.tryVibration({ type: 'pattern', pattern: builder.build() }, recipe.usage)) return;
+          pattern = builder.build();
         }
       } catch (error) {
-        if (errorCode(error) !== UNSUPPORTED_CODE) throw error as Error;
+        if (errorCode(error) !== UNSUPPORTED_CODE) {
+          throw new ExpoHapticsError(ERROR_VIBRATION, errorMessage(error), error);
+        }
       }
+
+      if (pattern !== undefined && await this.tryVibration({ type: 'pattern', pattern }, recipe.usage)) return;
     }
 
     if (this.destroyed) return;
@@ -161,7 +170,8 @@ export class ExpoHapticsModule extends ExpoModule {
       return true;
     } catch (error) {
       if (errorCode(error) === UNSUPPORTED_CODE) return false;
-      throw error as Error;
+
+      throw new ExpoHapticsError(ERROR_VIBRATION, errorMessage(error), error);
     }
   }
 }
@@ -183,11 +193,11 @@ function isUnavailable(error: Object): boolean {
   const code = errorCode(error);
   if (code === UNSUPPORTED_CODE) return true;
 
-  if (code === DEVICE_OPERATION_FAILED && deviceInfo.apiAvailable(19)) {
+  if (code === DEVICE_OPERATION_FAILED && deviceInfo.sdkApiVersion >= VIBRATOR_INFO_API) {
     try {
-      return vibrator.getVibratorInfoSync().length === 0;
+      return !vibrator.getVibratorInfoSync().some((info: vibrator.VibratorInfo): boolean => info.isLocalVibrator);
     } catch (_) {
-      // Keep the original failure if the device inventory cannot be checked.
+      return false;
     }
   }
 
@@ -226,7 +236,7 @@ function presetId(name: HapticPresetName): string {
 }
 
 function notificationPresetId(notification: HapticNotification): string | undefined {
-  if (deviceInfo.apiAvailable(18)) {
+  if (deviceInfo.sdkApiVersion >= HD_HAPTICS_API) {
     switch (notification) {
       case 'success':
         return vibrator.HapticFeedback.EFFECT_NOTICE_SUCCESS;

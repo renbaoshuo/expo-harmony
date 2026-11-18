@@ -15,7 +15,7 @@ function notificationIntensity(amplitude: number): number {
   return Math.round(amplitude * HARMONY_MAX_INTENSITY / ANDROID_MAX_AMPLITUDE);
 }
 
-export type HapticUsage = 'notification' | 'physicalFeedback' | 'touch';
+export type HapticUsage = 'physicalFeedback' | 'touch';
 
 export interface HapticPulse {
   readonly durationMs: number;
@@ -38,7 +38,7 @@ export interface HapticRecipe {
 }
 
 export function notificationRecipe(type: string): HapticRecipe | undefined {
-  // Patterns retain SDK 57 HapticsNotificationType's timings, pauses and relative amplitudes.
+  // Keep the upstream pulse timings while using physical feedback to honor the system touch setting.
   switch (type) {
     case 'success':
       return {
@@ -49,7 +49,7 @@ export function notificationRecipe(type: string): HapticRecipe | undefined {
           { durationMs: 40, intensity: notificationIntensity(60), startMs: 140 },
         ],
         preset: { count: 2, intensity: 50, name: 'soft' },
-        usage: 'notification',
+        usage: 'physicalFeedback',
       };
     case 'warning':
       return {
@@ -60,7 +60,7 @@ export function notificationRecipe(type: string): HapticRecipe | undefined {
           { durationMs: 60, intensity: notificationIntensity(60), startMs: 160 },
         ],
         preset: { count: 2, intensity: 60, name: 'sharp' },
-        usage: 'notification',
+        usage: 'physicalFeedback',
       };
     case 'error':
       return {
@@ -72,7 +72,7 @@ export function notificationRecipe(type: string): HapticRecipe | undefined {
           { durationMs: 50, intensity: notificationIntensity(50), startMs: 280 },
         ],
         preset: { count: 3, intensity: 70, name: 'hard' },
-        usage: 'notification',
+        usage: 'physicalFeedback',
       };
     default:
       return undefined;

@@ -20,7 +20,7 @@ npm install @expo-harmony/expo-haptics expo-haptics@~57.0.3
 
 #### `Haptics.notificationAsync(type?)`
 
-触发通知类振动，返回 `Promise<void>`；省略 `type` 时使用 `NotificationFeedbackType.Success`。HarmonyOS API 18 及以上先尝试系统通知反馈，再尝试设备支持时可用的振动序列和通用预设；API 13 至 17 使用通用预设。对应效果不可用时会回退为一次定时振动，节奏和强度可能简化。
+为任务结果触发触感反馈，遵循系统触感反馈设置，返回 `Promise<void>`。省略 `type` 时使用 `NotificationFeedbackType.Success`。HarmonyOS API 18 及以上先尝试系统的成功、警告或失败预设，再尝试设备支持的振动序列和通用预设。API 13 至 17 使用通用预设。对应效果不可用时回退为一次定时振动，节奏和强度可能简化。
 
 #### `Haptics.impactAsync(style?)`
 
