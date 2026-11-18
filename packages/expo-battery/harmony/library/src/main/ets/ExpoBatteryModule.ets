@@ -18,8 +18,10 @@ const POWER_MODE_SYSTEM_EVENT: string = commonEventManager.Support.COMMON_EVENT_
 const SUBSCRIBE_TO_EVENT_API_VERSION: number = 20;
 const CUSTOM_POWER_SAVE_API_VERSION: number = 20;
 const SUBSCRIPTION_RETRY_DELAY_MS: number = 1000;
+const MAX_SUBSCRIPTION_RETRY_DELAY_MS: number = 60000;
 const UNSUBSCRIPTION_RETRY_DELAY_MS: number = 1000;
 const MAX_UNSUBSCRIPTION_ATTEMPTS: number = 3;
+const CAPABILITY_UNSUPPORTED: number = 801;
 
 class BatteryLevelEvent {
   batteryLevel: number;
@@ -46,8 +48,8 @@ class PowerModeEvent {
 }
 
 class ExpoBatteryError extends ExpoModuleError {
-  constructor(code: string, message: string) {
-    super(code, message);
+  constructor(code: string, message: string, cause?: Object) {
+    super(code, message, cause);
     this.name = 'ExpoBatteryError';
   }
 }
@@ -64,6 +66,7 @@ export class ExpoBatteryModule extends ExpoModule {
   private readonly supportsPower: boolean = canIUse('SystemCapability.PowerManager.PowerManager.Core');
   private readonly supportsCommonEvents: boolean = canIUse('SystemCapability.Notification.CommonEvent');
   private retry: number = -1;
+  private retryDelay: number = SUBSCRIPTION_RETRY_DELAY_MS;
   private foreground: boolean;
   private destroyed: boolean = false;
   private lastBatteryLevel?: number = undefined;
@@ -140,8 +143,11 @@ export class ExpoBatteryModule extends ExpoModule {
     this.updateSystemObservations();
   }
 
-  private updateSystemObservations(): void {
-    this.clearRetryTimer();
+  private updateSystemObservations(resetRetry: boolean = true): void {
+    if (resetRetry) {
+      this.clearRetryTimer();
+      this.retryDelay = SUBSCRIPTION_RETRY_DELAY_MS;
+    }
 
     const active = !this.destroyed && this.foreground && this.supportsCommonEvents;
     this.updateSystemObservation(
@@ -214,7 +220,9 @@ export class ExpoBatteryModule extends ExpoModule {
     data: commonEventManager.CommonEventData,
   ): void {
     if (this.observations.get(event) !== observation) return;
-    if (data?.event === event) this.publishSystemEvent(event, data);
+
+    // A queued event may predate the snapshot taken after subscription or resume.
+    if (data?.event === event) this.publishSystemEvent(event);
   }
 
   private stopSystemObservation(event: string): void {
@@ -261,7 +269,8 @@ export class ExpoBatteryModule extends ExpoModule {
   private handleSubscriptionFailure(event: string, error: Object): void {
     this.warn(`Unable to observe HarmonyOS event '${event}': ${String(error)}`);
     this.observations.delete(event);
-    this.scheduleSubscriptionRetry();
+
+    if ((error as BusinessError)?.code !== CAPABILITY_UNSUPPORTED) this.scheduleSubscriptionRetry();
   }
 
   private scheduleSubscriptionRetry(): void {
@@ -269,8 +278,10 @@ export class ExpoBatteryModule extends ExpoModule {
 
     this.retry = setTimeout((): void => {
       this.retry = -1;
-      this.updateSystemObservations();
-    }, SUBSCRIPTION_RETRY_DELAY_MS);
+      this.updateSystemObservations(false);
+    }, this.retryDelay);
+
+    this.retryDelay = Math.min(this.retryDelay * 2, MAX_SUBSCRIPTION_RETRY_DELAY_MS);
   }
 
   private clearRetryTimer(): void {
@@ -280,10 +291,11 @@ export class ExpoBatteryModule extends ExpoModule {
     this.retry = -1;
   }
 
-  private publishSystemEvent(event: string, data?: commonEventManager.CommonEventData): void {
+  private publishSystemEvent(event: string): void {
     if (event === BATTERY_SYSTEM_EVENT) {
-      this.publishBatteryLevelIfChanged(data);
-      this.publishBatteryStateIfChanged(data);
+      this.publishBatteryLevelIfChanged();
+      this.publishBatteryStateIfChanged();
+
       return;
     }
 
@@ -296,33 +308,37 @@ export class ExpoBatteryModule extends ExpoModule {
       else if (name === BATTERY_STATE_EVENT_NAME) this.lastBatteryState = this.readBatteryState();
       else this.lastLowPowerMode = this.readLowPowerMode();
     } catch (error) {
+      if (name === BATTERY_LEVEL_EVENT_NAME) this.lastBatteryLevel = undefined;
+      else if (name === BATTERY_STATE_EVENT_NAME) this.lastBatteryState = undefined;
+      else this.lastLowPowerMode = undefined;
+
       this.warn(`Unable to initialize the '${name}' observer: ${String(error)}`);
     }
   }
 
-  private publishBatteryLevelIfChanged(data?: commonEventManager.CommonEventData): void {
+  private publishBatteryLevelIfChanged(): void {
     if (!this.events.has(BATTERY_LEVEL_EVENT_NAME)) return;
 
     try {
-      const value = this.readBatteryLevel(data);
-      if (value === this.lastBatteryLevel) return;
+      const level = this.readBatteryLevel();
+      if (level === this.lastBatteryLevel) return;
 
-      this.sendEvent(BATTERY_LEVEL_EVENT_NAME, new BatteryLevelEvent(value));
-      this.lastBatteryLevel = value;
+      this.sendEvent(BATTERY_LEVEL_EVENT_NAME, new BatteryLevelEvent(level));
+      this.lastBatteryLevel = level;
     } catch (error) {
       this.warn(`Unable to publish the Expo Battery level event: ${String(error)}`);
     }
   }
 
-  private publishBatteryStateIfChanged(data?: commonEventManager.CommonEventData): void {
+  private publishBatteryStateIfChanged(): void {
     if (!this.events.has(BATTERY_STATE_EVENT_NAME)) return;
 
     try {
-      const value = this.readBatteryState(data);
-      if (value === this.lastBatteryState) return;
+      const state = this.readBatteryState();
+      if (state === this.lastBatteryState) return;
 
-      this.sendEvent(BATTERY_STATE_EVENT_NAME, new BatteryStateEvent(value));
-      this.lastBatteryState = value;
+      this.sendEvent(BATTERY_STATE_EVENT_NAME, new BatteryStateEvent(state));
+      this.lastBatteryState = state;
     } catch (error) {
       this.warn(`Unable to publish the Expo Battery state event: ${String(error)}`);
     }
@@ -347,31 +363,25 @@ export class ExpoBatteryModule extends ExpoModule {
     this.context.logger.warn(message);
   }
 
-  private readBatteryLevel(data?: commonEventManager.CommonEventData): number {
+  private readBatteryLevel(): number {
     if (!this.supportsBattery) return UNKNOWN_BATTERY_LEVEL;
 
     try {
-      const present: boolean | undefined = data?.parameters?.[batteryInfo.CommonEventBatteryChangedKey.EXTRA_PRESENT];
-      const soc: number | undefined = data?.parameters?.[batteryInfo.CommonEventBatteryChangedKey.EXTRA_SOC];
-      if (!(typeof present === 'boolean' ? present : batteryInfo.isBatteryPresent)) return UNKNOWN_BATTERY_LEVEL;
-      return batteryLevelFromSoc(typeof soc === 'number' ? soc : batteryInfo.batterySOC);
+      if (!batteryInfo.isBatteryPresent) return UNKNOWN_BATTERY_LEVEL;
+      return batteryLevelFromSoc(batteryInfo.batterySOC);
     } catch (error) {
-      throw new ExpoBatteryError('ERR_BATTERY_LEVEL', `Unable to read the HarmonyOS battery level: ${String(error)}`);
+      throw new ExpoBatteryError('ERR_BATTERY_LEVEL', 'Unable to read the HarmonyOS battery level.', error as Object);
     }
   }
 
-  private readBatteryState(data?: commonEventManager.CommonEventData): ExpoBatteryStateValue {
+  private readBatteryState(): ExpoBatteryStateValue {
     if (!this.supportsBattery) return ExpoBatteryState.UNKNOWN;
 
     try {
-      const present: boolean | undefined = data?.parameters?.[batteryInfo.CommonEventBatteryChangedKey.EXTRA_PRESENT];
-      const state: number | undefined = data?.parameters?.[batteryInfo.CommonEventBatteryChangedKey.EXTRA_CHARGE_STATE];
-      const plugged: number | undefined = data?.parameters?.[batteryInfo.CommonEventBatteryChangedKey.EXTRA_PLUGGED_TYPE];
-      if (!(typeof present === 'boolean' ? present : batteryInfo.isBatteryPresent)) return ExpoBatteryState.UNKNOWN;
-      if (typeof state === 'number' && typeof plugged === 'number') return batteryStateFromChargeState(state, plugged);
+      if (!batteryInfo.isBatteryPresent) return ExpoBatteryState.UNKNOWN;
       return batteryStateFromChargeState(batteryInfo.chargingStatus, batteryInfo.pluggedType);
     } catch (error) {
-      throw new ExpoBatteryError('ERR_BATTERY_STATE', `Unable to read the HarmonyOS battery state: ${String(error)}`);
+      throw new ExpoBatteryError('ERR_BATTERY_STATE', 'Unable to read the HarmonyOS battery state.', error as Object);
     }
   }
 
@@ -387,7 +397,7 @@ export class ExpoBatteryModule extends ExpoModule {
         (deviceInfo.sdkApiVersion >= CUSTOM_POWER_SAVE_API_VERSION && mode === power.DevicePowerMode.MODE_CUSTOM_POWER_SAVE)
       );
     } catch (error) {
-      throw new ExpoBatteryError('ERR_BATTERY_POWER_MODE', `Unable to read the HarmonyOS power mode: ${String(error)}`);
+      throw new ExpoBatteryError('ERR_BATTERY_POWER_MODE', 'Unable to read the HarmonyOS power mode.', error as Object);
     }
   }
 
