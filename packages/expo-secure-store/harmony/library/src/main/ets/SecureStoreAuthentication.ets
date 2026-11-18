@@ -20,13 +20,16 @@ const INVALID_NATIVE_PARAMETER: number = 401;
 
 export function availableBiometric(): userAuth.UserAuthType | undefined {
   let lockout: BusinessError | undefined;
+  let failure: BusinessError | undefined;
 
   for (const type of BIOMETRIC_TYPES) {
     try {
       userAuth.getAvailableStatus(type, TRUST_LEVEL);
+
       return type;
     } catch (error) {
       const status = error as BusinessError;
+
       switch (status.code) {
         case userAuth.UserAuthResultCode.LOCKED:
           lockout = status;
@@ -36,10 +39,13 @@ export function availableBiometric(): userAuth.UserAuthType | undefined {
         case userAuth.UserAuthResultCode.NOT_ENROLLED:
           break;
         default:
-          throw new ExpoSecureStoreError(status);
+          failure ??= status;
+          break;
       }
     }
   }
+
+  if (failure !== undefined) throw new ExpoSecureStoreError(failure);
 
   if (lockout !== undefined) {
     throw new ExpoModuleError('ERR_SECURE_STORE_AUTH_FAILED', 'Biometric authentication is locked.', lockout);
@@ -50,6 +56,7 @@ export function availableBiometric(): userAuth.UserAuthType | undefined {
 
 export function requireAvailableBiometric(): userAuth.UserAuthType {
   const type = availableBiometric();
+
   if (type === undefined) {
     throw new ExpoModuleError('ERR_SECURE_STORE_AUTH_UNAVAILABLE', 'No enrolled biometric authenticator supports ATL3.');
   }
@@ -122,7 +129,7 @@ export class SecureStoreAuthentication {
         throw new ExpoModuleError('ERR_SECURE_STORE_INVALID_ARGUMENT', 'The system rejected the authentication widget parameters.', native);
       }
 
-      throw error as Error;
+      throw new ExpoSecureStoreError(error as Object);
     }
 
     return new Promise<Uint8Array>((resolve, reject): void => {
@@ -146,11 +153,14 @@ export class SecureStoreAuthentication {
 
           try {
             if (settled) return;
+
             if (result.result === userAuth.UserAuthResultCode.SUCCESS) {
               finish(result.token?.slice());
             } else {
               finish(undefined, new ExpoModuleError('ERR_SECURE_STORE_AUTH_FAILED', `Biometric authentication failed (${result.result}).`));
             }
+          } catch (error) {
+            finish(undefined, error as Object);
           } finally {
             result.token?.fill(0);
           }

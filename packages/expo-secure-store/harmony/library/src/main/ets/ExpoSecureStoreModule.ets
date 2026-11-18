@@ -121,6 +121,7 @@ export class ExpoSecureStoreModule extends ExpoModule {
     const item = await query(aliasQuery(alias), asset.ReturnType.ATTRIBUTES);
 
     this.assertActive();
+
     if (item === undefined) return null;
     const match = itemQuery(alias, item);
 
@@ -192,8 +193,9 @@ export class ExpoSecureStoreModule extends ExpoModule {
 
     if (item !== undefined && requiresAuthentication(item) === options.requireAuthentication) {
       const match = itemQuery(alias, item);
+
       if (!options.requireAuthentication) {
-        await asset.update(match, valueAttributes(secret));
+        await update(match, secret);
 
         return;
       }
@@ -209,7 +211,7 @@ export class ExpoSecureStoreModule extends ExpoModule {
         this.assertAuthenticationForeground();
 
         if (credentialsMatch(result)) {
-          await asset.update(match, valueAttributes(secret));
+          await update(match, secret);
 
           return;
         }
@@ -239,7 +241,7 @@ export class ExpoSecureStoreModule extends ExpoModule {
 
     if (item !== undefined && requiresAuthentication(item) === options.requireAuthentication) {
       if (!options.requireAuthentication) {
-        asset.updateSync(itemQuery(alias, item), valueAttributes(secret));
+        updateSync(itemQuery(alias, item), secret);
 
         return;
       }
@@ -301,9 +303,12 @@ export class ExpoSecureStoreModule extends ExpoModule {
         await asset.postQuery(handle);
       } catch (error) {
         if (result !== undefined) clearSecret(result);
+
         if (failure === undefined || isNotFound(failure)) throw new ExpoSecureStoreError(error as Object);
 
         console.warn(`Unable to finish SecureStore authentication query: ${(error as BusinessError).code}`);
+      } finally {
+        challenge.fill(0);
       }
     }
   }
@@ -389,8 +394,15 @@ function aliasQuery(alias: Uint8Array): asset.AssetMap {
 function itemQuery(alias: Uint8Array, item: asset.AssetMap): asset.AssetMap {
   const fields = aliasQuery(alias);
   fields.set(asset.Tag.AUTH_TYPE, requiresAuthentication(item) ? asset.AuthType.ANY : asset.AuthType.NONE);
+
+  const access = item.get(asset.Tag.ACCESSIBILITY);
+  if (typeof access === 'number') fields.set(asset.Tag.ACCESSIBILITY, access);
+  const passcode = item.get(asset.Tag.REQUIRE_PASSWORD_SET);
+  if (typeof passcode === 'boolean') fields.set(asset.Tag.REQUIRE_PASSWORD_SET, passcode);
+
   const enrollment = item.get(asset.Tag.DATA_LABEL_CRITICAL_1);
   if (enrollment instanceof Uint8Array) fields.set(asset.Tag.DATA_LABEL_CRITICAL_1, enrollment);
+
   return fields;
 }
 
@@ -405,6 +417,32 @@ function valueAttributes(secret: Uint8Array): asset.AssetMap {
   const fields: asset.AssetMap = new Map();
   fields.set(asset.Tag.SECRET, secret);
   return fields;
+}
+
+async function update(match: asset.AssetMap, secret: Uint8Array): Promise<void> {
+  try {
+    await asset.update(match, valueAttributes(secret));
+  } catch (error) {
+    const cause = error as Object;
+    if (isNotFound(cause)) {
+      throw new ExpoModuleError('ERR_SECURE_STORE_BUSY', 'The SecureStore record changed during the operation. Retry the operation.', cause);
+    }
+
+    throw new ExpoSecureStoreError(cause);
+  }
+}
+
+function updateSync(match: asset.AssetMap, secret: Uint8Array): void {
+  try {
+    asset.updateSync(match, valueAttributes(secret));
+  } catch (error) {
+    const cause = error as Object;
+    if (isNotFound(cause)) {
+      throw new ExpoModuleError('ERR_SECURE_STORE_BUSY', 'The SecureStore record changed during the operation. Retry the operation.', cause);
+    }
+
+    throw new ExpoSecureStoreError(cause);
+  }
 }
 
 function newAttributes(alias: Uint8Array, secret: Uint8Array, options: SecureStoreOptions, overwrite: boolean): asset.AssetMap {
