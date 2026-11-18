@@ -53,6 +53,7 @@ export class ExpoNetworkModule extends ExpoModule {
   private attempt: number = 0;
   private observing: boolean = false;
   private destroyed: boolean = false;
+  private publishedState?: NetworkState;
   private readonly lostNetworkIds: Set<number> = new Set<number>();
   private readonly blockedNetworkIds: Set<number> = new Set<number>();
 
@@ -198,6 +199,7 @@ export class ExpoNetworkModule extends ExpoModule {
 
   private stopObserving(): void {
     this.observing = false;
+    this.publishedState = undefined;
     this.lostNetworkIds.clear();
     this.blockedNetworkIds.clear();
     this.pendingImmediateChange = false;
@@ -257,18 +259,38 @@ export class ExpoNetworkModule extends ExpoModule {
 
     if (this.observer !== observer || revision !== this.revision) return;
 
+    const last = this.publishedState;
+    if (last !== undefined && last.type === state.type && last.isConnected === state.isConnected &&
+      last.isInternetReachable === state.isInternetReachable) {
+      return;
+    }
+
     this.sendEvent(STATE_EVENT, state);
+    this.publishedState = state;
   }
 
   private async readNetworkState(eventRevision?: number): Promise<NetworkState> {
-    let handle: connection.NetHandle;
-
     try {
-      handle = await connection.getDefaultNet();
+      const handle = await connection.getDefaultNet();
+
+      try {
+        return await this.readStateForHandle(handle, eventRevision);
+      } catch (error) {
+        if (!isInvalidNetworkError(error as Object) ||
+          (eventRevision !== undefined && eventRevision !== this.revision)) return unknownState();
+
+        // The default handle can change before the capability query.
+        const next = await connection.getDefaultNet();
+        if (next.netId === handle.netId) return unknownState();
+
+        return await this.readStateForHandle(next, eventRevision);
+      }
     } catch (_) {
       return unknownState();
     }
+  }
 
+  private async readStateForHandle(handle: connection.NetHandle, eventRevision?: number): Promise<NetworkState> {
     if (handle.netId === 0) return disconnectedState();
     if (handle.netId < FIRST_NETWORK_ID) return unknownState();
 
@@ -278,16 +300,14 @@ export class ExpoNetworkModule extends ExpoModule {
       if (this.lostNetworkIds.has(handle.netId)) return disconnectedState();
     }
 
-    try {
-      const capabilities = await connection.getNetCapabilities(handle);
-      const type = networkType(capabilities.bearerTypes);
-      const reachable = !this.blockedNetworkIds.has(handle.netId) && isInternetReachable(capabilities);
-      if (eventRevision === this.revision) this.lostNetworkIds.clear();
+    const capabilities = await connection.getNetCapabilities(handle);
 
-      return new NetworkState(type, type !== NetworkStateType.UNKNOWN, reachable);
-    } catch (_) {
-      return unknownState();
-    }
+    const type = networkType(capabilities.bearerTypes);
+    const reachable = !this.blockedNetworkIds.has(handle.netId) && isInternetReachable(capabilities);
+
+    if (eventRevision === this.revision) this.lostNetworkIds.clear();
+
+    return new NetworkState(type, type !== NetworkStateType.UNKNOWN, reachable);
   }
 
   private async readIpAddress(): Promise<string> {
@@ -300,7 +320,7 @@ export class ExpoNetworkModule extends ExpoModule {
         return await ipAddressForNetwork(handle);
       } catch (error) {
         failure = error as Object;
-        if ((error as BusinessError).code === INVALID_NETWORK_ARGUMENT) {
+        if (isInvalidNetworkError(error as Object)) {
           // The default network may have disappeared between the two IPC calls.
           const next = await connection.getDefaultNet();
           if (next.netId !== handle.netId) return await ipAddressForNetwork(next);
@@ -335,6 +355,10 @@ function disconnectedState(): NetworkState {
 
 function unknownState(): NetworkState {
   return new NetworkState(NetworkStateType.UNKNOWN, false, false);
+}
+
+function isInvalidNetworkError(error: Object): boolean {
+  return (error as BusinessError).code === INVALID_NETWORK_ARGUMENT;
 }
 
 function isTransientNetworkError(error: Object): boolean {

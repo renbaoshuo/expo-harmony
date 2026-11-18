@@ -32,7 +32,7 @@ import * as Network from 'expo-network';
 
 无参数，返回 `Promise<NetworkState>`，包含系统默认网络的类型、连接状态和互联网可达状态。没有默认网络时，`type` 为 `NONE`，另外两个字段为 `false`。无法识别网络类型时，`type` 为 `UNKNOWN`，`isConnected` 为 `false`。读取网络信息失败时，`isInternetReachable` 也为 `false`。
 
-`isInternetReachable` 使用系统的互联网连通性判断。若连通性检查仍在进行，或系统已通知当前网络因应用的访问策略而受阻，该字段为 `false`。默认网络查询通常返回 VPN 下层的系统网络。
+`isInternetReachable` 使用系统的互联网连通性判断。若连通性检查仍在进行，或活跃的网络监听已收到当前网络因应用访问策略而受阻的通知，该字段为 `false`。Network Kit 的系统默认网络查询返回 VPN 下层的网络。
 
 #### `Network.getIpAddressAsync()`
 
@@ -46,7 +46,7 @@ import * as Network from 'expo-network';
 
 #### `Network.addNetworkStateListener(listener)`
 
-参数 `listener` 接收一个 `NetworkStateEvent`。订阅成功后会收到当前网络状态，之后系统默认网络状态变化时也会收到更新。返回 `EventSubscription`，调用其 `remove()` 方法取消订阅。
+参数 `listener` 接收一个 `NetworkStateEvent`。首个订阅启动监听时会收到当前网络状态，之后事件在公开的连接状态字段变化时发送。返回 `EventSubscription`，调用其 `remove()` 方法取消订阅。
 
 ### Types
 
