@@ -63,7 +63,9 @@ class NavigationBarVisibilityEvent {
 type NavigationBarListener = (event: NavigationBarVisibilityEvent) => void;
 
 class AbilityNavigationBarState {
-  private readonly settings: NavigationBarConfiguration;
+  readonly startup: NavigationBarConfiguration;
+  private style: NavigationBarStyle | null;
+  private hidden: boolean | null;
   private target?: window.Window;
   private generation: number = 0;
   private destroyed: boolean = false;
@@ -74,7 +76,9 @@ class AbilityNavigationBarState {
   private last: NavigationBarVisibility | null = null;
 
   constructor(context: common.UIAbilityContext) {
-    this.settings = readConfiguration(context);
+    this.startup = readConfiguration(context);
+    this.style = this.startup.style;
+    this.hidden = this.startup.hidden;
   }
 
   async setWindow(target: window.Window): Promise<void> {
@@ -82,6 +86,7 @@ class AbilityNavigationBarState {
       this.clearWindow();
       this.target = target;
     }
+
     await this.prepare();
   }
 
@@ -90,7 +95,6 @@ class AbilityNavigationBarState {
     this.detachWindow();
     this.target = undefined;
     this.applied.clear();
-    this.queue = Promise.resolve();
   }
 
   destroy(): void {
@@ -100,8 +104,10 @@ class AbilityNavigationBarState {
   }
 
   private async prepare(): Promise<void> {
-    await this.useWindow(async (target: window.Window): Promise<void> => {
-      this.publishVisibility(target, false, false);
+    await this.useWindow(async (target: window.Window, check: () => void): Promise<void> => {
+      await this.prepareWindow(target, check);
+
+      this.publishVisibility(target, false);
     });
   }
 
@@ -132,7 +138,8 @@ class AbilityNavigationBarState {
     await this.useWindow(async (target: window.Window, check: () => void): Promise<void> => {
       await applyStyle(target, style);
       check();
-      this.settings.style = style;
+
+      this.style = style;
       this.applied.add(CONFIG_STYLE);
     }, active);
   }
@@ -142,7 +149,7 @@ class AbilityNavigationBarState {
       await setNavigationBarVisibility(target, !hidden);
       check();
 
-      this.settings.hidden = hidden;
+      this.hidden = hidden;
       this.applied.add(CONFIG_HIDDEN);
     }, active);
   }
@@ -151,14 +158,14 @@ class AbilityNavigationBarState {
     operation: (target: window.Window, check: () => void) => Promise<T>,
     active: () => boolean = (): boolean => true,
   ): Promise<T> {
-    const target = this.target;
+    const win = this.target;
     const generation = this.generation;
 
     const check = (): void => {
       if (this.destroyed || !active()) {
         throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_DESTROYED', 'The Expo NavigationBar owner has been destroyed.');
       }
-      if (target === undefined || this.generation !== generation) {
+      if (win === undefined || this.generation !== generation) {
         throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_WINDOW', 'The Expo NavigationBar window is no longer available.');
       }
     };
@@ -167,11 +174,7 @@ class AbilityNavigationBarState {
       .then(async (): Promise<T> => {
         check();
 
-        const current = target as window.Window;
-        await this.prepareWindow(current, check);
-        check();
-
-        const result = await operation(current, check);
+        const result = await operation(win as window.Window, check);
         check();
 
         return result;
@@ -186,24 +189,24 @@ class AbilityNavigationBarState {
   }
 
   private async prepareWindow(target: window.Window, check: () => void): Promise<void> {
-    const style = this.settings.style;
-    const hidden = this.settings.hidden;
+    const style = this.style;
+    const hidden = this.hidden;
 
-    if (style !== null && supportsNavigationWindow(WINDOW_MANAGER_CAPABILITY)) {
+    if (style !== null && supportsNavigationBarChanges(WINDOW_MANAGER_CAPABILITY)) {
       await this.applyOption(CONFIG_STYLE, (): Promise<void> => applyStyle(target, style), check);
     }
-    if (hidden !== null && supportsNavigationWindow(WINDOW_SESSION_CAPABILITY)) {
+    if (hidden !== null && supportsNavigationBarChanges(WINDOW_SESSION_CAPABILITY)) {
       await this.applyOption(CONFIG_HIDDEN, (): Promise<void> => setNavigationBarVisibility(target, !hidden), check);
     }
 
     check();
 
-    if (this.listeners.size === 0 || this.observer !== undefined || !supportsNavigationWindow(WINDOW_MANAGER_CAPABILITY)) return;
+    if (this.listeners.size === 0 || this.observer !== undefined || !canIUse(WINDOW_MANAGER_CAPABILITY)) return;
 
     const observer = (options: window.AvoidAreaOptions): void => {
       if (this.observer !== observer) return;
       if (options.type === window.AvoidAreaType.TYPE_SYSTEM || options.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR) {
-        this.publishVisibility(target, options.type === window.AvoidAreaType.TYPE_SYSTEM);
+        this.publishVisibility(target);
       }
     };
 
@@ -245,17 +248,17 @@ class AbilityNavigationBarState {
     }
   }
 
-  private publishVisibility(target: window.Window, force: boolean, notifyInitial: boolean = true): void {
+  private publishVisibility(target: window.Window, notifyInitial: boolean = true): void {
     if (this.observer === undefined) return;
 
     try {
-      const visibility = inspectVisibility(target);
+      const value = inspectVisibility(target);
       const previous = this.last;
-      this.last = visibility;
-      if (!force && (previous === visibility || (previous === null && !notifyInitial))) return;
 
-      const event = new NavigationBarVisibilityEvent(visibility);
+      this.last = value;
+      if (previous === value || (previous === null && !notifyInitial)) return;
 
+      const event = new NavigationBarVisibilityEvent(value);
       this.listeners.forEach((listener: NavigationBarListener): void => {
         try {
           listener(event);
@@ -306,7 +309,7 @@ export class ExpoNavigationBarLifecycleSubscriber extends ExpoAbilityLifecycleSu
 
   override onDestroy(): void {
     this.state.destroy();
-    states.delete(this.context);
+    if (states.get(this.context) === this.state) states.delete(this.context);
   }
 }
 
@@ -323,20 +326,14 @@ export class ExpoNavigationBarModule extends ExpoModule {
 
     if (context.isHeadless) return;
 
-    const state = states.get(context.uiAbilityContext);
-    if (state === undefined) {
-      throw new ExpoNavigationBarError(
-        'ERR_NAVIGATION_BAR_ABILITY_NOT_INITIALIZED',
-        'Expo NavigationBar requires its autolinked Ability lifecycle subscriber.',
-      );
-    }
-
-    this.state = state;
+    this.state = states.get(context.uiAbilityContext);
   }
 
   definition(): ExpoModuleDefinition {
     return new ExpoModuleDefinition()
       .name('ExpoNavigationBar')
+      .constant('initialStyle', (): NavigationBarStyle | null => this.state?.startup.style ?? null)
+      .constant('initialHidden', (): boolean | null => this.state?.startup.hidden ?? null)
       .events([VISIBILITY_EVENT_NAME])
       .asyncFunction(
         'setStyle',
@@ -358,10 +355,10 @@ export class ExpoNavigationBarModule extends ExpoModule {
         ),
       )
       .onStartObserving(VISIBILITY_EVENT_NAME, (): void => {
-        if (!this.isActive() || this.observing) return;
+        if (this.state === undefined || !this.isActive() || this.observing) return;
 
         this.observing = true;
-        this.state?.addListener(this.onVisibility);
+        this.state.addListener(this.onVisibility);
       })
       .onStopObserving(VISIBILITY_EVENT_NAME, (): void => this.stopObserving())
       .onPrepareForReload(async (): Promise<void> => this.destroy())
@@ -369,7 +366,12 @@ export class ExpoNavigationBarModule extends ExpoModule {
   }
 
   private requireState(): AbilityNavigationBarState {
-    if (this.state === undefined) throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_WINDOW', 'NavigationBar requires a UIAbility window.');
+    if (this.state === undefined) {
+      const message = this.context.isHeadless
+        ? 'NavigationBar requires a UIAbility window.'
+        : 'NavigationBar requires its autolinked UIAbility lifecycle subscriber.';
+      throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_WINDOW', message);
+    }
 
     return this.state;
   }
@@ -390,7 +392,7 @@ export class ExpoNavigationBarModule extends ExpoModule {
 }
 
 async function applyStyle(target: window.Window, style: NavigationBarStyle): Promise<void> {
-  if (!supportsNavigationWindow(WINDOW_MANAGER_CAPABILITY)) {
+  if (!supportsNavigationBarChanges(WINDOW_MANAGER_CAPABILITY)) {
     throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_STYLE', 'This HarmonyOS device does not support navigation bar styling.');
   }
 
@@ -404,7 +406,7 @@ async function applyStyle(target: window.Window, style: NavigationBarStyle): Pro
 }
 
 async function setNavigationBarVisibility(target: window.Window, visible: boolean): Promise<void> {
-  if (!supportsNavigationWindow(WINDOW_SESSION_CAPABILITY)) {
+  if (!supportsNavigationBarChanges(WINDOW_SESSION_CAPABILITY)) {
     throw new ExpoNavigationBarError('ERR_NAVIGATION_BAR_VISIBILITY', 'This HarmonyOS device does not support changing navigation bar visibility.');
   }
 
@@ -416,7 +418,7 @@ async function setNavigationBarVisibility(target: window.Window, visible: boolea
 }
 
 function inspectVisibility(target: window.Window): NavigationBarVisibility {
-  if (!supportsNavigationWindow(WINDOW_MANAGER_CAPABILITY)) return 'hidden';
+  if (!canIUse(WINDOW_MANAGER_CAPABILITY)) return 'hidden';
 
   try {
     const indicator = target.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
@@ -444,7 +446,7 @@ function hasArea(rect: window.Rect): boolean {
   return rect.width > 0 && rect.height > 0;
 }
 
-function supportsNavigationWindow(capability: string): boolean {
+function supportsNavigationBarChanges(capability: string): boolean {
   return deviceInfo.deviceType !== TWO_IN_ONE_DEVICE_TYPE && canIUse(capability);
 }
 

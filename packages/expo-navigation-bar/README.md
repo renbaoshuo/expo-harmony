@@ -33,9 +33,9 @@ npm install @expo-harmony/expo-navigation-bar expo-navigation-bar@~57.0.3
 | `style` | `NavigationBarStyle` | `'light'` | 设置导航栏按钮颜色。`'light'` 为浅色按钮，`'dark'` 为深色按钮；`'auto'` 在浅色界面使用深色按钮、在深色界面使用浅色按钮，`'inverted'` 则相反。 |
 | `hidden` | `boolean` | `false` | 为 `true` 时隐藏底部导航栏和手势指示条，为 `false` 时显示。 |
 
-组件只设置显式传入的属性。多个组件同时挂载时，按挂载顺序合并各自设置；一个属性不再由组件控制时，恢复该属性的运行时默认值。
+组件只设置显式传入的属性。多个组件同时挂载时，按挂载顺序合并各自设置。最后一个设置该属性的组件移除或清空属性时，恢复启动配置或最近一次通过 `NavigationBar.setStyle`、`NavigationBar.setHidden` 设置的默认值。
 
-显隐设置作用于主窗口，分屏、自由悬浮窗口等模式下可能要等到窗口进入全屏或最大化才生效。系统可能在设置调用成功后才更新可见状态。按钮着色取决于设备和系统的导航模式，手势指示条由系统绘制。2-in-1 设备不支持这些主窗口导航栏设置。
+显隐设置作用于主窗口，分屏、自由悬浮窗口等模式下可能要等到窗口进入全屏或最大化才生效。系统可能在设置调用成功后才更新可见状态。2-in-1 设备上可以根据窗口避让区读取可见性，设置会报告不可用。按钮着色依赖窗口系统栏的三键导航颜色属性。HarmonyOS 的现行文档将这一属性标为设备不支持，手势指示条颜色也由系统控制。[华为窗口接口参考](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/arkts-apis-window-window/) · [系统栏属性](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/arkts-apis-window-i/)
 
 #### `NavigationBar.setStyle(style)`
 

@@ -18,6 +18,8 @@ import { Appearance, useColorScheme } from 'react-native';
 type ResolvedBarStyle = 'light' | 'dark';
 
 const ExpoNavigationBar = requireNativeModule<{
+  initialStyle: ResolvedBarStyle | null;
+  initialHidden: boolean | null;
   addListener(event: 'ExpoNavigationBar.didChange', listener: (event: NavigationBarVisibilityEvent) => void): EventSubscription;
   setStyle(style: ResolvedBarStyle): Promise<void>;
   setHidden(hidden: boolean): Promise<void>;
@@ -41,8 +43,8 @@ function resolveStyle(style: NavigationBarStyle): ResolvedBarStyle {
 }
 
 const defaultProps: Required<NavigationBarProps> = {
-  style: 'light',
-  hidden: false,
+  style: ExpoNavigationBar.initialStyle ?? 'light',
+  hidden: ExpoNavigationBar.initialHidden ?? false,
 };
 
 function mergeEntriesStack() {
@@ -69,30 +71,32 @@ function reportUpdateFailure(property: 'style' | 'visibility', error: unknown): 
   console.warn(`Unable to set the HarmonyOS navigation bar ${property}: ${String(error)}`);
 }
 
-async function applyStyle(style: NavigationBarStyle): Promise<void> {
+async function applyStyle(style: NavigationBarStyle, force = false): Promise<void> {
   const resolved = resolveStyle(style);
 
-  if (resolved === currentStyle?.value) return;
+  if (!force && resolved === currentStyle?.value) return;
 
   const update = { value: resolved };
+
   try {
-    const request = ExpoNavigationBar.setStyle(resolved);
+    const write = ExpoNavigationBar.setStyle(resolved);
     currentStyle = update;
-    await request;
+    await write;
   } catch (error) {
     if (currentStyle === update) currentStyle = undefined;
     reportUpdateFailure('style', error);
   }
 }
 
-async function applyHidden(hidden: boolean): Promise<void> {
-  if (hidden === currentHidden?.value) return;
+async function applyHidden(hidden: boolean, force = false): Promise<void> {
+  if (!force && hidden === currentHidden?.value) return;
 
   const update = { value: hidden };
+
   try {
-    const request = ExpoNavigationBar.setHidden(hidden);
+    const write = ExpoNavigationBar.setHidden(hidden);
     currentHidden = update;
-    await request;
+    await write;
   } catch (error) {
     if (currentHidden === update) currentHidden = undefined;
     reportUpdateFailure('visibility', error);
@@ -102,12 +106,12 @@ async function applyHidden(hidden: boolean): Promise<void> {
 /** @deprecated Use `NavigationBar.setStyle` instead. */
 export function setStyle(style: NavigationBarStyle): void {
   defaultProps.style = style;
-  void applyStyle(style);
+  void applyStyle(style, true);
 }
 
 function setHidden(hidden: boolean): void {
   defaultProps.hidden = hidden;
-  void applyHidden(hidden);
+  void applyHidden(hidden, true);
 }
 
 function updateEntriesStack() {

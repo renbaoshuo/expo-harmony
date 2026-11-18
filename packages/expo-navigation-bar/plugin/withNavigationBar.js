@@ -22,6 +22,10 @@ function withHarmonyNavigationBar(config, input = {}) {
   if (!config.harmony?.bundleName && !config.platforms?.includes('harmony')) return config;
 
   const props = input ?? {};
+  if (typeof props !== 'object' || Array.isArray(props)) {
+    throw new TypeError('Harmony expo-navigation-bar plugin options must be an object.');
+  }
+
   for (const name of ['backgroundColor', 'borderColor', 'behavior', 'position', 'enforceContrast']) {
     if (props[name] != null) {
       throw new TypeError(`Harmony expo-navigation-bar does not support the '${name}' config plugin option.`);
@@ -49,10 +53,12 @@ function withHarmonyNavigationBar(config, input = {}) {
   return withModuleJson(config, (mod) => {
     const manifest = mod.modResults.module ??= {};
     for (const name of LEGACY_METADATA) HarmonyManifest.removeMetadata(manifest, name);
+
     const metadata = [[STYLE_METADATA, style], [HIDDEN_METADATA, hidden]].flatMap(
       ([name, value]) => value == null ? [] : [{ name, value: String(value) }]
     );
     HarmonyManifest.configureModuleMetadata(mod, metadata);
+
     return mod;
   });
 }
