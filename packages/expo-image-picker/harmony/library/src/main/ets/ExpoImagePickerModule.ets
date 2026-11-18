@@ -28,6 +28,8 @@ const PHOTO_PICKER_MAX_SELECTION: number = 500;
 const CAMERA_RESULT_OK: number = 0;
 const CAMERA_RESULT_CANCELLED: number = -1;
 const CAMERA_MAX_VIDEO_DURATION: number = 0x7fffffff;
+const MOVING_PHOTO_BADGE_API: number = 22;
+const ADVANCED_PHOTO_PICKER_API: number = 26;
 const MEDIA_LOCATION_PERMISSION = 'ohos.permission.MEDIA_LOCATION';
 
 // Keep the lock until the system picker settles, including across RN reloads.
@@ -92,6 +94,9 @@ export class ExpoImagePickerModule extends ExpoModule {
       .onAbilityDestroy((): void => {
         this.dispose();
       })
+      .onWindowStageWillDestroy((): void => {
+        this.cancelCrop?.();
+      })
       .onDestroy((): void => {
         this.dispose();
       });
@@ -104,6 +109,7 @@ export class ExpoImagePickerModule extends ExpoModule {
     if (pickers.has(ability)) return new ImagePickerResult();
 
     this.assertActive(true);
+
     if (options.exif) {
       options.includeLocation = this.context.permissionStatus(MEDIA_LOCATION_PERMISSION) === ExpoPermissionStatus.GRANTED;
     }
@@ -126,9 +132,7 @@ export class ExpoImagePickerModule extends ExpoModule {
       await removeAssets(assets);
       this.assertActive();
 
-      if (cause instanceof ExpoImagePickerError) {
-        throw new ExpoImagePickerError(cause.code, cause.message, cause);
-      }
+      if (cause instanceof ExpoImagePickerError) throw new ExpoImagePickerError(cause.code, cause.message, cause.cause);
 
       throw new ExpoImagePickerError('ERR_IMAGE_PICKER', `Unable to ${capture ? 'capture' : 'select'} media: ${String(cause)}`, cause as Object);
     } finally {
@@ -198,6 +202,7 @@ export class ExpoImagePickerModule extends ExpoModule {
     const videos = selectsVideos(options);
 
     const config = new photoAccessHelper.PhotoSelectOptions();
+
     if (videos) {
       config.MIMEType = images || livePhotos
         ? photoAccessHelper.PhotoViewMIMETypes.IMAGE_VIDEO_TYPE
@@ -208,7 +213,7 @@ export class ExpoImagePickerModule extends ExpoModule {
         : photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE;
     }
 
-    if (deviceInfo.apiAvailable(22)) {
+    if (deviceInfo.sdkApiVersion >= MOVING_PHOTO_BADGE_API) {
       if (livePhotos) {
         config.isMovingPhotoBadgeShown = true;
         if (videos && !images) {
@@ -226,21 +231,11 @@ export class ExpoImagePickerModule extends ExpoModule {
       }
     }
 
-    config.maxSelectNumber = options.allowsMultipleSelection
+    const limit = options.allowsMultipleSelection
       ? Math.min(options.selectionLimit || PHOTO_PICKER_MAX_SELECTION, PHOTO_PICKER_MAX_SELECTION)
       : 1;
-    if (deviceInfo.apiAvailable('26.0.0')) {
-      if (options.allowsMultipleSelection && options.orderedSelection) {
-        config.isSelectionNumberVisible = true;
-        config.isSelectionOrderAdjustable = true;
-      }
-
-      if (options.preferredAssetRepresentationMode === 'current') {
-        config.preferredCompatibleMode = photoAccessHelper.PreferredCompatibleMode.CURRENT;
-      } else if (options.preferredAssetRepresentationMode === 'compatible') {
-        config.preferredCompatibleMode = photoAccessHelper.PreferredCompatibleMode.COMPATIBLE;
-      }
-    }
+    config.maxSelectNumber = limit;
+    this.configureRepresentationAndOrder(config, options, limit);
 
     config.isEditSupported = false;
     config.isPhotoTakingSupported = false;
@@ -248,13 +243,14 @@ export class ExpoImagePickerModule extends ExpoModule {
 
     const result = await new photoAccessHelper.PhotoViewPicker().select(config);
     this.assertActive();
+
     if (result == null || !Array.isArray(result.photoUris)) {
       throw new ExpoImagePickerError('ERR_IMAGE_PICKER', 'PhotoViewPicker did not return a selection result.');
     }
     if (result.photoUris.length === 0) return;
 
     let movingPhotos: boolean[] | undefined;
-    if (deviceInfo.apiAvailable(22)) {
+    if (deviceInfo.sdkApiVersion >= MOVING_PHOTO_BADGE_API) {
       if (livePhotos) {
         const states = result.movingPhotoBadgeStates;
         if (states?.length === result.photoUris.length) {
@@ -266,13 +262,46 @@ export class ExpoImagePickerModule extends ExpoModule {
     const helper = photoAccessHelper.getPhotoAccessHelper(ability);
 
     try {
-      for (let index = 0; index < result.photoUris.length; index++) {
+      // Gallery can return every frame in a burst even when the picker limit is one.
+      for (let index = 0; index < result.photoUris.length && assets.length < limit; index++) {
         const asset = await this.readAsset(ability, helper, result.photoUris[index], options, images, livePhotos, movingPhotos?.[index]);
-        if (asset !== undefined) assets.push(asset);
+
+        if (asset !== undefined) {
+          assets.push(asset);
+        } else if (allowsCrop(options)) {
+          return;
+        }
+
         this.assertActive();
       }
     } finally {
       await helper.release().catch((): void => {});
+    }
+  }
+
+  private configureRepresentationAndOrder(
+    config: photoAccessHelper.PhotoSelectOptions,
+    options: ImagePickerOptions,
+    limit: number,
+  ): void {
+    // apiAvailable itself was introduced in API 26.
+    if (deviceInfo.sdkApiVersion < ADVANCED_PHOTO_PICKER_API) return;
+
+    if (deviceInfo.apiAvailable('26.0.0')) {
+      if (limit > 1 && options.orderedSelection) {
+        config.isSelectionNumberVisible = true;
+        config.isSelectionOrderAdjustable = true;
+      }
+
+      if (options.preferredAssetRepresentationMode === 'current') {
+        config.assetCompatibleCapability = {
+          supportedHighResolution: true,
+          supportedMimeType: ['image/heic'],
+        };
+        config.preferredCompatibleMode = photoAccessHelper.PreferredCompatibleMode.CURRENT;
+      } else if (options.preferredAssetRepresentationMode === 'compatible') {
+        config.preferredCompatibleMode = photoAccessHelper.PreferredCompatibleMode.COMPATIBLE;
+      }
     }
   }
 
@@ -284,18 +313,18 @@ export class ExpoImagePickerModule extends ExpoModule {
   ): Promise<ImagePickerAsset | undefined> {
     if (!allowsCrop(options)) return await exportImage(uri, this.context.cachePath, options, name);
 
-    const pixels = await cropImage(ability, uri, options, (cancel): void => {
+    const crop = await cropImage(ability, uri, this.context.cachePath, options, (cancel): void => {
       this.cancelCrop = cancel;
     }).finally((): void => {
       this.cancelCrop = undefined;
     });
-    if (pixels === null) return undefined;
+    if (crop === null) return undefined;
 
     try {
       this.assertActive();
-      return await exportImage(uri, this.context.cachePath, options, name, pixels);
+      return await exportImage(uri, this.context.cachePath, options, name, crop);
     } finally {
-      await pixels.release().catch((): void => {});
+      await crop.release().catch((): void => {});
     }
   }
 

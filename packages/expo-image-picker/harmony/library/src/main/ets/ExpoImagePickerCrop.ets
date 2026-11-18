@@ -7,10 +7,11 @@
 
 import { ImageCropper, ImageCropperConfig, ImageCropperController, ImageCropperLayerPainter, ImageCropperLayerPainterConfig } from '@candies/image_cropper';
 import { common } from '@kit.AbilityKit';
-import { ComponentContent } from '@kit.ArkUI';
+import { ComponentContent, UIContext } from '@kit.ArkUI';
 import { fileIo } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
 import { ExpoImagePickerError } from './ExpoImagePickerError';
+import { createUprightCropInput, removeFile } from './ExpoImagePickerMedia';
 import { ImagePickerOptions } from './ImagePickerOptions';
 
 class OvalCropPainter extends ImageCropperLayerPainter {
@@ -93,13 +94,25 @@ function buildCropDialog(model: CropDialogModel): void {
 export async function cropImage(
   ability: common.UIAbilityContext,
   uri: string,
+  cache: string,
   options: ImagePickerOptions,
   setCancel: (cancel: () => void) => void,
 ): Promise<image.PixelMap | null> {
-  const ui = ability.windowStage.getMainWindowSync().getUIContext();
+  let ui: UIContext;
+
+  try {
+    ui = ability.windowStage.getMainWindowSync().getUIContext();
+  } catch (cause) {
+    throw new ExpoImagePickerError('ERR_IMAGE_PICKER_CONTEXT', 'ImagePicker requires a main window to display the crop editor.', cause as Object);
+  }
+
   const prompt = ui.getPromptAction();
   let file: fileIo.File | undefined;
   let source: image.ImageSource | undefined;
+  let uprightPath: string | undefined;
+  let uprightFile: fileIo.File | undefined;
+  let uprightSource: image.ImageSource | undefined;
+
   let content: ComponentContent<CropDialogModel> | undefined;
   let opened = false;
   let canceled = false;
@@ -110,14 +123,27 @@ export async function cropImage(
     canceled = true;
     cancelResult?.();
   };
+
   setCancel(cancel);
 
   try {
     file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY);
     if (canceled) return null;
 
-    const preview = image.createImageSource(file.fd);
-    source = preview;
+    source = image.createImageSource(file.fd);
+    if (source == null) throw new ExpoImagePickerError('ERR_IMAGE_PICKER_MEDIA_PROCESSING', 'Could not open the selected image for editing.');
+
+    uprightPath = await createUprightCropInput(source, cache);
+    if (canceled) return null;
+
+    if (uprightPath !== undefined) {
+      uprightFile = await fileIo.open(uprightPath, fileIo.OpenMode.READ_ONLY);
+      uprightSource = image.createImageSource(uprightFile.fd);
+      if (uprightSource == null) throw new ExpoImagePickerError('ERR_IMAGE_PICKER_MEDIA_PROCESSING', 'Could not open the upright image for editing.');
+      if (canceled) return null;
+    }
+
+    const preview = uprightSource ?? source;
 
     const controller = new ImageCropperController();
     const config = new ImageCropperConfig({
@@ -128,6 +154,7 @@ export async function cropImage(
 
     const result = new Promise<image.PixelMap | null>((resolve, reject): void => {
       cancelResult = (): void => resolve(null);
+
       const model: CropDialogModel = {
         source: preview,
         config,
@@ -137,20 +164,21 @@ export async function cropImage(
           if (canceled || controller.getActionDetails().cropRect === undefined) return false;
 
           saving ??= Promise.resolve().then(async (): Promise<void> => {
-            const cropped = await controller.getCroppedImage();
+            const pixels = await controller.getCroppedImage();
 
             if (canceled) {
-              await cropped?.release();
-            } else if (cropped === null) {
+              await pixels?.release();
+            } else if (pixels === null) {
               reject(new ExpoImagePickerError('ERR_IMAGE_PICKER_MEDIA_PROCESSING', 'Could not crop the selected image.'));
             } else {
-              resolve(cropped);
+              resolve(pixels);
             }
           }).catch((error: Error): void => reject(error));
 
           return true;
         },
       };
+
       content = new ComponentContent<CropDialogModel>(ui, wrapBuilder(buildCropDialog), model);
     });
 
@@ -170,6 +198,15 @@ export async function cropImage(
     try {
       content?.dispose();
     } catch (_) {}
+
+    try {
+      await uprightSource?.release();
+    } catch (_) {}
+    try {
+      if (uprightFile !== undefined) await fileIo.close(uprightFile);
+    } catch (_) {}
+    if (uprightPath !== undefined) await removeFile(uprightPath);
+
     try {
       await source?.release();
     } catch (_) {}

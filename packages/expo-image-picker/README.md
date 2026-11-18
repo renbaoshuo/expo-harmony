@@ -66,7 +66,7 @@ const result = await ImagePicker.launchImageLibraryAsync({
 
 返回 `Promise<ImagePickerResult>`，打开系统图库选择界面。用户选中的文件不需要整库访问权限。照片中的位置信息可能被系统移除；若需读取照片 EXIF 中的 GPS 信息，还需声明并申请 `ohos.permission.MEDIA_LOCATION`。
 
-`allowsMultipleSelection` 为 `false` 时最多选择一项；为 `true` 时由 `selectionLimit` 限制，`selectionLimit` 为 `0` 或大于 `500` 时按 `500` 处理。选中单张图片后可通过 `allowsEditing` 进入裁剪界面，多选和视频忽略编辑选项。
+`allowsMultipleSelection` 为 `false` 时最多返回一项；为 `true` 时由 `selectionLimit` 限制，`selectionLimit` 为 `0` 或大于 `500` 时按 `500` 处理。图库返回连拍序列时也遵守这个上限。选中单张图片后可通过 `allowsEditing` 进入裁剪界面，多选和视频忽略编辑选项。带有 EXIF 旋转或镜像标记的图片会先校正方向，再显示裁剪界面。
 
 图库结果的 `uri` 指向应用缓存中的文件，需要长期保存时请复制到其他位置。取消时返回 `{ canceled: true, assets: null }`。系统相机或图库选择界面已打开时再次调用，也会返回取消结果。
 
@@ -212,7 +212,7 @@ const result = await ImagePicker.launchImageLibraryAsync({
 
 #### `UIImagePickerPreferredAssetRepresentationMode`
 
-- HarmonyOS 系统图库选择器自行决定资源表示方式。
+- HarmonyOS 26.0.0 起，`'current'` 请求当前格式，`'compatible'` 请求兼容格式，`'automatic'` 交由系统决定。较早版本使用系统默认表示方式。
 
 #### `UIImagePickerPresentationStyle`
 

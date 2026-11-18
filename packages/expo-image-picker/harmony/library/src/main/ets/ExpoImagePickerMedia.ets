@@ -14,11 +14,12 @@ import { image } from '@kit.ImageKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { media } from '@kit.MediaKit';
 
-import { EXIF_KEYS, EXIF_LOCATION_KEYS, decodeExifProperties, orientationCode } from './ExpoImagePickerExif';
+import { EXIF_KEYS, EXIF_LOCATION_KEYS, decodeExifProperties, readOrientation } from './ExpoImagePickerExif';
 import { ExpoImagePickerError } from './ExpoImagePickerError';
 
 const CACHE_DIRECTORY: string = 'expo-image-picker';
 const AV_METADATA_CAPABILITY: string = 'SystemCapability.Multimedia.Media.AVMetadataExtractor';
+const EXTENDED_EXIF_FORMATS_API: number = 23;
 const READ_CHUNK_SIZE: number = 64 * 1024;
 const JPEG_MIME_TYPE: string = 'image/jpeg';
 const PNG_MIME_TYPE: string = 'image/png';
@@ -105,9 +106,7 @@ export async function createCapture(cache: string, type: PickerMediaType): Promi
   } catch (cause) {
     await removeFile(path);
 
-    if (cause instanceof ExpoImagePickerError) {
-      throw new ExpoImagePickerError(cause.code, cause.message, cause);
-    }
+    if (cause instanceof ExpoImagePickerError) throw new ExpoImagePickerError(cause.code, cause.message, cause.cause);
 
     throw new ExpoImagePickerError(CODE_CAPTURE_FILE, `Failed to prepare the camera output file: ${String(cause)}`, cause as Object);
   } finally {
@@ -117,6 +116,37 @@ export async function createCapture(cache: string, type: PickerMediaType): Promi
 
 export async function removeCapture(file: CaptureFile): Promise<void> {
   await removeFile(file.path);
+}
+
+export async function createUprightCropInput(source: image.ImageSource, cache: string): Promise<string | undefined> {
+  const orientation = await readOrientation(source);
+  if (orientation === undefined || orientation === 1) return undefined;
+
+  const dir = `${cache}/${CACHE_DIRECTORY}`;
+  await ensureDirectory(dir);
+
+  const path = `${dir}/${uniqueFilename('crop', 'png')}`;
+
+  // Cropper coordinates follow the encoded image, so bake the EXIF orientation into the input pixels.
+  const pixels = await source.createPixelMap({ editable: true });
+  try {
+    if ([2, 5, 7].includes(orientation)) await pixels.flip(true, false);
+    if (orientation === 4) await pixels.flip(false, true);
+    if (orientation === 3) await pixels.rotate(180);
+    if (orientation === 6 || orientation === 7) await pixels.rotate(90);
+    if (orientation === 5 || orientation === 8) await pixels.rotate(270);
+
+    await packImage(pixels, path, PNG_MIME_TYPE, 1);
+
+    return path;
+  } catch (cause) {
+    await removeFile(path);
+
+    if (cause instanceof ExpoImagePickerError) throw new ExpoImagePickerError(cause.code, cause.message, cause.cause);
+    throw new ExpoImagePickerError(CODE_MEDIA_PROCESSING, 'Failed to orient the selected image for editing.', cause as Object);
+  } finally {
+    await pixels.release().catch((): void => {});
+  }
 }
 
 export async function exportImage(
@@ -169,9 +199,7 @@ export async function exportImage(
   } catch (cause) {
     if (path !== undefined) await removeFile(path);
 
-    if (cause instanceof ExpoImagePickerError) {
-      throw new ExpoImagePickerError(cause.code, cause.message, cause);
-    }
+    if (cause instanceof ExpoImagePickerError) throw new ExpoImagePickerError(cause.code, cause.message, cause.cause);
 
     throw new ExpoImagePickerError(CODE_MEDIA_PROCESSING, `Failed to process the selected image: ${String(cause)}`, cause as Object);
   }
@@ -197,9 +225,7 @@ export async function exportVideo(uri: string, cache: string, name?: string): Pr
   } catch (cause) {
     if (path !== undefined) await removeFile(path);
 
-    if (cause instanceof ExpoImagePickerError) {
-      throw new ExpoImagePickerError(cause.code, cause.message, cause);
-    }
+    if (cause instanceof ExpoImagePickerError) throw new ExpoImagePickerError(cause.code, cause.message, cause.cause);
 
     throw new ExpoImagePickerError(CODE_MEDIA_PROCESSING, `Failed to process the selected video: ${String(cause)}`, cause as Object);
   }
@@ -257,7 +283,7 @@ export async function exportMovingPhoto(
     await removeFile(imagePath);
     await removeFile(videoPath);
 
-    if (cause instanceof ExpoImagePickerError) throw new ExpoImagePickerError(cause.code, cause.message, cause);
+    if (cause instanceof ExpoImagePickerError) throw new ExpoImagePickerError(cause.code, cause.message, cause.cause);
 
     throw new ExpoImagePickerError(CODE_MEDIA_PROCESSING, `Failed to export the selected moving photo: ${String(cause)}`, cause as Object);
   }
@@ -308,18 +334,6 @@ async function inspectImage(uri: string, options?: ProcessingOptions): Promise<I
   } finally {
     await releaseImageSource(source);
     await closeFile(file);
-  }
-}
-
-async function readOrientation(source: image.ImageSource): Promise<number | undefined> {
-  try {
-    const data = await source.getImageProperties([image.PropertyKey.ORIENTATION]);
-    const value = data[image.PropertyKey.ORIENTATION];
-    if (value === null || value === undefined) return undefined;
-
-    return orientationCode(value);
-  } catch (_) {
-    return undefined;
   }
 }
 
@@ -410,12 +424,12 @@ async function readExif(source: image.ImageSource, mime: string, includeLocation
   try {
     const supported =
       [JPEG_MIME_TYPE, PNG_MIME_TYPE, 'image/heif', 'image/heic'].includes(mime) ||
-      (deviceInfo.apiAvailable(23) && [WEBP_MIME_TYPE, 'image/x-adobe-dng'].includes(mime));
+      (deviceInfo.sdkApiVersion >= EXTENDED_EXIF_FORMATS_API && [WEBP_MIME_TYPE, 'image/x-adobe-dng'].includes(mime));
     if (!supported) return {};
 
     const data = await source.getImageProperties(includeLocation ? EXIF_KEYS.concat(EXIF_LOCATION_KEYS) : EXIF_KEYS);
 
-    return data == null ? {} : decodeExifProperties(data);
+    return data == null ? {} : decodeExifProperties(data, includeLocation);
   } catch (_) {
     // ImageKit can reject the entire batch when the image has no EXIF fields.
     return {};
@@ -482,16 +496,15 @@ async function copyFile(uri: string, path: string): Promise<void> {
 }
 
 async function ensureDirectory(path: string): Promise<void> {
-  if (await fileIo.access(path)) {
-    const info = await fileIo.stat(path);
-    if (!info.isDirectory()) {
-      throw new ExpoImagePickerError(CODE_CACHE, `The image picker cache path '${path}' is not a directory.`);
-    }
+  try {
+    await fileIo.mkdir(path, true);
+  } catch (cause) {
+    // Other UIAbilities can create the cache directory between operations.
+    const stat = await fileIo.stat(path).catch((): undefined => undefined);
+    if (stat?.isDirectory()) return;
 
-    return;
+    throw new ExpoImagePickerError(CODE_CACHE, 'The image picker cache directory is unavailable.', cause as Object);
   }
-
-  await fileIo.mkdir(path, true);
 }
 
 function checkedFileSize(size: number): number {
@@ -501,7 +514,7 @@ function checkedFileSize(size: number): number {
   return size;
 }
 
-async function removeFile(path: string): Promise<void> {
+export async function removeFile(path: string): Promise<void> {
   try {
     await fileIo.unlink(path);
   } catch (_) {}
