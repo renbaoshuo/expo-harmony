@@ -45,7 +45,7 @@ const result = await DocumentPicker.getDocumentAsync({
 
 - `base64`：HarmonyOS 不返回 Base64 内容，`uri` 仍为文件地址。
 
-系统按文件后缀过滤候选文件，返回结果后模块也会核对所选文件的后缀。后缀来自 HarmonyOS UTD 注册表，`*/*` 允许任意后缀。选择器根据用户选择提供临时访问授权，无需在应用中声明文件访问权限。[鸿蒙文件选择指南](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/select-user-file/)
+系统按文件后缀过滤候选文件，返回结果后模块也会核对所选文件的后缀。后缀来自 HarmonyOS UTD 注册表，`*/*` 允许任意后缀。指定多个 MIME 类型时，使用系统能够识别的类型对应的全部后缀。选择器根据用户选择提供临时访问授权，无需在应用中声明文件访问权限。[鸿蒙文件选择指南](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/select-user-file/)
 
 #### `DocumentPickerAsset`
 
@@ -91,7 +91,7 @@ HarmonyOS SDK API 15 及以上版本可提供更高精度的最后修改时间�
 
 #### `ERR_DOCUMENT_PICKER_UNSUPPORTED_MIME_TYPE`
 
-HarmonyOS SDK 的 MIME 类型注册表中没有对应文件后缀时抛出。
+除 `*/*` 外，指定的 MIME 类型均无法从 HarmonyOS SDK 的注册表取得对应文件后缀时抛出。
 
 #### `ERR_DOCUMENT_PICKER_MIME_TYPE_MISMATCH`
 

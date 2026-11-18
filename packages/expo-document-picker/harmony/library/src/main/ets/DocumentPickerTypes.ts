@@ -8,14 +8,28 @@
 import { uniformTypeDescriptor } from '@kit.ArkData';
 import type { BusinessError } from '@kit.BasicServicesKit';
 
+const INVALID_PARAMETER = 401;
+
+class DocumentTypeLookupError extends Error {
+  readonly code: number;
+  readonly cause: BusinessError;
+
+  constructor(cause: BusinessError) {
+    super(cause.message);
+    this.code = cause.code;
+    this.cause = cause;
+  }
+}
+
 export class UnsupportedDocumentTypeError extends Error {
-  constructor(mimeType: string) {
-    super(`HarmonyOS has no filename extensions registered for '${mimeType}'.`);
+  constructor(mimeTypes: string[]) {
+    super(`HarmonyOS has no filename extensions registered for: ${mimeTypes.join(', ')}.`);
   }
 }
 
 export function filenameExtension(name: string): string {
   const dot = name.lastIndexOf('.');
+
   return dot > 0 && dot < name.length - 1 ? name.slice(dot) : '';
 }
 
@@ -24,28 +38,29 @@ export function mimeTypeForName(name: string): string | undefined {
   if (suffix.length === 0) return undefined;
 
   try {
-    const id = uniformTypeDescriptor.getUniformDataTypeByFilenameExtension(suffix);
-    return uniformTypeDescriptor.getTypeDescriptor(id)?.mimeTypes[0];
+    for (const id of uniformTypeDescriptor.getUniformDataTypesByFilenameExtension(suffix)) {
+      const mime = uniformTypeDescriptor.getTypeDescriptor(id)?.mimeTypes[0];
+      if (mime) return mime;
+    }
   } catch (_) {
     return undefined;
   }
+
+  return undefined;
 }
 
 export function documentSuffixes(types: string[]): string[] | undefined {
-  const normalized = types.map((type: string): string => type.trim().toLowerCase());
-  if (normalized.includes('*/*')) return undefined;
+  const mimes = new Set(types.map((type: string): string => type.trim().toLowerCase()));
+  if (mimes.has('*/*')) return undefined;
 
   const suffixes: Set<string> = new Set<string>();
-  for (const mime of normalized) {
-    const extensions = extensionsForMimeType(mime);
-    if (extensions.length === 0) {
-      throw new UnsupportedDocumentTypeError(mime);
-    }
-
-    extensions.forEach((extension: string): void => {
+  for (const mime of mimes) {
+    for (const extension of extensionsForMimeType(mime)) {
       suffixes.add(extension);
-    });
+    }
   }
+
+  if (suffixes.size === 0) throw new UnsupportedDocumentTypeError([...mimes]);
 
   return Array.from(suffixes);
 }
@@ -56,11 +71,14 @@ function extensionsForMimeType(mime: string): string[] {
   let ids: string[];
 
   try {
-    ids = wildcard ? Object.values(uniformTypeDescriptor.UniformDataType) : uniformTypeDescriptor.getUniformDataTypesByMIMEType(mime);
+    ids = wildcard
+      ? Object.values(uniformTypeDescriptor.UniformDataType)
+      : uniformTypeDescriptor.getUniformDataTypesByMIMEType(mime);
   } catch (error) {
-    if ((error as BusinessError).code === 401) return [];
+    const failure = error as BusinessError;
+    if (failure.code === INVALID_PARAMETER) return [];
 
-    throw error;
+    throw new DocumentTypeLookupError(failure);
   }
 
   const extensions: string[] = [];

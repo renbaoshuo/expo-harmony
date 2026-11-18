@@ -122,7 +122,6 @@ export class ExpoDocumentPickerModule extends ExpoModule {
 
       try {
         if (options.copyToCacheDirectory) {
-          // mkdtemp requires six trailing Xs and reserves the directory atomically.
           directory = await fileIo.mkdtemp(`${this.context.cachePath}/DocumentPicker-XXXXXX`);
           this.assertActive();
         }
@@ -140,7 +139,9 @@ export class ExpoDocumentPickerModule extends ExpoModule {
 
         return { canceled: false, assets };
       } catch (error) {
-        if (error instanceof ExpoModuleError) throw new ExpoModuleError(error.code, error.message, error.cause);
+        if (error instanceof ExpoModuleError) {
+          throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
+        }
 
         throw new ExpoModuleError('ERR_FAILED_TO_READ_DOCUMENT', 'Failed to read the selected document.', error);
       }
@@ -153,7 +154,9 @@ export class ExpoDocumentPickerModule extends ExpoModule {
         }
       }
 
-      if (error instanceof ExpoModuleError) throw new ExpoModuleError(error.code, error.message, error.cause);
+      if (error instanceof ExpoModuleError) {
+        throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
+      }
       if (error instanceof UnsupportedDocumentTypeError) {
         throw new ExpoModuleError('ERR_DOCUMENT_PICKER_UNSUPPORTED_MIME_TYPE', error.message, error);
       }
