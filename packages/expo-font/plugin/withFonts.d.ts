@@ -12,6 +12,8 @@ declare const withHarmonyFonts: ConfigPlugin<withHarmonyFonts.FontsPluginConfig 
 declare namespace withHarmonyFonts {
   interface HarmonyFontDefinition {
     path: string;
+    weight?: 400;
+    style?: 'normal';
   }
 
   type HarmonyFont

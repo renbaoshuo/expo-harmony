@@ -74,21 +74,26 @@ function fontEntries(config, props) {
   }
 
   const entries = [];
+
   for (const font of fonts) {
     if (typeof font === 'string') {
+      if (!font.trim() || font.includes('\0')) {
+        throw new ExpoFontPluginError('A Harmony font path must be non-blank and contain no NUL character.');
+      }
+
       entries.push({ source: font });
       continue;
     }
 
-    if (!font || typeof font.fontFamily !== 'string' || !font.fontFamily.trim()
-      || !Array.isArray(font.fontDefinitions)) {
+    if (!font || typeof font.fontFamily !== 'string' || !font.fontFamily.trim() || font.fontFamily.includes('\0')
+      || !Array.isArray(font.fontDefinitions) || font.fontDefinitions.length === 0) {
       throw new ExpoFontPluginError(
         'Harmony font entries must be paths or expo-font family definitions.'
       );
     }
 
     for (const face of font.fontDefinitions) {
-      if (!face || typeof face.path !== 'string') {
+      if (!face || typeof face.path !== 'string' || !face.path.trim() || face.path.includes('\0')) {
         throw new ExpoFontPluginError(
           `Font family '${font.fontFamily}' contains an invalid definition.`
         );
@@ -107,7 +112,7 @@ function fontEntries(config, props) {
         );
       }
 
-      if (face.weight !== undefined || face.style !== undefined) {
+      if ((face.weight !== undefined && face.weight !== 400) || face.style === 'italic') {
         throw new ExpoFontPluginError(
           `Font family '${font.fontFamily}' uses weight/style variants, but the Harmony font registry currently supports one face per family. Use a distinct fontFamily for each Harmony face.`
         );
@@ -129,10 +134,9 @@ function expandFontEntries(root, entries) {
     let stat;
 
     try {
-      try {
-        stat = fs.statSync(source);
-      } catch (cause) {
-        if (cause.code !== 'ENOENT') throw cause;
+      stat = fs.statSync(source, { throwIfNoEntry: false });
+
+      if (stat === undefined) {
         // Match Expo's package-style paths, resolved from the host application.
         source = requireFromProject.resolve(font.source);
         stat = fs.statSync(source);

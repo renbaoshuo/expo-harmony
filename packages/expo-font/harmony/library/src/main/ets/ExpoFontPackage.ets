@@ -52,17 +52,13 @@ const MAX_RENDER_GLYPH_CODE_UNITS: number = 100_000;
 const MAX_RENDER_SIDE_PIXELS: number = 8_192;
 const MAX_RENDER_BUFFER_BYTES: number = 64 * 1024 * 1024;
 
-const LOCAL_FONT_COLLECTION_API: number = 22;
 const ASYNC_FONT_LOADING_API: number = 18;
+const FONT_UNLOADING_API: number = 20;
+const LOCAL_FONT_COLLECTION_API: number = 22;
 const CHECKED_FONT_LOADING_API: number = 23;
 
-interface RegisteredFont {
-  path: string;
-  renderFamily: string;
-}
-
 class FontRegistry {
-  readonly fonts: Map<string, RegisteredFont> = new Map<string, RegisteredFont>();
+  readonly fonts: Map<string, string> = new Map<string, string>();
   private collection?: text.FontCollection;
 
   fontCollection(): text.FontCollection {
@@ -77,10 +73,25 @@ class FontRegistry {
     return this.collection;
   }
 
-  renderFamily(path: string, digest?: string): string {
-    // The global collection needs content-based aliases to isolate runtimes.
-    const id = deviceInfo.sdkApiVersion >= LOCAL_FONT_COLLECTION_API ? util.generateRandomUUID() : (digest ?? fileDigestSync(path));
+  createRenderFamily(path: string, digest?: string): string {
+    // Older releases cannot remove a global alias, so reuse it for the same font bytes.
+    const id = deviceInfo.sdkApiVersion >= FONT_UNLOADING_API ? util.generateRandomUUID() : (digest ?? fileDigestSync(path));
     return `expo-font-${id}`;
+  }
+
+  releaseRenderFamily(alias: string): void {
+    if (deviceInfo.sdkApiVersion < FONT_UNLOADING_API) return;
+
+    try {
+      this.collection?.unloadFontSync(alias);
+    } catch (_) {
+      // The alias may not exist when registration failed before it was installed.
+    }
+  }
+
+  clear(): void {
+    this.fonts.forEach((alias: string): void => this.releaseRenderFamily(alias));
+    this.fonts.clear();
   }
 }
 
@@ -180,43 +191,62 @@ export class ExpoFontLoaderModule extends ExpoModule {
   private async load(family: string, uri: string): Promise<void> {
     this.assertFamily(family, false);
 
-    const operation = this.registrationTail.catch((): void => {}).then(async (): Promise<void> => {
+    const load = this.registrationTail.catch((): void => {}).then(async (): Promise<void> => {
       const path = this.validateSource(uri);
       const registry = fontRegistry(this.context);
-      if (registry.fonts.get(family)?.path === path) return;
 
       // FontCollection strips file:// without decoding the native path.
       const source = `file://${path}`;
       const collection = registry.fontCollection();
-      const alias = registry.renderFamily(path);
+      const alias = registry.createRenderFamily(path);
+      let committed = false;
 
-      if (deviceInfo.sdkApiVersion >= CHECKED_FONT_LOADING_API) await collection.loadFontWithCheck(alias, source);
-      else if (deviceInfo.sdkApiVersion >= ASYNC_FONT_LOADING_API) await collection.loadFont(alias, source);
-      else collection.loadFontSync(alias, source);
+      try {
+        if (deviceInfo.sdkApiVersion >= CHECKED_FONT_LOADING_API) {
+          await collection.loadFontWithCheck(alias, source);
+        } else {
+          requireValidFontFile(path);
+          if (deviceInfo.sdkApiVersion >= ASYNC_FONT_LOADING_API) await collection.loadFont(alias, source);
+          else collection.loadFontSync(alias, source);
+        }
 
-      this.assertActive();
-
-      this.context.registerReactNativeFont(family, path);
-      registry.fonts.set(family, { path, renderFamily: alias });
+        this.commitFont(registry, family, alias, path);
+        committed = true;
+      } finally {
+        if (!committed) registry.releaseRenderFamily(alias);
+      }
     });
 
-    this.registrationTail = operation;
-    await operation;
+    this.registrationTail = load;
+    await load;
   }
 
   private loadBundledFonts(): void {
     this.assertActive();
-    const entries: BundledFontManifestEntry[] = this.readBundledFontEntries();
-    const families = new Set<string>();
-    for (const entry of entries) {
-      this.assertBundledEntry(entry);
-      if (families.has(entry.family)) {
-        throw new ExpoFontError('ERR_FONT_BUNDLED_MANIFEST', `Bundled font family '${entry.family}' is listed more than once.`);
-      }
-      families.add(entry.family);
+
+    let entries: BundledFontManifestEntry[];
+    try {
+      entries = this.readBundledFontEntries();
+    } catch (error) {
+      this.context.logger.warn(`Unable to read the bundled fonts: ${errorMessage(error as Object)}`);
+      return;
     }
 
-    entries.forEach((entry: BundledFontManifestEntry): void => this.loadBundled(entry));
+    const families = new Set<string>();
+    for (const entry of entries) {
+      try {
+        this.assertBundledEntry(entry);
+
+        if (families.has(entry.family)) {
+          throw new ExpoFontError('ERR_FONT_BUNDLED_MANIFEST', `Bundled font family '${entry.family}' is listed more than once.`);
+        }
+
+        families.add(entry.family);
+        this.loadBundled(entry);
+      } catch (error) {
+        this.context.logger.warn(`Unable to load a bundled font: ${errorMessage(error as Object)}`);
+      }
+    }
   }
 
   private readBundledFontEntries(): BundledFontManifestEntry[] {
@@ -286,18 +316,38 @@ export class ExpoFontLoaderModule extends ExpoModule {
   }
 
   private loadBundled(entry: BundledFontManifestEntry): void {
-    const source = this.validateSource(`resource://RAWFILE/${entry.file}`, entry.sha256, entry.size);
+    const path = this.validateSource(`resource://RAWFILE/${entry.file}`, entry.sha256, entry.size);
     const registry = fontRegistry(this.context);
-    const collection = registry.fontCollection();
-    const alias = registry.renderFamily(source, entry.sha256?.toLowerCase());
-    const uri = `file://${source}`;
 
-    if (deviceInfo.sdkApiVersion >= CHECKED_FONT_LOADING_API) collection.loadFontSyncWithCheck(alias, uri);
-    else collection.loadFontSync(alias, uri);
+    const collection = registry.fontCollection();
+    const alias = registry.createRenderFamily(path, entry.sha256?.toLowerCase());
+    const source = `file://${path}`;
+    let committed = false;
+
+    try {
+      if (deviceInfo.sdkApiVersion >= CHECKED_FONT_LOADING_API) {
+        collection.loadFontSyncWithCheck(alias, source);
+      } else {
+        requireValidFontFile(path);
+        collection.loadFontSync(alias, source);
+      }
+
+      this.commitFont(registry, entry.family, alias, path);
+      committed = true;
+    } finally {
+      if (!committed) registry.releaseRenderFamily(alias);
+    }
+  }
+
+  private commitFont(registry: FontRegistry, family: string, alias: string, path: string): void {
     this.assertActive();
 
-    this.context.registerReactNativeFont(entry.family, source);
-    registry.fonts.set(entry.family, { path: source, renderFamily: alias });
+    if (!this.context.isHeadless) this.context.registerReactNativeFont(family, path);
+
+    const previous = registry.fonts.get(family);
+    registry.fonts.set(family, alias);
+
+    if (previous !== undefined && previous !== alias) registry.releaseRenderFamily(previous);
   }
 
   private validateSource(uri: string, digest?: string, size?: number): string {
@@ -362,8 +412,9 @@ export class ExpoFontLoaderModule extends ExpoModule {
   }
 
   private assertFamily(family: string, bundled: boolean): void {
-    if (family.trim().length === 0) {
-      throw new ExpoFontError('ERR_FONT_FAMILY', bundled ? 'Bundled font family cannot be empty.' : 'Font family cannot be empty.');
+    if (family.trim().length === 0 || family.includes('\0')) {
+      const label = bundled ? 'Bundled font family' : 'Font family';
+      throw new ExpoFontError('ERR_FONT_FAMILY', `${label} cannot be blank or contain a NUL character.`);
     }
   }
 
@@ -377,11 +428,13 @@ export class ExpoFontLoaderModule extends ExpoModule {
     if (this.destroyed) return;
     this.destroyed = true;
     this.cache.clear();
+    this.context.services.get(fontRegistryKey)?.clear();
   }
 }
 
 export class ExpoFontUtilsModule extends ExpoModule {
   private destroyed: boolean = false;
+  private renderTail: Promise<void> = Promise.resolve();
 
   constructor(context: ExpoModuleContext) {
     super(context);
@@ -396,7 +449,10 @@ export class ExpoFontUtilsModule extends ExpoModule {
           ExpoValueTypes.string(),
           FONT_RENDER_OPTIONS_TYPE.defaulted(new FontRenderOptions()),
           async (glyphs: string, options: FontRenderOptions): Promise<FontRenderResult> => {
-            return await this.renderToImage(glyphs, options);
+            // Serialize renders to bound simultaneous PixelMap memory.
+            const render = this.renderTail.then((): Promise<FontRenderResult> => this.renderToImage(glyphs, options));
+            this.renderTail = render.then((): void => {}, (): void => {});
+            return await render;
           },
         ).returns(FONT_RENDER_RESULT_TYPE),
       )
@@ -407,6 +463,8 @@ export class ExpoFontUtilsModule extends ExpoModule {
 
   private async renderToImage(glyphs: string, options: FontRenderOptions): Promise<FontRenderResult> {
     this.assertActive();
+
+    const logger = this.context.logger;
     if (
       !Number.isFinite(options.size) ||
       options.size <= 0 ||
@@ -441,8 +499,9 @@ export class ExpoFontUtilsModule extends ExpoModule {
     }
 
     const registry = fontRegistry(this.context);
-    const font = registry.fonts.get(options.fontFamily);
-    const family = font?.renderFamily ?? options.fontFamily;
+    const alias = registry.fonts.get(options.fontFamily);
+    const family = alias ?? options.fontFamily;
+
     const color = normalizedArgb(options.color);
     const style: text.TextStyle = {
       color,
@@ -453,7 +512,7 @@ export class ExpoFontUtilsModule extends ExpoModule {
       halfLeading: options.lineHeight !== undefined,
     };
 
-    const collection = font === undefined ? text.FontCollection.getGlobalInstance() : registry.fontCollection();
+    const collection = alias === undefined ? text.FontCollection.getGlobalInstance() : registry.fontCollection();
     const builder = new text.ParagraphBuilder({ textStyle: style }, collection);
     builder.pushStyle(style);
     builder.addText(glyphs);
@@ -529,7 +588,7 @@ export class ExpoFontUtilsModule extends ExpoModule {
         try {
           await packer.release();
         } catch (error) {
-          this.context.logger.warn(`Unable to release the font image packer: ${errorMessage(error as Object)}`);
+          logger.warn(`Unable to release the font image packer: ${errorMessage(error as Object)}`);
         }
       }
     } catch (error) {
@@ -539,7 +598,7 @@ export class ExpoFontUtilsModule extends ExpoModule {
       try {
         await map.release();
       } catch (error) {
-        this.context.logger.warn(`Unable to release the font PixelMap: ${errorMessage(error as Object)}`);
+        logger.warn(`Unable to release the font PixelMap: ${errorMessage(error as Object)}`);
       }
 
       await unlinkIfExists(temp);
@@ -676,6 +735,14 @@ function rawFontPath(uri: string): string {
     throw new ExpoFontError('ERR_FONT_SOURCE', 'Font asset URI is invalid.');
   }
   return path;
+}
+
+function requireValidFontFile(path: string): void {
+  // The older font-collection loaders may resolve even when the typeface cannot be decoded.
+  const typeface = drawing.Typeface.makeFromFile(path);
+  if (typeface === undefined || typeface === null) {
+    throw new ExpoFontError('ERR_FONT_SOURCE', 'Unable to decode the font file.');
+  }
 }
 
 function ensureDirectory(path: string): void {
