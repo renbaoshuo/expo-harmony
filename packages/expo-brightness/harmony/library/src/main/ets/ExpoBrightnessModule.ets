@@ -43,13 +43,14 @@ export class ExpoBrightnessModule extends ExpoModule {
   private pending: Promise<void> = Promise.resolve();
   private windowWrite?: Promise<void>;
   private observer?: (id: number, info: display.BrightnessInfo) => void;
+  private sampleBrightness?: (emit: boolean) => void;
   private destroyed: boolean = false;
 
   definition(): ExpoModuleDefinition {
     return new ExpoModuleDefinition()
       .name('ExpoBrightness')
       .events([CHANGE_EVENT])
-      .asyncFunction('isAvailableAsync', async (): Promise<boolean> => canIUse(WINDOW_CAPABILITY))
+      .asyncFunction('isAvailableAsync', async (): Promise<boolean> => this.isWindowBrightnessAvailable())
       .asyncFunction('getPermissionsAsync', async (): Promise<BrightnessPermissionResponse> => {
         this.assertActive();
         return new BrightnessPermissionResponse();
@@ -68,14 +69,13 @@ export class ExpoBrightnessModule extends ExpoModule {
       .asyncFunction('getSystemBrightnessAsync', async (): Promise<number> => this.readSystemBrightness())
       .asyncFunction('getSystemBrightnessModeAsync', async (): Promise<number> => this.readSystemBrightnessMode())
       .asyncFunction('restoreSystemBrightnessAsync', async (): Promise<void> => {
-        // Recent 2-in-1 devices always use system brightness and have no window override to restore.
-        if (!usesSharedBrightness()) await this.writeBrightness(FOLLOW_SYSTEM);
+        await this.writeBrightness(FOLLOW_SYSTEM);
       })
       .asyncFunction('isUsingSystemBrightnessAsync', async (): Promise<boolean> => {
         return this.serialize(async (): Promise<boolean> => {
-          const target = await this.getWindow();
+          const win = this.getWindow();
 
-          return usesSharedBrightness() || target.getWindowProperties().brightness === FOLLOW_SYSTEM;
+          return usesSharedBrightness() || win.getWindowProperties().brightness === FOLLOW_SYSTEM;
         });
       })
       .onStartObserving(CHANGE_EVENT, (): void => this.startObserving())
@@ -93,47 +93,62 @@ export class ExpoBrightnessModule extends ExpoModule {
       });
   }
 
-  private async getWindow(): Promise<window.Window> {
-    if (this.context.isHeadless || !canIUse(WINDOW_CAPABILITY)) {
+  private isWindowBrightnessAvailable(): boolean {
+    return !this.destroyed && !this.context.isHeadless && canIUse(WINDOW_CAPABILITY);
+  }
+
+  private getWindow(): window.Window {
+    this.assertActive();
+    if (!this.isWindowBrightnessAvailable()) {
       throw new ExpoModuleError('ERR_BRIGHTNESS_UNAVAILABLE', 'Window brightness is unavailable in this runtime.');
     }
 
-    const target = await this.context.getReactNativeWindow();
-    this.assertActive();
-
-    return target;
+    // The brightness API is owned by the main window even when React renders in a subwindow.
+    try {
+      return this.context.uiAbilityContext.windowStage.getMainWindowSync();
+    } catch (error) {
+      throw new ExpoModuleError('ERR_BRIGHTNESS_UNAVAILABLE', 'The main window is unavailable.', error as Error);
+    }
   }
 
   private getBrightness(): Promise<number> {
-    return this.serialize(async (): Promise<number> => this.readBrightness(await this.getWindow()));
+    return this.serialize(async (): Promise<number> => this.readBrightness(this.getWindow()));
   }
 
   private writeBrightness(value: number): Promise<void> {
     return this.serialize(async (): Promise<void> => {
-      const target = await this.getWindow();
-      this.assertActive();
+      const win = this.getWindow();
 
-      const write = target.setWindowBrightness(value);
+      // PC and 2-in-1 devices with shared brightness have no window override to restore.
+      if (value === FOLLOW_SYSTEM && usesSharedBrightness()) return;
+
+      const write = win.setWindowBrightness(value);
       this.windowWrite = write;
 
       try {
         await write;
+
+        this.sampleBrightness?.(true);
       } finally {
         this.windowWrite = undefined;
       }
     });
   }
 
-  private async readBrightness(target: window.Window): Promise<number> {
+  private async readBrightness(win: window.Window): Promise<number> {
     this.assertActive();
 
-    const initial: number = target.getWindowProperties().brightness;
+    const shared = usesSharedBrightness();
+    const initial = shared ? FOLLOW_SYSTEM : win.getWindowProperties().brightness;
     if (initial !== FOLLOW_SYSTEM) return requireBrightness(initial);
 
-    const system: number = await this.readSystemBrightness();
+    const current = readDisplayBrightness();
+    if (current !== undefined) return current;
+
+    const system = await this.readSystemBrightness();
 
     // Another owner can change the window while the settings query is pending.
-    const latest: number = target.getWindowProperties().brightness;
+    const latest = shared ? FOLLOW_SYSTEM : win.getWindowProperties().brightness;
     return latest === FOLLOW_SYSTEM ? system : requireBrightness(latest);
   }
 
@@ -176,38 +191,43 @@ export class ExpoBrightnessModule extends ExpoModule {
 
     this.assertActive();
 
-    if (setting === String(settings.display.AUTO_SCREEN_BRIGHTNESS_MODE)) return BrightnessMode.AUTOMATIC;
-    if (setting === String(settings.display.MANUAL_SCREEN_BRIGHTNESS_MODE)) return BrightnessMode.MANUAL;
+    const value = typeof setting === 'string' ? setting.trim() : '';
+    if (value === String(settings.display.AUTO_SCREEN_BRIGHTNESS_MODE)) return BrightnessMode.AUTOMATIC;
+    if (value === String(settings.display.MANUAL_SCREEN_BRIGHTNESS_MODE)) return BrightnessMode.MANUAL;
+
     return BrightnessMode.UNKNOWN;
   }
 
   private startObserving(): void {
-    if (this.destroyed || this.context.isHeadless || this.observer || !canIUse(DISPLAY_CAPABILITY)) return;
-    if (deviceInfo.sdkApiVersion < BRIGHTNESS_OBSERVATION_API) return;
+    if (!this.isWindowBrightnessAvailable() || this.sampleBrightness !== undefined) return;
 
     let previous: number | undefined;
     let sampling = false;
-    let resample = false;
+    let notify = false;
+
     const sample = (emit: boolean): void => {
-      if (sampling) {
-        resample = true;
-        return;
-      }
+      notify = notify || emit;
+      if (sampling) return;
 
       sampling = true;
+      const emitting = notify;
+      notify = false;
+
       this.getBrightness().then((brightness: number): void => {
-        if (this.observer !== observer || brightness === previous) return;
+        if (this.sampleBrightness !== sample || brightness === previous) return;
 
         previous = brightness;
-        if (emit) this.sendEvent(CHANGE_EVENT, new BrightnessEvent(brightness));
+        if (emitting || notify) this.sendEvent(CHANGE_EVENT, new BrightnessEvent(brightness));
       }).catch((): void => {}).finally((): void => {
         sampling = false;
-        if (!resample || this.observer !== observer) return;
-
-        resample = false;
-        sample(true);
+        if (notify && this.sampleBrightness === sample) sample(true);
       });
     };
+
+    this.sampleBrightness = sample;
+    sample(false);
+
+    if (deviceInfo.sdkApiVersion < BRIGHTNESS_OBSERVATION_API || !canIUse(DISPLAY_CAPABILITY)) return;
 
     const observer = (id: number, _info: display.BrightnessInfo): void => {
       if (this.observer !== observer) return;
@@ -220,13 +240,14 @@ export class ExpoBrightnessModule extends ExpoModule {
     try {
       display.on('brightnessInfoChange', observer);
       this.observer = observer;
-      sample(false);
     } catch (_) {
       // A device can expose DisplayManager without supporting brightness observations.
     }
   }
 
   private stopObserving(): void {
+    this.sampleBrightness = undefined;
+
     const observer = this.observer;
     this.observer = undefined;
     if (observer === undefined || deviceInfo.sdkApiVersion < BRIGHTNESS_OBSERVATION_API) return;
@@ -255,6 +276,18 @@ export class ExpoBrightnessModule extends ExpoModule {
       throw new ExpoModuleError('ERR_BRIGHTNESS_DESTROYED', 'The Expo Brightness runtime has already been destroyed.');
     }
   }
+}
+
+function readDisplayBrightness(): number | undefined {
+  if (!canIUse(DISPLAY_CAPABILITY) || typeof deviceInfo.apiAvailable !== 'function') return undefined;
+  if (!deviceInfo.apiAvailable('26.0.0')) return undefined;
+
+  try {
+    const value = display.getBrightnessInfo(display.getDefaultDisplaySync().id).brightnessPosition;
+    if (value !== undefined && Number.isFinite(value) && value >= 0 && value <= 1) return value;
+  } catch (_) {}
+
+  return undefined;
 }
 
 function usesSharedBrightness(): boolean {

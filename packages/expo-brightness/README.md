@@ -27,11 +27,11 @@ npm install @expo-harmony/expo-brightness expo-brightness@~57.0.2
 
 #### `Brightness.getBrightnessAsync()`
 
-返回 `Promise<number>`，当前窗口亮度，范围为 `0` 到 `1`。窗口跟随系统亮度时，读取系统亮度设置并归一化到此范围；开启自动亮度时，返回值可能与屏幕当前的实际亮度不同。
+返回 `Promise<number>`，主窗口亮度，范围为 `0` 到 `1`。主窗口跟随系统亮度时，HarmonyOS API 26.0.0 起优先读取屏幕亮度条的当前位置。若该值不可用，则读取系统亮度设置并归一化。开启自动亮度时，设置值可能与屏幕当前亮度不同。
 
 #### `Brightness.setBrightnessAsync(brightnessValue)`
 
-设置当前窗口亮度并返回 `Promise<void>`。`brightnessValue` 为 `0` 到 `1` 的数值，超出范围时会截断到边界，传入 `NaN` 会抛出 `TypeError`。窗口处于前台且获得焦点时设置才会生效。[窗口亮度文档](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/arkts-apis-window-window)
+设置当前 Ability 的主窗口亮度并返回 `Promise<void>`。`brightnessValue` 为 `0` 到 `1` 的数值，超出范围时会截断到边界，传入 `NaN` 会抛出 `TypeError`。主窗口处于前台且获得焦点时设置才会生效。[窗口亮度文档](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/arkts-apis-window-window)
 
 HarmonyOS 6.1.0 起，手机和平板用户在控制中心调整亮度时，窗口会恢复跟随系统。HarmonyOS 5.0.2 起，PC 和 2in1 设备的窗口亮度与系统亮度同步。
 
@@ -53,7 +53,7 @@ HarmonyOS 6.1.0 起，手机和平板用户在控制中心调整亮度时，窗�
 
 #### `Brightness.isAvailableAsync()`
 
-返回 `Promise<boolean>`，表示当前设备是否支持窗口管理系统能力。
+返回 `Promise<boolean>`，表示当前运行时是否有界面且设备具备窗口管理能力。
 
 #### `Brightness.getSystemBrightnessModeAsync()`
 
@@ -79,7 +79,7 @@ HarmonyOS 6.1.0 起，手机和平板用户在控制中心调整亮度时，窗�
 
 `listener` 接收 `BrightnessEvent`，返回 `EventSubscription`，可调用 `remove()` 取消订阅。
 
-- HarmonyOS 6.0.2（API 22）及以上可以通过系统屏幕亮度事件接收变化，预期受设备能力和默认屏幕事件限制。 [屏幕亮度事件](https://developer.huawei.com/consumer/en/doc/harmonyos-references/js-apis-display/)
+- 本模块修改主窗口亮度时会报告变化。HarmonyOS 6.0.2（API 22）及以上还可监听系统亮度事件，取决于设备能力和默认屏幕。 [屏幕亮度事件](https://developer.huawei.com/consumer/en/doc/harmonyos-references/js-apis-display/)
 
 ### Types
 
