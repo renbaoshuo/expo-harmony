@@ -14,6 +14,7 @@ import {
   ExpoModuleError,
   ExpoValueTypes,
 } from '@expo-harmony/expo-modules-core';
+import { abilityAccessCtrl } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { geoLocationManager } from '@kit.LocationKit';
 import { sensor } from '@kit.SensorServiceKit';
@@ -64,6 +65,7 @@ import {
 
 const RETRY_DELAY_MS: number = 1000;
 const RETRY_LIMIT: number = 3;
+const LOCATION_CORE_CAPABILITY = 'SystemCapability.Location.Location.Core';
 
 class LocationWatch {
   id: number;
@@ -71,6 +73,7 @@ class LocationWatch {
   callback?: (location: geoLocationManager.Location) => void;
   removed: boolean = false;
   active: boolean = false;
+  ready: boolean = false;
 
   constructor(id: number, options: LocationOptions) {
     this.id = id;
@@ -85,17 +88,17 @@ export class ExpoLocationModule extends ExpoModule {
   private readonly watches: Map<number, LocationWatch> = new Map();
   private readonly headings: Set<number> = new Set();
   private headingCallback?: (response: sensor.OrientationResponse) => void;
-  private locationCallback?: (location: geoLocationManager.Location) => void;
   private enabledCallback?: (enabled: boolean) => void;
   private errorCallback?: (error: geoLocationManager.LocationError) => void;
   private headingActive: boolean = false;
-  private locationActive: boolean = false;
   private errorActive: boolean = false;
   private timer: number = -1;
   private attempts: number = 0;
   private failed: boolean = false;
   private declination?: number;
-  private generation: number = 0;
+  private declinationGeneration: number = 0;
+  private declinationPending: boolean = false;
+  private switchRequest?: Promise<boolean>;
 
   constructor(context: ExpoModuleContext) {
     super(context);
@@ -119,7 +122,6 @@ export class ExpoLocationModule extends ExpoModule {
         'watchMotionActivityImplAsync',
         ExpoFunction.typed1(WATCH_ID, async (_id: number): Promise<void> => {
           this.ensureActive();
-          // Public HarmonyOS APIs do not provide Expo's six activity classes.
           throw new ExpoModuleError('ERR_MOTION_ACTIVITY_UNAVAILABLE', 'Motion activity recognition is not available on HarmonyOS.');
         }),
       )
@@ -147,7 +149,7 @@ export class ExpoLocationModule extends ExpoModule {
         ExpoFunction.typed2(
           WATCH_ID,
           LOCATION_OPTIONS.defaulted(new LocationOptions()),
-          async (id: number, options: LocationOptions): Promise<void> => this.watchPosition(id, options),
+          async (id: number, options: LocationOptions): Promise<void> => await this.watchPosition(id, options),
         ),
       )
       .asyncFunction(
@@ -234,7 +236,7 @@ export class ExpoLocationModule extends ExpoModule {
 
   private async backgroundPermission(request: boolean): Promise<PermissionResponse> {
     this.ensureActive();
-    if (!this.taskAvailable(BACKGROUND_TASK_TYPE) && !this.taskAvailable(GEOFENCE_TASK_TYPE)) {
+    if (!this.permissions.hasBackgroundDeclaration()) {
       return new PermissionResponse('denied', false);
     }
 
@@ -253,7 +255,7 @@ export class ExpoLocationModule extends ExpoModule {
 
   private servicesEnabled(logFailure: boolean = true): boolean {
     this.ensureActive();
-    if (!canIUse('SystemCapability.Location.Location.Core')) return false;
+    if (!canIUse(LOCATION_CORE_CAPABILITY)) return false;
 
     try {
       return geoLocationManager.isLocationEnabled();
@@ -276,8 +278,29 @@ export class ExpoLocationModule extends ExpoModule {
     }
   }
 
-  private async currentPosition(options: LocationOptions): Promise<LocationRecord> {
+  private async ensureLocationForRequest(options: LocationOptions): Promise<void> {
+    this.ensureForegroundPermission();
+    if (this.servicesEnabled()) return;
+
+    if (options.mayShowUserSettingsDialog && this.foreground && !this.context.isHeadless && canIUse(LOCATION_CORE_CAPABILITY)) {
+      try {
+        if (this.switchRequest === undefined) {
+          this.switchRequest = abilityAccessCtrl.createAtManager().requestGlobalSwitch(
+            this.context.uiAbilityContext, abilityAccessCtrl.SwitchType.LOCATION,
+          ).finally((): void => { this.switchRequest = undefined; });
+        }
+
+        await this.switchRequest;
+      } catch (error) {
+        this.warn(`Unable to request the location switch: ${message(error)}`);
+      }
+    }
+
     this.ensureLocation();
+  }
+
+  private async currentPosition(options: LocationOptions): Promise<LocationRecord> {
+    await this.ensureLocationForRequest(options);
 
     const cached = new LastKnownOptions();
     cached.maxAge = options.interval();
@@ -333,8 +356,8 @@ export class ExpoLocationModule extends ExpoModule {
     }
   }
 
-  private watchPosition(id: number, options: LocationOptions): void {
-    this.ensureLocation();
+  private async watchPosition(id: number, options: LocationOptions): Promise<void> {
+    this.ensureActive();
 
     this.removeWatch(id);
     if (this.watches.has(id)) {
@@ -343,11 +366,17 @@ export class ExpoLocationModule extends ExpoModule {
 
     const watch = new LocationWatch(id, options);
     this.watches.set(id, watch);
-    this.startAvailabilityObservers();
 
     try {
+      await this.ensureLocationForRequest(options);
+      if (watch.removed) return;
+
+      watch.ready = true;
+      this.startAvailabilityObservers();
       if (this.foreground) this.startWatch(watch);
     } catch (error) {
+      if (watch.removed) return;
+
       watch.removed = true;
       this.cleanup((): void => this.stopWatch(watch));
       this.cleanup((): void => this.stopErrorObserverIfIdle());
@@ -358,7 +387,7 @@ export class ExpoLocationModule extends ExpoModule {
   }
 
   private startWatch(watch: LocationWatch): void {
-    if (watch.active || watch.removed || this.destroyed || !this.foreground) return;
+    if (!watch.ready || watch.active || watch.removed || this.destroyed || !this.foreground) return;
 
     if (watch.callback !== undefined) this.stopWatch(watch);
     this.ensureLocation();
@@ -432,11 +461,11 @@ export class ExpoLocationModule extends ExpoModule {
     this.ensureForegroundPermission();
 
     if (this.headingActive) {
-      this.startHeadingLocation();
+      this.updateDeclination();
       return;
     }
 
-    if (this.headingCallback !== undefined || this.locationCallback !== undefined) this.stopHeading();
+    if (this.headingCallback !== undefined) this.stopHeading();
     if (!canIUse('SystemCapability.Sensors.Sensor')) {
       throw new ExpoModuleError('ERR_LOCATION_HEADING', 'Orientation sensors are unavailable on this device.');
     }
@@ -460,92 +489,57 @@ export class ExpoLocationModule extends ExpoModule {
 
     this.headingCallback = callback;
     this.headingActive = true;
-    this.startHeadingLocation();
+    this.updateDeclination();
   }
 
-  private startHeadingLocation(): void {
+  private async updateDeclination(): Promise<void> {
+    if (this.declination !== undefined || this.declinationPending || !this.servicesEnabled(false)) return;
+
+    this.declinationPending = true;
+    const generation = ++this.declinationGeneration;
+
     try {
-      if (this.locationActive || !this.permissions.hasForeground() || !this.servicesEnabled()) return;
-
-      if (this.locationCallback !== undefined) this.stopHeadingLocation();
-
-      const callback = (location: geoLocationManager.Location): void => {
-        if (this.destroyed || !this.foreground || !this.locationActive || this.locationCallback !== callback) return;
-        this.updateDeclination(location, callback);
-      };
-
-      this.startErrorObserver();
-
-      const options = new LocationOptions();
-      options.distanceInterval = 0;
-
-      geoLocationManager.on('locationChange', locationRequest(options), callback);
-
-      this.locationCallback = callback;
-      this.locationActive = true;
-
+      let location: geoLocationManager.Location;
       try {
-        this.updateDeclination(geoLocationManager.getLastLocation(), callback);
+        location = geoLocationManager.getLastLocation();
       } catch (error) {
-        if (Number((error as BusinessError).code) !== LocationErrorCode.NoLocation) {
-          this.warn(`Unable to read the compass location: ${message(error)}`);
-        }
-      }
-    } catch (error) {
-      this.warn(`Unable to obtain true north: ${message(error)}`);
+        if (Number((error as BusinessError).code) !== LocationErrorCode.NoLocation) throw new ExpoLocationError(error);
 
-      this.cleanup((): void => this.stopHeadingLocation());
-      this.cleanup((): void => this.stopErrorObserverIfIdle());
-
-      this.failed = true;
-      this.scheduleRetry();
-    }
-  }
-
-  private async updateDeclination(location: geoLocationManager.Location, callback: (location: geoLocationManager.Location) => void): Promise<void> {
-    const generation = ++this.generation;
-
-    try {
-      if (!validCoordinate(location.latitude, location.longitude) || finiteOrNull(location.altitude) === null) {
-        this.declination = undefined;
-        return;
+        location = await geoLocationManager.getCurrentLocation({
+          locatingPriority: geoLocationManager.LocatingPriority.PRIORITY_LOCATING_SPEED,
+          locatingTimeoutMs: LOCATION_TIMEOUT_MS,
+        });
       }
 
-      const coordinate: sensor.LocationOptions = { latitude: location.latitude, longitude: location.longitude, altitude: location.altitude };
+      if (generation !== this.declinationGeneration || !validCoordinate(location.latitude, location.longitude)) return;
+
+      const coordinate: sensor.LocationOptions = {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        altitude: finiteOrNull(location.altitude) ?? 0,
+      };
       const info = await sensor.getGeomagneticInfo(coordinate, Date.now());
 
-      if (this.destroyed || !this.foreground || !this.locationActive || this.locationCallback !== callback || generation !== this.generation) return;
-
-      this.declination = finiteOrNull(info.deflectionAngle) ?? undefined;
+      if (generation === this.declinationGeneration) this.declination = finiteOrNull(info.deflectionAngle) ?? undefined;
     } catch (error) {
-      if (generation !== this.generation) return;
-
-      this.declination = undefined;
-      if (!this.destroyed) this.warn(`Unable to calculate true north: ${message(error)}`);
+      if (generation === this.declinationGeneration) this.warn(`Unable to calculate true north: ${message(error)}`);
+    } finally {
+      if (generation === this.declinationGeneration) this.declinationPending = false;
     }
   }
 
-  private stopHeadingLocation(): void {
-    this.locationActive = false;
+  private resetDeclination(): void {
     this.declination = undefined;
-    this.generation += 1;
-
-    if (this.locationCallback !== undefined) {
-      geoLocationManager.off('locationChange', this.locationCallback);
-      this.locationCallback = undefined;
-    }
+    this.declinationPending = false;
+    this.declinationGeneration += 1;
   }
 
   private stopHeading(): void {
     this.headingActive = false;
-
-    try {
-      if (this.headingCallback !== undefined) {
-        sensor.off(sensor.SensorId.ORIENTATION, this.headingCallback);
-        this.headingCallback = undefined;
-      }
-    } finally {
-      this.stopHeadingLocation();
+    this.resetDeclination();
+    if (this.headingCallback !== undefined) {
+      sensor.off(sensor.SensorId.ORIENTATION, this.headingCallback);
+      this.headingCallback = undefined;
     }
   }
 
@@ -569,9 +563,6 @@ export class ExpoLocationModule extends ExpoModule {
       } catch (failure) {
         this.warn(`Unable to report a location service error: ${message(failure)}`);
       } finally {
-        this.declination = undefined;
-        this.generation += 1;
-
         if (error === geoLocationManager.LocationError.LOCATING_FAILED_LOCATION_PERMISSION_DENIED) {
           this.pauseLocationSources();
         } else if (error === geoLocationManager.LocationError.LOCATING_FAILED_LOCATION_SWITCH_OFF) {
@@ -599,8 +590,6 @@ export class ExpoLocationModule extends ExpoModule {
   }
 
   private stopErrorObserverIfIdle(): void {
-    if (this.locationCallback !== undefined) return;
-
     for (const watch of this.watches.values()) {
       if (watch.callback !== undefined) return;
     }
@@ -677,7 +666,7 @@ export class ExpoLocationModule extends ExpoModule {
 
     // Suspended subscriptions still need observers to detect permission/service recovery.
     try {
-      if (this.enabledCallback === undefined && canIUse('SystemCapability.Location.Location.Core')) {
+      if (this.enabledCallback === undefined && canIUse(LOCATION_CORE_CAPABILITY)) {
         const callback = (_enabled: boolean): void => {
           if (this.enabledCallback === callback) this.availabilityChanged();
         };
@@ -743,7 +732,7 @@ export class ExpoLocationModule extends ExpoModule {
       if (active && !watch.removed && reason !== undefined) this.emitError(watch.id, reason);
     });
 
-    this.cleanup((): void => this.stopHeadingLocation());
+    this.resetDeclination();
     this.cleanup((): void => this.stopErrorObserverIfIdle());
     this.cleanup((): void => this.stopAvailabilityObserversIfIdle());
   }
@@ -836,11 +825,6 @@ export class ExpoLocationModule extends ExpoModule {
           this.stopHeading();
           if (this.foreground && !this.destroyed) this.startHeading();
         });
-      } else if (!this.locationActive) {
-        this.cleanup((): void => {
-          this.stopHeadingLocation();
-          this.startHeadingLocation();
-        });
       }
 
       this.cleanup((): void => this.stopErrorObserverIfIdle());
@@ -857,6 +841,7 @@ export class ExpoLocationModule extends ExpoModule {
     this.destroyed = true;
     this.foreground = false;
     this.failed = false;
+    geofencingConsumer.detach(this.context);
 
     if (this.timer >= 0) {
       clearTimeout(this.timer);
@@ -910,7 +895,9 @@ export class ExpoLocationModule extends ExpoModule {
     } else {
       validateBackgroundOptions(options);
     }
-    await ExpoTaskManagerRegistry.registerTask(this.context, name, taskType, options);
+    const restartCancelled = !geofencing && await backgroundLocationConsumer.wasCancelled(this.context.uiAbilityContext, name);
+    this.ensureActive();
+    await ExpoTaskManagerRegistry.registerTask(this.context, name, taskType, options, restartCancelled);
   }
 
   private async stopTask(name: string, taskType: string): Promise<void> {

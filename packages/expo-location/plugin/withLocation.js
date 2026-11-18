@@ -31,17 +31,20 @@ const withLocation = (config, {
   config = withModuleJson(config, (mod) => {
     const manifest = mod.modResults;
     const ability = HarmonyManifest.getMainAbilityOrThrow(manifest);
-    const permissions = [{
-      name: 'ohos.permission.LOCATION_IN_BACKGROUND',
-      reason: '$string:expo_location_background_permission_reason',
-      usedScene: { abilities: [ability.name], when: 'always' },
-    }];
+    const permissions = [];
+
     if (background) {
       permissions.push({ name: 'ohos.permission.KEEP_BACKGROUND_RUNNING' });
       ability.backgroundModes = [...new Set([...(ability.backgroundModes ?? []), 'location'])];
       HarmonyManifest.setMetadata(ability, { name: 'expo.location.background', value: 'true' });
     }
+
     if (geofencing) {
+      permissions.push({
+        name: 'ohos.permission.LOCATION_IN_BACKGROUND',
+        reason: '$string:expo_location_background_permission_reason',
+        usedScene: { abilities: [ability.name], when: 'always' },
+      });
       HarmonyManifest.ensureExtensionAbility(manifest, {
         name: fenceName,
         srcEntry: fenceSource,
@@ -49,6 +52,7 @@ const withLocation = (config, {
         exported: false,
       });
     }
+
     HarmonyPermissions.ensurePermissions(manifest, permissions);
 
     return mod;

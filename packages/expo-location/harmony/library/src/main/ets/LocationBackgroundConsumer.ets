@@ -26,8 +26,9 @@ const MAXIMUM_BATCH_SIZE: number = 100;
 const LOCATION_NOTIFICATION_REQUEST_CODE: number = 24_005_701;
 const BACKGROUND_PREFERENCES: string = 'ExpoLocationBackground';
 const CANCELLED_TASKS_KEY: string = 'cancelledTasks';
-const BACKGROUND_LOCATION_PERMISSIONS: Permissions[] = ['ohos.permission.APPROXIMATELY_LOCATION', 'ohos.permission.LOCATION_IN_BACKGROUND'];
+const BACKGROUND_LOCATION_PERMISSIONS: Permissions[] = ['ohos.permission.APPROXIMATELY_LOCATION'];
 const MAX_TIMEOUT_MS: number = 2_147_483_647;
+const NANOSECONDS_PER_MILLISECOND: number = 1_000_000;
 
 class CancelledTask {
   name: string;
@@ -76,7 +77,7 @@ class BackgroundWatch {
   private attached: boolean = false;
   private pending: LocationRecord[] = [];
   private previous?: geoLocationManager.Location;
-  private batchStart?: number;
+  private batchStart?: geoLocationManager.Location;
   private distance: number = 0;
   private timer: number = -1;
   private delivering: boolean = false;
@@ -117,15 +118,16 @@ class BackgroundWatch {
     try {
       const location = new LocationRecord(value);
       const previous = this.previous;
-      if (previous !== undefined && value.timeStamp === previous.timeStamp &&
-        (value.timeSinceBoot === previous.timeSinceBoot || value.timeSinceBoot <= 0 || previous.timeSinceBoot <= 0)) return;
+      if (previous !== undefined && (previous.timeSinceBoot > 0 && value.timeSinceBoot > 0
+        ? value.timeSinceBoot <= previous.timeSinceBoot : value.timeStamp === previous.timeStamp)) return;
 
       if (this.options.distance > 0 && previous !== undefined) {
         this.distance += geoLocationManager.getDistanceBetweenLocations(previous, value);
       }
 
-      this.batchStart = this.batchStart ?? value.timeStamp;
+      this.batchStart = this.batchStart ?? value;
       this.previous = value;
+
       if (this.pending.length >= MAXIMUM_BATCH_SIZE) this.pending.shift();
       this.pending.push(location);
 
@@ -136,6 +138,7 @@ class BackgroundWatch {
           this.flush();
         }, Math.min(this.options.timeout, MAX_TIMEOUT_MS));
       }
+
       this.flush();
     } catch (error) {
       console.warn(`Unable to read Expo background location: ${message(error)}`);
@@ -148,14 +151,18 @@ class BackgroundWatch {
     const current = this.previous;
     if (current === undefined) return;
 
-    const last = current.timeStamp;
+    const first = this.batchStart ?? current;
+    const elapsed = first.timeSinceBoot > 0 && current.timeSinceBoot > 0
+      ? (current.timeSinceBoot - first.timeSinceBoot) / NANOSECONDS_PER_MILLISECOND
+      : current.timeStamp - first.timeStamp;
+
     if (!this.forcePending && this.shouldDefer() && this.pending.length < MAXIMUM_BATCH_SIZE &&
-      (last - (this.batchStart ?? last) < this.options.interval || this.distance < this.options.distance)) return;
+      (elapsed < this.options.interval || this.distance < this.options.distance)) return;
 
     const locations = this.pending;
     this.pending = [];
     this.forcePending = false;
-    this.batchStart = last;
+    this.batchStart = current;
     this.distance = 0;
     if (this.timer >= 0) clearTimeout(this.timer);
     this.timer = -1;
@@ -212,6 +219,15 @@ export class LocationBackgroundConsumer implements ExpoTaskConsumer {
     return hasLocationTaskPermission(context);
   }
 
+  async wasCancelled(ability: common.UIAbilityContext, name: string): Promise<boolean> {
+    let cancelled = false;
+    await this.serialize(async (): Promise<void> => {
+      await this.loadCancelled(ability);
+      cancelled = this.cancelled.has(name);
+    });
+    return cancelled;
+  }
+
   async onTasksChanged(context: ExpoModuleContext, tasks: ExpoTaskRecord[]): Promise<void> {
     await this.serialize(async (): Promise<void> => {
       const current = context.isHeadless ? this.context : context;
@@ -259,15 +275,17 @@ export class LocationBackgroundConsumer implements ExpoTaskConsumer {
       }
 
       this.releaseRetiredWatches();
+
       for (const watch of this.watches.values()) {
         if (active.some((task: ExpoTaskRecord): boolean =>
           task.taskName === watch.task.taskName && task.registrationGeneration === watch.task.registrationGeneration)) continue;
         this.removeWatch(watch);
       }
+
       for (const task of active) {
-        const existing = this.watches.get(task.taskName);
-        if (existing !== undefined) {
-          existing.flush();
+        const running = this.watches.get(task.taskName);
+        if (running !== undefined) {
+          running.flush();
           continue;
         }
 
@@ -281,6 +299,7 @@ export class LocationBackgroundConsumer implements ExpoTaskConsumer {
           (): boolean => this.context?.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND,
         );
         this.watches.set(task.taskName, watch);
+
         try {
           watch.start();
         } catch (error) {
@@ -288,6 +307,13 @@ export class LocationBackgroundConsumer implements ExpoTaskConsumer {
           throw new ExpoModuleError('ERR_LOCATION_BACKGROUND_UNAVAILABLE', message(error), error);
         }
       }
+
+      // Keep suppression until activation succeeds in case TaskManager rolls the registration back.
+      let restarted = false;
+      for (const task of active) {
+        if (this.cancelled.delete(task.taskName)) restarted = true;
+      }
+      if (restarted) await this.persistCancelled().catch(reportBackgroundFailure);
     });
   }
 
@@ -307,9 +333,9 @@ export class LocationBackgroundConsumer implements ExpoTaskConsumer {
 
   destroyAbility(ability: common.UIAbilityContext): void {
     this.serialize(async (): Promise<void> => {
+      if (this.context?.uiAbilityContext === ability) this.context = undefined;
       if (this.ability !== ability) return;
 
-      this.context = undefined;
       await this.release();
     }).catch(reportBackgroundFailure);
   }

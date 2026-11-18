@@ -28,11 +28,11 @@ export class PendingFenceTransition implements geoLocationManager.GeofenceTransi
   generation: number;
   receivedAt: number;
 
-  constructor(transition: geoLocationManager.GeofenceTransition, generation: number) {
+  constructor(transition: geoLocationManager.GeofenceTransition, generation: number, receivedAt: number) {
     this.geofenceId = transition.geofenceId;
     this.transitionEvent = transition.transitionEvent;
     this.generation = generation;
-    this.receivedAt = Date.now();
+    this.receivedAt = receivedAt;
   }
 }
 
@@ -55,14 +55,15 @@ async function pendingTransitions(store: preferences.Preferences): Promise<Pendi
   if (typeof raw !== 'string') return [];
 
   try {
-    const values: ESObject = JSON.parse(raw);
-    if (!Array.isArray(values)) return [];
+    const items: ESObject = JSON.parse(raw);
+    if (!Array.isArray(items)) return [];
 
     const now = Date.now();
-    return (values as PendingFenceTransition[]).filter((item: PendingFenceTransition): boolean =>
+
+    return (items as PendingFenceTransition[]).filter((item: PendingFenceTransition): boolean =>
       item !== null && Number.isSafeInteger(item.geofenceId) && Number.isSafeInteger(item.generation) && item.generation > 0 &&
       Number.isFinite(item.receivedAt) && item.receivedAt <= now && item.receivedAt + GEOFENCE_EVENT_EXPIRY_MS > now,
-    );
+    ).sort((first: PendingFenceTransition, second: PendingFenceTransition): number => first.receivedAt - second.receivedAt);
   } catch (_) {
     return [];
   }
@@ -91,6 +92,7 @@ export async function acknowledgeGeofenceTransitions(context: common.Context, ha
     } else {
       await store.put(PENDING_TRANSITIONS_KEY, JSON.stringify(pending));
     }
+
     await store.flush();
   });
 }
@@ -98,13 +100,26 @@ export async function acknowledgeGeofenceTransitions(context: common.Context, ha
 // Imported directly by the generated FenceExtensionAbility. This entry may
 // load only APIs that HarmonyOS allows inside that extension.
 export function deliverExpoGeofenceEvent(context: common.ExtensionContext, transition: geoLocationManager.GeofenceTransition): void {
+  saveGeofenceTransition(context, transition, Date.now())
+    .catch((error: Object): void => console.warn(`Unable to save Expo geofence transition: ${String(error)}`));
+}
+
+export async function saveGeofenceTransition(
+  context: common.Context,
+  transition: geoLocationManager.GeofenceTransition,
+  receivedAt: number,
+  generation?: number,
+): Promise<void> {
   if (transition.transitionEvent !== geoLocationManager.GeofenceTransitionEvent.GEOFENCE_TRANSITION_EVENT_ENTER &&
     transition.transitionEvent !== geoLocationManager.GeofenceTransitionEvent.GEOFENCE_TRANSITION_EVENT_EXIT) return;
 
-  withGeofenceStore(context, async (store: preferences.Preferences): Promise<void> => {
+  await withGeofenceStore(context, async (store: preferences.Preferences): Promise<void> => {
+    if (receivedAt + GEOFENCE_EVENT_EXPIRY_MS <= Date.now()) return;
+
     const token = context.applicationInfo.accessTokenId;
     const permissions = abilityAccessCtrl.createAtManager();
     const granted = abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED;
+
     if (permissions.checkAccessTokenSync(token, 'ohos.permission.APPROXIMATELY_LOCATION') !== granted ||
       permissions.checkAccessTokenSync(token, 'ohos.permission.LOCATION') !== granted ||
       permissions.checkAccessTokenSync(token, 'ohos.permission.LOCATION_IN_BACKGROUND') !== granted) return;
@@ -117,13 +132,14 @@ export function deliverExpoGeofenceEvent(context: common.ExtensionContext, trans
 
     const fence = (fences as FenceIdentity[]).find((item: FenceIdentity): boolean =>
       item !== null && item.id === transition.geofenceId && item.owner === context.applicationInfo.name &&
-      Number.isSafeInteger(item.generation) && item.generation > 0,
+      Number.isSafeInteger(item.generation) && item.generation > 0 && (generation === undefined || item.generation === generation),
     );
     if (fence === undefined) return;
 
     const pending = await pendingTransitions(store);
-    pending.push(new PendingFenceTransition(transition, fence.generation));
+    pending.push(new PendingFenceTransition(transition, fence.generation, receivedAt));
+
     await store.put(PENDING_TRANSITIONS_KEY, JSON.stringify(pending.slice(-MAX_PENDING_TRANSITIONS)));
     await store.flush();
-  }).catch((error: Object): void => console.warn(`Unable to save Expo geofence transition: ${String(error)}`));
+  });
 }

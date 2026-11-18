@@ -66,17 +66,19 @@ export function hasGeofenceConfiguration(context: common.UIAbilityContext): bool
   }
 }
 
-export function hasLocationTaskPermission(context: ExpoModuleContext, precise: boolean = false): boolean {
+export function hasLocationTaskPermission(context: ExpoModuleContext, geofencing: boolean = false): boolean {
+  // Only FenceExtensionAbility needs an extra background grant to wake the app.
   return context.permissionStatus('ohos.permission.APPROXIMATELY_LOCATION') === ExpoPermissionStatus.GRANTED &&
-    (!precise || context.permissionStatus('ohos.permission.LOCATION') === ExpoPermissionStatus.GRANTED) &&
-    context.permissionStatus('ohos.permission.LOCATION_IN_BACKGROUND') === ExpoPermissionStatus.GRANTED;
+    (!geofencing ||
+      (context.permissionStatus('ohos.permission.LOCATION') === ExpoPermissionStatus.GRANTED &&
+        context.permissionStatus('ohos.permission.LOCATION_IN_BACKGROUND') === ExpoPermissionStatus.GRANTED));
 }
 
-export function requireLocationTaskPermission(context: ExpoModuleContext, precise: boolean): void {
-  if (!hasLocationTaskPermission(context, precise)) {
+export function requireLocationTaskPermission(context: ExpoModuleContext, geofencing: boolean): void {
+  if (!hasLocationTaskPermission(context, geofencing)) {
     throw new ExpoModuleError(
       'ERR_LOCATION_BACKGROUND_UNAUTHORIZED',
-      precise ? 'Grant precise location and choose Always allow in system settings.' : 'Grant foreground location and choose Always allow in system settings.',
+      geofencing ? 'Grant precise location and choose Always allow in system settings.' : 'Grant foreground location.',
     );
   }
 }

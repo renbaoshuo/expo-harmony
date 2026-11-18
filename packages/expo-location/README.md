@@ -34,7 +34,7 @@ npm install @expo-harmony/expo-location expo-location@~57.0.22
 }
 ```
 
-应用应先取得前台定位权限，再说明后台用途并引导用户在系统设置中选择“始终允许”。地理围栏还需要精确定位。
+后台连续定位使用系统显示通知的持续任务，取得前台定位权限后即可启动。地理围栏需要精确定位和后台定位权限，请说明用途并引导用户在系统设置中选择“始终允许”。[华为持续任务与定位权限说明](https://developer.huawei.com/consumer/en/doc/HarmonyOS-Guides/permissions-for-all-user/)
 
 ## API 对照表
 
@@ -46,7 +46,7 @@ npm install @expo-harmony/expo-location expo-location@~57.0.22
 
 #### `Location.useBackgroundPermissions(options?)`
 
-返回后台定位权限响应、申请函数和读取函数。`permissionResponse` 初次读取完成前为 `null`；`options` 类型为 `PermissionHookOptions`。后台能力未启用或未获得“始终允许”权限时，响应为 `denied`。
+返回后台定位权限响应、申请函数和读取函数。`permissionResponse` 初次读取完成前为 `null`；`options` 类型为 `PermissionHookOptions`。后台定位权限未声明或未获得“始终允许”时，响应为 `denied`。
 
 #### `Location.useMotionActivityPermissions(options?)`
 
@@ -126,7 +126,7 @@ npm install @expo-harmony/expo-location expo-location@~57.0.22
 
 返回 `Promise<void>`，注册后台位置更新任务；任务收到 `{ locations }`，其中 `locations` 是位置对象数组。`options` 类型为 `LocationTaskOptions`，省略时使用 `accuracy: Balanced`。
 
-要求后台定位能力已启用，HarmonyOS SDK API 21 及以上且设备支持持续定位；启动时应用须在前台，并已授予前台定位和“始终允许”权限。运行时系统显示持续任务通知；用户从通知停止任务后，更新会停止，再次启动可恢复。应用进程终止时当前持续任务停止，应用重新打开后仍有效的任务注册可恢复。
+要求后台定位能力已启用，HarmonyOS SDK API 21 及以上且设备支持持续定位；启动时应用须在前台，并已取得前台定位权限。运行时系统显示持续任务通知；用户从通知停止任务后，更新会停止，再次启动可恢复。应用进程终止时当前持续任务停止，应用重新打开后仍有效的任务注册可恢复。
 
 后台更新可用 `deferredUpdatesDistance`、`deferredUpdatesInterval` 和 `deferredUpdatesTimeout` 延后或批量投递。停止应用进程不会清除任务注册。能力未启用或设备不支持时抛出 `ERR_LOCATION_BACKGROUND_UNAVAILABLE`；权限不足时抛出 `ERR_LOCATION_BACKGROUND_UNAUTHORIZED`。
 
@@ -142,7 +142,7 @@ npm install @expo-harmony/expo-location expo-location@~57.0.22
 
 返回 `Promise<void>`，为指定任务注册圆形 GNSS 地理围栏。设备进入或离开围栏时，任务收到 `{ eventType, region }`；`eventType` 和 `region.state` 的值见对应枚举。`regions` 类型为 `LocationRegion[]`，不能为空。
 
-要求地理围栏能力已启用，HarmonyOS SDK API 23 及以上、设备支持 WGS-84 GNSS 围栏，并已授予前台、精确和“始终允许”定位权限。系统最多支持每个应用 100 个围栏；单个围栏有效期为一年，应用重新打开后会恢复已注册围栏。应用进程退出时发生的事件会在应用回到前台时投递，且只保留仍在一分钟有效期内的事件。能力未启用或设备不支持时抛出 `ERR_LOCATION_GEOFENCING_UNAVAILABLE`；权限不足时抛出 `ERR_LOCATION_BACKGROUND_UNAUTHORIZED`。
+要求地理围栏能力已启用，HarmonyOS SDK API 23 及以上、设备支持 WGS-84 GNSS 围栏，并已授予前台、精确和“始终允许”定位权限。系统最多支持每个应用 100 个围栏；单个围栏有效期为一年，应用重新打开后会恢复已注册围栏。应用进程退出或正在重建 React Native 运行时时收到的事件会在有可用运行时后投递，且只保留仍在一分钟有效期内的事件。能力未启用或设备不支持时抛出 `ERR_LOCATION_GEOFENCING_UNAVAILABLE`；权限不足时抛出 `ERR_LOCATION_BACKGROUND_UNAUTHORIZED`。
 
 #### `Location.stopGeofencingAsync(taskName)`
 
@@ -235,7 +235,7 @@ npm install @expo-harmony/expo-location expo-location@~57.0.22
 | `distanceInterval` | `number` | 最小更新距离，米 |
 | `mayShowUserSettingsDialog` | `boolean` | 是否显示定位设置弹窗 |
 
-- HarmonyOS 没有对应的系统设置弹窗，传入 `mayShowUserSettingsDialog` 不生效。
+- 前台调用单次定位或开始位置订阅时，定位总开关关闭且 `mayShowUserSettingsDialog` 为 `true`（默认值）时可显示系统提示。用户取消后，调用会以 `ERR_LOCATION_SETTINGS_UNSATISFIED` 拒绝。[华为定位服务指南](https://developer.huawei.com/consumer/en/doc/harmonyos-guides/location-guidelines/)
 
 `timeInterval` 和 `distanceInterval` 省略时按精度使用下表默认值。时间间隔传给系统时按秒向上取整。
 
@@ -486,11 +486,11 @@ HarmonyOS SDK API 20 及以上可直接读取系统权限状态；API 13–19 �
 
 #### `Location.getBackgroundPermissionsAsync()`
 
-返回 `Promise<PermissionResponse>`。只有前台定位和 HarmonyOS“始终允许”后台定位权限均已授权，且后台能力已启用时才返回 `granted`；否则返回 `denied`。`expires` 始终为 `'never'`。
+返回 `Promise<PermissionResponse>`。只有前台定位和 HarmonyOS“始终允许”后台定位权限均已授权，且应用已声明后台定位权限时才返回 `granted`；否则返回 `denied`。`expires` 始终为 `'never'`。
 
 #### `Location.requestBackgroundPermissionsAsync()`
 
-返回 `Promise<PermissionResponse>`。已启用后台定位或地理围栏时，会打开系统权限设置。同一时刻的重复申请共用一次设置交互；打开应用详情页时，响应反映当前权限，应用回到前台后可用 `getBackgroundPermissionsAsync()` 读取用户的选择。
+返回 `Promise<PermissionResponse>`。应用已声明后台定位权限且已有前台定位权限时，会打开应用详情页。同一时刻的重复申请共用一次设置交互；打开应用详情页时，响应反映当前权限，应用回到前台后可用 `getBackgroundPermissionsAsync()` 读取用户的选择。
 
 #### `Location.getMotionActivityPermissionsAsync()`
 

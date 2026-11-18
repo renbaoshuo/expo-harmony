@@ -6,9 +6,9 @@
  */
 
 import { ExpoRuntimePermissionsKey, ExpoModuleContext, ExpoModuleError, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
-import { abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
+import { abilityAccessCtrl, bundleManager, Permissions } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
-import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 
 const APPROXIMATE_PERMISSION: Permissions = 'ohos.permission.APPROXIMATELY_LOCATION';
 const PRECISE_PERMISSION: Permissions = 'ohos.permission.LOCATION';
@@ -16,11 +16,9 @@ const BACKGROUND_PERMISSION: Permissions = 'ohos.permission.LOCATION_IN_BACKGROU
 const SELF_PERMISSION_STATUS_API: number = 20;
 const REQUEST_ERROR_REASONS_API: number = 18;
 const PERMISSION_CHANGE_API: number = 18;
-const PERMISSION_SETTINGS_API: number = 22;
-const NOT_MANUAL_SETTINGS_PERMISSION: number = 12100014;
 const APP_SETTINGS_ACTION: string = 'action.settings.app.info';
-const PREFERENCES_NAME: string = 'ExpoLocation';
-const DENIED_KEY: string = 'foregroundPermissionDenied';
+const LEGACY_PREFERENCES_NAME: string = 'ExpoLocation';
+const LEGACY_DENIED_KEY: string = 'foregroundPermissionDenied';
 
 enum RequestReason {
   Success = 0,
@@ -47,7 +45,6 @@ export class LocationPermissions {
   private context: ExpoModuleContext;
   private pending?: Promise<PermissionResponse>;
   private backgroundPending?: Promise<PermissionResponse>;
-  private denied?: boolean;
   private observer?: abilityAccessCtrl.AtManager;
   private callback?: (info: abilityAccessCtrl.PermissionStateChangeInfo) => void;
 
@@ -88,43 +85,32 @@ export class LocationPermissions {
   }
 
   async getForeground(): Promise<PermissionResponse> {
-    const system = this.context.systemPermissionStatus(APPROXIMATE_PERMISSION) === ExpoPermissionStatus.GRANTED;
-    if (system && deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API) await this.setDenied(false);
+    const response = this.context.getPermissionResponse(APPROXIMATE_PERMISSION);
+    const granted = response.status === ExpoPermissionStatus.GRANTED;
 
-    const history = deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API ? await this.wasDenied() : undefined;
-    const status = this.context.permissionStatus(APPROXIMATE_PERMISSION, history);
-    if (status === ExpoPermissionStatus.GRANTED) return new PermissionResponse('granted', true);
+    if (deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API &&
+      (granted || response.status === ExpoPermissionStatus.NOT_DETERMINED) &&
+      this.context.services.get(ExpoRuntimePermissionsKey) === undefined &&
+      await this.readLegacyDenial(granted) && !granted) return new PermissionResponse('denied', false);
 
-    const canAsk = status === ExpoPermissionStatus.NOT_DETERMINED;
-    return new PermissionResponse(canAsk ? 'undetermined' : 'denied', canAsk);
+    if (granted) return new PermissionResponse('granted', response.canAskAgain);
+    return new PermissionResponse(response.status === ExpoPermissionStatus.NOT_DETERMINED ? 'undetermined' : 'denied', response.canAskAgain);
   }
 
-  private async wasDenied(): Promise<boolean> {
-    if (this.denied !== undefined) return this.denied;
-
+  private async readLegacyDenial(granted: boolean): Promise<boolean> {
+    // Preserve denials recorded before Expo Modules Core owned permission history.
     try {
-      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: PREFERENCES_NAME });
-      const denied = await store.get(DENIED_KEY, false);
-      this.denied = this.denied ?? denied === true;
+      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: LEGACY_PREFERENCES_NAME });
+      const denied = (await store.get(LEGACY_DENIED_KEY, false)) === true;
+
+      if (denied && granted) {
+        await store.delete(LEGACY_DENIED_KEY);
+        await store.flush();
+      }
+
+      return denied;
     } catch (_) {
-      this.denied = this.denied ?? false;
-    }
-
-    return this.denied;
-  }
-
-  private async setDenied(denied: boolean): Promise<void> {
-    this.denied = denied;
-
-    try {
-      const store = await preferences.getPreferences(this.context.uiAbilityContext, { name: PREFERENCES_NAME });
-      if ((await store.get(DENIED_KEY, false)) === denied) return;
-
-      await store.put(DENIED_KEY, denied);
-      await store.flush();
-    } catch (_) {
-      // History is best effort; storage failures must not override the system permission state.
-      return;
+      return false;
     }
   }
 
@@ -146,11 +132,17 @@ export class LocationPermissions {
     return new PermissionResponse(granted ? 'granted' : 'denied', granted);
   }
 
+  hasBackgroundDeclaration(): boolean {
+    const bundle = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_REQUESTED_PERMISSION);
+    return bundle.reqPermissionDetails.some((permission: bundleManager.ReqPermissionDetail): boolean => permission.name === BACKGROUND_PERMISSION);
+  }
+
   async requestBackground(): Promise<PermissionResponse> {
     if (this.backgroundPending !== undefined) return await this.backgroundPending;
 
     const pending = this.openBackgroundSettings();
     this.backgroundPending = pending;
+
     try {
       return await pending;
     } finally {
@@ -159,22 +151,11 @@ export class LocationPermissions {
   }
 
   private async openBackgroundSettings(): Promise<PermissionResponse> {
-    const permission = this.getBackground();
-    if (permission.granted || !this.hasForeground() ||
-      this.context.services.get(ExpoRuntimePermissionsKey) !== undefined) return permission;
+    const response = this.getBackground();
+    if (response.granted || !this.hasForeground() ||
+      this.context.services.get(ExpoRuntimePermissionsKey) !== undefined) return response;
 
     const ability = this.context.uiAbilityContext;
-    if (deviceInfo.sdkApiVersion >= PERMISSION_SETTINGS_API) {
-      try {
-        await abilityAccessCtrl.createAtManager().openPermissionOnSetting(ability, BACKGROUND_PERMISSION);
-        return this.getBackground();
-      } catch (error) {
-        // This API accepts only permissions classified as manual_settings.
-        if (Number((error as BusinessError).code) !== NOT_MANUAL_SETTINGS_PERMISSION) {
-          throw new ExpoModuleError('ERR_LOCATION_PERMISSION_REQUEST', 'Unable to open the HarmonyOS background location settings.', error);
-        }
-      }
-    }
 
     try {
       await ability.startAbility({
@@ -200,6 +181,7 @@ export class LocationPermissions {
         const index = result.permissions.indexOf(permission);
         const reason = reasons?.[index] ?? RequestReason.Success;
         const status = result.authResults[index];
+
         if (
           index < 0 ||
           reason === RequestReason.InvalidPermission ||
@@ -216,14 +198,6 @@ export class LocationPermissions {
       const index = result.permissions.indexOf(APPROXIMATE_PERMISSION);
       const reason = reasons?.[index] ?? RequestReason.Success;
       const blocked = reason === RequestReason.CannotRequest || reason === RequestReason.ManualSettings;
-      // A completed API call without a dialog is not proof of a user decision.
-      if (
-        deviceInfo.sdkApiVersion < SELF_PERMISSION_STATUS_API &&
-        (blocked || (reason === RequestReason.Success &&
-          (result.authResults[index] === ExpoPermissionStatus.GRANTED || result.dialogShownResults?.[index] === true)))
-      ) {
-        await this.setDenied(blocked || result.authResults[index] === ExpoPermissionStatus.DENIED);
-      }
 
       cannotAsk = cannotAsk || blocked;
     }
