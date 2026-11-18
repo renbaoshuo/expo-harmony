@@ -6,6 +6,7 @@
  */
 
 import { resourceManager } from '@kit.LocalizationKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import type { BusinessError } from '@kit.BasicServicesKit';
 import {
   ExpoFunction,
@@ -87,8 +88,10 @@ const ALIGNMENTS: Record<string, Alignment> = {
 
 const SYMBOL_GLYPH_CAPABILITY = 'SystemCapability.ArkUI.ArkUI.Full';
 const RESOURCE_MANAGER_CAPABILITY = 'SystemCapability.Global.ResourceManager';
+const SYSTEM_RESOURCE_MANAGER_API = 20;
 const INVALID_RESOURCE_NAME = 9001003;
 const RESOURCE_NOT_FOUND = 9001004;
+const SYSTEM_RESOURCE_UNAVAILABLE = 9001009;
 
 const WEIGHTS: Record<string, number> = {
   'unspecified': 400,
@@ -104,19 +107,22 @@ const WEIGHTS: Record<string, number> = {
 };
 
 function isSymbolAvailable(name: string): boolean {
-  if (!/^[a-zA-Z0-9_]+$/.test(name) || !canIUse(SYMBOL_GLYPH_CAPABILITY) || !canIUse(RESOURCE_MANAGER_CAPABILITY)) {
+  if (!name || /[^a-zA-Z0-9_]/.test(name) || !canIUse(SYMBOL_GLYPH_CAPABILITY) || !canIUse(RESOURCE_MANAGER_CAPABILITY)) {
     return false;
   }
 
   try {
-    return resourceManager.getSysResourceManager().getSymbolByName(name) > 0;
+    const manager = deviceInfo.sdkApiVersion >= SYSTEM_RESOURCE_MANAGER_API
+      ? resourceManager.getSysResourceManager()
+      : resourceManager.getSystemResourceManager();
+    return manager.getSymbolByName(name) > 0;
   } catch (error) {
     const failure = error as BusinessError;
-    const code = Number(failure.code);
+    const code = failure.code;
 
-    if (code === INVALID_RESOURCE_NAME || code === RESOURCE_NOT_FOUND) return false;
+    if (code === INVALID_RESOURCE_NAME || code === RESOURCE_NOT_FOUND || code === SYSTEM_RESOURCE_UNAVAILABLE) return false;
 
-    throw new ExpoModuleError('ERR_SYMBOL_RESOURCE', `ResourceManager (${failure.code}): ${failure.message}`);
+    throw new ExpoModuleError('ERR_SYMBOL_RESOURCE', `ResourceManager (${code}): ${failure.message}`, failure);
   }
 }
 
@@ -159,6 +165,7 @@ class SymbolView extends ExpoView {
   effect: SymbolEffect = new SymbolEffect();
   effectTrigger: number = -1;
   private revision: number = 0;
+  private effectChanged: boolean = false;
   tint: number | null = null;
   colors: number[] = [];
 
@@ -171,21 +178,24 @@ class SymbolView extends ExpoView {
 
     this.resource = symbolResource(name);
     this.name = name;
-    this.refreshEffect();
+    this.effectChanged = true;
   }
 
   updateAnimation(animation: SymbolAnimation | null): void {
-    const previous = this.animation;
-    if (previous?.type === animation?.type && previous?.wholeSymbol === animation?.wholeSymbol
-      && previous?.direction === animation?.direction && previous?.iterative === animation?.iterative) return;
+    const current = this.animation;
+    if (current?.type === animation?.type && current?.wholeSymbol === animation?.wholeSymbol
+      && current?.direction === animation?.direction && current?.iterative === animation?.iterative) return;
 
-    this.animation = animation;
     this.effect = symbolEffect(animation);
-    this.refreshEffect();
+    this.animation = animation;
+    this.effectChanged = true;
   }
 
-  private refreshEffect(): void {
-    this.effectTrigger = this.animation === null ? -1 : ++this.revision;
+  commitProps(): void {
+    if (!this.effectChanged) return;
+
+    this.effectChanged = false;
+    this.effectTrigger = this.animation === null || this.resource === undefined ? -1 : ++this.revision;
   }
 
   renderingStrategy(): SymbolRenderingStrategy {
@@ -275,7 +285,8 @@ export class ExpoSymbolsModule extends ExpoModule {
         'resizeMode',
         ExpoValueTypes.string(),
         (view: SymbolView, value: string): void => {
-          view.alignment = ALIGNMENTS[value] ?? Alignment.Center;
+          const alignment = ALIGNMENTS[value];
+          view.alignment = typeof alignment === 'number' ? alignment : Alignment.Center;
         },
         'scaleAspectFit',
       )
@@ -322,7 +333,8 @@ export class ExpoSymbolsModule extends ExpoModule {
           view.colors = colors;
         },
         [],
-      );
+      )
+      .onDidUpdateProps((view: SymbolView): void => view.commitProps());
 
     return new ExpoModuleDefinition()
       .name('SymbolModule')

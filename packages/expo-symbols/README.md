@@ -8,7 +8,7 @@
 
 本包适配 Expo SDK 57。
 
-引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 20（HarmonyOS 6.0.0）。
+引入本包前，需要确保应用使用的 HarmonyOS SDK 至少为 API 13（HarmonyOS 5.0.1）。
 
 ```bash
 npm install @expo-harmony/expo-symbols expo-symbols@~57.0.3
@@ -32,7 +32,7 @@ npm install @expo-harmony/expo-symbols expo-symbols@~57.0.3
 
 类型：`React.ReactNode`
 
-系统中没有 `name` 对应图标时显示的内容；未设置时不渲染内容。
+原生模块或系统图标不可用时显示的内容；未设置时不渲染内容。
 
 ##### `size`
 

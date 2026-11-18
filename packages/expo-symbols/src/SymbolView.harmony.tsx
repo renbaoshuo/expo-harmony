@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { requireNativeModule, requireNativeViewManager } from 'expo-modules-core';
+import { requireNativeViewManager, requireOptionalNativeModule } from 'expo-modules-core';
 import { useMemo } from 'react';
 import type { ComponentType, JSX } from 'react';
 import { processColor } from 'react-native';
@@ -13,11 +13,13 @@ import type { ColorValue } from 'react-native';
 
 import type { NativeSymbolAnimation, NativeSymbolViewProps, SymbolViewProps } from './SymbolModule.types';
 
-const native = requireNativeModule<{ isSymbolAvailable(name: string): boolean }>('SymbolModule');
-const NativeView: ComponentType<NativeSymbolViewProps> = requireNativeViewManager('SymbolModule');
+const native = requireOptionalNativeModule<{ isSymbolAvailable(name: string): boolean }>('SymbolModule');
+const NativeView: ComponentType<NativeSymbolViewProps> | null = native
+  ? requireNativeViewManager('SymbolModule')
+  : null;
 
-function colorValue(color: ColorValue | undefined): number | null {
-  if (color === undefined) return null;
+function colorValue(color: ColorValue | null | undefined): number | null {
+  if (color == null) return null;
 
   const value = processColor(color);
   if (typeof value !== 'number') throw new TypeError('expo-symbols requires a valid HarmonyOS color.');
@@ -30,7 +32,7 @@ export function SymbolView({
   fallback,
   size = 24,
   style,
-  type = 'monochrome',
+  type: colorMode,
   weight = 'unspecified',
   tintColor,
   colors,
@@ -42,12 +44,12 @@ export function SymbolView({
   const symbol = typeof name === 'object' && name !== null && typeof name.harmony === 'string'
     ? name.harmony
     : '';
-  const available = useMemo(() => symbol !== '' && native.isSymbolAvailable(symbol), [symbol]);
+  const available = useMemo(() => symbol !== '' && native?.isSymbolAvailable(symbol) === true, [symbol]);
 
-  if (!available) return <>{fallback}</>;
-
+  if (!NativeView || !available) return <>{fallback}</>;
   if (!Number.isFinite(size) || size < 0) throw new RangeError('expo-symbols size must be a finite, non-negative number.');
 
+  const type = colorMode ?? 'monochrome';
   const tint = colorValue(tintColor);
   const palette = type === 'palette' && tint === null && Array.isArray(colors) && colors.length > 1
     ? colors.slice(0, 3).map(colorValue).filter((color): color is number => color !== null)
