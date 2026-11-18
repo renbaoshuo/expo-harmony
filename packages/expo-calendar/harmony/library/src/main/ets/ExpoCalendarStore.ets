@@ -159,6 +159,10 @@ export class ExpoCalendarStore {
     const calendar = await this.manager().getCalendar();
     this.assertReadable();
 
+    if (!Number.isSafeInteger(calendar.id) || calendar.id <= 0) {
+      throw new ExpoCalendarError('ERR_CALENDAR_NOT_FOUND', 'Calendar Kit did not return a default calendar.');
+    }
+
     return this.serializeCalendar(calendar, calendar.id, this.permissions.hasWriteAccess());
   }
 
@@ -175,10 +179,28 @@ export class ExpoCalendarStore {
       const account = calendarAccountFromDetails(data);
       const config = calendarConfigFromDetails(data);
 
+      // Calendar Kit can reuse an account with the same name and type.
+      const calendars = await manager.getAllCalendars();
+      this.assertActive();
+      this.permissions.ensureWritable();
+
+      for (const existing of calendars) {
+        const current = existing.getAccount();
+
+        if (current.name === account.name && current.type === account.type) {
+          throw new ExpoCalendarError('ERR_CALENDAR_NOT_SAVED', 'A calendar account with this name and type already exists.');
+        }
+      }
+
       const calendar = await manager.createCalendar(account);
+
       if (!Number.isSafeInteger(calendar.id) || calendar.id <= 0) {
         throw new ExpoCalendarError('ERR_CALENDAR_NOT_SAVED', 'Calendar Kit did not create a valid calendar.');
       }
+      if (calendars.some((existing: calendarManager.Calendar): boolean => existing.id === calendar.id)) {
+        throw new ExpoCalendarError('ERR_CALENDAR_NOT_SAVED', 'Calendar Kit returned an existing calendar account.');
+      }
+
       if (config === undefined) return calendar;
 
       try {
@@ -186,11 +208,9 @@ export class ExpoCalendarStore {
         this.permissions.ensureWritable();
         await calendar.setConfig(config);
       } catch (error) {
-        try {
-          await manager.deleteCalendar(calendar);
-        } catch (_) {}
-
-        throw new ExpoCalendarError('ERR_CALENDAR_NOT_SAVED', `Could not configure the calendar: ${(error as Error).message}`);
+        // The create and configure operations cannot be made atomic. Avoid
+        // deleting the account because Calendar Kit can return an existing ID.
+        throw new ExpoCalendarError('ERR_CALENDAR_NOT_SAVED', `Could not configure calendar '${calendar.id}': ${(error as Error).message}`);
       }
 
       return calendar;
@@ -220,13 +240,14 @@ export class ExpoCalendarStore {
     if (end < start) throw new ExpoCalendarError('ERR_CALENDAR_INVALID_DATE_RANGE', 'endDate must not precede startDate.');
     if (ids.length === 0 && !emptyMeansAll) throw new ExpoCalendarError('ERR_CALENDAR_INVALID_ARGUMENT', 'calendarIds must not be empty.');
 
-    const selected = ids.map((id: string): number => requireCalendarId(id));
+    const selected = new Set(ids.map((id: string): number => requireCalendarId(id)));
     const calendars = await this.manager().getAllCalendars();
     this.assertReadable();
 
     const events: ExpoEventRecord[] = [];
+
     for (const calendar of calendars) {
-      if (!(emptyMeansAll && selected.length === 0) && !selected.includes(calendar.id)) continue;
+      if (selected.size !== 0 && !selected.has(calendar.id)) continue;
 
       const instances = await calendar.queryEventInstances(start, end, undefined, INSTANCE_FIELDS);
       this.assertReadable();

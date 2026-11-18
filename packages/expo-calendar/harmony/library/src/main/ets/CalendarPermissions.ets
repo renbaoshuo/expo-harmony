@@ -25,6 +25,7 @@ enum RequestReason {
   ConditionsNotMet = 3,
   CannotRequest = 5,
   ManualSettings = 6,
+  ServiceUnavailable = 12,
 }
 
 export class CalendarPermissionResponse {
@@ -111,12 +112,20 @@ export class CalendarPermissions {
   }
 
   async get(): Promise<CalendarPermissionResponse> {
+    this.context.assertActive();
+
+    if (!canIUse('SystemCapability.Applications.CalendarData')) {
+      return new CalendarPermissionResponse('denied', false);
+    }
+
     const read = await this.groupStatus(READ_CALENDAR, READ_WHOLE_CALENDAR);
     const write = await this.groupStatus(WRITE_CALENDAR, WRITE_WHOLE_CALENDAR);
+    this.context.assertActive();
 
     if (read === ExpoPermissionStatus.GRANTED && write === ExpoPermissionStatus.GRANTED) {
       return new CalendarPermissionResponse('granted', true);
     }
+
     const denied = [read, write].some((status: ExpoPermissionStatus): boolean =>
       status !== ExpoPermissionStatus.GRANTED && status !== ExpoPermissionStatus.NOT_DETERMINED);
 
@@ -124,13 +133,17 @@ export class CalendarPermissions {
   }
 
   async request(): Promise<CalendarPermissionResponse> {
+    this.context.assertActive();
+
+    if (!canIUse('SystemCapability.Applications.CalendarData')) return this.get();
+
     const permissions = this.requestedPermissions().filter((permission: Permissions): boolean =>
       this.context.permissionStatus(permission) !== ExpoPermissionStatus.GRANTED);
     if (permissions.length === 0) return this.get();
 
     const results = (await this.context.requestPermissions(permissions)).systemResults;
-    let blocked: boolean = false;
 
+    let blocked = false;
     for (const result of results) {
       for (const permission of permissions) {
         const index = result.permissions.indexOf(permission);
@@ -149,8 +162,13 @@ export class CalendarPermissions {
           );
         }
 
+        if (reason === RequestReason.ServiceUnavailable) {
+          throw new ExpoModuleError('ERR_CALENDAR_PERMISSION_REQUEST', 'The system calendar permission request service is unavailable.');
+        }
+
         const restricted = reason === RequestReason.ConditionsNotMet || reason === RequestReason.CannotRequest ||
           reason === RequestReason.ManualSettings;
+
         if (!granted && restricted && (permission === READ_CALENDAR || permission === WRITE_CALENDAR)) blocked = true;
       }
     }

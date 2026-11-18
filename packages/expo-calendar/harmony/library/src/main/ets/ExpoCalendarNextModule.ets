@@ -150,6 +150,13 @@ class CalendarEventObject extends ExpoSharedObject {
   openInCalendar(options?: Record<string, ESObject> | null): Promise<ExpoOpenDialogResult> {
     return this.store.openEventInCalendar(this.id(), options);
   }
+
+  async editInCalendar(options?: Record<string, ESObject> | null): Promise<ExpoEditDialogResult> {
+    const id = this.id();
+    await this.store.openEventInCalendar(id, options);
+
+    return new ExpoEditDialogResult(id);
+  }
 }
 
 class CalendarAttendeeObject extends ExpoSharedObject {
@@ -251,10 +258,7 @@ export class ExpoCalendarNextModule extends ExpoModule {
       ))
       .asyncFunction('editInCalendar', ExpoFunction.ownedTyped1(
         CALENDAR_RECORD.nullable().optional(),
-        async (event: CalendarEventObject, options?: Record<string, ESObject> | null): Promise<ExpoEditDialogResult> => {
-          await event.openInCalendar(options);
-          return new ExpoEditDialogResult();
-        },
+        (event: CalendarEventObject, options?: Record<string, ESObject> | null): Promise<ExpoEditDialogResult> => event.editInCalendar(options),
       ));
 
     attendees

@@ -21,7 +21,7 @@ npm install @expo-harmony/expo-calendar expo-calendar@~57.0.6
 ```ts
 import * as Calendar from 'expo-calendar';
 
-const permission = await Calendar.requestCalendarPermissionsAsync();
+const permission = await Calendar.requestCalendarPermissions();
 if (permission.granted) {
   const calendars = await Calendar.getCalendars(Calendar.EntityTypes.EVENT);
   const events = await calendars[0]?.listEvents(new Date(), new Date(Date.now() + 86400000));
@@ -70,7 +70,7 @@ if (permission.granted) {
 
 #### `Calendar.createCalendarAsync(details?)`
 
-返回新日历的 ID（`Promise<string>`）。`details.title` 必填；日历类型可由 `details.source.type` 或 `details.type` 指定，省略时为 `local`。创建时支持 `local`、`email`、`birthdays`、`caldav` 和 `subscribed`。颜色可传颜色字符串或数值。`sourceId`、`timeZone`、`isVisible` 和 `isSynced` 不支持。
+返回新日历的 ID（`Promise<string>`）。`details.title` 必填；日历类型可由 `details.source.type` 或 `details.type` 指定，省略时为 `local`。创建时支持 `local`、`email`、`birthdays`、`caldav` 和 `subscribed`。同名且同类型的账户已存在时返回 `ERR_CALENDAR_NOT_SAVED`。颜色可传颜色字符串或数值；若系统在创建账户后写入颜色失败，错误信息会包含该日历的 ID。`sourceId`、`timeZone`、`isVisible` 和 `isSynced` 不支持。
 
 #### `Calendar.updateCalendarAsync(id, details?)`
 
@@ -280,7 +280,7 @@ HarmonyOS 26.0.0 及以上打开现有日程的系统页面，成功启动后返
 
 #### `ExpoCalendarEvent.editInCalendar(params?)`
 
-与 `Calendar.editEventInCalendarAsync()` 使用相同的系统能力和返回值。
+与 `Calendar.editEventInCalendarAsync()` 使用相同的系统能力。成功启动页面时返回 `{ action: 'done', id }`，其中 `id` 是当前日程 ID。
 
 #### `ExpoCalendarAttendee.update(details)`
 

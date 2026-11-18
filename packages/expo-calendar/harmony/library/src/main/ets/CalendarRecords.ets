@@ -192,7 +192,12 @@ export class ExpoOpenDialogResult {
 }
 
 export class ExpoEditDialogResult extends ExpoOpenDialogResult {
-  readonly id: string | null = null;
+  readonly id: string | null;
+
+  constructor(id: string | null = null) {
+    super();
+    this.id = id;
+  }
 }
 
 function optionalRecord(value: ESObject): Record<string, ESObject> | undefined {
@@ -363,8 +368,9 @@ function requireNativeId(value: ESObject, name: string): number {
   }
 
   const id = Number(value);
+
   if (!Number.isSafeInteger(id) || id <= 0 || id > MAX_NATIVE_INT) {
-    throw new ExpoCalendarError('ERR_CALENDAR_INVALID_ID', `'${name}' is not a valid HarmonyOS calendar ID.`);
+    throw new ExpoCalendarError('ERR_CALENDAR_INVALID_ID', `'${name}' is outside the range of HarmonyOS Calendar Kit IDs.`);
   }
 
   return id;
