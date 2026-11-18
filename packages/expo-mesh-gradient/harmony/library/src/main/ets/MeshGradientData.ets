@@ -60,7 +60,9 @@ function sampleEdge(
   const end = start + stride * steps;
   const from = mesh.positions[start];
   const to = mesh.positions[end];
-  const path = from.x === to.x && from.y === to.y ? undefined : cubicPath(from, to, position, horizontal);
+
+  // Axis-aligned cubic edges have the same arc-length samples as straight lines.
+  const path = from.x === to.x || from.y === to.y ? undefined : cubicPath(from, to, position, horizontal);
   const length = path?.getLength(false) ?? 0;
   if (!Number.isFinite(length)) throw new Error('ExpoMeshGradient path length must be finite.');
 
@@ -72,7 +74,10 @@ function sampleEdge(
     const index = start + step * stride;
 
     if (path === undefined || length === 0) {
-      mesh.positions[index] = from;
+      mesh.positions[index] = {
+        x: from.x + (to.x - from.x) * fraction,
+        y: from.y + (to.y - from.y) * fraction,
+      };
     } else {
       const point: common2D.Point = { x: 0, y: 0 };
       if (!path.getPositionAndTangent(false, fraction * length, point, tangent)) {

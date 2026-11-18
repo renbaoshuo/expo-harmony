@@ -21,19 +21,35 @@ import type { ExpoViewContentContext } from '@expo-harmony/expo-modules-core';
 import { createMesh, DEFAULT_RESOLUTION, MeshGradientData } from './MeshGradientData';
 
 const DRAWING_CAPABILITY = 'SystemCapability.Graphics.Drawing';
-// NaN lets validation reject missing coordinates and unsupported colors.
-const MESH_NUMBER = ExpoValueTypes.number().defaulted(NaN);
+// Keep invalid values in the same prop update so validation can clear the old mesh.
+const MESH_NUMBER = ExpoValueTypes.custom<number>(
+  'MeshNumber',
+  (value: ESObject): number => typeof value === 'number' ? value : NaN,
+  (value: number): ESObject => value,
+);
 
 interface MeshResolution {
   x?: number;
   y?: number;
 }
 
-const MESH_RESOLUTION = ExpoValueTypes.shapedRecord<MeshResolution>(
+const MESH_RESOLUTION_RECORD = ExpoValueTypes.shapedRecord<MeshResolution>(
   'MeshResolution',
-  new ExpoRecordShape().field('x', ExpoValueTypes.number()).field('y', ExpoValueTypes.number()),
+  new ExpoRecordShape().field('x', MESH_NUMBER.optional()).field('y', MESH_NUMBER.optional()),
   (fields: Record<string, ESObject>): MeshResolution => fields as MeshResolution,
   (value: MeshResolution): Record<string, ESObject> => value as Record<string, ESObject>,
+);
+
+const MESH_RESOLUTION = ExpoValueTypes.custom<MeshResolution>(
+  'MeshResolution',
+  (value: ESObject, path: string): MeshResolution => {
+    try {
+      return MESH_RESOLUTION_RECORD.decode(value, path);
+    } catch {
+      return { x: NaN };
+    }
+  },
+  (value: MeshResolution, path: string): ESObject | void => MESH_RESOLUTION_RECORD.encode(value, path),
 );
 
 @Observed
@@ -164,12 +180,15 @@ class MeshNodeController extends NodeController {
     this.mesh = undefined;
 
     try {
-      frame?.getRenderNode()?.clearChildren();
+      if (node !== undefined) frame?.getRenderNode()?.removeChild(node);
     } catch (error) {
       console.warn(`ExpoMeshGradient could not detach its render node: ${String(error)}`);
     } finally {
-      node?.dispose();
-      frame?.dispose();
+      try {
+        node?.dispose();
+      } finally {
+        frame?.dispose();
+      }
     }
   }
 }
@@ -217,7 +236,7 @@ export class ExpoMeshGradientModule extends ExpoModule {
       .groupView()
       .prop(
         'columns',
-        ExpoValueTypes.number(),
+        MESH_NUMBER,
         (view: ExpoMeshGradientView, value: number): void => {
           view.columns = value;
         },
@@ -225,7 +244,7 @@ export class ExpoMeshGradientModule extends ExpoModule {
       )
       .prop(
         'rows',
-        ExpoValueTypes.number(),
+        MESH_NUMBER,
         (view: ExpoMeshGradientView, value: number): void => {
           view.rows = value;
         },
