@@ -66,17 +66,20 @@ class ExpoBlurView extends ExpoView {
 
 @Component
 struct ExpoBlurViewContent {
-  @ObjectLink view: ExpoBlurView;
+  // The Expo host gives this component one observed view for its lifetime.
+  @State view: ExpoBlurView | undefined = undefined;
 
   build(): void {
-    Stack()
-      .width('100%')
-      .height('100%')
-      .backgroundBlurStyle(this.view.intensity === 0 ? BlurStyle.NONE : this.view.material.style, {
-        colorMode: this.view.material.colorMode,
-        scale: this.view.intensity / 100,
-      })
-      .hitTestBehavior(HitTestMode.None);
+    if (this.view !== undefined) {
+      Stack()
+        .width('100%')
+        .height('100%')
+        .backgroundBlurStyle(this.view.intensity === 0 ? BlurStyle.NONE : this.view.material.style, {
+          colorMode: this.view.material.colorMode,
+          scale: this.view.intensity / 100,
+        })
+        .hitTestBehavior(HitTestMode.None);
+    }
   }
 }
 
