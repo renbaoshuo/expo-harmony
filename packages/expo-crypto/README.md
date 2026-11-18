@@ -86,6 +86,8 @@ npm install @expo-harmony/expo-crypto expo-crypto@~57.0.4
 
 返回长度为 `byteCount` 的 `Uint8Array`。`byteCount` 须在 0 到 1024 之间；超出范围时抛出 `TypeError`。
 
+上游 `expo-crypto` 在开发模式下检测到远程调试或缺少旧桥接的同步调用钩子时，会用 `Math.random()` 生成字节。需要安全随机数的调试代码可使用 `getRandomValues()` 或 `getRandomBytesAsync()`。
+
 #### `Crypto.getRandomBytesAsync(byteCount)`
 
 返回 `Promise<Uint8Array>`，长度规则与 `getRandomBytes()` 相同。

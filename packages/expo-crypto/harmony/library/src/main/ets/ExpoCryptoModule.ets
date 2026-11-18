@@ -129,7 +129,13 @@ const KEY_INPUT_TYPE: ExpoValueType<KeyInput> = new ExpoValueType<KeyInput>(
   'hex/base64 string or Uint8Array',
   (value: ESObject, path: string): KeyInput => {
     if (typeof value === 'string') return new KeyInput(undefined, value);
-    if (value instanceof Uint8Array) return new KeyInput(copyBytes(value));
+
+    if (value instanceof Uint8Array) {
+      requireKeyLength(value.byteLength);
+
+      return new KeyInput(copyBytes(value));
+    }
+
     throw new CryptoError('ERR_INVALID_ARGUMENT', `${path} must be a string or Uint8Array.`);
   },
   (value: KeyInput): ESObject => value.text ?? (value.bytes as ESObject),
@@ -223,91 +229,94 @@ export class ExpoCryptoModule extends ExpoModule {
 }
 
 class EncryptionKeyObject extends ExpoSharedObject {
-  private readonly keyBytes: Uint8Array;
-  private released: boolean = false;
+  readonly size: number;
+  private nativeKey: cryptoFramework.SymKey | undefined;
 
-  constructor(context: ExpoModuleContext, bytes: Uint8Array) {
+  constructor(context: ExpoModuleContext, nativeKey: cryptoFramework.SymKey, size: number) {
     super(context);
-    requireKeyLength(bytes.byteLength);
 
-    this.keyBytes = copyBytes(bytes);
-  }
-
-  get size(): number {
-    return this.keyBytes.byteLength * 8;
+    this.nativeKey = nativeKey;
+    this.size = size;
   }
 
   bytes(): Uint8Array {
-    this.assertAvailable();
-    return copyBytes(this.keyBytes);
+    return this.requireKey().getEncoded().data;
   }
 
   encoded(encoding: string): string {
-    this.assertAvailable();
+    if (encoding !== 'hex' && encoding !== 'base64') {
+      throw new CryptoError('ERR_CRYPTO_INVALID_KEY', "Key encoding must be 'hex' or 'base64'.");
+    }
 
-    if (encoding === 'hex') return hexEncode(this.keyBytes);
-    if (encoding === 'base64') return base64Encode(this.keyBytes);
-    throw new CryptoError('ERR_CRYPTO_INVALID_KEY', "Key encoding must be 'hex' or 'base64'.");
+    const bytes = this.bytes();
+
+    try {
+      return encoding === 'hex' ? hexEncode(bytes) : base64Encode(bytes);
+    } finally {
+      secureErase(bytes);
+    }
+  }
+
+  createCipher(mode: cryptoFramework.CryptoMode, params: cryptoFramework.ParamsSpec): cryptoFramework.Cipher {
+    const cipher = cryptoFramework.createCipher(AES_GCM_ALGORITHM);
+    // Initialize the cipher before an explicit JS release can clear the native key.
+    cipher.initSync(mode, this.requireKey(), params);
+    return cipher;
   }
 
   override sharedObjectWillRelease(): void {
-    if (this.released) return;
-
-    this.released = true;
-    secureErase(this.keyBytes);
+    const native = this.nativeKey;
+    this.nativeKey = undefined;
+    native?.clearMem();
   }
 
   override getAdditionalMemoryPressure(): number {
-    return this.keyBytes.byteLength;
+    return this.size / 8;
   }
 
-  private assertAvailable(): void {
-    if (this.released) {
+  private requireKey(): cryptoFramework.SymKey {
+    if (this.nativeKey === undefined) {
       throw new CryptoError('ERR_SHARED_OBJECT_RELEASED', 'The AES encryption key has been released.');
     }
+
+    return this.nativeKey;
   }
 }
 
 class SealedDataObject extends ExpoSharedObject {
-  private readonly nonceBytes: Uint8Array;
-  private readonly ciphertextBytes: Uint8Array;
-  private readonly tagBytes: Uint8Array;
+  readonly ivSize: number;
+  readonly tagSize: number;
+  private readonly data: Uint8Array;
 
-  constructor(context: ExpoModuleContext, iv: Uint8Array, ciphertext: Uint8Array, tag: Uint8Array) {
+  constructor(context: ExpoModuleContext, data: Uint8Array, ivLength: number, tagLength: number) {
     super(context);
-    requireTagLength(tag.byteLength, 'ERR_CRYPTO_INVALID_SEALED_DATA');
 
-    this.nonceBytes = copyBytes(iv);
-    this.ciphertextBytes = copyBytes(ciphertext);
-    this.tagBytes = copyBytes(tag);
+    requireTagLength(tagLength, 'ERR_CRYPTO_INVALID_SEALED_DATA');
+    requireSealedDataLength(data.byteLength, ivLength, tagLength);
+
+    this.data = data;
+    this.ivSize = ivLength;
+    this.tagSize = tagLength;
   }
 
   get combinedSize(): number {
-    return this.nonceBytes.byteLength + this.ciphertextBytes.byteLength + this.tagBytes.byteLength;
-  }
-
-  get ivSize(): number {
-    return this.nonceBytes.byteLength;
-  }
-
-  get tagSize(): number {
-    return this.tagBytes.byteLength;
+    return this.data.byteLength;
   }
 
   iv(): Uint8Array {
-    return copyBytes(this.nonceBytes);
+    return this.data.subarray(0, this.ivSize);
   }
 
   tag(): Uint8Array {
-    return copyBytes(this.tagBytes);
+    return this.data.subarray(this.combinedSize - this.tagSize);
   }
 
   ciphertext(includeTag: boolean = false): Uint8Array {
-    return includeTag ? concatBytes([this.ciphertextBytes, this.tagBytes]) : copyBytes(this.ciphertextBytes);
+    return this.data.subarray(this.ivSize, includeTag ? this.combinedSize : this.combinedSize - this.tagSize);
   }
 
   combined(): Uint8Array {
-    return concatBytes([this.nonceBytes, this.ciphertextBytes, this.tagBytes]);
+    return this.data;
   }
 
   override getAdditionalMemoryPressure(): number {
@@ -338,19 +347,12 @@ export class ExpoCryptoAESModule extends ExpoModule {
             const resolved = size ?? 256;
             requireKeySize(resolved);
 
-            let native: cryptoFramework.SymKey | undefined = undefined;
-            let bytes: Uint8Array | undefined = undefined;
-
             try {
-              native = await cryptoFramework.createSymKeyGenerator(`AES${resolved}`).generateSymKey();
-              bytes = native.getEncoded().data;
+              const key = await cryptoFramework.createSymKeyGenerator(`AES${resolved}`).generateSymKey();
 
-              return keyClass.instance(new EncryptionKeyObject(context, bytes));
+              return attachEncryptionKey(keyClass, context, key, resolved);
             } catch (error) {
               throw new CryptoError('ERR_CRYPTO_AES_KEY', `Unable to generate the AES key. ${errorMessage(error as Object)}`, error as Object);
-            } finally {
-              if (bytes !== undefined) secureErase(bytes);
-              native?.clearMem();
             }
           },
         ).returns(KEY_OBJECT_TYPE),
@@ -362,6 +364,7 @@ export class ExpoCryptoAESModule extends ExpoModule {
           ExpoValueTypes.string().nullable().optional(),
           async (context: ExpoModuleContext, input: KeyInput, encoding?: string | null): Promise<EncryptionKeyObject> => {
             let bytes: Uint8Array | undefined = undefined;
+
             try {
               if (input.text !== undefined) {
                 if (encoding === undefined || encoding === null) {
@@ -382,7 +385,10 @@ export class ExpoCryptoAESModule extends ExpoModule {
 
               requireKeyLength(bytes.byteLength);
 
-              return keyClass.instance(new EncryptionKeyObject(context, bytes));
+              const size = bytes.byteLength * 8;
+              const key = await cryptoFramework.createSymKeyGenerator(`AES${size}`).convertKey({ data: bytes });
+
+              return attachEncryptionKey(keyClass, context, key, size);
             } finally {
               if (bytes !== undefined) secureErase(bytes);
             }
@@ -414,7 +420,7 @@ export class ExpoCryptoAESModule extends ExpoModule {
           SEALED_CONFIG_TYPE.nullable().optional(),
           (context: ExpoModuleContext, combined: Uint8Array, config?: SealedDataConfig | null): SealedDataObject => {
             const resolved = config ?? new SealedDataConfig();
-            return sealedClass.instance(sealedFromCombined(context, combined, resolved));
+            return sealedClass.instance(new SealedDataObject(context, combined, resolved.ivLength, resolved.tagLength));
           },
         ).returns(SEALED_OBJECT_TYPE),
       )
@@ -506,6 +512,21 @@ export class ExpoCryptoAESModule extends ExpoModule {
   }
 }
 
+function attachEncryptionKey(
+  keyClass: ExpoSharedObjectClassDefinition<EncryptionKeyObject>,
+  context: ExpoModuleContext,
+  native: cryptoFramework.SymKey,
+  size: number,
+): EncryptionKeyObject {
+  try {
+    return keyClass.instance(new EncryptionKeyObject(context, native, size));
+  } catch (error) {
+    native.clearMem();
+
+    throw new CryptoError('ERR_CRYPTO_AES_KEY', 'Unable to attach the AES key.', error as Object);
+  }
+}
+
 function requireIntegerTypedArray(value: ESObject, path: string): IntegerTypedArray {
   if (
     value instanceof Int8Array ||
@@ -587,7 +608,6 @@ function decodeEncryptOptions(value: ESObject, path: string): EncryptOptions {
   const tagLength = optionalSize(input['tagLength'], `${path}.tagLength`);
   if (tagLength !== undefined) result.tagLength = tagLength;
   requireTagLength(result.tagLength, 'ERR_CRYPTO_UNSUPPORTED_TAG_LENGTH');
-  requireSupportedTagLength(result.tagLength);
 
   const nonce: ESObject = input['nonce'];
   if (nonce !== undefined && nonce !== null) {
@@ -624,8 +644,6 @@ function decodeSealedConfig(value: ESObject, path: string): SealedDataConfig {
   result.ivLength = optionalSize(input['ivLength'], `${path}.ivLength`) ?? DEFAULT_IV_LENGTH;
   result.tagLength = optionalSize(input['tagLength'], `${path}.tagLength`) ?? DEFAULT_TAG_LENGTH;
 
-  requireTagLength(result.tagLength, 'ERR_CRYPTO_INVALID_SEALED_DATA');
-
   return result;
 }
 
@@ -633,7 +651,9 @@ function decodeCiphertextOptions(value: ESObject, path: string): CiphertextOptio
   const input = requireRecord(value, path);
   const result = new CiphertextOptions();
   result.includeTag = optionalBoolean(input['includeTag'], `${path}.includeTag`) ?? false;
-  result.encoding = optionalString(input['encoding'], `${path}.encoding`) ?? 'bytes';
+  // The iOS and Android bridges also accept the native outputFormat key.
+  result.encoding = optionalString(input['encoding'], `${path}.encoding`) ??
+    optionalString(input['outputFormat'], `${path}.outputFormat`) ?? 'bytes';
   requireBinaryEncoding(result.encoding);
 
   return result;
@@ -658,40 +678,28 @@ function optionalSize(value: ESObject, path: string): number | undefined {
 }
 
 function requireSize(value: number, path: string): number {
-  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+  if (!Number.isSafeInteger(value) || value < 0) {
     throw new CryptoError('ERR_INVALID_ARGUMENT', `${path} must be a non-negative integer.`);
   }
+
   return value;
 }
 
 function fillRandom(target: IntegerTypedArray): void {
   const bytes = new Uint8Array(target.buffer, target.byteOffset, target.byteLength);
-  if (bytes.byteLength === 0) return;
-  if (bytes.byteLength > PLATFORM_INT_MAX) {
-    throw new CryptoError('ERR_CRYPTO_RANDOM', 'The requested random buffer is too large.');
-  }
-
-  try {
-    const generated = cryptoFramework.createRandom().generateRandomSync(bytes.byteLength).data;
-    requireRandomLength(generated, bytes.byteLength);
-
-    bytes.set(generated);
-  } catch (error) {
-    throw new CryptoError('ERR_CRYPTO_RANDOM', `Unable to generate secure random bytes. ${errorMessage(error as Object)}`, error as Object);
-  }
+  if (bytes.byteLength > 0) bytes.set(randomBytes(bytes.byteLength));
 }
 
-async function randomBytesAsync(length: number): Promise<Uint8Array> {
-  if (length === 0) return new Uint8Array(0);
+function randomBytes(length: number): Uint8Array {
   if (length > PLATFORM_INT_MAX) {
     throw new CryptoError('ERR_CRYPTO_RANDOM', 'The requested random buffer is too large.');
   }
 
   try {
-    const generated = (await cryptoFramework.createRandom().generateRandom(length)).data;
-    requireRandomLength(generated, length);
+    const bytes = cryptoFramework.createRandom().generateRandomSync(length).data;
+    requireRandomLength(bytes, length);
 
-    return copyBytes(generated);
+    return bytes;
   } catch (error) {
     throw new CryptoError('ERR_CRYPTO_RANDOM', `Unable to generate secure random bytes. ${errorMessage(error as Object)}`, error as Object);
   }
@@ -757,17 +765,10 @@ async function encodedDigestAsync(algorithm: string, data: Uint8Array, encoding:
 }
 
 async function encryptAesGcm(plaintext: Uint8Array, key: EncryptionKeyObject, options: EncryptOptions): Promise<SealedDataObject> {
-  let native: cryptoFramework.SymKey | undefined = undefined;
-  let bytes: Uint8Array | undefined = undefined;
-
   try {
-    bytes = key.bytes();
-    const nonce = options.nonce === undefined ? await randomBytesAsync(options.nonceLength) : copyBytes(options.nonce);
-    native = await cryptoFramework.createSymKeyGenerator(`AES${key.size}`).convertKey({ data: bytes });
-
-    const cipher = cryptoFramework.createCipher(AES_GCM_ALGORITHM);
+    const nonce = options.nonce ?? randomBytes(options.nonceLength);
     const params = gcmParams(nonce, options.additionalData, options.tagLength);
-    await cipher.init(cryptoFramework.CryptoMode.ENCRYPT_MODE, native, params);
+    const cipher = key.createCipher(cryptoFramework.CryptoMode.ENCRYPT_MODE, params);
 
     if (plaintext.byteLength === 0 && options.tagLength === DEFAULT_TAG_LENGTH && options.additionalData.byteLength > 0) {
       // The legacy GCM implementation commits AAD on update, including for an empty message.
@@ -779,57 +780,48 @@ async function encryptAesGcm(plaintext: Uint8Array, key: EncryptionKeyObject, op
       throw new CryptoError('ERR_CRYPTO_ENCRYPT', 'Harmony returned an invalid AES-GCM ciphertext or tag length.');
     }
 
-    return new SealedDataObject(key.context, nonce, result.data.subarray(0, plaintext.byteLength), result.data.subarray(plaintext.byteLength));
+    return new SealedDataObject(key.context, concatBytes([nonce, result.data]), nonce.byteLength, options.tagLength);
   } catch (error) {
-    if (error instanceof CryptoError) throw error;
+    if (error instanceof CryptoError) {
+      throw new CryptoError(error.code, error.message, error.cause);
+    }
 
     throw new CryptoError('ERR_CRYPTO_ENCRYPT', `AES-GCM encryption failed. ${errorMessage(error as Object)}`, error as Object);
-  } finally {
-    if (bytes !== undefined) secureErase(bytes);
-    native?.clearMem();
   }
 }
 
 async function decryptAesGcm(sealed: SealedDataObject, key: EncryptionKeyObject, aad: Uint8Array): Promise<Uint8Array> {
   requireNonceLength(sealed.ivSize);
-  requireTagLength(sealed.tagSize, 'ERR_CRYPTO_UNSUPPORTED_TAG_LENGTH');
-  requireSupportedTagLength(sealed.tagSize);
-
-  let native: cryptoFramework.SymKey | undefined = undefined;
-  let bytes: Uint8Array | undefined = undefined;
 
   try {
-    bytes = key.bytes();
-    native = await cryptoFramework.createSymKeyGenerator(`AES${key.size}`).convertKey({ data: bytes });
+    const legacy = sealed.tagSize === DEFAULT_TAG_LENGTH;
+    const params = gcmParams(sealed.iv(), aad, sealed.tagSize, legacy ? sealed.tag() : undefined);
+    const cipher = key.createCipher(cryptoFramework.CryptoMode.DECRYPT_MODE, params);
 
-    const cipher = cryptoFramework.createCipher(AES_GCM_ALGORITHM);
-    const legacyTag = sealed.tagSize === DEFAULT_TAG_LENGTH;
-    const params = gcmParams(sealed.iv(), aad, sealed.tagSize, legacyTag ? sealed.tag() : undefined);
-    await cipher.init(cryptoFramework.CryptoMode.DECRYPT_MODE, native, params);
-
-    const ciphertext = sealed.ciphertext(!legacyTag);
-    const expectedLength = legacyTag ? ciphertext.byteLength : ciphertext.byteLength - sealed.tagSize;
+    const ciphertext = sealed.ciphertext(!legacy);
+    const size = legacy ? ciphertext.byteLength : ciphertext.byteLength - sealed.tagSize;
     if (ciphertext.byteLength === 0 && aad.byteLength > 0) {
       await cipher.update({ data: ciphertext });
     }
-    const finalized = await cipher.doFinal(ciphertext.byteLength === 0 ? null : { data: ciphertext });
-    if (finalized === null) {
-      if (expectedLength === 0) return EMPTY_BYTES;
+
+    const result = await cipher.doFinal(ciphertext.byteLength === 0 ? null : { data: ciphertext });
+    if (result === null) {
+      if (size === 0) return EMPTY_BYTES;
       throw new CryptoError('ERR_CRYPTO_DECRYPT', 'Harmony returned no AES-GCM plaintext.');
     }
-    if (finalized.data.byteLength !== expectedLength) {
-      secureErase(finalized.data);
+    if (result.data.byteLength !== size) {
+      secureErase(result.data);
+
       throw new CryptoError('ERR_CRYPTO_DECRYPT', 'Harmony returned an invalid AES-GCM plaintext length.');
     }
 
-    return finalized.data;
+    return result.data;
   } catch (error) {
-    if (error instanceof CryptoError) throw error;
+    if (error instanceof CryptoError) {
+      throw new CryptoError(error.code, error.message, error.cause);
+    }
 
     throw new CryptoError('ERR_CRYPTO_DECRYPT', `AES-GCM authentication failed. ${errorMessage(error as Object)}`, error as Object);
-  } finally {
-    if (bytes !== undefined) secureErase(bytes);
-    native?.clearMem();
   }
 }
 
@@ -844,39 +836,30 @@ function gcmParams(iv: Uint8Array, aad: Uint8Array, tagLength: number, tag?: Uin
     return params;
   }
 
-  if (deviceInfo.apiAvailable('26.0.0')) {
-    const params: cryptoFramework.AeadParamsSpec = {
-      algName: 'AeadParamsSpec',
-      nonce: iv,
-      tagLen: tagLength,
-    };
-    if (aad.byteLength > 0) params.authenticatedData = aad;
-    return params;
+  if (typeof deviceInfo.apiAvailable !== 'function' || !deviceInfo.apiAvailable('26.0.0')) {
+    throw new CryptoError(
+      'ERR_CRYPTO_UNSUPPORTED_TAG_LENGTH',
+      `${tagLength}-byte AES-GCM tags require HarmonyOS SDK 26.0.0 or later.`,
+    );
   }
 
-  throw new CryptoError(
-    'ERR_CRYPTO_UNSUPPORTED_TAG_LENGTH',
-    `${tagLength}-byte AES-GCM tags require HarmonyOS SDK 26.0.0 or later.`,
-  );
-}
+  const params: cryptoFramework.AeadParamsSpec = {
+    algName: 'AeadParamsSpec',
+    nonce: iv,
+    tagLen: tagLength,
+  };
+  if (aad.byteLength > 0) params.authenticatedData = aad;
 
-function sealedFromCombined(context: ExpoModuleContext, combined: Uint8Array, config: SealedDataConfig): SealedDataObject {
-  requireSealedDataLength(combined.byteLength, config.ivLength, config.tagLength);
-  const offset = combined.byteLength - config.tagLength;
-  return new SealedDataObject(context, combined.subarray(0, config.ivLength), combined.subarray(config.ivLength, offset), combined.subarray(offset));
+  return params;
 }
 
 function sealedFromParts(context: ExpoModuleContext, iv: Uint8Array, ciphertext: Uint8Array, tag?: TagArgument): SealedDataObject {
   if (tag?.bytes !== undefined) {
-    return new SealedDataObject(context, iv, ciphertext, tag.bytes);
+    return new SealedDataObject(context, concatBytes([iv, ciphertext, tag.bytes]), iv.byteLength, tag.bytes.byteLength);
   }
 
-  const tagLength = tag?.length ?? DEFAULT_TAG_LENGTH;
-  requireTagLength(tagLength, 'ERR_CRYPTO_INVALID_SEALED_DATA');
-  requireSealedDataLength(iv.byteLength + ciphertext.byteLength, iv.byteLength, tagLength);
-
-  const offset = ciphertext.byteLength - tagLength;
-  return new SealedDataObject(context, iv, ciphertext.subarray(0, offset), ciphertext.subarray(offset));
+  const length = tag?.length ?? DEFAULT_TAG_LENGTH;
+  return new SealedDataObject(context, concatBytes([iv, ciphertext]), iv.byteLength, length);
 }
 
 function requireSealedDataLength(length: number, ivLength: number, tagLength: number): void {
@@ -912,15 +895,6 @@ function requireTagLength(length: number, code: string): void {
   }
 }
 
-function requireSupportedTagLength(length: number): void {
-  if (length !== DEFAULT_TAG_LENGTH && !deviceInfo.apiAvailable('26.0.0')) {
-    throw new CryptoError(
-      'ERR_CRYPTO_UNSUPPORTED_TAG_LENGTH',
-      `${length}-byte AES-GCM tags require HarmonyOS SDK 26.0.0 or later.`,
-    );
-  }
-}
-
 function requireRandomLength(bytes: Uint8Array, expected: number): void {
   if (bytes.byteLength !== expected) {
     throw new CryptoError('ERR_CRYPTO_RANDOM', `Harmony returned ${bytes.byteLength} random bytes for a ${expected}-byte request.`);
@@ -941,7 +915,7 @@ function requireBinaryEncoding(encoding: string): void {
 }
 
 function formatBytes(bytes: Uint8Array, encoding: string): ESObject {
-  if (encoding === 'bytes') return bytes as ESObject;
+  if (encoding === 'bytes') return copyBytes(bytes) as ESObject;
   if (encoding === 'base64') return base64Encode(bytes);
   throw new CryptoError('ERR_INVALID_ARGUMENT', `Unsupported binary output encoding '${encoding}'.`);
 }
@@ -993,7 +967,7 @@ function base64Decode(text: string, maximumLength?: number): Uint8Array {
 }
 
 function hexEncode(bytes: Uint8Array): string {
-  return buffer.from(bytes).toString('hex');
+  return buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('hex');
 }
 
 function hexDecode(value: string): Uint8Array {
