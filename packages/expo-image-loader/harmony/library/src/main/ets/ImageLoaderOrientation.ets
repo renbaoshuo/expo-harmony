@@ -5,10 +5,10 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
 
-// PropertyKey.ORIENTATION returns these documented EXIF names on API 13.
-// image.Orientation is only available from API 23.
+// Use the EXIF strings on SDKs older than Image Kit's API 23 Orientation enum.
 enum ExifOrientation {
   TOP_LEFT = 'Top-left',
   TOP_RIGHT = 'Top-right',
@@ -29,29 +29,54 @@ export async function applyImageOrientation(source: image.ImageSource, pixel: im
     return;
   }
 
-  switch (orientation) {
+  let horizontal = false;
+  let vertical = false;
+  let rotation = 0;
+
+  switch (orientation.trim()) {
+    case '2':
     case ExifOrientation.TOP_RIGHT:
-      await pixel.flip(true, false);
+      horizontal = true;
       break;
+    case '3':
     case ExifOrientation.BOTTOM_RIGHT:
-      await pixel.rotate(180);
+      rotation = 180;
       break;
+    case '4':
     case ExifOrientation.BOTTOM_LEFT:
-      await pixel.flip(false, true);
+      vertical = true;
       break;
+    case '5':
     case ExifOrientation.LEFT_TOP:
-      await pixel.flip(true, false);
-      await pixel.rotate(270);
+      horizontal = true;
+      rotation = 270;
       break;
+    case '6':
     case ExifOrientation.RIGHT_TOP:
-      await pixel.rotate(90);
+      rotation = 90;
       break;
+    case '7':
     case ExifOrientation.RIGHT_BOTTOM:
-      await pixel.flip(true, false);
-      await pixel.rotate(90);
+      horizontal = true;
+      rotation = 90;
       break;
+    case '8':
     case ExifOrientation.LEFT_BOTTOM:
-      await pixel.rotate(270);
+      rotation = 270;
       break;
   }
+
+  if (!horizontal && !vertical && rotation === 0) return;
+
+  // Apply the mirror before rotating for the transpose and transverse orientations.
+  if (typeof deviceInfo.apiAvailable === 'function') {
+    if (deviceInfo.apiAvailable('26.0.0')) {
+      if (horizontal || vertical) await pixel.applyFlip(horizontal, vertical);
+      if (rotation !== 0) await pixel.applyRotate(rotation);
+      return;
+    }
+  }
+
+  if (horizontal || vertical) await pixel.flip(horizontal, vertical);
+  if (rotation !== 0) await pixel.rotate(rotation);
 }
