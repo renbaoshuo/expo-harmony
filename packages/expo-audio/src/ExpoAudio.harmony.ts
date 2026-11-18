@@ -6,7 +6,7 @@
  */
 
 import { AudioModule } from 'expo-audio/build/ExpoAudio';
-import type { AudioSource } from 'expo-audio';
+import type { AudioMode, AudioSource } from 'expo-audio';
 import { resolveSource } from 'expo-audio/build/utils/resolveSource';
 
 export * from 'expo-audio/build/ExpoAudio';
@@ -22,6 +22,16 @@ AudioModule.AudioPlaylist.prototype.insert = function (source: AudioSource, inde
   const resolved = resolveSource(source);
   if (resolved !== null) insert.call(this, resolved, index);
 };
+
+export async function setAudioModeAsync(mode: Partial<AudioMode>): Promise<void> {
+  await AudioModule.setAudioModeAsync({
+    playsInSilentMode: mode.playsInSilentMode,
+    shouldPlayInBackground: mode.shouldPlayInBackground,
+    shouldRouteThroughEarpiece: mode.shouldRouteThroughEarpiece,
+    interruptionMode: mode.interruptionMode ?? mode.interruptionModeAndroid,
+    allowsBackgroundRecording: mode.allowsBackgroundRecording,
+  });
+}
 
 // The upstream wrapper only exposes the notification request on Android.
 export async function requestNotificationPermissionsAsync() {

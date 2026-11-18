@@ -116,7 +116,6 @@ interface RecordingOptionsInput {
 }
 
 interface RecordingStartOptions {
-  atTime?: number;
   forDuration?: number;
 }
 
@@ -171,12 +170,10 @@ class PreparedPlayer {
 
 class PreloadEntry {
   readonly source: AudioSource;
-  readonly preferredBufferDuration: number;
   readonly prepared: Promise<PreparedPlayer>;
 
-  constructor(source: AudioSource, preferredBufferDuration: number, prepared: Promise<PreparedPlayer>) {
+  constructor(source: AudioSource, prepared: Promise<PreparedPlayer>) {
     this.source = source;
-    this.preferredBufferDuration = preferredBufferDuration;
     this.prepared = prepared;
   }
 }
@@ -188,8 +185,8 @@ interface LockScreenOptionsInput {
 }
 
 class ExpoAudioError extends ExpoModuleError {
-  constructor(code: string, message: string) {
-    super(code, message);
+  constructor(code: string, message: string, cause?: Object) {
+    super(code, message, cause);
     this.name = 'ExpoAudioError';
   }
 }
@@ -522,10 +519,11 @@ function openSourceFile(path: string, temporary: boolean, context?: ExpoModuleCo
 
 function openPackagedSource(context: ExpoModuleContext, uri: string): SourceFile {
   let name: string;
+
   try {
     name = rawResourcePathFromUri(uri);
   } catch (error) {
-    throw new ExpoAudioError('ERR_AUDIO_INVALID_SOURCE', cleanError(error as Object));
+    throw new ExpoAudioError('ERR_AUDIO_INVALID_SOURCE', cleanError(error as Object), error as Object);
   }
 
   const resources = context.uiAbilityContext.resourceManager;
@@ -535,15 +533,17 @@ function openPackagedSource(context: ExpoModuleContext, uri: string): SourceFile
     try {
       descriptor = openRawResourceFile(resources, name);
     } catch (error) {
-      if (!/^asset:\/\//i.test(uri) || (error as BusinessError).code !== RAW_RESOURCE_NOT_FOUND) throw error as Error;
-
-      let fallback: string;
-      try {
-        fallback = rawResourcePathFromUri(uri, true);
-      } catch (_) {
-        throw error as Error;
+      let fallback = name;
+      if (/^asset:\/\//i.test(uri) && (error as BusinessError).code === RAW_RESOURCE_NOT_FOUND) {
+        try {
+          fallback = rawResourcePathFromUri(uri, true);
+        } catch (_) {
+          // Metro asset names can contain literal percent signs.
+        }
       }
-      if (fallback === name) throw error as Error;
+      if (fallback === name) {
+        throw new ExpoAudioError('ERR_AUDIO_PLAYER_LOAD', cleanError(error as Object), error as Object);
+      }
 
       name = fallback;
       descriptor = openRawResourceFile(resources, name);
@@ -556,7 +556,11 @@ function openPackagedSource(context: ExpoModuleContext, uri: string): SourceFile
 
     return new SourceFile(uri, descriptor.file, descriptor.offset, descriptor.length, false);
   } catch (error) {
-    throw new ExpoAudioError('ERR_AUDIO_PLAYER_LOAD', `The packaged audio '${name}' could not be opened: ${cleanError(error as Object)}`);
+    throw new ExpoAudioError(
+      'ERR_AUDIO_PLAYER_LOAD',
+      `The packaged audio '${name}' could not be opened: ${cleanError(error as Object)}`,
+      error as Object,
+    );
   }
 }
 
@@ -1116,8 +1120,10 @@ abstract class PlaybackController extends OperationQueue {
         await player.play();
       } catch (error) {
         if (this.player === player && this.retainedAudioSession) this.retainedAudioSession = retained;
-        throw error as Error;
+
+        throw new ExpoAudioError('ERR_AUDIO_PLAYBACK', cleanError(error as Object), error as Object);
       }
+
       if (this.player !== player) return;
 
       this.errorValue = null;
@@ -1910,7 +1916,6 @@ function readRecordingStartOptions(value: ESObject): RecordingStartOptions {
 
   const input = value as Record<string, ESObject>;
 
-  if (typeof input.atTime === 'number') options.atTime = input.atTime;
   if (typeof input.forDuration === 'number') options.forDuration = input.forDuration;
 
   return options;
@@ -2040,10 +2045,6 @@ class AudioRecorderController extends OperationQueue {
 
   async stop(): Promise<void> {
     await this.enqueue(async (): Promise<void> => this.stopInternal());
-  }
-
-  startRecordingAtTime(seconds: number): void {
-    this.record({ atTime: seconds });
   }
 
   recordForDuration(seconds: number): void {
@@ -2202,15 +2203,6 @@ class AudioRecorderController extends OperationQueue {
       throw new ExpoAudioError('ERR_AUDIO_RECORDER_NOT_PREPARED', 'Call prepareToRecordAsync() before starting an audio recording.');
     }
 
-    if (options.atTime !== undefined && (!Number.isFinite(options.atTime) || options.atTime < 0)) {
-      throw new ExpoAudioError('ERR_AUDIO_INVALID_RECORDING_TIME', 'Recording start time must be a finite non-negative number.');
-    }
-    if ((options.atTime ?? 0) > 0) {
-      throw new ExpoAudioError(
-        'ERR_AUDIO_RECORDING_AT_TIME_UNSUPPORTED',
-        'HarmonyOS AVRecorder does not provide a device-clock scheduled recording start.',
-      );
-    }
     if (options.forDuration !== undefined && (!Number.isFinite(options.forDuration) || options.forDuration < 0)) {
       throw new ExpoAudioError('ERR_AUDIO_INVALID_RECORDING_DURATION', 'Recording duration must be a finite non-negative number.');
     }
@@ -2622,14 +2614,18 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   @Available({ minApiVersion: '22' })
   private handleBackgroundTaskCanceled(info: backgroundTaskManager.ContinuousTaskCancelInfo): void {
     if (this.destroyed || this.stoppingBackgroundTasks.has(info.id)) return;
+
     for (const entry of this.backgroundTaskIds) {
       const mode = entry[0];
       if (entry[1] !== info.id) continue;
 
       this.backgroundTaskIds.delete(mode);
-      if (!this.inBackground) return;
 
-      this.canceledBackgroundModes.add(mode);
+      const userCanceled = info.reason === backgroundTaskManager.ContinuousTaskCancelReason.USER_CANCEL;
+      if (!this.inBackground && !userCanceled) return;
+
+      if (this.inBackground) this.canceledBackgroundModes.add(mode);
+
       if (mode === BACKGROUND_PLAYBACK_MODE) {
         this.clearAudioSessionRetainers();
         this.pauseAllPlayback();
@@ -2644,10 +2640,12 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
           });
         });
       }
-      this.scheduleBackgroundTaskSync();
+
+      if (this.inBackground) this.scheduleBackgroundTaskSync();
       return;
     }
   }
+
   private backgroundTaskTail: Promise<void> = Promise.resolve();
   private lifecycleTail: Promise<void> = Promise.resolve();
   private nextObjectId: number = 1;
@@ -2681,16 +2679,11 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     const entry = this.preloaded.get(key);
     if (this.destroyed || entry === undefined || !sameSourceHeaders(entry.source.headers, source.headers)) return undefined;
 
-    const prepared = preparePlayer(entry.source, entry.preferredBufferDuration, this);
-    const replacement = new PreloadEntry(entry.source, entry.preferredBufferDuration, prepared);
+    // Remove before awaiting so concurrent consumers cannot claim the same AVPlayer.
+    this.preloaded.delete(key);
 
-    this.preloaded.set(key, replacement);
-    prepared.catch((): void => {
-      if (this.preloaded.get(key) === replacement) this.preloaded.delete(key);
-    });
-
-    const result = await entry.prepared.catch((): undefined => undefined);
-    if (result === undefined || result.player.state === 'prepared') return result;
+    const prepared = await entry.prepared.catch((): undefined => undefined);
+    if (prepared === undefined || prepared.player.state === 'prepared') return prepared;
 
     await this.releasePreload(entry).catch((): void => {});
     return undefined;
@@ -2713,7 +2706,8 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
 
   playbackStateChanged(controller: PlaybackController): void {
     if (this.sessionController === controller) this.updateMediaPlaybackState(controller);
-    if (this.inBackground) this.scheduleBackgroundTaskSync();
+
+    if (this.mode.shouldPlayInBackground === true) this.scheduleBackgroundTaskSync();
 
     if (this.hasActivePlayback()) return;
     if (this.hasSessionRetainer()) return;
@@ -2731,7 +2725,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   }
 
   recordingStateChanged(): void {
-    if (this.inBackground) this.scheduleBackgroundTaskSync();
+    if (this.mode.allowsBackgroundRecording === true) this.scheduleBackgroundTaskSync();
   }
 
   setLockScreenPlayer(controller: AudioPlayerController, active: boolean, metadata?: AudioMetadataInput, options?: LockScreenOptionsInput): void {
@@ -2743,7 +2737,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
         this.lockScreenGeneration += 1;
         this.publishedLockScreenActivation = this.requestedLockScreenActivation;
 
-        if (this.inBackground && this.mode.shouldPlayInBackground === true && this.hasActivePlayback()) {
+        if (this.canContinueInBackground(BACKGROUND_PLAYBACK_MODE) && this.hasActivePlayback()) {
           this.scheduleBackgroundTaskSync();
         } else {
           this.clearMediaSession();
@@ -2954,7 +2948,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   }
 
   private reconcileReleasedPlaybackObject(): void {
-    if (this.inBackground) this.scheduleBackgroundTaskSync();
+    if (this.mode.shouldPlayInBackground === true) this.scheduleBackgroundTaskSync();
     if (!this.hasActivePlayback() && !this.hasSessionRetainer()) this.deactivateAudioSession();
   }
 
@@ -3017,7 +3011,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
       this.playlists.forEach((playlist: PlaylistController): void => playlist.refreshAudioRendererUsage());
     }
 
-    if (this.inBackground) await this.queueBackgroundTaskSync();
+    await this.queueBackgroundTaskSync();
   }
 
   private shouldPlayInSilentMode(): boolean {
@@ -3152,9 +3146,10 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
 
     const duration = Math.max(0, finiteNumber(preferredBufferDuration, 0));
     const load = preparePlayer(source, duration, this);
-    const next = new PreloadEntry(source, duration, load);
+    const next = new PreloadEntry(source, load);
 
     this.preloaded.set(key, next);
+
     const cleanup = entry === undefined ? Promise.resolve() : this.releasePreload(entry).catch((): void => {});
 
     try {
@@ -3162,7 +3157,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     } catch (error) {
       if (this.preloaded.get(key) === next) this.preloaded.delete(key);
 
-      throw new ExpoAudioError('ERR_AUDIO_PRELOAD', cleanError(error as Object));
+      throw new ExpoAudioError('ERR_AUDIO_PRELOAD', cleanError(error as Object), error as Object);
     } finally {
       await cleanup;
     }
@@ -3321,7 +3316,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   }
 
   private async syncBackgroundTask(): Promise<void> {
-    const modes = this.inBackground && !this.destroyed ? this.desiredBackgroundModes() : [];
+    const modes = this.destroyed ? [] : this.desiredBackgroundModes();
 
     if (deviceInfo.sdkApiVersion >= 22) {
       const hadPlayback = this.backgroundTaskIds.has(BACKGROUND_PLAYBACK_MODE);
@@ -3331,19 +3326,22 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
       return;
     }
 
-    let failure: Error | undefined;
+    let failure: Object | undefined;
     if (modes.includes(BACKGROUND_PLAYBACK_MODE)) {
       try {
         await this.ensureBackgroundMediaSession();
       } catch (error) {
         this.suspendUnavailableBackgroundMode(BACKGROUND_PLAYBACK_MODE);
         modes.splice(modes.indexOf(BACKGROUND_PLAYBACK_MODE), 1);
-        failure = error as Error;
+        failure = error as Object;
       }
     }
 
     await this.syncLegacyBackgroundTask(modes);
-    if (failure !== undefined) throw failure;
+    if (failure !== undefined) {
+      const code = failure instanceof ExpoModuleError ? failure.code : 'ERR_ARKTS_MODULE';
+      throw new ExpoAudioError(code, cleanError(failure), failure);
+    }
   }
 
   private async syncLegacyBackgroundTask(modes: string[]): Promise<void> {
@@ -3366,7 +3364,8 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
         if (!this.backgroundModes.includes(mode)) this.suspendUnavailableBackgroundMode(mode);
       }
 
-      throw error as Error;
+      const code = error instanceof ExpoModuleError ? error.code : 'ERR_ARKTS_MODULE';
+      throw new ExpoAudioError(code, cleanError(error as Object), error as Object);
     }
 
     this.backgroundModes = modes;
@@ -3385,7 +3384,8 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
 
   @Available({ minApiVersion: '22' })
   private async syncScopedBackgroundTasks(modes: string[]): Promise<void> {
-    let failure: Error | undefined;
+    let failure: Object | undefined;
+
     for (const entry of this.backgroundTaskIds) {
       const mode = entry[0];
       if (modes.includes(mode)) continue;
@@ -3393,7 +3393,7 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
       try {
         await this.stopScopedBackgroundTask(mode, entry[1]);
       } catch (error) {
-        failure ??= error as Error;
+        failure ??= error as Object;
       }
     }
 
@@ -3403,11 +3403,14 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
         if (!this.backgroundTaskIds.has(mode)) await this.startScopedBackgroundTask(mode);
       } catch (error) {
         this.suspendUnavailableBackgroundMode(mode);
-        failure ??= error as Error;
+        failure ??= error as Object;
       }
     }
 
-    if (failure !== undefined) throw failure;
+    if (failure !== undefined) {
+      const code = failure instanceof ExpoModuleError ? failure.code : 'ERR_ARKTS_MODULE';
+      throw new ExpoAudioError(code, cleanError(failure), failure);
+    }
   }
 
   @Available({ minApiVersion: '22' })
@@ -3444,7 +3447,10 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
       await backgroundTaskManager.stopBackgroundRunning(context, taskId);
     } catch (error) {
       const active = await backgroundTaskManager.getAllContinuousTasks(context, true);
-      if (active.some((task): boolean => task.continuousTaskId === taskId)) throw error as Error;
+      if (active.some((task): boolean => task.continuousTaskId === taskId)) {
+        const code = error instanceof ExpoModuleError ? error.code : 'ERR_ARKTS_MODULE';
+        throw new ExpoAudioError(code, cleanError(error as Object), error as Object);
+      }
     } finally {
       this.stoppingBackgroundTasks.delete(taskId);
     }
@@ -3468,8 +3474,6 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   }
 
   private activePlaybackController(): PlaybackController | undefined {
-    if (this.lockScreenPlayer !== undefined && this.lockScreenPlayer.playing) return this.lockScreenPlayer;
-
     const player = Array.from(this.players.values()).find((entry: AudioPlayerController): boolean => entry.playing);
     if (player !== undefined) return player;
 
@@ -3478,19 +3482,20 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
 
   private async ensureBackgroundMediaSession(): Promise<void> {
     await this.queueMediaSessionOperation(async (): Promise<void> => {
-      if (this.destroyed || !this.inBackground || this.mode.shouldPlayInBackground !== true) return;
+      if (this.destroyed || !this.canContinueInBackground(BACKGROUND_PLAYBACK_MODE) || !this.hasActivePlayback()) return;
 
-      const controller = this.activePlaybackController();
+      const controller = this.lockScreenPlayer ?? this.activePlaybackController();
       if (controller === undefined) return;
 
       const lockScreen = controller === this.lockScreenPlayer;
       const options = lockScreen ? this.lockScreenOptions : undefined;
       const metadata = lockScreen ? this.lockScreenMetadata : undefined;
       const previous = this.sessionController;
+
       const session = await this.ensureMediaSessionNow(controller, options);
       if (!lockScreen || previous !== controller) await this.setMediaSessionMetadata(session, controller, metadata, options);
       await session.setAVPlaybackState(this.mediaPlaybackState(controller), controller.playing ? 1 : 0);
-      if (this.destroyed || !this.inBackground) return;
+      if (this.destroyed) return;
 
       await this.activateMediaSession(session, controller);
     });
@@ -3511,10 +3516,13 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
   }
 
   private suspendUnavailableBackgroundMode(mode: string): void {
-    if (!this.inBackground || this.destroyed) return;
+    if (this.destroyed) return;
 
-    this.canceledBackgroundModes.add(mode);
-    this.suspendBackgroundMode(mode);
+    if (this.inBackground) {
+      this.canceledBackgroundModes.add(mode);
+      this.suspendBackgroundMode(mode);
+    }
+
     if (mode === BACKGROUND_PLAYBACK_MODE && this.lockScreenPlayer === undefined) this.clearMediaSession();
   }
 
@@ -3528,16 +3536,14 @@ class ExpoAudioRuntime implements PlaybackDelegate, RecorderDelegate {
     }
   }
 
-  private async onForeground(): Promise<void> {
+  private onForeground(): void {
     if (this.destroyed) return;
 
     this.inBackground = false;
     this.canceledBackgroundModes.clear();
 
-    await this.stopBackgroundTask();
-
-    if (this.lockScreenPlayer === undefined) this.clearMediaSession();
-    else if (this.sessionController !== this.lockScreenPlayer) {
+    this.scheduleBackgroundTaskSync();
+    if (this.lockScreenPlayer !== undefined && this.sessionController !== this.lockScreenPlayer) {
       this.updateLockScreenMetadata(this.lockScreenPlayer, this.lockScreenMetadata);
     }
 
@@ -4164,9 +4170,8 @@ export class ExpoAudioModule extends ExpoModule {
       .syncFunction('getStatus', (object: ExpoAudioRecorder): RecorderStateRecord => object.controller.currentStatus)
       .syncFunction(
         'startRecordingAtTime',
-        ExpoFunction.ownedTyped1(ExpoValueTypes.number(), (object: ExpoAudioRecorder, seconds: number): void =>
-          object.controller.startRecordingAtTime(seconds),
-        ),
+        // Expo Audio starts immediately on Android, and AVRecorder has no device-clock scheduling.
+        ExpoFunction.ownedTyped1(ExpoValueTypes.number(), (object: ExpoAudioRecorder, _seconds: number): void => object.controller.record({})),
       )
       .asyncFunction(
         'prepareToRecordAsync',

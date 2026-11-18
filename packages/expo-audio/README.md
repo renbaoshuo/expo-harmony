@@ -92,7 +92,7 @@ npm install @expo-harmony/expo-audio expo-audio@~57.0.5
 
 #### `getPreloadedSources()`
 
-返回 `Promise<string[]>`，列出已预加载的音源地址。播放器使用预加载音源后，该地址仍会保留在列表中，直到显式清除。
+返回 `Promise<string[]>`，列出仍可使用的预加载音源地址。与 iOS 一样，预加载项在播放器使用后从列表移除。
 
 #### `getRecordingPermissionsAsync()`
 
@@ -336,7 +336,7 @@ npm install @expo-harmony/expo-audio expo-audio@~57.0.5
 
 #### `AudioRecorder.record(options?)`
 
-开始录音，须先准备录音。`options.atTime` 只支持 `0`；大于 `0` 会报错。`options.forDuration` 可设置录制时长，到时自动停止。
+开始录音，须先准备录音。与 Android 一样，忽略 `options.atTime` 并立即开始录音。`options.forDuration` 可设置录制时长，到时自动停止。
 
 #### `AudioRecorder.stop()`
 
@@ -352,7 +352,7 @@ npm install @expo-harmony/expo-audio expo-audio@~57.0.5
 
 #### `AudioRecorder.startRecordingAtTime(seconds)`
 
-该方法已弃用，只支持 `0`；传入大于 `0` 的值会报错。
+该方法已弃用。调用时立即开始录音，行为与 `record()` 一致。
 
 #### `AudioRecorder.getAvailableInputs()`
 
@@ -559,15 +559,11 @@ Hook `useAudioStream()` 返回的对象，包含 `stream: AudioStream` 和 `isSt
 
 ##### HarmonyOS 上不支持的属性
 
-- `android`、`ios`：不读取这些嵌套配置。
-
-#### `RecordingOptionsWeb`
-
-可选字段 `mimeType` 用于在未指定扩展名时选择格式：`audio/mpeg` 录为 MP3，其他值录为 M4A。`bitsPerSecond` 可作为 `bitRate` 的备用值。
+- `android`、`ios`、`web`：各平台的嵌套配置仅用于对应的平台。
 
 #### `RecordingStartOptions`
 
-`atTime` 只支持 `0`；`forDuration` 可设置录制秒数，到时自动停止。
+`forDuration` 可设置录制秒数，到时自动停止。`atTime` 在 HarmonyOS 上忽略。
 
 #### `RecordingDirectory`
 
@@ -653,7 +649,6 @@ Hook `useAudioStream()` 返回的对象，包含 `stream: AudioStream` 和 `isSt
 | `ERR_AUDIO_RECORDING_UNAVAILABLE` | 当前应用状态下不能录音。 |
 | `ERR_AUDIO_RECORDING_DIRECTORY` | 录音目录不是 `'cache'` 或 `'document'`。 |
 | `ERR_AUDIO_RECORDING_FORMAT_UNSUPPORTED` | 录音扩展名不是 `.m4a` 或 `.mp3`。 |
-| `ERR_AUDIO_INVALID_RECORDING_TIME`、`ERR_AUDIO_RECORDING_AT_TIME_UNSUPPORTED` | 录音开始时间无效或不受支持。 |
 | `ERR_AUDIO_INVALID_RECORDING_DURATION` | 录音时长不是有效的非负数。 |
 | `ERR_AUDIO_RECORDER_ALREADY_PREPARED`、`ERR_AUDIO_RECORDER_NOT_PREPARED`、`ERR_AUDIO_RECORDER_PREPARE`、`ERR_AUDIO_RECORDER_RELEASED`、`ERR_AUDIO_RECORDING_STOP` | 录音器准备、状态或停止录音失败。 |
 | `ERR_AUDIO_INPUT_UNAVAILABLE`、`ERR_AUDIO_INVALID_INPUT`、`ERR_AUDIO_INPUT_SELECTION_UNAVAILABLE`、`ERR_AUDIO_INPUT_NOT_FOUND` | 录音输入不可用、标识无效或无法切换。 |
