@@ -75,7 +75,7 @@ demo 的配置在 [`apps/demo/app.json`](../apps/demo/app.json)，要改四处�
 ```
 
 - `bundleName` 是应用包名，必填。
-- `targetSdkVersion` 和 `compatibleSdkVersion` 默认分别为 24（HarmonyOS 6.1.1）和 20（HarmonyOS 6.0.0）。通过 [expo-build-properties](../packages/expo-build-properties/README.md) 配置 SDK、ABI、SO 打包和 release 选项。应用的最低兼容版本须满足所有原生依赖的要求，Demo 的通知和网格渐变模块要求至少 API 23。
+- `targetSdkVersion` 和 `compatibleSdkVersion` 默认分别为 24（HarmonyOS 6.1.1）和 20（HarmonyOS 6.0.0）。主包支持最低 API 14（HarmonyOS 5.0.2）。可通过 [expo-build-properties](../packages/expo-build-properties/README.md) 设置应用的最低兼容版本，取值须满足所有原生依赖的要求。Demo 的通知和网格渐变模块要求至少 API 23。
 - `expo.harmony.permissions` 会写入生成的 `module.json5`。HarmonyOS 还会在构建时合并所用 HAR 的权限声明。上例的 `CAMERA` 用于应用内嵌相机，系统拍照选择器不需要它。[华为 HAR 打包说明](https://developer.huawei.com/consumer/cn/doc/HarmonyOS-Guides/har-package/) · [CameraPicker API](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-camerapicker/)
 
 选取照片、视频、联系人或文件时，使用系统选择器可以将访问范围限定为用户选中的内容。确需全库访问等受限能力时，由应用开发者按业务场景向华为提交申请，并按各模块的说明在 `expo.harmony.permissions` 声明权限。验证受限接口的正向流程时，签名 Profile 需要包含对应 ACL，并允许在目标调试设备上安装。已提交申请的应用可按华为流程使用试用调试 Profile。发布时使用包含获批 ACL 的发布 Profile。对于 `user_grant` 权限，应用安装后还要在运行时取得用户授权。[华为受限开放权限](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/restricted-permissions) · [调试与发布 Profile 配置](https://developer.huawei.com/consumer/cn/doc/harmonyos-faqs/faqs-appgallery-25/)
