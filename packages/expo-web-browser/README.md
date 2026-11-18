@@ -20,7 +20,7 @@ npm install @expo-harmony/expo-web-browser expo-web-browser@~57.0.3
 
 #### `WebBrowser.openBrowserAsync(url, browserParams)`
 
-`url` 须为带主机的 HTTP 或 HTTPS 地址；`browserParams` 为可选的 `WebBrowserOpenOptions`，默认 `{}`。在系统选择的外部浏览器中打开网页，返回 `Promise<WebBrowserResult>`。浏览器启动成功后返回 `{ type: 'opened' }`，不等待页面加载或浏览器关闭。浏览器启动中或认证会话进行中再次调用时返回 `{ type: 'locked' }`。调用时应用不在前台会抛出 `ERR_WEB_BROWSER_UNAVAILABLE`。
+`url` 须为带主机的 HTTP 或 HTTPS 地址；`browserParams` 为可选的 `WebBrowserOpenOptions`，默认 `{}`。在系统选择的外部浏览器中打开网页，返回 `Promise<WebBrowserResult>`。浏览器启动成功后返回 `{ type: 'opened' }`，不等待页面加载或浏览器关闭。同一个 UIAbility 内，浏览器启动中或认证会话进行中再次调用时返回 `{ type: 'locked' }`。调用时应用不在前台会抛出 `ERR_WEB_BROWSER_UNAVAILABLE`。
 
 HarmonyOS 通过系统打开外部浏览器。`browserParams.browserPackage` 可指定已安装浏览器的 HarmonyOS `bundleName`，系统会在该应用中查找匹配的网页处理能力。省略时由系统选择。页面外观和窗口行为由浏览器决定。
 

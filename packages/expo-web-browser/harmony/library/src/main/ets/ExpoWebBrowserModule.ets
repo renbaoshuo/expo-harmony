@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import type { Want } from '@kit.AbilityKit';
+import type { Want, common } from '@kit.AbilityKit';
 import { uri, url } from '@kit.ArkTS';
 import {
   ExpoAppLifecycleState,
@@ -17,11 +17,12 @@ import {
   ExpoValueTypes,
 } from '@expo-harmony/expo-modules-core';
 
-// Stage-model Want does not expose the legacy Action and Entity enums.
+// The Stage-model SDK does not export constants for these implicit Want values.
 const VIEW_DATA_ACTION: string = 'ohos.want.action.viewData';
 const BROWSABLE_ENTITY: string = 'entity.system.browsable';
 const URI_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 const SCHEME_REDIRECT = /^[a-z][a-z0-9+.-]*:(?:\/\/)?$/i;
+const activeBrowserAbilities: WeakSet<common.UIAbilityContext> = new WeakSet();
 
 enum ResultType {
   OPENED = 'opened',
@@ -52,9 +53,8 @@ class AuthSession {
   readonly resolve: (result: BrowserResult) => void;
   readonly reject: (error: ExpoModuleError) => void;
   backgrounded: boolean = false;
-  returned: boolean = false;
   launched: boolean = false;
-  pendingRedirect?: string;
+  resultBeforeLaunch?: BrowserResult;
 
   constructor(redirect: string | undefined, resolve: (result: BrowserResult) => void, reject: (error: ExpoModuleError) => void) {
     this.redirect = redirect;
@@ -65,8 +65,8 @@ class AuthSession {
 
 export class ExpoWebBrowserModule extends ExpoModule {
   private session?: AuthSession;
-  private launching: boolean = false;
-  private cancel?: (error: ExpoModuleError) => void;
+  private rejectPendingLaunch?: (error: ExpoModuleError) => void;
+  private ownedAbility?: common.UIAbilityContext;
   private destroyed: boolean = false;
 
   definition(): ExpoModuleDefinition {
@@ -116,9 +116,8 @@ export class ExpoWebBrowserModule extends ExpoModule {
           const session = this.session;
           if (session === undefined || !session.backgrounded) return;
 
-          session.returned = true;
-          // A link delivers onNewWant before onForeground; an unmatched return dismisses.
-          if (session.launched) this.finishAuthSession(session, { type: ResultType.DISMISS });
+          // HarmonyOS delivers the matching Want before bringing the Ability to the foreground.
+          this.completeAfterLaunch(session, { type: ResultType.DISMISS });
         })
         .onPrepareForReload(async (): Promise<void> => this.destroy())
         .onAbilityDestroy((): void => this.destroy())
@@ -127,18 +126,21 @@ export class ExpoWebBrowserModule extends ExpoModule {
   }
 
   private async openBrowser(url: string, browserPackage?: string): Promise<BrowserResult> {
-    if (!this.canLaunchBrowser()) return { type: ResultType.LOCKED };
+    const ability = this.availableAbility();
+    if (ability === undefined) return { type: ResultType.LOCKED };
 
     normalizeURL(url, true);
 
-    await this.launchBrowser(url, browserPackage);
+    await this.launchBrowser(ability, url, browserPackage);
     this.assertHost();
 
     return { type: ResultType.OPENED };
   }
 
   private async openAuthSession(url: string, redirect: string | undefined): Promise<BrowserResult> {
-    if (!this.canLaunchBrowser()) {
+    const ability = this.availableAbility();
+
+    if (ability === undefined) {
       throw new ExpoModuleError('ERR_WEB_BROWSER_ALREADY_OPEN', 'A browser session is already open.');
     }
 
@@ -149,23 +151,24 @@ export class ExpoWebBrowserModule extends ExpoModule {
       const session = new AuthSession(expected, resolve, reject);
       this.session = session;
 
-      this.launchBrowser(url)
+      this.launchBrowser(ability, url)
         .then((): void => {
           if (this.session !== session) return;
+
           this.assertHost();
 
           session.launched = true;
-          if (session.pendingRedirect !== undefined) {
-            this.finishAuthSession(session, { type: ResultType.SUCCESS, url: session.pendingRedirect });
-          } else if (session.returned) {
-            this.finishAuthSession(session, { type: ResultType.DISMISS });
+          const result = session.resultBeforeLaunch;
+          if (result !== undefined) {
+            this.finishAuthSession(session, result);
           }
         })
         .catch((error: ExpoModuleError): void => {
           if (this.session !== session) return;
 
           this.session = undefined;
-          // Match SDK 57's auth-start failure contract while preserving host errors.
+          this.releaseBrowser();
+
           session.reject(
             error.code === 'ERR_WEB_BROWSER_OPEN_BROWSER'
               ? new ExpoModuleError('ERR_WEB_AUTH_SESSION_FAILED_TO_START', 'The authentication session could not be started.')
@@ -175,25 +178,27 @@ export class ExpoWebBrowserModule extends ExpoModule {
     });
   }
 
-  private async launchBrowser(url: string, browserPackage?: string): Promise<void> {
-    this.launching = true;
+  private async launchBrowser(ability: common.UIAbilityContext, url: string, browserPackage?: string): Promise<void> {
+    activeBrowserAbilities.add(ability);
+    this.ownedAbility = ability;
+
     const cancellation = new Promise<void>((_resolve, reject): void => {
-      this.cancel = reject;
+      this.rejectPendingLaunch = reject;
     });
 
     try {
       const want: Want = { action: VIEW_DATA_ACTION, entities: [BROWSABLE_ENTITY], uri: url };
       if (browserPackage) want.bundleName = browserPackage;
 
-      await Promise.race([this.context.uiAbilityContext.startAbility(want), cancellation]);
+      await Promise.race([ability.startAbility(want), cancellation]);
     } catch (_) {
       this.assertHost();
 
       // Platform errors may echo the authentication URL; do not expose their cause.
       throw new ExpoModuleError('ERR_WEB_BROWSER_OPEN_BROWSER', 'Unable to open the web browser.');
     } finally {
-      this.launching = false;
-      this.cancel = undefined;
+      this.rejectPendingLaunch = undefined;
+      this.releaseBrowser();
     }
   }
 
@@ -202,17 +207,19 @@ export class ExpoWebBrowserModule extends ExpoModule {
 
     if (session?.redirect === undefined || url === undefined || !matchesRedirect(session.redirect, url)) return;
 
-    if (session.launched) {
-      this.finishAuthSession(session, { type: ResultType.SUCCESS, url });
-    } else if (session.pendingRedirect === undefined) {
-      session.pendingRedirect = url;
-    }
+    this.completeAfterLaunch(session, { type: ResultType.SUCCESS, url });
+  }
+
+  private completeAfterLaunch(session: AuthSession, result: BrowserResult): void {
+    if (session.launched) this.finishAuthSession(session, result);
+    else session.resultBeforeLaunch ??= result;
   }
 
   private finishAuthSession(session: AuthSession, result: BrowserResult): void {
     if (this.session !== session) return;
 
     this.session = undefined;
+    this.releaseBrowser();
     session.resolve(result);
   }
 
@@ -222,28 +229,38 @@ export class ExpoWebBrowserModule extends ExpoModule {
     }
   }
 
-  private canLaunchBrowser(): boolean {
+  private availableAbility(): common.UIAbilityContext | undefined {
     this.assertHost();
 
-    // The first launch may background the host before an overlapping call arrives.
-    if (this.launching || this.session !== undefined) return false;
-
-    if (this.context.isHeadless || this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) {
-      throw new ExpoModuleError('ERR_WEB_BROWSER_UNAVAILABLE', 'Opening a browser requires a foreground UIAbility.');
+    if (!this.context.isHeadless) {
+      const ability = this.context.uiAbilityContext;
+      // A launch may background the Ability before a second runtime calls this module.
+      if (activeBrowserAbilities.has(ability)) return undefined;
+      if (this.context.appLifecycleState === ExpoAppLifecycleState.FOREGROUND) return ability;
     }
 
-    return true;
+    throw new ExpoModuleError('ERR_WEB_BROWSER_UNAVAILABLE', 'Opening a browser requires a foreground UIAbility.');
+  }
+
+  private releaseBrowser(): void {
+    const ability = this.ownedAbility;
+    if (ability === undefined || this.rejectPendingLaunch !== undefined || this.session !== undefined) return;
+
+    activeBrowserAbilities.delete(ability);
+    this.ownedAbility = undefined;
   }
 
   private destroy(): void {
     if (this.destroyed) return;
 
     this.destroyed = true;
+
     const session = this.session;
     this.session = undefined;
+    this.releaseBrowser();
 
     session?.reject(new ExpoModuleError('ERR_WEB_BROWSER_DESTROYED', 'The WebBrowser host was destroyed during a browser session.'));
-    this.cancel?.(new ExpoModuleError('ERR_WEB_BROWSER_DESTROYED', 'The WebBrowser host was destroyed during a browser launch.'));
+    this.rejectPendingLaunch?.(new ExpoModuleError('ERR_WEB_BROWSER_DESTROYED', 'The WebBrowser host was destroyed during a browser launch.'));
   }
 }
 
