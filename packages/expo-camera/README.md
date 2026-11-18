@@ -44,7 +44,7 @@ npm install @expo-harmony/expo-camera expo-camera@~57.0.6
 
 #### `CameraView.getSupportedFeatures()`
 
-返回 `{ isModernBarcodeScannerAvailable, toggleRecordingAsyncAvailable }`。`isModernBarcodeScannerAvailable` 表示设备是否提供系统扫码能力；`toggleRecordingAsyncAvailable` 在 HarmonyOS 上始终为 `true`。
+返回 `{ isModernBarcodeScannerAvailable, toggleRecordingAsyncAvailable }`。`isModernBarcodeScannerAvailable` 表示设备是否提供系统扫码能力。`toggleRecordingAsyncAvailable` 表示设备是否提供支持暂停和恢复的系统录像能力。
 
 #### `CameraView.getAvailablePictureSizesAsync()`
 
@@ -69,7 +69,7 @@ npm install @expo-harmony/expo-camera expo-camera@~57.0.6
 - `mirror`：镜像前摄照片。
 - `pictureRef`：设为 `true` 时返回 `PictureRef`。
 - `maxDownsampling`：解码照片时允许的最大降采样倍数，必须为正整数。
-- `onPictureSaved`：拍照完成时通过回调传递照片结果；设置后 Promise 返回 `null`。
+- `onPictureSaved`：保存完成后通过回调传递照片结果。设置后 Promise 在收到相机输出时返回 `null`，照片仍可能在处理中。
 - `shutterSound`：设为 `false` 不会关闭系统快门声，并会给出警告。
 
 默认处理会校正照片方向，返回宽高与处理后的图片一致。录像模式、录像中、预览暂停或照片尚未就绪时调用会拒绝。无可用拍照分辨率的设备仍可预览，但拍照会失败。
@@ -84,8 +84,8 @@ HarmonyOS 上不支持的拍照选项：
 
 `options` 支持：
 
-- `maxDuration`：最长录制时长，单位秒，到达限制后自动停止。API 18 及以上的整数秒限制由系统录制器管理。
-- `maxFileSize`：录制文件的大小阈值，单位字节。应用检测到达到阈值后自动停止，写入缓冲和 MP4 封装可能使最终大小超过阈值。
+- `maxDuration`：最长录制时长，单位秒，取非负数。达到限制后自动停止。API 18 及以上的整数秒限制由系统录制器管理。
+- `maxFileSize`：录制文件的大小阈值，单位字节，取非负整数。应用检测到达到阈值后自动停止，写入缓冲和 MP4 封装可能使最终大小超过阈值。
 - `mirror`：镜像前摄录像；需要 HarmonyOS SDK API 15 及以上，较低版本不生效。
 - `codec`：`'avc1'` 或 `'hvc1'`。按相机和编码器共同支持的分辨率及帧率选择录像档位；同一档位可用两种编码时默认使用 H.264。
 
@@ -155,7 +155,7 @@ HarmonyOS 上不支持的拍照选项：
 
 ##### `mute`
 
-`boolean`，默认 `false`。设为 `true` 时录像不录制声音；设为 `false` 时需先获麦克风权限。
+`boolean`，默认 `false`。设为 `true` 时录像不录制声音。设为 `false` 时需先获麦克风权限。该设置在开始录制时读取。
 
 ##### `autofocus`
 

@@ -5,8 +5,8 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import image from '@ohos.multimedia.image';
-import deviceInfo from '@ohos.deviceInfo';
+import { deviceInfo } from '@kit.BasicServicesKit';
+import { image } from '@kit.ImageKit';
 
 export const EXIF_KEYS: image.PropertyKey[] = [
   image.PropertyKey.BITS_PER_SAMPLE,
@@ -325,6 +325,8 @@ const EXIF_DOUBLE_KEYS: image.PropertyKey[] = [
 
 function rationalNumber(value: string): number | undefined {
   const parts = value.trim().split('/');
+  if (parts.length > 2 || parts[0].trim().length === 0) return undefined;
+
   const numerator = Number(parts[0]);
   const denominator = parts.length > 1 ? Number(parts[1]) : 1;
   if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return undefined;
@@ -384,36 +386,41 @@ export function decodeExifProperties(properties: Record<image.PropertyKey, strin
 }
 
 export function encodeExifMetadata(metadata?: Record<string, ESObject>): Record<image.PropertyKey, string | null> {
-  const records = {} as Record<image.PropertyKey, string | null>;
-  if (metadata === undefined) return records;
+  const tags = {} as Record<image.PropertyKey, string | null>;
+  if (metadata === undefined) return tags;
 
   Object.keys(metadata).forEach((name: string): void => {
     const key = name as image.PropertyKey;
     const value: ESObject = metadata[name];
     if (!EXIF_KEYS.includes(key) || !isWritableExifKey(key) || value === undefined || value === null) return;
 
-    if (typeof value !== 'number' || !Number.isFinite(value)) {
-      records[key] = String(value);
+    if (typeof value === 'string') {
+      tags[key] = value;
       return;
     }
+    if (typeof value !== 'number' || !Number.isFinite(value)) return;
 
     if (key === image.PropertyKey.GPS_LATITUDE || key === image.PropertyKey.GPS_DEST_LATITUDE) {
-      records[key] = coordinateString(value);
-      const reference = key === image.PropertyKey.GPS_LATITUDE ? image.PropertyKey.GPS_LATITUDE_REF : image.PropertyKey.GPS_DEST_LATITUDE_REF;
-      records[reference] = value < 0 ? 'S' : 'N';
+      if (Math.abs(value) > 90) return;
+
+      const ref = key === image.PropertyKey.GPS_LATITUDE ? image.PropertyKey.GPS_LATITUDE_REF : image.PropertyKey.GPS_DEST_LATITUDE_REF;
+      tags[key] = coordinateString(value);
+      tags[ref] = value < 0 ? 'S' : 'N';
     } else if (key === image.PropertyKey.GPS_LONGITUDE || key === image.PropertyKey.GPS_DEST_LONGITUDE) {
-      records[key] = coordinateString(value);
-      const reference = key === image.PropertyKey.GPS_LONGITUDE ? image.PropertyKey.GPS_LONGITUDE_REF : image.PropertyKey.GPS_DEST_LONGITUDE_REF;
-      records[reference] = value < 0 ? 'W' : 'E';
+      if (Math.abs(value) > 180) return;
+
+      const ref = key === image.PropertyKey.GPS_LONGITUDE ? image.PropertyKey.GPS_LONGITUDE_REF : image.PropertyKey.GPS_DEST_LONGITUDE_REF;
+      tags[key] = coordinateString(value);
+      tags[ref] = value < 0 ? 'W' : 'E';
     } else if (key === image.PropertyKey.GPS_ALTITUDE) {
-      records[key] = rationalString(Math.abs(value));
-      records[image.PropertyKey.GPS_ALTITUDE_REF] = value < 0 ? '1' : '0';
+      tags[key] = rationalString(Math.abs(value));
+      tags[image.PropertyKey.GPS_ALTITUDE_REF] = value < 0 ? '1' : '0';
     } else if (EXIF_DOUBLE_KEYS.includes(key)) {
-      records[key] = rationalString(value);
+      tags[key] = rationalString(value);
     } else {
-      records[key] = String(Math.trunc(value));
+      tags[key] = String(Math.trunc(value));
     }
   });
 
-  return records;
+  return tags;
 }

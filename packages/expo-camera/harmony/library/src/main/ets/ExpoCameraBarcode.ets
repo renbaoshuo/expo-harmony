@@ -6,9 +6,9 @@
  */
 
 import { camera } from '@kit.CameraKit';
-import { BusinessError } from '@kit.BasicServicesKit';
+import { BusinessError, systemDateTime } from '@kit.BasicServicesKit';
+import { image } from '@kit.ImageKit';
 import { detectBarcode, scanBarcode, scanCore } from '@kit.ScanKit';
-import image from '@ohos.multimedia.image';
 
 export const SCAN_CAPABILITY: string = 'SystemCapability.Multimedia.Scan.ScanBarcode';
 
@@ -67,46 +67,39 @@ export interface BarcodePreviewGeometry {
   offsetY: number;
 }
 
-function barcodeType(type: scanCore.ScanType): string {
-  if (type === scanCore.ScanType.AZTEC_CODE) return 'aztec';
-  if (type === scanCore.ScanType.CODABAR_CODE) return 'codabar';
-  if (type === scanCore.ScanType.CODE39_CODE) return 'code39';
-  if (type === scanCore.ScanType.CODE93_CODE) return 'code93';
-  if (type === scanCore.ScanType.CODE128_CODE) return 'code128';
-  if (type === scanCore.ScanType.DATAMATRIX_CODE) return 'datamatrix';
-  if (type === scanCore.ScanType.EAN8_CODE) return 'ean8';
-  if (type === scanCore.ScanType.EAN13_CODE) return 'ean13';
-  if (type === scanCore.ScanType.ITF14_CODE) return 'itf14';
-  if (type === scanCore.ScanType.PDF417_CODE) return 'pdf417';
-  if (type === scanCore.ScanType.QR_CODE) return 'qr';
-  if (type === scanCore.ScanType.UPC_A_CODE) return 'upc_a';
-  if (type === scanCore.ScanType.UPC_E_CODE) return 'upc_e';
-  return 'unknown';
+interface BarcodeFormat {
+  expoType: string;
+  scanType: scanCore.ScanType;
 }
 
-function scanType(type: string): scanCore.ScanType | undefined {
-  if (type === 'aztec') return scanCore.ScanType.AZTEC_CODE;
-  if (type === 'codabar') return scanCore.ScanType.CODABAR_CODE;
-  if (type === 'code39') return scanCore.ScanType.CODE39_CODE;
-  if (type === 'code93') return scanCore.ScanType.CODE93_CODE;
-  if (type === 'code128') return scanCore.ScanType.CODE128_CODE;
-  if (type === 'datamatrix') return scanCore.ScanType.DATAMATRIX_CODE;
-  if (type === 'ean8') return scanCore.ScanType.EAN8_CODE;
-  if (type === 'ean13') return scanCore.ScanType.EAN13_CODE;
-  if (type === 'itf14') return scanCore.ScanType.ITF14_CODE;
-  if (type === 'pdf417') return scanCore.ScanType.PDF417_CODE;
-  if (type === 'qr') return scanCore.ScanType.QR_CODE;
-  if (type === 'upc_a') return scanCore.ScanType.UPC_A_CODE;
-  if (type === 'upc_e') return scanCore.ScanType.UPC_E_CODE;
-  return undefined;
+const BARCODE_FORMATS: BarcodeFormat[] = [
+  { expoType: 'aztec', scanType: scanCore.ScanType.AZTEC_CODE },
+  { expoType: 'codabar', scanType: scanCore.ScanType.CODABAR_CODE },
+  { expoType: 'code39', scanType: scanCore.ScanType.CODE39_CODE },
+  { expoType: 'code93', scanType: scanCore.ScanType.CODE93_CODE },
+  { expoType: 'code128', scanType: scanCore.ScanType.CODE128_CODE },
+  { expoType: 'datamatrix', scanType: scanCore.ScanType.DATAMATRIX_CODE },
+  { expoType: 'ean8', scanType: scanCore.ScanType.EAN8_CODE },
+  { expoType: 'ean13', scanType: scanCore.ScanType.EAN13_CODE },
+  { expoType: 'itf14', scanType: scanCore.ScanType.ITF14_CODE },
+  { expoType: 'pdf417', scanType: scanCore.ScanType.PDF417_CODE },
+  { expoType: 'qr', scanType: scanCore.ScanType.QR_CODE },
+  { expoType: 'upc_a', scanType: scanCore.ScanType.UPC_A_CODE },
+  { expoType: 'upc_e', scanType: scanCore.ScanType.UPC_E_CODE },
+];
+
+function barcodeType(type: scanCore.ScanType): string {
+  return BARCODE_FORMATS.find((format: BarcodeFormat): boolean => format.scanType === type)?.expoType ?? 'unknown';
 }
 
 export function scanTypes(value?: string[], allWhenEmpty: boolean = true): scanCore.ScanType[] {
-  if (value === undefined || value.length === 0) return allWhenEmpty ? [scanCore.ScanType.ALL] : [];
+  if (value === undefined || value.length === 0) {
+    return allWhenEmpty ? BARCODE_FORMATS.map((format: BarcodeFormat): scanCore.ScanType => format.scanType) : [];
+  }
 
-  return value
-    .map((type: string): scanCore.ScanType | undefined => scanType(type))
-    .filter((type: scanCore.ScanType | undefined): boolean => type !== undefined) as scanCore.ScanType[];
+  return BARCODE_FORMATS
+    .filter((format: BarcodeFormat): boolean => value.includes(format.expoType))
+    .map((format: BarcodeFormat): scanCore.ScanType => format.scanType);
 }
 
 export function barcodeResult(value: scanBarcode.ScanResult, includeGeometry: boolean = true): BarcodeResult {
@@ -299,14 +292,16 @@ export class CameraBarcodeAnalyzer {
     let types: scanCore.ScanType[] = [];
 
     try {
-      const now = Date.now();
+      const now = systemDateTime.getUptime(systemDateTime.TimeType.STARTUP);
+
       if (!this.released && this.canScan() && !this.decoding && now >= this.nextScan) {
         this.nextScan = now + SCAN_INTERVAL_MS;
-        const requested = this.getBarcodeTypes();
-        types = scanTypes(requested);
+        types = scanTypes(this.getBarcodeTypes());
+
         if (types.length > 0) {
           const size = frame.size;
           const component = await frame.getComponent(image.ComponentType.JPEG);
+
           scan = {
             byteBuffer: packNv21(component, size.width, size.height),
             width: size.width,
@@ -329,12 +324,13 @@ export class CameraBarcodeAnalyzer {
     const geometry = this.getGeometry(frame.width, frame.height);
 
     try {
-      const result = await detectBarcode.decodeImage(frame, { scanTypes: types });
-      const liveGeometry = geometry === this.getGeometry(frame.width, frame.height) ? geometry : undefined;
+      const result = await detectBarcode.decodeImage(frame, { scanTypes: types, enableMultiMode: true });
+      const current = geometry === this.getGeometry(frame.width, frame.height) ? geometry : undefined;
 
       for (const value of result.scanResults) {
         if (this.released || !this.canScan()) return;
-        const barcode = previewBarcodeResult(value, frame, liveGeometry);
+
+        const barcode = previewBarcodeResult(value, frame, current);
         const requested = this.getBarcodeTypes();
         if (barcode.type !== 'unknown' && (requested === undefined || requested.length === 0 || requested.includes(barcode.type))) {
           this.onBarcodeScanned(barcode);

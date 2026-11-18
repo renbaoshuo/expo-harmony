@@ -13,6 +13,7 @@ import {
   ExpoModuleDefinition,
   ExpoModuleError,
   ExpoPermissionStatus,
+  ExpoRecordShape,
   ExpoSharedObjectClassDefinition,
   ExpoSharedRef,
   ExpoValueType,
@@ -22,13 +23,13 @@ import {
 } from '@expo-harmony/expo-modules-core';
 import { ImageLoaderInterfaceKey } from '@expo-harmony/expo-image-loader';
 import { Permissions } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { camera } from '@kit.CameraKit';
+import { fileIo as fs, fileUri } from '@kit.CoreFileKit';
+import { image } from '@kit.ImageKit';
 import { media } from '@kit.MediaKit';
 import { detectBarcode, scanBarcode, scanCore } from '@kit.ScanKit';
-import fs from '@ohos.file.fs';
-import image from '@ohos.multimedia.image';
-import util from '@ohos.util';
 import { BarcodeResult, barcodeResult, SCAN_CAPABILITY, scanTypes } from './ExpoCameraBarcode';
 import { ExpoCameraError } from './ExpoCameraError';
 import { ensureDirectory, packPicture, readBuffer, uniquePath } from './ExpoCameraFiles';
@@ -37,6 +38,8 @@ import { BarcodeScannerSettings, buildExpoCameraView, ExpoCameraViewState, Pictu
 
 const CAMERA_PERMISSION: Permissions = 'ohos.permission.CAMERA';
 const MICROPHONE_PERMISSION: Permissions = 'ohos.permission.MICROPHONE';
+const CAMERA_CAPABILITY = 'SystemCapability.Multimedia.Camera.Core';
+const RECORDER_CAPABILITY = 'SystemCapability.Multimedia.Media.AVRecorder';
 
 interface SavePictureOptions {
   quality?: number;
@@ -46,96 +49,130 @@ interface SavePictureOptions {
 
 type ScannerOptions = BarcodeScannerSettings;
 
-function requireRecord(value: ESObject, path: string): Record<string, ESObject> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new ExpoModuleError('ERR_INVALID_ARGUMENT_TYPE', `${path} expected an object, received ${value === null ? 'null' : typeof value}.`);
-  }
-  return value as Record<string, ESObject>;
-}
-
-function optionalField<Value>(record: Record<string, ESObject>, key: string, type: ExpoValueType<Value>, path: string): Value | undefined {
-  const value: ESObject = record[key];
-  return value === undefined ? undefined : type.decode(value, `${path}.${key}`);
-}
-
-function inputRecordType<Value>(name: string, decode: (record: Record<string, ESObject>, path: string) => Value): ExpoValueType<Value> {
-  return new ExpoValueType<Value>(
+function optionsType<Value>(name: string, shape: ExpoRecordShape): ExpoValueType<Value> {
+  return ExpoValueTypes.shapedRecord<Value>(
     name,
-    (value: ESObject, path: string): Value => decode(requireRecord(value, path), path),
-    (value: Value): ESObject => value as ESObject,
+    shape,
+    (fields: Record<string, ESObject>): Value => fields as ESObject as Value,
+    (value: Value): Record<string, ESObject> => value as ESObject as Record<string, ESObject>,
   );
 }
 
-const COPY_RECORD_TYPE: ExpoValueType<Record<string, ESObject>> = inputRecordType(
-  'plain object',
-  (record: Record<string, ESObject>): Record<string, ESObject> => record,
-);
+const METADATA_TYPE = ExpoValueTypes.record(ExpoValueTypes.any());
 const STRING_ARRAY_TYPE = ExpoValueTypes.array(ExpoValueTypes.string());
-const SAVE_PICTURE_OPTIONS_TYPE: ExpoValueType<SavePictureOptions> = inputRecordType(
+
+const SAVE_PICTURE_OPTIONS_TYPE = optionsType<SavePictureOptions>(
   'SavePictureOptions',
-  (record: Record<string, ESObject>, path: string): SavePictureOptions => ({
-    quality: optionalField(record, 'quality', ExpoValueTypes.number(), path),
-    base64: optionalField(record, 'base64', ExpoValueTypes.boolean(), path),
-    metadata: optionalField(record, 'metadata', COPY_RECORD_TYPE, path),
-  }),
+  new ExpoRecordShape()
+    .field('quality', ExpoValueTypes.number())
+    .field('base64', ExpoValueTypes.boolean())
+    .field('metadata', METADATA_TYPE),
 );
-const PICTURE_OPTIONS_TYPE: ExpoValueType<PictureOptions> = inputRecordType(
+
+const PICTURE_OPTIONS_TYPE = optionsType<PictureOptions>(
   'PictureOptions',
-  (record: Record<string, ESObject>, path: string): PictureOptions => ({
-    quality: optionalField(record, 'quality', ExpoValueTypes.number(), path),
-    base64: optionalField(record, 'base64', ExpoValueTypes.boolean(), path),
-    exif: optionalField(record, 'exif', ExpoValueTypes.boolean(), path),
-    additionalExif: optionalField(record, 'additionalExif', COPY_RECORD_TYPE, path),
-    id: optionalField(record, 'id', ExpoValueTypes.number(), path),
-    fastMode: optionalField(record, 'fastMode', ExpoValueTypes.boolean(), path),
-    mirror: optionalField(record, 'mirror', ExpoValueTypes.boolean(), path),
-    skipProcessing: optionalField(record, 'skipProcessing', ExpoValueTypes.boolean(), path),
-    imageType: optionalField(record, 'imageType', ExpoValueTypes.string(), path),
-    pictureRef: optionalField(record, 'pictureRef', ExpoValueTypes.boolean(), path),
-    shutterSound: optionalField(record, 'shutterSound', ExpoValueTypes.boolean(), path),
-    maxDownsampling: optionalField(record, 'maxDownsampling', ExpoValueTypes.number(), path),
-  }),
+  new ExpoRecordShape()
+    .field('quality', ExpoValueTypes.number())
+    .field('base64', ExpoValueTypes.boolean())
+    .field('exif', ExpoValueTypes.boolean())
+    .field('additionalExif', METADATA_TYPE)
+    .field('id', ExpoValueTypes.number())
+    .field('fastMode', ExpoValueTypes.boolean())
+    .field('mirror', ExpoValueTypes.boolean())
+    .field('skipProcessing', ExpoValueTypes.boolean())
+    .field('imageType', ExpoValueTypes.string())
+    .field('pictureRef', ExpoValueTypes.boolean())
+    .field('shutterSound', ExpoValueTypes.boolean())
+    .field('maxDownsampling', ExpoValueTypes.number()),
 );
-const RECORDING_OPTIONS_TYPE: ExpoValueType<RecordingOptions> = inputRecordType(
+
+const RECORDING_OPTIONS_TYPE = optionsType<RecordingOptions>(
   'RecordingOptions',
-  (record: Record<string, ESObject>, path: string): RecordingOptions => ({
-    maxDuration: optionalField(record, 'maxDuration', ExpoValueTypes.number(), path),
-    maxFileSize: optionalField(record, 'maxFileSize', ExpoValueTypes.number(), path),
-    mirror: optionalField(record, 'mirror', ExpoValueTypes.boolean(), path),
-    codec: optionalField(record, 'codec', ExpoValueTypes.string(), path),
-  }),
+  new ExpoRecordShape()
+    .field('maxDuration', ExpoValueTypes.number())
+    .field('maxFileSize', ExpoValueTypes.number())
+    .field('mirror', ExpoValueTypes.boolean())
+    .field('codec', ExpoValueTypes.string()),
 );
-const SCANNER_OPTIONS_TYPE: ExpoValueType<ScannerOptions> = inputRecordType(
+
+const SCANNER_OPTIONS_TYPE = optionsType<ScannerOptions>(
   'ScannerOptions',
-  (record: Record<string, ESObject>, path: string): ScannerOptions => ({
-    barcodeTypes: optionalField(record, 'barcodeTypes', STRING_ARRAY_TYPE, path),
-  }),
+  new ExpoRecordShape().field('barcodeTypes', STRING_ARRAY_TYPE),
 );
 
 class CameraPictureRef extends ExpoSharedRef<image.PixelMap> {
   readonly width: number;
   readonly height: number;
-  private readonly saveBody: (pixel: image.PixelMap, options: SavePictureOptions) => Promise<SavedPicture>;
+  private saves = 0;
+  private released = false;
 
   constructor(
     context: ExpoModuleContext,
     pixel: image.PixelMap,
     width: number,
     height: number,
-    saveBody: (pixel: image.PixelMap, options: SavePictureOptions) => Promise<SavedPicture>,
   ) {
     super(context, 'image', pixel);
     this.width = width;
     this.height = height;
-    this.saveBody = saveBody;
   }
 
   async savePictureAsync(options: SavePictureOptions): Promise<SavedPicture> {
-    return await this.saveBody(this.value, options);
+    if (this.released) throw new ExpoCameraError('ERR_CAMERA_PICTURE_RELEASED', 'The picture reference has been released.');
+
+    this.saves += 1;
+    try {
+      return await this.savePicture(options);
+    } finally {
+      this.saves -= 1;
+      if (this.released && this.saves === 0) this.releasePixelMap();
+    }
   }
 
   override sharedObjectWillRelease(): void {
+    this.released = true;
+    if (this.saves === 0) this.releasePixelMap();
+  }
+
+  private releasePixelMap(): void {
     this.value.release().catch((): void => {});
+  }
+
+  private async savePicture(options: SavePictureOptions): Promise<SavedPicture> {
+    if (options.quality !== undefined && (!Number.isFinite(options.quality) || options.quality < 0 || options.quality > 1)) {
+      throw new ExpoCameraError('ERR_CAMERA_INVALID_OPTION', 'Photo quality must be a number between 0 and 1.');
+    }
+
+    let path: string | undefined;
+    let saved = false;
+
+    try {
+      this.context.assertActive();
+
+      const dir = `${this.context.cachePath}/expo-camera`;
+      await ensureDirectory(dir);
+      path = uniquePath(dir, 'picture-ref', 'jpg');
+
+      await packPicture(path, this.value, {
+        format: 'image/jpeg',
+        quality: Math.round((options.quality ?? 1) * 100),
+        needsPackProperties: options.metadata !== undefined,
+      });
+      await writeMetadata(path, options.metadata);
+
+      const result = new SavedPicture(fileUriFromPath(path), this.width, this.height);
+      if (options.base64 === true) {
+        const bytes = await readBuffer(path);
+        result.base64 = await new util.Base64Helper().encodeToString(new Uint8Array(bytes));
+      }
+
+      this.context.assertActive();
+      saved = true;
+
+      return result;
+    } finally {
+      if (!saved && path !== undefined) await fs.unlink(path).catch((): void => {});
+    }
   }
 }
 
@@ -203,16 +240,7 @@ export class ExpoCameraModule extends ExpoModule {
         new ExpoCameraViewState(
           viewContext,
           (pixel: image.PixelMap, width: number, height: number): CameraPictureRef =>
-            pictureClass.instance(
-              new CameraPictureRef(
-                this.context,
-                pixel,
-                width,
-                height,
-                async (picturePixel: image.PixelMap, options: SavePictureOptions): Promise<SavedPicture> =>
-                  await this.savePicture(picturePixel, options),
-              ),
-            ),
+            pictureClass.instance(new CameraPictureRef(this.context, pixel, width, height)),
         ),
       wrapBuilder(buildExpoCameraView),
     )
@@ -349,6 +377,13 @@ export class ExpoCameraModule extends ExpoModule {
         ),
       )
       .asyncFunction(
+        'takePictureRef',
+        ExpoFunction.ownedTyped1(
+          PICTURE_OPTIONS_TYPE.defaulted({}),
+          async (view: ExpoCameraViewState, options: PictureOptions): Promise<ESObject> => await view.takePictureRefAsync(options),
+        ),
+      )
+      .asyncFunction(
         'getAvailablePictureSizes',
         ExpoFunction.ownedTyped0(async (view: ExpoCameraViewState): Promise<string[]> => await view.getAvailablePictureSizesAsync()).returns(
           STRING_ARRAY_TYPE,
@@ -401,13 +436,14 @@ export class ExpoCameraModule extends ExpoModule {
       .constant('Type', { front: 'front', back: 'back' })
       .constant('FlashMode', { off: 'off', on: 'on', auto: 'auto', screen: 'screen' })
       .property('isModernBarcodeScannerAvailable', ExpoValueTypes.boolean(), (): boolean => canIUse(SCAN_CAPABILITY))
-      .property('toggleRecordingAsyncAvailable', ExpoValueTypes.boolean(), (): boolean => true)
+      .property('toggleRecordingAsyncAvailable', ExpoValueTypes.boolean(), (): boolean => canIUse(RECORDER_CAPABILITY))
       .events(['onModernBarcodeScanned'])
       .sharedObjectClass(pictureClass)
       .asyncFunction(
         'isAvailableAsync',
         ExpoFunction.typed0(
-          async (): Promise<boolean> => camera.getCameraManager(this.context.uiAbilityContext).getSupportedCameras().length > 0,
+          async (): Promise<boolean> => canIUse(CAMERA_CAPABILITY) &&
+            camera.getCameraManager(this.context.uiAbilityContext).getSupportedCameras().length > 0,
         ).returns(ExpoValueTypes.boolean()),
       )
       .asyncFunction('getCameraPermissionsAsync', async (): Promise<PermissionRecord> => this.getPermission(CAMERA_PERMISSION))
@@ -465,6 +501,8 @@ export class ExpoCameraModule extends ExpoModule {
   }
 
   private async getAvailableVideoCodecs(): Promise<string[]> {
+    if (!canIUse(RECORDER_CAPABILITY)) return [];
+
     const recorder = await media.createAVRecorder();
 
     try {
@@ -512,24 +550,22 @@ export class ExpoCameraModule extends ExpoModule {
       }
 
       this.context.assertActive();
-      const results = await detectBarcode.decode({ uri: fileUriFromPath(path) }, { scanTypes: formats });
+
+      const results = await detectBarcode.decode({ uri: fileUri.getUriFromPath(path) }, { scanTypes: formats, enableMultiMode: true });
       this.context.assertActive();
 
       return results
         .filter((result: scanBarcode.ScanResult): boolean => formats.includes(result.scanType))
         .map((result: scanBarcode.ScanResult): BarcodeResult => barcodeResult(result));
     } catch (error) {
+      if (error instanceof ExpoCameraError) throw new ExpoCameraError(error.code, error.message, error.cause);
       if (error instanceof ExpoModuleError) throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
 
       console.error(`Expo Camera barcode scan failed: ${String(error)}`);
 
       throw new ExpoCameraError('ERR_CAMERA_BARCODE_SCAN', 'The barcode image could not be scanned.');
     } finally {
-      if (path !== undefined) {
-        try {
-          fs.unlinkSync(path);
-        } catch (_) {}
-      }
+      if (path !== undefined) await fs.unlink(path).catch((): void => {});
     }
   }
 
@@ -562,41 +598,4 @@ export class ExpoCameraModule extends ExpoModule {
     this.sendEvent('onModernBarcodeScanned', { type: barcode.type, data: barcode.data, raw: barcode.raw });
   }
 
-  private async savePicture(pixel: image.PixelMap, options: SavePictureOptions = {}): Promise<SavedPicture> {
-    if (options.quality !== undefined && (!Number.isFinite(options.quality) || options.quality < 0 || options.quality > 1)) {
-      throw new ExpoCameraError('ERR_CAMERA_INVALID_OPTION', 'Photo quality must be a number between 0 and 1.');
-    }
-
-    let path: string | undefined;
-    let saved = false;
-
-    try {
-      const info = await pixel.getImageInfo();
-      const dir = `${this.context.cachePath}/expo-camera`;
-      await ensureDirectory(dir);
-      path = uniquePath(dir, 'picture-ref', 'jpg');
-
-      await packPicture(path, pixel, {
-        format: 'image/jpeg',
-        quality: Math.round((options.quality ?? 1) * 100),
-        needsPackProperties: options.metadata !== undefined,
-      });
-      await writeMetadata(path, options.metadata);
-
-      const result = new SavedPicture(fileUriFromPath(path), info.size.width, info.size.height);
-      if (options.base64 === true) {
-        const bytes = await readBuffer(path);
-        result.base64 = await new util.Base64Helper().encodeToString(new Uint8Array(bytes));
-      }
-
-      saved = true;
-      return result;
-    } finally {
-      if (!saved && path !== undefined) {
-        try {
-          fs.unlinkSync(path);
-        } catch (_) {}
-      }
-    }
-  }
 }

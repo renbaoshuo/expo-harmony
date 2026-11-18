@@ -5,11 +5,10 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import fs from '@ohos.file.fs';
-import image from '@ohos.multimedia.image';
+import { util } from '@kit.ArkTS';
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { image } from '@kit.ImageKit';
 import { ExpoCameraError } from './ExpoCameraError';
-
-let sequence: number = 0;
 
 export async function writeBuffer(path: string, buffer: ArrayBuffer): Promise<void> {
   const file = await fs.open(path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
@@ -17,9 +16,10 @@ export async function writeBuffer(path: string, buffer: ArrayBuffer): Promise<vo
 
   try {
     while (offset < buffer.byteLength) {
-      const chunk = buffer.slice(offset, Math.min(offset + 64 * 1024, buffer.byteLength));
-      const count = await fs.write(file.fd, chunk, { offset });
+      const chunk = offset === 0 ? buffer : buffer.slice(offset);
+      const count = await fs.write(file.fd, chunk);
       if (count <= 0) throw new ExpoCameraError('ERR_CAMERA_FILE_WRITE', `Unable to write '${path}'.`);
+
       offset += count;
     }
   } finally {
@@ -31,15 +31,17 @@ export async function readBuffer(path: string): Promise<ArrayBuffer> {
   const stat = await fs.stat(path);
   const buffer = new ArrayBuffer(stat.size);
   const bytes = new Uint8Array(buffer);
+
   const file = await fs.open(path, fs.OpenMode.READ_ONLY);
   let offset: number = 0;
 
   try {
     while (offset < buffer.byteLength) {
-      const chunk = new ArrayBuffer(Math.min(64 * 1024, buffer.byteLength - offset));
-      const count = await fs.read(file.fd, chunk, { length: chunk.byteLength });
+      const chunk = offset === 0 ? buffer : new ArrayBuffer(buffer.byteLength - offset);
+      const count = await fs.read(file.fd, chunk);
       if (count <= 0) break;
-      bytes.set(new Uint8Array(chunk, 0, count), offset);
+
+      if (offset !== 0) bytes.set(new Uint8Array(chunk, 0, count), offset);
       offset += count;
     }
   } finally {
@@ -54,13 +56,18 @@ export async function readBuffer(path: string): Promise<ArrayBuffer> {
 }
 
 export async function ensureDirectory(path: string): Promise<void> {
-  if (!(await fs.access(path))) await fs.mkdir(path, true);
+  try {
+    await fs.mkdir(path, true);
+  } catch (error) {
+    const exists = await fs.stat(path).then((stat: fs.Stat): boolean => stat.isDirectory(), (): boolean => false);
+    if (!exists) {
+      throw new ExpoCameraError('ERR_CAMERA_FILE_WRITE', `Unable to create '${path}'.`, error as Object);
+    }
+  }
 }
 
-export function uniquePath(dir: string, prefix: string, extension: string, tag?: number): string {
-  sequence = (sequence + 1) % 1_000_000;
-
-  return `${dir}/${prefix}-${Date.now()}${tag === undefined ? '' : `-${tag}`}-${sequence}.${extension}`;
+export function uniquePath(dir: string, prefix: string, extension: string): string {
+  return `${dir}/${prefix}-${util.generateRandomUUID()}.${extension}`;
 }
 
 export async function packPicture(path: string, pixel: image.PixelMap, options: image.PackingOption): Promise<void> {
