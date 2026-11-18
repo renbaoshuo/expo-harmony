@@ -47,6 +47,17 @@ if(NOT TARGET rnoh)
     "${CMAKE_CURRENT_BINARY_DIR}/rnoh")
 endif()
 
+if(TARGET rnoh_core)
+  get_target_property(RNOH_CORE_SOURCE_DIR rnoh_core SOURCE_DIR)
+  set(RNOH_EXCEPTION_STACK_SOURCE "${RNOH_CORE_SOURCE_DIR}/ExceptionStackHandler.cpp")
+  if(EXISTS "${RNOH_EXCEPTION_STACK_SOURCE}")
+    # RNOH checks API 15 at runtime, but strong references stop its library from loading on API 14.
+    set_property(SOURCE "${RNOH_EXCEPTION_STACK_SOURCE}"
+      TARGET_DIRECTORY rnoh_core APPEND PROPERTY COMPILE_OPTIONS
+      -include "${CMAKE_CURRENT_SOURCE_DIR}/cmake/RnohHiAppEventCompat.h")
+  endif()
+endif()
+
 function(expo_harmony_configure_worklets)
   if(TARGET rnoh_worklets)
     # Worklets 1.1.0-beta.1 also publishes its compiled sources as interface sources.
