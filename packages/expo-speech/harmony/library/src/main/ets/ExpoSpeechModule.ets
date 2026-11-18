@@ -8,7 +8,7 @@
 import { ExpoFunction, ExpoModule, ExpoModuleDefinition, ExpoModuleError, ExpoValueTypes } from '@expo-harmony/expo-modules-core';
 import { util } from '@kit.ArkTS';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { textToSpeech } from '@kit.CoreSpeechKit';
+import lazy { textToSpeech } from '@kit.CoreSpeechKit';
 import { i18n } from '@kit.LocalizationKit';
 import { SPEECH_OPTIONS, SpeechOptions } from './SpeechOptions';
 
@@ -78,25 +78,34 @@ export class ExpoSpeechModule extends ExpoModule {
       )
       .asyncFunction('getVoices', async (): Promise<Voice[]> => {
         let voices: textToSpeech.VoiceInfo[];
+
         try {
           voices = await this.getNativeVoices();
         } catch (error) {
           this.assertActive();
 
-          // Match Android's empty list for unavailable TTS and keep catalog failures observable.
+          // Android returns an empty catalog when TTS is unavailable.
           if (error instanceof ExpoModuleError && error.code === ERR_SPEECH_UNAVAILABLE) return [];
 
           throw new ExpoModuleError('ERR_SPEECH_UNABLE_TO_GET_VOICES', `Unable to get voices: ${describeError(error)}`);
         }
 
-        return voices.map(
-          (voice: textToSpeech.VoiceInfo): Voice => ({
-            identifier: voiceIdentifier(voice),
-            name: voice.description || voiceIdentifier(voice),
+        const catalog = new Map<string, Voice>();
+
+        for (const voice of voices) {
+          const id = voiceIdentifier(voice);
+          if (catalog.has(id)) continue;
+
+          const entry: Voice = {
+            identifier: id,
+            name: voice.description || id,
             language: normalizeLanguage(voice.language),
             quality: 'Default',
-          }),
-        );
+          };
+          catalog.set(id, entry);
+        }
+
+        return Array.from(catalog.values());
       })
       .asyncFunction('isSpeaking', async (): Promise<boolean> => {
         this.assertActive();
@@ -238,6 +247,10 @@ export class ExpoSpeechModule extends ExpoModule {
 
     const item = this.current!;
     this.current = undefined;
+
+    // A playback-only stop can leave synthesis active.
+    if ((item.submitted && event !== SPEAKING_DONE) || this.queue.length === 0) this.releaseEngineSafely();
+
     try {
       this.publish(event, item.id, error);
     } finally {
