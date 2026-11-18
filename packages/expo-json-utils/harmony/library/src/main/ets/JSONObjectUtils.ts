@@ -8,6 +8,15 @@
 export type JSONValue = Object | null | undefined;
 export type JSONObject = Record<string, JSONValue>;
 
+// eslint-disable-next-line no-control-regex -- Java trims characters U+0000 through U+0020.
+const DECIMAL_DOUBLE = /^[\x00-\x20]*([+-]?(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[fFdD]?|NaN|Infinity))[\x00-\x20]*$/;
+// eslint-disable-next-line no-control-regex -- Java trims characters U+0000 through U+0020.
+const HEXADECIMAL_DOUBLE = /^[\x00-\x20]*([+-]?)0[xX]([0-9a-fA-F]*)(?:\.([0-9a-fA-F]*))?[pP]([+-]?[0-9]+)[fFdD]?[\x00-\x20]*$/;
+const BITS_PER_HEX_DIGIT = 4;
+const HEX_SIGNIFICAND_DIGITS = 15;
+const BINARY64_OVERFLOW_SCALE = 1024 + BITS_PER_HEX_DIGIT;
+const BINARY64_UNDERFLOW_SCALE = -1075;
+
 export class JSONUtilsError extends Error {
   constructor(message: string) {
     super(message);
@@ -62,10 +71,16 @@ export class JSONObjectUtils {
     if (typeof value === 'number') return value;
 
     if (typeof value === 'string') {
-      // eslint-disable-next-line no-control-regex -- Match Java's trim range in the anchored match.
-      const match = /^[\x00-\x20]*([+-]?(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?[fFdD]?|NaN|Infinity))[\x00-\x20]*$/.exec(value);
-      if (match) {
-        return Number(match[1].replace(/[fFdD]$/, ''));
+      const decimal = DECIMAL_DOUBLE.exec(value);
+      if (decimal !== null) return Number(decimal[1].replace(/[fFdD]$/, ''));
+
+      const hex = HEXADECIMAL_DOUBLE.exec(value);
+      if (hex !== null) {
+        const [, sign, whole, fraction = '', exponent] = hex;
+
+        if (whole.length + fraction.length > 0) {
+          return hexToNumber(sign === '-' ? -1 : 1, whole, fraction, exponent);
+        }
       }
     }
 
@@ -116,6 +131,29 @@ export class JSONObjectUtils {
   static getNullableObject(json: JSONObject, key: string): JSONObject | null {
     return JSONObjectUtils.hasValue(json, key) ? JSONObjectUtils.requireObject(json, key) : null;
   }
+}
+
+function hexToNumber(sign: number, whole: string, fraction: string, exponent: string): number {
+  const digits = (whole + fraction).replace(/^0+/, '');
+  if (digits.length === 0) return sign * 0;
+
+  // With the point before the first nonzero digit, the mantissa is in [1/16, 1).
+  const scale = Number(exponent) + BITS_PER_HEX_DIGIT * (digits.length - fraction.length);
+  if (scale >= BINARY64_OVERFLOW_SCALE) return sign * Infinity;
+  if (scale <= BINARY64_UNDERFLOW_SCALE) return sign * 0;
+
+  // Keep more than the 54 bits needed to distinguish binary64 midpoints.
+  let prefix = digits.slice(0, HEX_SIGNIFICAND_DIGITS);
+  if (/[1-9a-f]/i.test(digits.slice(HEX_SIGNIFICAND_DIGITS))) prefix += '1';
+
+  const significand = BigInt('0x' + prefix);
+  const power = scale - BITS_PER_HEX_DIGIT * prefix.length;
+  if (power >= 0) return sign * Number(significand << BigInt(power));
+
+  // Convert by 2^n = 5^(-n) * 10^n, so Number rounds only once, including for subnormals.
+  const decimal = significand * BigInt(5) ** BigInt(-power);
+
+  return sign * Number(decimal.toString() + 'e' + power);
 }
 
 function requireDataValue(field: PropertyDescriptor | undefined, key: string): JSONValue {

@@ -16,6 +16,8 @@ npm install @expo-harmony/expo-json-utils
 
 ## API 对照表
 
+以下接口通过 HarmonyOS HAR 提供，在 ArkTS 或 TypeScript 原生模块中使用。React Native JavaScript 入口没有运行时接口，与上游一致。
+
 ### Methods
 
 #### `JSONObjectUtils.hasValue(json, key)`
@@ -40,7 +42,7 @@ npm install @expo-harmony/expo-json-utils
 
 #### `JSONObjectUtils.requireNumber(json, key)`
 
-接收 JSON 对象 `json` 和字段名 `key`，返回 `number`。数值原样返回，包括 `NaN` 和正负无穷。字符串去除首尾空白后，可包含十进制数、指数、`NaN` 或 `Infinity`，并可带正负号；十进制数字末尾也可带 `f`、`F`、`d` 或 `D`。其他字符串和值会抛出 `JSONUtilsError`。数值超过 JavaScript 安全整数范围时可能丢失精度。
+接收 JSON 对象 `json` 和字段名 `key`，返回 `number`。数值原样返回，包括 `NaN` 和正负无穷。字符串按 Android 的浮点数转换规则解析，支持十进制数、带二进制指数的十六进制数（例如 `0x1.8p1`）、`NaN` 和 `Infinity`。其他字符串和值会抛出 `JSONUtilsError`。数值超过 JavaScript 安全整数范围时可能丢失精度。
 
 #### `JSONObjectUtils.getNullableNumber(json, key)`
 
