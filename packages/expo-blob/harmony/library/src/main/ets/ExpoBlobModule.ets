@@ -186,7 +186,10 @@ class BlobObject extends ExpoSharedObject {
       }
     }
 
-    return new BlobObject(context, new BlobData(parts), options.type);
+    const first = parts[0];
+    const data = parts.length === 1 && first instanceof BlobData ? first : new BlobData(parts);
+
+    return new BlobObject(context, data, options.type);
   }
 
   slice(start?: number | null, end?: number | null, type?: string | null): BlobObject {

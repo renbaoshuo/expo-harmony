@@ -22,6 +22,10 @@ function* normalizeViews(parts: Iterable<BlobPart>): Iterable<BlobPart> {
 }
 
 export class Blob extends ExpoBlob {
+  static override get length(): number {
+    return super.length;
+  }
+
   constructor(parts?: Iterable<BlobPart>, options?: BlobPropertyBag) {
     super(parts !== null && typeof parts === 'object' ? normalizeViews(parts) : parts, options);
   }
