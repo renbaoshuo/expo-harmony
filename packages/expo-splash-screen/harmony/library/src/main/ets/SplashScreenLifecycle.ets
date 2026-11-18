@@ -106,7 +106,12 @@ class SplashScreenAbilityOwner {
     this.ability = ability;
   }
 
-  attachView(ui: UIContext, listener: SplashScreenRenderListener): () => void {
+  attachView(ui: UIContext, listener: SplashScreenRenderListener): (() => void) | undefined {
+    if (!this.state.canShowNativeView()) return undefined;
+
+    const resources = resolveResources(this.ability.resourceManager);
+    if (resources === undefined) return undefined;
+
     const previous = this.listener;
     if (previous !== undefined) {
       this.detachView();
@@ -115,9 +120,9 @@ class SplashScreenAbilityOwner {
 
     this.ui = ui;
     this.listener = listener;
-    this.resources = resolveResources(this.ability.resourceManager);
+    this.resources = resources;
 
-    if (this.resources !== undefined) this.state.markNativeVisible();
+    this.state.markNativeVisible();
     this.publish();
 
     return (): void => {
@@ -130,19 +135,23 @@ class SplashScreenAbilityOwner {
 
     this.generation += 1;
     this.clearTimer();
+
     this.opacity = 1;
     this.listener = undefined;
     this.ui = undefined;
+    this.resources = undefined;
+
     this.state.markNativeRemoved();
   }
 
   updateResources(): void {
-    if (!this.state.isVisible()) return;
+    if (!this.state.isVisible() || this.state.isHiding()) return;
 
     const resources = resolveResources(this.ability.resourceManager);
     if (resources === undefined) return;
 
     this.resources = resources;
+
     this.publish();
   }
 
@@ -212,6 +221,7 @@ class SplashScreenAbilityOwner {
     this.generation += 1;
     this.clearTimer();
 
+    this.resources = undefined;
     this.opacity = 1;
     this.publish();
 
@@ -264,6 +274,8 @@ class SplashScreenAbilityOwner {
 
     this.generation += 1;
     this.clearTimer();
+
+    this.resources = undefined;
     this.state.markNativeRemoved();
     this.opacity = 1;
 
@@ -410,7 +422,7 @@ export class ExpoSplashScreenReactActivityHandler implements ReactActivityHandle
 
   onRootViewMounted(context: ReactRootViewContext): void {
     // A native replacement root cannot emit React's content-appeared event.
-    if (context.isCustomRoot && !context.ready) {
+    if ((context.showsNativeContentBeforeReact ?? context.isCustomRoot) && !context.ready) {
       SplashScreenCoordinator.dismissForNativeRoot(context.core.uiAbilityContext);
     }
   }

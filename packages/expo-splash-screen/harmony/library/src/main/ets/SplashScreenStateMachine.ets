@@ -12,8 +12,12 @@ export class SplashScreenStateMachine {
   private hidden: boolean = false;
   private destroyed: boolean = false;
 
+  canShowNativeView(): boolean {
+    return !this.hidden && !this.destroyed;
+  }
+
   markNativeVisible(): void {
-    if (this.hidden || this.destroyed) return;
+    if (!this.canShowNativeView()) return;
     this.visible = true;
   }
 

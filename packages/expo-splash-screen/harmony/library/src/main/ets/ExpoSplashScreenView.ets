@@ -43,7 +43,10 @@ export struct ExpoSplashScreenView {
               .objectFit(ImageFit.Cover)
               .expandSafeArea([SafeAreaType.SYSTEM]);
           } else if (this.state.resizeMode === 'native') {
-            Image(this.state.image).objectFit(ImageFit.None);
+            Image(this.state.image)
+              .fitOriginalSize(true)
+              .autoResize(false)
+              .objectFit(ImageFit.None);
           } else {
             Image(this.state.image)
               .width(this.state.imageWidth)
