@@ -19,6 +19,7 @@ import {
   NotificationAction,
   ScheduledNotification,
   HANDLER_TIMEOUT_MS,
+  MAX_INT32,
   EXPO_SERVICE_ERROR,
   identifier,
   integer,
@@ -69,12 +70,13 @@ abstract class NotificationsModule extends ExpoModule {
     });
   }
 
-  protected queueToken<T>(operation: () => Promise<T>): Promise<T> {
+  protected queueToken<T>(operation: () => Promise<T>, invalidatesUpdates: boolean = false): Promise<T> {
     return this.store.runToken((): Promise<T> => {
+      // The runtime may have closed while this operation waited in the queue.
       this.context.runtimeEpoch;
 
       return operation();
-    }, true);
+    }, invalidatesUpdates);
   }
 
   protected listen(callback: NotificationReceiver): void {
@@ -140,10 +142,9 @@ export class ExpoPushTokenManager extends NotificationsModule {
             try {
               await pushService.deleteToken();
             } catch (error) {
-              if (error instanceof ExpoModuleError) throw error;
               throw new ExpoNotificationError('ERR_NOTIFICATIONS_PUSH_TOKEN', error as Object);
             }
-          }),
+          }, true),
       );
   }
 
@@ -168,7 +169,6 @@ export class ExpoPushTokenManager extends NotificationsModule {
     try {
       token = await pushService.getToken();
     } catch (error) {
-      if (error instanceof ExpoModuleError) throw error;
       throw new ExpoNotificationError('ERR_NOTIFICATIONS_PUSH_TOKEN', error as Object);
     }
 
@@ -205,7 +205,6 @@ export class ExpoNotificationPermissionsModule extends NotificationsModule {
                 await notificationManager.requestEnableNotification(context);
               } catch (error) {
                 if ((error as BusinessError).code !== NOTIFICATIONS_DISABLED) {
-                  if (error instanceof ExpoModuleError) throw error;
                   throw new ExpoNotificationError('ERR_NOTIFICATIONS_PERMISSION', error as Object);
                 }
               }
@@ -227,8 +226,6 @@ export class ExpoNotificationPermissionsModule extends NotificationsModule {
     const granted = await notificationManager.isNotificationEnabled();
     const asked = store.read<boolean>(PERMISSION_REQUESTED, false);
 
-    if (granted && !asked) await store.write(PERMISSION_REQUESTED, true);
-
     const response: Record<string, ESObject> = {};
     response['status'] = granted ? 'granted' : asked ? 'denied' : 'undetermined';
     response['granted'] = granted;
@@ -249,14 +246,14 @@ export class ExpoBadgeModule extends NotificationsModule {
           return await notificationManager.getBadgeNumber();
         } catch (error) {
           if ((error as BusinessError).code === CAPABILITY_UNSUPPORTED) return 0;
-          if (error instanceof ExpoModuleError) throw error;
+
           throw new ExpoNotificationError('ERR_NOTIFICATIONS_BADGE', error as Object);
         }
       })
       .asyncFunction(
         'setBadgeCountAsync',
         ExpoFunction.typed1(ExpoValueTypes.number(), (count: number): Promise<boolean> =>
-          setNotificationBadge(integer(count, 'badgeCount', 0, 2147483647)),
+          setNotificationBadge(integer(count, 'badgeCount', 0, MAX_INT32)),
         ),
       );
   }

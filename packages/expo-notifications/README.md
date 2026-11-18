@@ -14,6 +14,8 @@
 npm install @expo-harmony/expo-notifications expo-notifications@~57.0.23
 ```
 
+使用 Expo 预构建时，在应用配置的 `plugins` 中加入 `@expo-harmony/expo-notifications`。插件为应用配置 Push Kit 的前台接收入口，并可通过 `sounds` 将自定义通知声音放入 `rawfile`。
+
 ## API 对照表
 
 ### Hooks
@@ -54,6 +56,8 @@ npm install @expo-harmony/expo-notifications expo-notifications@~57.0.23
 
 日期、间隔、每日、每周、每月和每年触发器可用于定时提醒。定时提醒由系统投递，应用退出后仍可触发；不经过前台 handler，也不会逐次触发 `addNotificationReceivedListener`。提醒支持 `title`、`body`、`autoDismiss`、默认声音和时长不超过 30 分钟的自定义声音。重复提醒每次触发时，点击响应中的 `date` 仍为初次计划的时间。
 
+代理提醒的 `subscribeReminderState` 报告通知按钮的操作，系统投递时没有对应的回调。[华为代理提醒 API](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/js-apis-reminderagentmanager/)
+
 重复使用同一标识符调度待触发提醒会更新该提醒；若旧提醒已展示且仍有后续触发，会先发布新提醒再取消旧提醒。通知数量和频率受系统配额限制。
 
 - `calendar` 触发器：HarmonyOS 不支持此触发方式，调用会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
@@ -72,11 +76,11 @@ npm install @expo-harmony/expo-notifications expo-notifications@~57.0.23
 
 #### `cancelScheduledNotificationAsync(identifier)`
 
-取消指定标识符且仍有后续触发的定时提醒。重复取消不报错；已展示的一次性通知可用 `dismissNotificationAsync()` 清除。
+取消指定标识符且仍有后续触发的定时提醒。重复取消不报错。HarmonyOS 取消重复提醒时会一并移除该提醒当前显示的通知卡片。已展示的一次性通知可用 `dismissNotificationAsync()` 清除。
 
 #### `cancelAllScheduledNotificationsAsync()`
 
-取消全部仍有后续触发的定时提醒，不清除已经展示的通知。
+取消全部仍有后续触发的定时提醒，并移除被取消的重复提醒当前显示的通知卡片。
 
 #### `getPresentedNotificationsAsync()`
 
@@ -139,7 +143,7 @@ npm install @expo-harmony/expo-notifications expo-notifications@~57.0.23
 
 #### `registerTaskAsync(taskName)`
 
-- HarmonyOS 不支持应用在后台收到推送时运行 JavaScript 任务，此方法会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。
+- 此方法会以 `ERR_NOTIFICATIONS_UNSUPPORTED` 拒绝。Push Kit 的 `BACKGROUND` 消息在应用不处于前台时由系统缓存或写入应用配置的数据库，应用回到前台后处理。[华为后台消息指南](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/push-background/)
 
 #### `unregisterTaskAsync(taskName)`
 

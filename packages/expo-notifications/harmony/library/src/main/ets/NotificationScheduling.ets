@@ -23,7 +23,7 @@ import {
   notificationSlot,
 } from './NotificationTypes';
 import { validateTrigger, reminderTrigger, nextTriggerDate } from './NotificationTriggers';
-import { publishNotification, responseParameters } from './NotificationPresentation';
+import { publishNotification, responseWantParameters } from './NotificationPresentation';
 
 const REMINDER_NOT_FOUND = 1700003;
 const REMINDER_LIMIT_EXCEEDED = 1700002;
@@ -59,7 +59,6 @@ async function cancelSystemReminder(id: number): Promise<void> {
     await reminderAgentManager.cancelReminder(id);
   } catch (error) {
     if ((error as BusinessError).code !== REMINDER_NOT_FOUND) {
-      if (error instanceof ExpoModuleError) throw error;
       throw new ExpoNotificationError('ERR_NOTIFICATIONS_SCHEDULE', error as Object);
     }
   }
@@ -72,8 +71,8 @@ export async function schedule(context: ExpoModuleContext, store: NotificationsS
   const customSound: string | undefined = content.sound === 'custom' ? (input as Record<string, ESObject>)['sound'] : undefined;
   const trigger = validateTrigger(value);
 
-  const output = trigger === null ? null : recordTrigger(trigger);
-  const request: NotificationRequest = { identifier: id, content, trigger: output };
+  const fields = trigger === null ? null : recordTrigger(trigger);
+  const request: NotificationRequest = { identifier: id, content, trigger: fields };
   const notification: Notification = { date: Date.now(), request };
 
   if (trigger === null) {
@@ -100,16 +99,7 @@ export async function schedule(context: ExpoModuleContext, store: NotificationsS
   }
 
   const ability = context.uiAbilityContext;
-  const ringSeconds = customSound === undefined ? 0 : await ringtoneDuration(ability, customSound);
-  const next = nextTriggerDate(trigger);
-
-  if (next === null) {
-    throw new ExpoModuleError('ERR_NOTIFICATIONS_INVALID_ARGUMENT', 'Cannot schedule a notification in the past.');
-  }
-
-  const reminder = reminderTrigger(trigger, next);
-  notification.date = next;
-
+  const seconds = customSound === undefined ? 0 : await ringtoneDuration(ability, customSound);
   const pending = await store.validSchedules();
   const old = pending.find((entry: ScheduledNotification): boolean => entry.request.identifier === id);
   const records = store.schedules();
@@ -118,11 +108,19 @@ export async function schedule(context: ExpoModuleContext, store: NotificationsS
   );
   let native = old !== undefined && !shown ? old.notificationId : await store.allocateId();
 
+  const next = nextTriggerDate(trigger);
+  if (next === null) {
+    throw new ExpoModuleError('ERR_NOTIFICATIONS_INVALID_ARGUMENT', 'Cannot schedule a notification in the past.');
+  }
+
+  const reminder = reminderTrigger(trigger, next);
+  notification.date = next;
+
   reminder.notificationId = native;
   reminder.title = content.title ?? '';
   reminder.content = content.body ?? '';
   reminder.expiredContent = content.body ?? '';
-  reminder.ringDuration = ringSeconds;
+  reminder.ringDuration = seconds;
 
   if (customSound !== undefined) {
     reminder.customRingUri = customSound;
@@ -135,7 +133,7 @@ export async function schedule(context: ExpoModuleContext, store: NotificationsS
   reminder.wantAgent = {
     pkgName: ability.abilityInfo.bundleName,
     abilityName: ability.abilityInfo.name,
-    parameters: responseParameters(notification),
+    parameters: await responseWantParameters(store, notification),
   };
 
   if (old !== undefined && !shown) {
@@ -154,7 +152,6 @@ export async function schedule(context: ExpoModuleContext, store: NotificationsS
       await store.write('scheduled', records);
 
       if ((error as BusinessError).code !== REMINDER_NOT_FOUND) {
-        if (error instanceof ExpoModuleError) throw error;
         throw new ExpoNotificationError('ERR_NOTIFICATIONS_SCHEDULE', error as Object);
       }
     }
@@ -178,27 +175,28 @@ export async function schedule(context: ExpoModuleContext, store: NotificationsS
       );
     }
 
-    if (error instanceof ExpoModuleError) throw error;
     throw new ExpoNotificationError('ERR_NOTIFICATIONS_SCHEDULE', error as Object);
   }
 
   const entry: ScheduledNotification = { reminderId: handle, notificationId: native, request };
+  let saved = false;
 
   try {
     await store.write('scheduled', records.concat([entry]));
+    saved = true;
     if (old !== undefined) await cancelSystemReminder(old.reminderId);
   } catch (error) {
     try {
       await cancelSystemReminder(handle);
+      if (saved) await store.write('scheduled', records);
     } catch (rollback) {
       throw new ExpoModuleError(
         'ERR_NOTIFICATIONS_SCHEDULE_ROLLBACK',
-        `Could not complete scheduling or cancel reminder ${handle}; retry cancellation with the Expo identifier.`,
+        `Could not restore the previous state after scheduling reminder ${handle}.`,
         rollback as Object,
       );
     }
 
-    if (error instanceof ExpoModuleError) throw error;
     throw new ExpoNotificationError('ERR_NOTIFICATIONS_STORAGE', error as Object);
   }
 
@@ -208,7 +206,6 @@ export async function schedule(context: ExpoModuleContext, store: NotificationsS
 export async function cancelScheduled(store: NotificationsStore, id?: string): Promise<void> {
   if (id !== undefined) identifier(id);
 
-  // validSchedules retains display metadata separately from still-pending reminders.
   for (const entry of await store.validSchedules(true)) {
     if (id === undefined || entry.request.identifier === id) await cancelSystemReminder(entry.reminderId);
   }

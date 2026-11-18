@@ -14,7 +14,7 @@ const MAX_DATE = 8640000000000000;
 const MILLISECONDS_PER_SECOND = 1000;
 const MIN_REPEAT_INTERVAL_SECONDS = 24 * 60 * 60;
 const MONTHS_IN_YEAR = 12;
-const GREGORIAN_CYCLE_YEARS = 400;
+const MAX_LEAP_DAY_GAP_YEARS = 8;
 
 export function validateTrigger(value: ESObject): Record<string, ESObject> | null {
   if (value === null) return null;
@@ -86,13 +86,16 @@ export function nextTriggerDate(trigger: Record<string, ESObject> | null, now: n
       : new Date(date.getFullYear(), date.getMonth(), date.getDate() + offset + 7, trigger.hour as number, trigger.minute as number).getTime();
   }
 
-  // Scan real calendar months, skipping absent days rather than overflowing
-  // February 31 into March. A Gregorian cycle contains every leap-day case.
-  for (let offset = 0; offset <= GREGORIAN_CYCLE_YEARS * MONTHS_IN_YEAR; offset++) {
-    const month = new Date(date.getFullYear(), date.getMonth() + offset, 1);
-    if (trigger.type === 'yearly' && month.getMonth() !== trigger.month) continue;
+  const yearly = trigger.type === 'yearly';
+  // Consecutive months cannot both lack day 31. A skipped leap century can
+  // increase the gap between leap days to eight years.
+  const lastOffset = yearly ? MAX_LEAP_DAY_GAP_YEARS : 2;
+  const startMonth: number = yearly ? trigger.month : date.getMonth();
+  const step = yearly ? MONTHS_IN_YEAR : 1;
 
-    const candidate = new Date(month.getFullYear(), month.getMonth(), trigger.day as number, trigger.hour as number, trigger.minute as number, 0, 0);
+  for (let offset = 0; offset <= lastOffset; offset++) {
+    const month = new Date(date.getFullYear(), startMonth + offset * step, 1);
+    const candidate = new Date(month.getFullYear(), month.getMonth(), trigger.day as number, trigger.hour as number, trigger.minute as number);
     if (candidate.getMonth() === month.getMonth() && candidate.getTime() >= now) return candidate.getTime();
   }
 
@@ -130,8 +133,8 @@ export function reminderTrigger(trigger: Record<string, ESObject>, timestamp: nu
       year: date.getFullYear(),
       month: date.getMonth() + 1,
       day: date.getDate(),
-      hour: date.getHours(),
-      minute: date.getMinutes(),
+      hour: trigger.type === 'date' ? date.getHours() : trigger.hour as number,
+      minute: trigger.type === 'date' ? date.getMinutes() : trigger.minute as number,
       second: date.getSeconds(),
     },
   };

@@ -12,17 +12,23 @@ import { notificationManager } from '@kit.NotificationKit';
 
 export const DEFAULT_ACTION = 'expo.modules.notifications.actions.DEFAULT';
 export const RESPONSE_KEY = 'expo.modules.notifications.response';
+export const RESPONSE_SIGNATURE_KEY = 'expo.modules.notifications.responseSignature';
 export const PUSH_LISTENER_ACTION = 'action.ohos.push.listener';
 export const SLOT_METADATA = 'expo.modules.notifications.defaultSlotType';
 export const HANDLER_TIMEOUT_MS = 3000;
 export const MAX_ACTION_BUTTONS = 2;
-export const MAX_NOTIFICATION_ID = Math.floor((2147483647 - MAX_ACTION_BUTTONS) / (MAX_ACTION_BUTTONS + 1));
+export const MAX_INT32 = 2147483647;
+export const MAX_NOTIFICATION_ID = Math.floor((MAX_INT32 - MAX_ACTION_BUTTONS) / (MAX_ACTION_BUTTONS + 1));
 export const REMINDER_PERMISSION = 'ohos.permission.PUBLISH_AGENT_REMINDER';
 export const EXPO_SERVICE_ERROR = 'ERR_NOTIFICATIONS_EXPO_PUSH_SERVICE_UNSUPPORTED';
 
 export class ExpoNotificationError extends ExpoModuleError {
-  constructor(fallback: string, error: Object) {
-    super(String((error as BusinessError).code ?? fallback), (error as Error).message, error);
+  constructor(fallback: string, cause: Object) {
+    const existing = cause instanceof ExpoModuleError ? cause : undefined;
+    const error = cause as BusinessError;
+    super(String(error.code ?? fallback), error.message, existing?.cause ?? cause, existing?.path);
+
+    if (existing !== undefined) this.name = existing.name;
   }
 }
 
@@ -95,6 +101,14 @@ export interface ScheduledNotification {
   request: NotificationRequest;
 }
 
+export function repeats(request: NotificationRequest): boolean {
+  const trigger = request.trigger;
+  if (trigger === null) return false;
+
+  return trigger.type === 'daily' || trigger.type === 'weekly' || trigger.type === 'monthly' ||
+    trigger.type === 'yearly' || (trigger.type === 'timeInterval' && trigger.repeats === true);
+}
+
 export interface NotificationAction {
   identifier: string;
   buttonTitle: string;
@@ -141,7 +155,7 @@ export function notificationContent(input: ESObject): Record<string, ESObject> {
   }
 
   if (content.data !== undefined && content.data !== null) record(content.data, 'content.data');
-  if (content.badge !== undefined) integer(content.badge, 'badge', 0, 2147483647);
+  if (content.badge !== undefined) integer(content.badge, 'badge', 0, MAX_INT32);
 
   const sound: ESObject = content.sound;
   if (sound === 'defaultRingtone' || sound === 'defaultCritical') {

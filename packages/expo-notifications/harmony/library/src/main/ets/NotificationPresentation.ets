@@ -14,6 +14,7 @@ import { NotificationsStore } from './NotificationsStore';
 import {
   DEFAULT_ACTION,
   RESPONSE_KEY,
+  RESPONSE_SIGNATURE_KEY,
   MAX_ACTION_BUTTONS,
   MAX_NOTIFICATION_ID,
   Notification,
@@ -25,6 +26,7 @@ import {
   notificationSlot,
   parseResponse,
   record,
+  repeats,
   ExpoNotificationError,
 } from './NotificationTypes';
 
@@ -49,12 +51,12 @@ export async function setNotificationBadge(count: number): Promise<boolean> {
     return true;
   } catch (error) {
     if ((error as BusinessError).code === CAPABILITY_UNSUPPORTED) return false;
-    if (error instanceof ExpoModuleError) throw error;
+
     throw new ExpoNotificationError('ERR_NOTIFICATIONS_BADGE', error as Object);
   }
 }
 
-export function responseParameters(notification: Notification, action: string = DEFAULT_ACTION): Record<string, Object> {
+function responseParameters(notification: Notification, action: string = DEFAULT_ACTION): Record<string, Object> {
   const response: NotificationResponse = { actionIdentifier: action, notification };
   const params: Record<string, Object> = {};
   params[RESPONSE_KEY] = JSON.stringify(response);
@@ -62,8 +64,21 @@ export function responseParameters(notification: Notification, action: string = 
   return params;
 }
 
+export async function responseWantParameters(
+  store: NotificationsStore,
+  notification: Notification,
+  action: string = DEFAULT_ACTION,
+): Promise<Record<string, Object>> {
+  const params = responseParameters(notification, action);
+  const signature = await store.signResponse(params[RESPONSE_KEY] as string);
+
+  params[RESPONSE_SIGNATURE_KEY] = signature;
+  return params;
+}
+
 async function clickAgent(
   context: common.UIAbilityContext,
+  store: NotificationsStore,
   notification: Notification,
   id: number,
   action: string,
@@ -75,7 +90,7 @@ async function clickAgent(
         bundleName: context.abilityInfo.bundleName,
         abilityName: context.abilityInfo.name,
         action,
-        parameters: responseParameters(notification, action),
+        parameters: await responseWantParameters(store, notification, action),
       },
     ],
     operationType: wantAgent.OperationType.START_ABILITY,
@@ -95,14 +110,20 @@ export function validateBehavior(value: Record<string, ESObject>): void {
     throw new ExpoModuleError('ERR_NOTIFICATIONS_UNSUPPORTED', 'Android notification priority is not supported on HarmonyOS.');
   }
 
-  const banner: boolean = value.shouldShowBanner ?? value.shouldShowAlert ?? false;
-  const list: boolean = value.shouldShowList ?? value.shouldShowAlert ?? false;
-  if (banner && !list) {
+  if (showsBanner(value) && !showsList(value)) {
     throw new ExpoModuleError(
       'ERR_NOTIFICATIONS_UNSUPPORTED',
       'Banner-only notifications without a notification-center entry are not supported on HarmonyOS.',
     );
   }
+}
+
+function showsBanner(behavior: Record<string, ESObject>): boolean {
+  return behavior.shouldShowBanner === true || behavior.shouldShowAlert === true;
+}
+
+function showsList(behavior: Record<string, ESObject>): boolean {
+  return behavior.shouldShowList === true || behavior.shouldShowAlert === true;
 }
 
 function notificationText(context: common.UIAbilityContext, content: Record<string, ESObject>): notificationManager.NotificationBasicContent {
@@ -119,7 +140,14 @@ function notificationText(context: common.UIAbilityContext, content: Record<stri
   }
 
   const app = context.applicationInfo;
-  const label = app.labelId === 0 ? app.name : context.resourceManager.getStringSync(app.labelId);
+  let label = app.name;
+  if (app.labelId !== 0) {
+    try {
+      label = context.resourceManager.getStringSync(app.labelId) || label;
+    } catch (_) {
+      // App resources can be unavailable during an Ability transition.
+    }
+  }
 
   return { title: label, text, additionalText: subtitle === text ? undefined : subtitle ?? undefined };
 }
@@ -132,16 +160,13 @@ export async function publishNotification(
   behavior?: Record<string, ESObject>,
 ): Promise<void> {
   const content = notification.request.content;
-  if (behavior !== undefined) {
-    if (behavior.shouldSetBadge === true && content.badge !== undefined) {
+  const updateBadge = content.badge !== undefined && (behavior === undefined || behavior.shouldSetBadge === true);
+  if (behavior !== undefined && !showsBanner(behavior) && !showsList(behavior)) {
+    if (updateBadge) {
       await setNotificationBadge(content.badge as number);
     }
 
-    const banner: boolean = behavior.shouldShowBanner ?? behavior.shouldShowAlert ?? false;
-    const list: boolean = behavior.shouldShowList ?? behavior.shouldShowAlert ?? false;
-    if (!banner && !list) return;
-  } else if (content.badge !== undefined) {
-    await setNotificationBadge(content.badge as number);
+    return;
   }
 
   const normal = notificationText(context, content);
@@ -158,7 +183,7 @@ export async function publishNotification(
 
   const buttons: notificationManager.NotificationActionButton[] = [];
   for (const action of category?.actions ?? []) {
-    buttons.push({ title: action.buttonTitle, wantAgent: await clickAgent(context, notification, id, action.identifier, buttons.length + 1) });
+    buttons.push({ title: action.buttonTitle, wantAgent: await clickAgent(context, store, notification, id, action.identifier, buttons.length + 1) });
   }
 
   const request: notificationManager.NotificationRequest = {
@@ -169,26 +194,29 @@ export async function publishNotification(
       notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
       normal,
     },
-    deliveryTime: notification.date,
     tapDismissed: content.autoDismiss !== false,
-    wantAgent: await clickAgent(context, notification, id, DEFAULT_ACTION, 0),
+    wantAgent: await clickAgent(context, store, notification, id, DEFAULT_ACTION, 0),
     actionButtons: buttons,
     sound: muted ? undefined : customSound,
     extraInfo: responseParameters(notification),
     notificationFlags: {
       soundEnabled: muted ? FLAG_DISABLED : FLAG_DEFAULT,
-      bannerEnabled: behavior !== undefined && !(behavior.shouldShowBanner ?? behavior.shouldShowAlert ?? false) ? FLAG_DISABLED : FLAG_DEFAULT,
+      bannerEnabled: behavior !== undefined && !showsBanner(behavior) ? FLAG_DISABLED : FLAG_DEFAULT,
     },
   };
 
   await notificationManager.publish(request);
+  if (updateBadge) await setNotificationBadge(content.badge as number);
 }
 
 export function presentedNotification(request: notificationManager.NotificationRequest, schedules: ScheduledNotification[]): Notification {
   const serialized: ESObject = request.extraInfo?.[RESPONSE_KEY];
   if (typeof serialized === 'string') {
     try {
-      return parseResponse(serialized).notification;
+      const notification = parseResponse(serialized).notification;
+      if (request.deliveryTime !== undefined) notification.date = request.deliveryTime;
+
+      return notification;
     } catch (_) {
       /* Notifications from other publishers need not use our metadata. */
     }
@@ -222,12 +250,14 @@ export async function dismissPresentedNotification(
   const reminder = schedules.find((entry: ScheduledNotification): boolean => entry.notificationId === request.id);
   if (reminder !== undefined) {
     try {
-      // Remove the card while preserving future occurrences of this reminder.
-      await reminderAgentManager.cancelReminderOnDisplay(reminder.reminderId);
+      if (repeats(reminder.request)) {
+        await reminderAgentManager.cancelReminderOnDisplay(reminder.reminderId);
+      } else {
+        await reminderAgentManager.cancelReminder(reminder.reminderId);
+      }
       return;
     } catch (error) {
       if ((error as BusinessError).code !== REMINDER_NOT_FOUND) {
-        if (error instanceof ExpoModuleError) throw error;
         throw new ExpoNotificationError('ERR_NOTIFICATIONS_DISMISS', error as Object);
       }
     }
@@ -237,7 +267,6 @@ export async function dismissPresentedNotification(
     await notificationManager.cancel(request.id, request.label);
   } catch (error) {
     if ((error as BusinessError).code !== NOTIFICATION_NOT_FOUND) {
-      if (error instanceof ExpoModuleError) throw error;
       throw new ExpoNotificationError('ERR_NOTIFICATIONS_DISMISS', error as Object);
     }
   }

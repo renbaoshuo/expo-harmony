@@ -7,6 +7,8 @@
 
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
+import { util } from '@kit.ArkTS';
+import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { reminderAgentManager } from '@kit.BackgroundTasksKit';
 import { ExpoModuleError } from '@expo-harmony/expo-modules-core';
@@ -19,9 +21,24 @@ import {
   MAX_NOTIFICATION_ID,
   RESPONSE_KEY,
   parseResponse,
+  repeats,
 } from './NotificationTypes';
 
 const PERMISSION_DENIED = 201;
+const SIGNING_KEY = 'responseSigningKey';
+const HMAC_ALGORITHM = 'HMAC|SHA256';
+
+function responseSignature(key: string, serialized: string): string {
+  const base64 = new util.Base64Helper();
+  const mac = cryptoFramework.createMac('SHA256');
+  const generator = cryptoFramework.createSymKeyGenerator(HMAC_ALGORITHM);
+  const secret = generator.convertKeySync({ data: base64.decodeSync(key) });
+
+  mac.initSync(secret);
+  mac.updateSync({ data: util.TextEncoder.create().encodeInto(serialized) });
+
+  return base64.encodeToStringSync(mac.doFinalSync().data);
+}
 
 export type NotificationReceiver = (notification: Notification, customSound?: string) => void;
 export type ResponseReceiver = (response: NotificationResponse) => void;
@@ -78,11 +95,11 @@ export class NotificationsStore {
     return this.registrationRevision;
   }
 
-  runToken<T>(operation: () => Promise<T>, supersedesUpdates: boolean = false): Promise<T> {
-    return this.registration.run(async (): Promise<T> => {
-      const result = await operation();
-      if (supersedesUpdates) this.registrationRevision += 1;
-      return result;
+  runToken<T>(operation: () => Promise<T>, invalidatesUpdates: boolean = false): Promise<T> {
+    return this.registration.run((): Promise<T> => {
+      if (invalidatesUpdates) this.registrationRevision += 1;
+
+      return operation();
     });
   }
 
@@ -118,6 +135,31 @@ export class NotificationsStore {
   write<T>(key: string, value: T): Promise<void> {
     // Preferences.flush commits every key, so writes and rollback must share a queue.
     return this.writes.run((): Promise<void> => this.persist(key, value));
+  }
+
+  async signResponse(serialized: string): Promise<string> {
+    let key = this.read<string>(SIGNING_KEY, '');
+    if (key === '') {
+      const random = cryptoFramework.createRandom().generateRandomSync(32);
+      key = new util.Base64Helper().encodeToStringSync(random.data);
+
+      await this.write(SIGNING_KEY, key);
+    }
+
+    return responseSignature(key, serialized);
+  }
+
+  verifyResponse(serialized: string, signature: string): boolean {
+    const key = this.read<string>(SIGNING_KEY, '');
+    if (key === '') return false;
+
+    const expected = responseSignature(key, serialized);
+    if (signature.length !== expected.length) return false;
+
+    let different = 0;
+    for (let i = 0; i < expected.length; i++) different |= signature.charCodeAt(i) ^ expected.charCodeAt(i);
+
+    return different === 0;
   }
 
   private async persist<T>(key: string, value: T): Promise<void> {
@@ -222,7 +264,10 @@ export class NotificationsStore {
 
     if (JSON.stringify(retained) !== JSON.stringify(saved)) await this.write('scheduled', retained);
 
-    return retained.filter((entry: ScheduledNotification): boolean => ids.has(entry.reminderId));
+    // The system keeps a delivered one-shot reminder valid until it is closed.
+    return retained.filter((entry: ScheduledNotification): boolean =>
+      ids.has(entry.reminderId) && (!displayed.has(entry.notificationId) || repeats(entry.request)),
+    );
   }
 
   receive(context: common.UIAbilityContext, notification: Notification, customSound?: string): void {

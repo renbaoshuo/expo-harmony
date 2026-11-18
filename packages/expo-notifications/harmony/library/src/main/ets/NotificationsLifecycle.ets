@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { AbilityLifecycleCallback, UIAbility, Want, wantConstant } from '@kit.AbilityKit';
+import { AbilityLifecycleCallback, common, UIAbility, Want, wantConstant } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { util } from '@kit.ArkTS';
 import { pushCommon, pushService } from '@kit.PushKit';
@@ -15,9 +15,12 @@ import { ExpoAbilityLifecycleSubscriber, ExpoAppLifecycleSubscriber, ExpoModuleE
 import { NotificationsStore } from './NotificationsStore';
 import {
   DEFAULT_ACTION,
+  MAX_INT32,
   RESPONSE_KEY,
+  RESPONSE_SIGNATURE_KEY,
   PUSH_LISTENER_ACTION,
   NotificationResponse,
+  ScheduledNotification,
   record,
   integer,
   pushNotification,
@@ -26,6 +29,8 @@ import {
 
 const NOTIFICATION_LAUNCH_REASON = 'ReasonMessage_Notification';
 const CALLER_PARAMETER_PREFIX = 'ohos.aafwk.param.caller';
+// The system sets this Want parameter on launch.
+const CALLER_BUNDLE = 'ohos.aafwk.param.callerBundleName';
 // ArkTS does not support reflecting over SDK enum classes with Object.values.
 const SYSTEM_WANT_KEYS = new Set<string>([
   wantConstant.Params.ABILITY_BACK_TO_OTHER_MISSION_STACK,
@@ -52,6 +57,8 @@ const SYSTEM_WANT_KEYS = new Set<string>([
   wantConstant.Params.ATOMIC_SERVICE_SHARE_ROUTER,
   wantConstant.Params.LAUNCH_REASON_MESSAGE,
   wantConstant.Params.ABILITY_UNIFIED_DATA_KEY,
+  RESPONSE_KEY,
+  RESPONSE_SIGNATURE_KEY,
   '__proto__',
   'component.startup.newRules',
   'moduleName',
@@ -66,19 +73,42 @@ function report(error: Object): void {
   );
 }
 
-function captureResponse(want: Want, store: NotificationsStore): void {
+function captureResponse(want: Want, context: common.UIAbilityContext): void {
+  const fromNotification = want.parameters?.[wantConstant.Params.LAUNCH_REASON_MESSAGE] === NOTIFICATION_LAUNCH_REASON;
   const serialized = want.parameters?.[RESPONSE_KEY];
+  if (!fromNotification && typeof serialized !== 'string') return;
+
+  const store = NotificationsStore.get(context);
+
   if (typeof serialized === 'string') {
     try {
-      store.respond(parseResponse(serialized));
+      const signature = want.parameters?.[RESPONSE_SIGNATURE_KEY];
+      if (typeof signature === 'string') {
+        if (store.verifyResponse(serialized, signature)) {
+          store.respond(parseResponse(serialized));
+
+          return;
+        }
+      } else if (signature === undefined) {
+        // Accept legacy unsigned responses only when the caller or saved reminder matches.
+        const response = parseResponse(serialized);
+        const fromThisApp = want.parameters?.[CALLER_BUNDLE] === context.abilityInfo.bundleName;
+        const wasScheduled = fromNotification && response.actionIdentifier === DEFAULT_ACTION &&
+          store.schedules().some((entry: ScheduledNotification): boolean =>
+            JSON.stringify(entry.request) === JSON.stringify(response.notification.request),
+          );
+        if (fromThisApp || wasScheduled) {
+          store.respond(response);
+
+          return;
+        }
+      }
     } catch (error) {
       report(error as Object);
     }
-
-    return;
   }
 
-  if (want.parameters?.[wantConstant.Params.LAUNCH_REASON_MESSAGE] !== NOTIFICATION_LAUNCH_REASON) return;
+  if (!fromNotification) return;
 
   // Push Kit flattens clickAction.data into Want parameters alongside system keys.
   const data: Record<string, ESObject> = {};
@@ -97,10 +127,10 @@ function captureResponse(want: Want, store: NotificationsStore): void {
 
 export class ExpoNotificationsAbilityLifecycleSubscriber extends ExpoAbilityLifecycleSubscriber {
   onCreate(want: Want): void {
-    captureResponse(want, NotificationsStore.get(this.context));
+    captureResponse(want, this.context);
   }
   onNewWant(want: Want): void {
-    captureResponse(want, NotificationsStore.get(this.context));
+    captureResponse(want, this.context);
   }
 }
 
@@ -119,8 +149,7 @@ class PushLifecycle extends AbilityLifecycleCallback {
     try {
       if (this.receiver !== ability) {
         pushService.receiveMessage('DEFAULT', ability, (payload: pushCommon.PushPayload): void => {
-          const current = this.ability;
-          if (current !== ability || payload.type !== 'ALERT') return;
+          if (this.ability !== ability || payload.type !== 'ALERT') return;
 
           try {
             const envelope = record(JSON.parse(payload.data), 'Push Kit payload');
@@ -138,11 +167,11 @@ class PushLifecycle extends AbilityLifecycleCallback {
             const id =
               source.notifyId === undefined || source.notifyId === -1
                 ? util.generateRandomUUID()
-                : String(integer(source.notifyId, 'Push Kit notifyId', 0, 2147483647));
+                : String(integer(source.notifyId, 'Push Kit notifyId', 0, MAX_INT32));
             const notification = pushNotification(id, source.title ?? null, source.body ?? null, data, Date.now());
             if (notification.request.trigger !== null) notification.request.trigger['payload'] = envelope;
 
-            store.receive(current.context, notification);
+            store.receive(ability.context, notification);
           } catch (error) {
             report(error as Object);
           }
@@ -196,8 +225,7 @@ class PushLifecycle extends AbilityLifecycleCallback {
     }
 
     this.listener = undefined;
-    // DEFAULT binds the Ability's callee and has no public off API. Register
-    // once for each new Ability, matching the documented onCreate integration.
+    // DEFAULT binds to the Ability's callee and has no public off API.
     this.receiver = undefined;
   }
 
