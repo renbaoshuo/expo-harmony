@@ -308,8 +308,9 @@ export default class Parser {
   parseIntegerOrDecimal(): number | Decimal {
     let decimalPoint = -1;
     let sign = 1;
-    let number = '';
-    if (this.lookChar()==='-') {
+    let text = '';
+
+    if (this.lookChar() === '-') {
       sign = -1;
       this.pos++;
     }
@@ -318,39 +319,41 @@ export default class Parser {
       throw new ParseError(this.pos, 'Expected a digit (0-9)');
     }
 
-    while(!this.eof()) {
+    while (!this.eof()) {
       const char = this.getChar();
       if (isDigit(char)) {
-        number += char;
+        text += char;
       } else if (decimalPoint === -1 && char === '.') {
-        if (number.length > 12) {
+        if (text.length > 12) {
           throw new ParseError(this.pos - 1, 'Exceeded maximum decimal length');
         }
-        decimalPoint = number.length;
-        number += '.';
+        decimalPoint = text.length;
+        text += '.';
       } else {
         this.pos--;
         break;
       }
 
-      if (decimalPoint === -1 && number.length > 15) {
+      if (decimalPoint === -1 && text.length > 15) {
         throw new ParseError(this.pos - 1, 'Exceeded maximum integer length');
       }
-      if (decimalPoint !== -1 && number.length - decimalPoint - 1 > 3) {
+      if (decimalPoint !== -1 && text.length - decimalPoint - 1 > 3) {
         throw new ParseError(this.pos - 1, 'Number of digits after the decimal point cannot exceed 3');
       }
     }
 
     if (decimalPoint === -1) {
-      return parseInt(number, 10) * sign;
+      const integer = parseInt(text, 10);
+
+      return integer === 0 ? 0 : integer * sign;
     }
 
-    const fraction = number.slice(decimalPoint + 1);
+    const fraction = text.slice(decimalPoint + 1);
     if (!fraction) {
       throw new ParseError(this.pos - 1, 'Decimal cannot end on a period');
     }
 
-    const digits = number.slice(0, decimalPoint) + fraction.padEnd(3, '0');
+    const digits = text.slice(0, decimalPoint) + fraction.padEnd(3, '0');
 
     return Decimal.fromPermille(parseInt(digits, 10) * sign);
   }

@@ -5,7 +5,7 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import util from '@ohos.util';
+import { util } from '@kit.ArkTS';
 import { Token } from './token';
 
 export type List = (InnerList|Item)[];
@@ -22,7 +22,7 @@ export class Decimal {
   readonly permille: number;
 
   private constructor(permille: number) {
-    this.permille = permille;
+    this.permille = permille === 0 ? 0 : permille;
   }
 
   static valueOf(value: number): Decimal {
@@ -54,7 +54,7 @@ export class ByteSequence {
 
   constructor(value: string | Uint8Array) {
     if (value instanceof Uint8Array) {
-      this.bytes = value.slice();
+      this.bytes = new Uint8Array(value);
       return;
     }
 
@@ -64,7 +64,12 @@ export class ByteSequence {
     }
 
     const padded = value.padEnd(Math.ceil(value.length / 4) * 4, '=');
-    this.bytes = padded ? new util.Base64Helper().decodeSync(padded) : new Uint8Array();
+
+    try {
+      this.bytes = padded ? new util.Base64Helper().decodeSync(padded) : new Uint8Array();
+    } catch (_) {
+      throw new TypeError('Invalid Base64 byte sequence.');
+    }
   }
 
   toBase64(): string {
