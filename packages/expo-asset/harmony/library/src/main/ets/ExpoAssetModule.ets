@@ -18,28 +18,25 @@ import {
   rawResourcePathFromUri,
 } from '@expo-harmony/expo-modules-core';
 import { fileIo as fs, hash as fileHash } from '@kit.CoreFileKit';
-import { request } from '@kit.BasicServicesKit';
+import type { BusinessError } from '@kit.BasicServicesKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { util } from '@kit.ArkTS';
+import lazy { rcp } from '@kit.RemoteCommunicationKit';
 
-const DOWNLOAD_CAPABILITY = 'SystemCapability.MiscServices.Download';
+const REMOTE_COMMUNICATION_CAPABILITY = 'SystemCapability.Collaboration.RemoteCommunication';
 const MESSAGE_DIGEST_CAPABILITY = 'SystemCapability.Security.CryptoFramework.MessageDigest';
-
-type CancelRequest = (error: ExpoAssetError) => void;
+const NETWORK_IDLE_TIMEOUT_MS = 60_000;
 
 class ExpoAssetError extends ExpoModuleError {
-  readonly canRemoveTemporaryFile: boolean;
-
-  constructor(code: string, message: string, canRemoveTemporaryFile: boolean = true) {
-    super(code, message);
+  constructor(code: string, message: string, cause?: Object, path?: string) {
+    super(code, message, cause, path);
     this.name = 'ExpoAssetError';
-    this.canRemoveTemporaryFile = canRemoveTemporaryFile;
   }
 }
 
 export class ExpoAssetModule extends ExpoModule {
   private readonly inflight: Map<string, Promise<string>> = new Map();
-  private readonly requests: Map<request.DownloadTask, CancelRequest> = new Map();
+  private session?: rcp.Session;
   private destroyed: boolean = false;
 
   constructor(context: ExpoModuleContext) {
@@ -73,6 +70,7 @@ export class ExpoAssetModule extends ExpoModule {
 
   private async prepareForReload(): Promise<void> {
     const pending = Array.from(this.inflight.values());
+
     this.beginShutdown();
 
     await Promise.all(
@@ -89,8 +87,13 @@ export class ExpoAssetModule extends ExpoModule {
 
     this.destroyed = true;
 
-    const error = new ExpoAssetError('ERR_ASSET_RUNTIME_DESTROYED', 'The Expo asset service was destroyed while a request was in progress.');
-    this.requests.forEach((cancel: CancelRequest): void => cancel(error));
+    const session = this.session;
+    this.session = undefined;
+
+    if (session !== undefined) {
+      try { session.cancel(); } catch (_) {}
+      try { session.close(); } catch (_) {}
+    }
   }
 
   private assertActive(): void {
@@ -101,6 +104,7 @@ export class ExpoAssetModule extends ExpoModule {
 
   private async download(uri: string, md5: string | null, type: string): Promise<string> {
     const scheme = uriScheme(uri);
+
     if (scheme === 'file') {
       this.context.fileSourceForRead(uri);
 
@@ -108,6 +112,7 @@ export class ExpoAssetModule extends ExpoModule {
     }
 
     const resource = isRawResource(uri, scheme) ? rawResourceName(uri) : undefined;
+
     if (resource === undefined && scheme !== 'http' && scheme !== 'https') {
       throw new ExpoAssetError('ERR_ASSET_UNSUPPORTED_URI', sanitizedUri(uri));
     }
@@ -158,15 +163,11 @@ export class ExpoAssetModule extends ExpoModule {
 
       return fileUriFromPath(file);
     } catch (error) {
-      if (!(error instanceof ExpoAssetError) || error.canRemoveTemporaryFile) {
-        try {
-          await fs.unlink(temp);
-        } catch (_) {}
-      } else {
-        this.context.logger.warn('Retaining an Expo asset temporary file because the native download could not be stopped.');
-      }
+      try { await fs.unlink(temp); } catch (_) {}
 
-      if (error instanceof ExpoAssetError) throw error;
+      if (error instanceof ExpoAssetError) {
+        throw new ExpoAssetError(error.code, error.message, error.cause, error.path);
+      }
 
       throw new ExpoAssetError('ERR_ASSET_DOWNLOAD_FAILED', cleanErrorMessage(error as Object));
     }
@@ -211,7 +212,9 @@ export class ExpoAssetModule extends ExpoModule {
         await fs.close(input.file.fd);
       }
     } catch (error) {
-      if (error instanceof ExpoAssetError) throw error;
+      if (error instanceof ExpoAssetError) {
+        throw new ExpoAssetError(error.code, error.message, error.cause, error.path);
+      }
 
       throw new ExpoAssetError('ERR_ASSET_RESOURCE_UNAVAILABLE', `Cannot read packaged asset '${name}': ${cleanErrorMessage(error as Object)}`);
     }
@@ -219,103 +222,41 @@ export class ExpoAssetModule extends ExpoModule {
 
   private async downloadHttp(uri: string, file: string): Promise<void> {
     this.assertActive();
-    if (!canIUse(DOWNLOAD_CAPABILITY)) {
+
+    if (!canIUse(REMOTE_COMMUNICATION_CAPABILITY)) {
       throw new ExpoAssetError('ERR_ASSET_DOWNLOAD_FAILED', 'The system download service is unavailable.');
     }
 
-    let task: request.DownloadTask;
+    let status: number;
+
     try {
-      task = await request.downloadFile(this.context.uiAbilityContext, {
-        url: uri,
-        filePath: file,
-        enableMetered: true,
-        enableRoaming: true,
-        background: false,
+      this.session ??= rcp.createSession({
+        headers: { 'accept-encoding': 'gzip' },
+        requestConfiguration: {
+          transfer: { timeout: { connectMs: NETWORK_IDLE_TIMEOUT_MS, transferMs: 0, inactivityMs: NETWORK_IDLE_TIMEOUT_MS } },
+        },
       });
+
+      status = (await this.session.downloadToFile(uri, { kind: 'file', file })).statusCode;
     } catch (error) {
+      this.assertActive();
+
+      const code = (error as BusinessError).code;
+
       throw new ExpoAssetError(
         'ERR_ASSET_DOWNLOAD_FAILED',
-        `Unable to start asset download from '${sanitizedUri(uri)}': ${cleanErrorMessage(error as Object)}`,
+        `Unable to download asset from '${sanitizedUri(uri)}'${typeof code === 'number' ? ` (Harmony error ${code})` : ''}.`,
       );
     }
 
-    await this.waitForDownload(task, uri);
-  }
+    this.assertActive();
 
-  private async waitForDownload(task: request.DownloadTask, uri: string): Promise<void> {
-    await new Promise<void>((resolve: () => void, reject: (error: Error) => void): void => {
-      let settled = false;
-
-      const cleanup = (): void => {
-        this.requests.delete(task);
-
-        // The service may detach listeners when it removes the task.
-        try { task.off('complete', complete); } catch (_) {}
-        try { task.off('fail', fail); } catch (_) {}
-        try { task.off('remove', remove); } catch (_) {}
-      };
-
-      const settle = (error?: ExpoAssetError): void => {
-        if (settled) return;
-
-        settled = true;
-        cleanup();
-
-        if (error === undefined) resolve();
-        else reject(error as Error);
-      };
-
-      const complete = (): void => settle();
-      const fail = (reason: number): void =>
-        settle(new ExpoAssetError('ERR_ASSET_DOWNLOAD_FAILED', `Unable to download asset from '${sanitizedUri(uri)}' (Harmony reason ${reason}).`));
-      const remove = (): void =>
-        settle(new ExpoAssetError('ERR_ASSET_DOWNLOAD_FAILED', `The system removed the asset download from '${sanitizedUri(uri)}'.`));
-
-      const cancel = (error: ExpoAssetError): void => {
-        if (settled) return;
-
-        settled = true;
-        cleanup();
-
-        // Retain the temporary file unless the native writer is confirmed stopped.
-        const cancelled = (deleted: boolean): void => reject(new ExpoAssetError(error.code, error.message, deleted) as Error);
-
-        try {
-          task.delete().then(
-            (deleted: boolean): void => cancelled(deleted),
-            (_: Object): void => cancelled(false),
-          );
-        } catch (_) {
-          cancelled(false);
-        }
-      };
-
-      this.requests.set(task, cancel);
-
-      try {
-        task.on('complete', complete);
-        task.on('fail', fail);
-        task.on('remove', remove);
-
-        if (this.destroyed) {
-          cancel(new ExpoAssetError('ERR_ASSET_RUNTIME_DESTROYED', 'The Expo asset service was destroyed while a request was in progress.'));
-          return;
-        }
-
-        // The download may finish before its listeners are registered.
-        task
-          .getTaskInfo()
-          .then((info: request.DownloadInfo): void => {
-            if (info.status === request.SESSION_SUCCESSFUL) complete();
-            else if (info.status === request.SESSION_FAILED) fail(info.failedReason);
-          })
-          .catch((error: Object): void => {
-            cancel(new ExpoAssetError('ERR_ASSET_DOWNLOAD_FAILED', cleanErrorMessage(error)));
-          });
-      } catch (error) {
-        cancel(new ExpoAssetError('ERR_ASSET_DOWNLOAD_FAILED', cleanErrorMessage(error as Object)));
-      }
-    });
+    if (status < 200 || status >= 300) {
+      throw new ExpoAssetError(
+        'ERR_ASSET_DOWNLOAD_FAILED',
+        `Unable to download asset from '${sanitizedUri(uri)}' (HTTP ${status}).`,
+      );
+    }
   }
 }
 
