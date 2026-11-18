@@ -26,13 +26,13 @@ function withDevClient(config, options = {}) {
     throw new TypeError('expo-dev-client addGeneratedScheme must be a boolean.');
   }
 
-  const scheme = generate ? require('expo-dev-client/getDefaultScheme')(config) : undefined;
-
   config = withDevLauncher(config, options ?? {});
   config = registerHarmonyConfigPlugin(config, pkg.name);
-  if (scheme === undefined) return config;
+
+  if (!generate) return config;
 
   return withModuleJson(config, (mod) => {
+    const scheme = require('expo-dev-client/getDefaultScheme')(mod.modRawConfig);
     const ability = HarmonyManifest.getMainAbilityOrThrow(mod.modResults);
 
     HarmonyManifest.configureAbility(mod, ability, {
