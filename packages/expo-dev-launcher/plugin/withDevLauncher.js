@@ -41,13 +41,6 @@ function launchMode(options) {
   return value;
 }
 
-function selectedAbility(module) {
-  const name = module.mainElement;
-  return Array.isArray(module.abilities)
-    ? module.abilities.find((ability, index) => ability?.name === name || (!name && index === 0))
-    : undefined;
-}
-
 function parseLaunchURL(value) {
   const authority = value.match(/^[a-z][a-z\d+.-]*:\/\/([^/?#]*)/i)?.[1];
   if (!authority || authority.includes('@') || value.includes('#')) {
@@ -59,11 +52,7 @@ function parseLaunchURL(value) {
 }
 
 function updateManifest(mod, options = {}) {
-  const module = mod.modResults.module;
-  if (!module || typeof module !== 'object') throw new TypeError('expo-dev-launcher requires a Harmony module manifest.');
-
-  const ability = selectedAbility(module);
-  if (!ability) throw new TypeError('expo-dev-launcher requires an entry UIAbility.');
+  const ability = HarmonyManifest.getMainAbilityOrThrow(mod.modResults);
 
   const mode = launchMode(options);
   const metadata = [
@@ -75,34 +64,37 @@ function updateManifest(mod, options = {}) {
     if (options[option] !== undefined && typeof options[option] !== 'boolean') {
       throw new TypeError(`expo-dev-launcher ${option} must be a boolean.`);
     }
+
     if (options[option] !== undefined) metadata.push({ name, value: String(options[option]) });
   }
+
   if (options.defaultLaunchURL !== undefined) {
     if (typeof options.defaultLaunchURL !== 'string' || !options.defaultLaunchURL.trim()) {
       throw new TypeError('expo-dev-launcher defaultLaunchURL must be a non-empty URL string.');
     }
 
-    const defaultURL = options.defaultLaunchURL.trim();
-    const parsed = parseLaunchURL(defaultURL);
+    const url = options.defaultLaunchURL.trim();
+    const parsed = parseLaunchURL(url);
     const host = parsed.hostname.toLowerCase();
-    const isWrapper = parsed.protocol === `${DEEP_LINK_SCHEME}:` ? host === DEEP_LINK_HOST : host === EXPO_DEV_CLIENT_HOST;
-    const innerURL = parsed.searchParams.get('url');
-    if (isWrapper && !innerURL) throw new TypeError('expo-dev-launcher defaultLaunchURL is missing its url parameter.');
+    const wrapped = parsed.protocol === `${DEEP_LINK_SCHEME}:` ? host === DEEP_LINK_HOST : host === EXPO_DEV_CLIENT_HOST;
+    const inner = parsed.searchParams.get('url');
+    if (wrapped && !inner) throw new TypeError('expo-dev-launcher defaultLaunchURL is missing its url parameter.');
 
-    const resolved = isWrapper ? parseLaunchURL(innerURL.trim()) : parsed;
+    const resolved = wrapped ? parseLaunchURL(inner.trim()) : parsed;
     if (!['http:', 'https:', 'exp:', 'exps:'].includes(resolved.protocol) || !resolved.hostname) {
       throw new TypeError('expo-dev-launcher defaultLaunchURL must resolve to an HTTP(S) or exp(s) URL.');
     }
-    metadata.push({ name: DEFAULT_URL_METADATA, value: defaultURL });
+
+    metadata.push({ name: DEFAULT_URL_METADATA, value: url });
   }
 
-  const launcherSkill = {
+  const skill = {
     entities: [BROWSABLE_ENTITY],
     actions: [VIEW_ACTION],
     uris: [{ scheme: DEEP_LINK_SCHEME, host: DEEP_LINK_HOST }],
   };
   HarmonyManifest.configureModuleMetadata(mod, metadata);
-  HarmonyManifest.configureAbility(mod, ability, { skills: [launcherSkill] });
+  HarmonyManifest.configureAbility(mod, ability, { skills: [skill] });
 }
 
 function withHarmonyDevLauncher(config, options = {}) {

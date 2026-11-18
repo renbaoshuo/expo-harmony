@@ -13,6 +13,7 @@ import { buildExpoDevLauncherRoot } from './ExpoDevLauncherView';
 
 export class ExpoDevLauncherReactActivityHandler implements ReactActivityHandler {
   readonly priority: number = DevLauncherHostPriority;
+  readonly showsNativeContentBeforeReact: boolean = true;
   private readonly controller: DevLauncherController;
 
   constructor(context: common.Context) {
@@ -25,6 +26,7 @@ export class ExpoDevLauncherReactActivityHandler implements ReactActivityHandler
 
   getDelayLoadAppHandler(_context: ReactRootViewContext): Promise<void> | undefined {
     if (!this.controller.enabled) return undefined;
+
     this.controller.startInitialSelection();
     return this.controller.ready;
   }

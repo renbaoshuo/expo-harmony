@@ -53,6 +53,7 @@ export class DevServerDiscovery {
   private service?: mdns.DiscoveryService;
   private timer?: number;
   private readonly candidates = new Map<string, mdns.LocalServiceInfo>();
+  private readonly resolved = new Map<mdns.LocalServiceInfo, mdns.LocalServiceInfo>();
   private readonly pending = new Set<string>();
   private readonly requests = new Set<http.HttpRequest>();
   private readonly servers = new Map<string, DiscoveredServer>();
@@ -106,6 +107,7 @@ export class DevServerDiscovery {
 
   start(): void {
     if (this.service !== undefined) return;
+
     this.discoveryError = undefined;
     if (!canIUse(MDNS_CAPABILITY)) {
       this.fail('Server discovery is unavailable on this device. Enter the project URL manually.');
@@ -117,6 +119,7 @@ export class DevServerDiscovery {
     try {
       const service = mdns.createDiscoveryService(this.context, EXPO_MDNS_SERVICE);
       this.service = service;
+
       service.on('discoveryStart', (event: mdns.DiscoveryEventInfo): void => {
         if (this.service !== service) return;
         if (event.errorCode !== undefined && event.errorCode !== 0) this.fail(`Server discovery failed (${event.errorCode}).`);
@@ -127,21 +130,28 @@ export class DevServerDiscovery {
       });
       service.on('serviceFound', (info: mdns.LocalServiceInfo): void => {
         if (this.service !== service) return;
-        this.candidates.set(info.serviceName, info);
+
+        const name = info.serviceName;
+        const previous = this.candidates.get(name);
+        if (previous !== undefined) this.resolved.delete(previous);
+        this.candidates.set(name, info);
+
         this.check(info, generation).catch((error: Error): void => console.warn(displayError(error)));
       });
       service.on('serviceLost', (info: mdns.LocalServiceInfo): void => {
         if (this.generation !== generation || this.service !== service) return;
-        this.candidates.delete(info.serviceName);
-        this.servers.delete(info.serviceName);
+
+        const name = info.serviceName;
+        const previous = this.candidates.get(name);
+        if (previous !== undefined) this.resolved.delete(previous);
+        this.candidates.delete(name);
+        this.servers.delete(name);
+
         this.publish();
       });
 
       service.startSearchingMDNS();
       if (this.service === service) {
-        this.candidates.forEach((info: mdns.LocalServiceInfo): void => {
-          this.check(info, generation).catch((error: Error): void => console.warn(displayError(error)));
-        });
         this.timer = setInterval((): void => {
           this.candidates.forEach((info: mdns.LocalServiceInfo): void => {
             this.check(info, generation).catch((error: Error): void => console.warn(displayError(error)));
@@ -151,24 +161,29 @@ export class DevServerDiscovery {
     } catch (error) {
       this.fail(`Unable to discover development servers. ${displayError(error as Object)}`);
     }
+
     this.publish();
   }
 
   restart(): void {
-    this.stop(false);
+    this.stop();
     this.start();
   }
 
-  stop(clearServers: boolean = true): void {
+  stop(): void {
     const service = this.service;
     this.generation += 1;
     this.service = undefined;
+
     if (this.timer !== undefined) clearInterval(this.timer);
     this.timer = undefined;
+
     this.requests.forEach((request: http.HttpRequest): void => request.destroy());
     this.requests.clear();
     this.pending.clear();
-    if (clearServers) this.candidates.clear();
+    this.candidates.clear();
+    this.resolved.clear();
+
     try {
       service?.stopSearchingMDNS();
     } catch (error) {
@@ -182,7 +197,8 @@ export class DevServerDiscovery {
     } catch (error) {
       console.warn(`Unable to detach development server discovery: ${displayError(error as Object)}`);
     }
-    if (clearServers) this.servers.clear();
+
+    this.servers.clear();
     this.publish();
   }
 
@@ -195,19 +211,23 @@ export class DevServerDiscovery {
   private async check(info: mdns.LocalServiceInfo, generation: number): Promise<void> {
     const name = info.serviceName;
     if (this.pending.has(name)) return;
+
     this.pending.add(name);
     let request: http.HttpRequest | undefined;
+
     try {
-      const resolved = await mdns.resolveLocalService(this.context, info);
+      const service = this.resolved.get(info) ?? await mdns.resolveLocalService(this.context, info);
       if (!this.isCurrent(info, generation)) return;
 
-      const address = resolved.host?.address;
-      const port = resolved.port;
+      const address = service.host?.address;
+      const port = service.port;
       if (!address || port === undefined || !Number.isInteger(port) || port < 1 || port > 65535) {
         this.servers.delete(name);
         this.publish();
         return;
       }
+
+      this.resolved.set(info, service);
       const origin = `http://${hostForURL(address)}:${port}`;
       request = http.createHttp();
       this.requests.add(request);
@@ -219,18 +239,24 @@ export class DevServerDiscovery {
         readTimeout: HEALTH_CHECK_TIMEOUT_MS,
         maxLimit: 16 * 1024,
       });
+
       if (!this.isCurrent(info, generation)) return;
+
       if (response.responseCode >= 200 && response.responseCode < 300
         && typeof response.result === 'string' && response.result.trim() === METRO_RUNNING_STATUS) {
         const url = `${origin}${MANIFEST_PATH}?platform=${HARMONY_PLATFORM}`;
-        this.servers.set(name, new DiscoveredServer(name, txtValue(resolved, 'name') ?? txtValue(info, 'name') ?? name,
-          url, txtValue(resolved, 'slug') ?? txtValue(info, 'slug')));
+        const label = txtValue(service, 'name') ?? txtValue(info, 'name') ?? name;
+        const slug = txtValue(service, 'slug') ?? txtValue(info, 'slug');
+        this.servers.set(name, new DiscoveredServer(name, label, url, slug));
       } else {
+        this.resolved.delete(info);
         this.servers.delete(name);
       }
+
       this.publish();
     } catch (_) {
       if (this.isCurrent(info, generation)) {
+        this.resolved.delete(info);
         this.servers.delete(name);
         this.publish();
       }

@@ -27,7 +27,6 @@ import { RecentApp, RecentApps } from './RecentApps';
 import { sendRuntimeError } from './DevLauncherRemoteLogs';
 
 const SCAN_CAPABILITY = 'SystemCapability.Multimedia.Scan.ScanBarcode';
-const SCANNER_CANCELLED_ERROR_CODE = 1000500002;
 
 export class DevLauncherViewState {
   readonly loading: boolean;
@@ -93,7 +92,7 @@ export class DevLauncherController {
     return controller;
   }
 
-  private selectionReady: Promise<void>;
+  private selectionReady: Promise<void> = Promise.resolve();
   private resolveReady?: () => void;
   private homeTransition?: Promise<void>;
   private readonly history: RecentApps;
@@ -109,7 +108,6 @@ export class DevLauncherController {
   private active = false;
   private foregrounded = false;
   private loadingRequest?: LaunchRequest;
-  private loadPromise?: Promise<void>;
   private manifestLoad?: Promise<LaunchSelection>;
   private progress = 0;
   private error?: string;
@@ -126,6 +124,7 @@ export class DevLauncherController {
   private runtime?: RuntimeRegistration;
   private runtimeOwner?: RuntimeRegistration;
   private pendingReloadReason?: string;
+  private scanningAbility?: common.UIAbilityContext;
   private readonly context: common.ApplicationContext;
   private readonly bundleName: string;
 
@@ -136,9 +135,7 @@ export class DevLauncherController {
     this.preferences = new DevMenuPreferences(context);
     this.preferences.subscribe((): void => this.publish());
     this.recent = this.history.all();
-    this.selectionReady = new Promise<void>((resolve: () => void): void => {
-      this.resolveReady = resolve;
-    });
+    this.resetSelectionGate();
   }
 
   get enabled(): boolean {
@@ -232,16 +229,6 @@ export class DevLauncherController {
     }
 
     UpdatesControllerRegistry.requestDevelopmentLauncherInitialization(this.bundleName);
-    if (!this.recoveryChecked) {
-      this.recoveryChecked = true;
-      const failure = this.history.takeFailure();
-      if (failure !== undefined) {
-        this.recoveredFailure = true;
-        this.error = `The previous runtime failed. Choose a project to try again.\n${failure}`;
-        this.publish();
-      }
-    }
-
     this.refreshDiscoveryLifecycle();
   }
 
@@ -263,15 +250,31 @@ export class DevLauncherController {
   detachAbility(ability?: common.UIAbilityContext): void {
     if (ability !== undefined && this.ability !== ability) return;
 
-    this.pendingRequest ??= this.loadingRequest;
     this.loadSerial += 1;
     this.loadingRequest = undefined;
+    this.pendingRequest = undefined;
+    this.selectedRequest = undefined;
+    this.selection = undefined;
+    this.openedSelection = undefined;
+    this.failedRequest = undefined;
     this.progress = 0;
+    this.error = undefined;
+
+    this.recoveryChecked = false;
+    this.recoveredFailure = false;
+    this.initialSelectionStarted = false;
+    this.settledInitialSelection = false;
+    this.resolveReady?.();
+    this.resetSelectionGate();
+
     this.runtime = undefined;
     this.runtimeOwner = undefined;
     this.pendingReloadReason = undefined;
+    this.scanningAbility = undefined;
 
     this.disconnectUpdates();
+    if (this.manifestLoad === undefined) this.resetUpdates();
+
     this.foregrounded = false;
     this.ability = undefined;
     this.detachDiscovery?.();
@@ -322,13 +325,26 @@ export class DevLauncherController {
   startInitialSelection(): void {
     if (!this.active || this.loading) return;
 
+    if (!this.recoveryChecked) {
+      this.recoveryChecked = true;
+
+      const error = this.history.takeFailure();
+      if (error !== undefined) {
+        this.recoveredFailure = true;
+        this.error = `The previous runtime failed. Choose a project to try again.\n${error}`;
+        this.publish();
+      }
+    }
+
     const pending = this.pendingRequest;
     if (pending !== undefined) {
       this.pendingRequest = undefined;
       this.loadRequest(pending).catch((): void => {});
       return;
     }
+
     if (this.initialSelectionStarted || this.settledInitialSelection || this.recoveredFailure) return;
+
     this.initialSelectionStarted = true;
     this.launchInitialSelection().catch((): void => {});
   }
@@ -427,9 +443,7 @@ export class DevLauncherController {
 
         // A queued reload may still need the current selection to complete before
         // suspend can run. Install the new gate only after that queue has drained.
-        this.selectionReady = new Promise<void>((resolve: () => void): void => {
-          this.resolveReady = resolve;
-        });
+        this.resetSelectionGate();
       }
 
       this.selection = undefined;
@@ -440,13 +454,21 @@ export class DevLauncherController {
       this.publish();
     } catch (error) {
       if (serial !== this.loadSerial) return;
+
       this.error = displayError(error as Object);
       this.publish();
+
       throw new DevLauncherError(
         error instanceof DevLauncherError || error instanceof ExpoModuleError ? error.code : 'ERR_DEV_LAUNCHER_RUNTIME',
         displayError(error as Object),
       );
     }
+  }
+
+  private resetSelectionGate(): void {
+    this.selectionReady = new Promise<void>((resolve: () => void): void => {
+      this.resolveReady = resolve;
+    });
   }
 
   async load(value: string): Promise<void> {
@@ -458,37 +480,27 @@ export class DevLauncherController {
   }
 
   private async loadRequest(request: LaunchRequest): Promise<void> {
+    const ability = this.ability;
     if (this.homeTransition !== undefined) await this.homeTransition;
-    if (!this.active) throw new DevLauncherError('ERR_DEV_LAUNCHER_UNAVAILABLE', 'Expo Dev Launcher is available only in debug builds.');
-    if (this.loading) {
-      this.pendingRequest = request;
-      return await this.loadPromise;
+
+    if (this.ability !== ability) {
+      throw new DevLauncherError('ERR_DEV_LAUNCHER_LOAD_SUPERSEDED', 'The launching ability has changed.');
     }
+    if (!this.active) throw new DevLauncherError('ERR_DEV_LAUNCHER_UNAVAILABLE', 'Expo Dev Launcher is available only in debug builds.');
 
     const serial = ++this.loadSerial;
     this.loadingRequest = request;
-    const pending = Promise.resolve().then((): Promise<void> => this.loadSelection(request, serial));
-    this.loadPromise = pending;
-    try {
-      await pending;
-    } finally {
-      if (this.loadPromise === pending) this.loadPromise = undefined;
-    }
+
+    await this.loadSelection(request, serial);
   }
 
-  private takePendingRequest(): LaunchRequest | undefined {
-    const request = this.pendingRequest;
-    if (request !== undefined) {
-      this.pendingRequest = undefined;
-      this.loadingRequest = undefined;
+  private requireCurrentLoad(serial: number): void {
+    if (serial !== this.loadSerial) {
+      throw new DevLauncherError('ERR_DEV_LAUNCHER_LOAD_SUPERSEDED', 'A newer launcher action replaced this load.');
     }
-
-    return request;
   }
 
   private async loadSelection(request: LaunchRequest, serial: number): Promise<void> {
-    if (serial !== this.loadSerial) return;
-
     const value = request.url;
 
     try {
@@ -497,13 +509,15 @@ export class DevLauncherController {
       this.progress = 0;
       this.error = undefined;
       this.publish();
+
+      this.requireCurrentLoad(serial);
       this.connectUpdates();
 
       // A previous request may still be finishing after Home or ability teardown.
       // Let it finish before resetting or starting another Updates selection.
       if (this.manifestLoad !== undefined) {
         await this.manifestLoad.catch((): void => {});
-        if (serial !== this.loadSerial) return;
+        this.requireCurrentLoad(serial);
       }
 
       let selection: LaunchSelection;
@@ -511,6 +525,7 @@ export class DevLauncherController {
         if (!this.hasEmbeddedBundle() || this.embeddedProvider === undefined) {
           throw new DevLauncherError('ERR_DEV_LAUNCHER_EMBEDDED_BUNDLE', 'Embedded bundle loading requires embeddedBundle: true and a bundle supplied by the application host.');
         }
+
         selection = new LaunchSelection(this.embeddedProvider, undefined, undefined, 'Embedded bundle', false);
       } else {
         const pending = new DevLauncherManifestLoader(this.context, []).load(url, (progress: number): void => {
@@ -527,21 +542,10 @@ export class DevLauncherController {
         }
       }
 
-      if (serial !== this.loadSerial) return;
-
-      const pending = this.takePendingRequest();
-      if (pending !== undefined) {
-        // Let the next load own its error; this load's serial is now obsolete.
-        return this.loadRequest(pending);
-      }
+      this.requireCurrentLoad(serial);
 
       if (value !== undefined && url !== undefined) await this.applyMenuURLPreferences(value, url, request.link);
-      if (serial !== this.loadSerial) return;
-
-      const queued = this.takePendingRequest();
-      if (queued !== undefined) {
-        return this.loadRequest(queued);
-      }
+      this.requireCurrentLoad(serial);
 
       if (selection.activateUpdate !== undefined) selection.activateUpdate();
       else if (url === undefined || selection.useDeveloperSupport) this.resetUpdates();
@@ -554,7 +558,6 @@ export class DevLauncherController {
       this.progress = 1;
       this.error = undefined;
       this.failedRequest = undefined;
-      this.publish();
 
       const first = !this.settledInitialSelection;
       this.resolveReady?.();
@@ -565,18 +568,17 @@ export class DevLauncherController {
         const reason = `Opened ${selection.name} from Expo Dev Launcher.`;
         this.requestReload(reason);
       }
-    } catch (error) {
-      if (serial !== this.loadSerial) return;
 
-      const pending = this.takePendingRequest();
-      if (pending !== undefined) {
-        return this.loadRequest(pending);
-      }
+      this.publish();
+    } catch (error) {
+      this.requireCurrentLoad(serial);
+
       this.loadingRequest = undefined;
       this.progress = 0;
       this.error = displayError(error as Object);
       this.failedRequest = request;
       this.publish();
+
       throw new DevLauncherError(
         error instanceof DevLauncherError || error instanceof ExpoModuleError ? error.code : 'ERR_DEV_LAUNCHER_RUNTIME',
         displayError(error as Object),
@@ -664,30 +666,40 @@ export class DevLauncherController {
 
   async scan(): Promise<void> {
     const ability = this.ability;
+    if (this.scanningAbility !== undefined) return;
 
+    let value: string;
     try {
       if (ability === undefined || !this.foregrounded) {
         throw new DevLauncherError('ERR_DEV_LAUNCHER_ABILITY', 'No foreground UIAbility is available for QR scanning.');
       }
-      if (!canIUse(SCAN_CAPABILITY))
+      if (!canIUse(SCAN_CAPABILITY)) {
         throw new DevLauncherError('ERR_DEV_LAUNCHER_SCANNER_UNAVAILABLE', 'QR scanning is not supported on this device.');
+      }
 
+      this.scanningAbility = ability;
       const result = await scanBarcode.startScanForResult(ability, { scanTypes: [scanCore.ScanType.QR_CODE] });
-      if (this.ability !== ability) return;
-      if (result.originalValue.trim().length === 0) throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_QR', 'The QR code is empty.');
 
-      await this.load(result.originalValue);
+      if (this.ability !== ability) return;
+
+      value = result.originalValue;
+      if (value.trim().length === 0) throw new DevLauncherError('ERR_DEV_LAUNCHER_INVALID_QR', 'The QR code is empty.');
     } catch (error) {
       if (this.ability !== ability) return;
-      if (error !== null && typeof error === 'object' && (error as BusinessError).code === SCANNER_CANCELLED_ERROR_CODE) return;
+      if (error !== null && typeof error === 'object' && (error as BusinessError).code === scanCore.ScanErrorCode.SCAN_SERVICE_CANCELED) return;
 
       const code = error instanceof DevLauncherError ? error.code : 'ERR_DEV_LAUNCHER_SCANNER';
       const message = error instanceof DevLauncherError ? error.message : `The QR scanner could not complete. ${String(error)}`;
+
       this.error = message;
       this.publish();
 
       throw new DevLauncherError(code, message);
+    } finally {
+      if (this.scanningAbility === ability) this.scanningAbility = undefined;
     }
+
+    await this.load(value);
   }
 
   async clearHistory(): Promise<void> {
@@ -713,7 +725,8 @@ export class DevLauncherController {
     if (request?.url === undefined) return;
 
     try {
-      await this.history.remember(resolveDevelopmentURL(request.url), selection.name, selection.manifest, request.link ?? request.url);
+      const url = selection.manifestURL ?? resolveDevelopmentURL(request.url);
+      await this.history.remember(url, selection.name, selection.manifest, request.link ?? request.url);
     } finally {
       this.recent = this.history.all();
       this.publish();

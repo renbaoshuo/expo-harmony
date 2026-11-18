@@ -89,13 +89,15 @@ export default { plugins: [devLauncher({ launchMode: 'launcher', skipOnboarding:
 
 开发构建可通过 `expo-harmony://open?url=...` 链接打开项目，应用自己的深链接仍可正常使用。链接可附带 `disableOnboarding=1`、`disableFab=1` 或 `disableAutoLaunch=1`，分别用于跳过引导、隐藏浮动工具按钮或关闭启动时自动打开菜单。发布版本不会打开开发链接。
 
-加载的项目需要与开发客户端包含的运行环境和原生功能相匹配。已发布的项目需要客户端安装 `@expo-harmony/expo-updates`，否则无法加载。
+加载的项目需要与开发客户端包含的运行环境和原生功能相匹配。要打开已发布的项目，请安装 `@expo-harmony/expo-updates`，并输入提供兼容 HarmonyOS 更新的服务器地址。
 
-从开发菜单选择 Home 会返回启动器。JavaScript 运行时错误会保留三天；再次启动时，启动器会显示错误信息，不会自动重新打开出错项目。系统原生崩溃不在此列。
+从开发菜单选择 Home 会返回启动器。React Native JavaScript 运行时错误会保留三天；再次启动时，启动器会显示错误信息，不会自动重新打开出错项目。
 
 ### 暂不支持的内容
 
-- 账户登录和 EAS 分支浏览。HarmonyOS 开发客户端不提供 EAS 账户功能。
+- **Expo 账户和 EAS 分支浏览。** 上游使用 Android 和 iOS 原生界面完成浏览器登录回调、会话管理和 GraphQL 查询。SDK 57 随附的分支查询使用 `AppPlatform`，其定义只有 `IOS` 和 `ANDROID`。HarmonyOS 分支浏览需要服务端支持 HarmonyOS 平台，并提供适用的 Expo 登录回调。
+- **通用原生网络检查。** RNOH 已报告 React Native Networking 请求，Expo 自有的 `expo/fetch` 也会报告。上游启动器的拦截器依赖 Android 的 OkHttp 和 iOS 的 URLSession，RNOH 0.86 的 HTTP 拦截器仅作用于对应的客户端实例。直接通过 HarmonyOS Network Kit 发出的其他原生请求目前需要各自的网络实现提供观测。
+- **进程级崩溃恢复。** 启动器恢复记录来自 React Native 运行时错误。HarmonyOS 系统原生崩溃由系统收集，HiAppEvent 可在应用重新启动后异步投递崩溃事件。启动器目前没有将这类报告关联到上一次运行的开发项目。[HarmonyOS 崩溃事件说明](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-v5/hiappevent-watcher-crash-events-V5/)
 - 按应用标识或用户筛选项目、查看签名证书或本地网络权限。HarmonyOS 开发客户端不提供这些信息。
 
 ## Author
