@@ -34,7 +34,7 @@ npm install @expo-harmony/expo-age-range expo-age-range@~57.0.5
 | 12 周岁及以上、不满 16 周岁 | `12` | `15` |
 | 16 周岁及以上、不满 18 周岁 | `16` | `17` |
 
-模式关闭或系统未提供年龄段时，`lowerBound` 和 `upperBound` 均为 `null`。年龄范围取自 [华为未成年人模式 API](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/account-api-minorsprotection)。
+模式关闭或系统未提供年龄段时，`lowerBound` 和 `upperBound` 均为 `null`，表示年龄未知。年龄段来自设备的未成年人模式，可能对应临时使用者。其来源和验证方式由系统管理。 [华为未成年人模式 API](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/account-api-minorsprotection)
 
 #### `AgeRange.isEligibleForAgeFeaturesAsync()`
 
@@ -97,11 +97,11 @@ npm install @expo-harmony/expo-age-range expo-age-range@~57.0.5
 
 #### `ERR_INVALID_ARGUMENT_TYPE`
 
-向 `requestAgeRangeAsync()` 传入 `null` 时，Promise 以此错误码拒绝。
+向 `requestAgeRangeAsync()` 传入 `null` 或 `undefined` 时，Promise 以此错误码拒绝。
 
 #### `ERR_AGE_RANGE_NOT_AVAILABLE`
 
-设备或当前用户空间不支持未成年人模式，或系统未提供该能力时，Promise 以此错误码拒绝。
+系统未提供未成年人模式能力，或 Account Kit 判定不支持时，Promise 以此错误码拒绝。中国大陆以外注册的华为账号和设备隐私空间均属于系统不支持的场景。 [华为未成年人模式 API](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/account-api-minorsprotection/)
 
 #### `ERR_AGE_RANGE_UNKNOWN_RESPONSE`
 

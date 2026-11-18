@@ -14,7 +14,7 @@ import {
   ExpoValueType,
   ExpoValueTypes,
 } from '@expo-harmony/expo-modules-core';
-import { minorsProtection } from '@kit.AccountKit';
+import lazy { minorsProtection } from '@kit.AccountKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
 interface Response {
@@ -23,15 +23,15 @@ interface Response {
 }
 
 const CAPABILITY: string = 'SystemCapability.AuthenticationServices.HuaweiID.MinorsProtection';
-
 const YOUTH_MODE_AGE_LIMIT: number = 18;
 
 const REQUEST: ExpoValueType<Object> = ExpoValueTypes.custom<Object>(
   'Any',
   (value: ESObject, path: string): Object => {
-    if (value === null) {
+    if (value === null || value === undefined) {
       throw new ExpoModuleError('ERR_INVALID_ARGUMENT_TYPE', `${path} expected a non-null value.`, undefined, path);
     }
+
     return value;
   },
   (value: Object): ESObject => value,
@@ -56,6 +56,7 @@ export class ExpoAgeRangeModule extends ExpoModule {
   private async request(): Promise<Response> {
     let supported = false;
     let info: minorsProtection.MinorsProtectionInfo | undefined;
+
     try {
       supported = canIUse(CAPABILITY) && minorsProtection.supportMinorsMode();
       if (supported) info = await minorsProtection.getMinorsProtectionInfo();
