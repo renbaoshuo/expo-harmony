@@ -18,6 +18,7 @@ export interface IUpdatesController {
   readonly path: string | null;
   readonly launched?: UpdateRecord;
   readonly embedded?: UpdateRecord;
+
   start(): void;
   constants(id?: number): Json;
   attach(id: number, reload: (reason: string) => Promise<void>, owner: Object): () => void;
@@ -32,6 +33,4 @@ export interface IUpdatesController {
   setExtra(key: string, value: string | null): Promise<void>;
   override(value: Json | null): void;
   overrideHeaders(headers: Headers | null): void;
-  logs(age: number): Promise<Json[]>;
-  clearLogs(): Promise<void>;
 }

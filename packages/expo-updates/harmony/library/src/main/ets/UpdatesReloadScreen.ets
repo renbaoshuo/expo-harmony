@@ -151,8 +151,9 @@ export class UpdatesReloadScreen {
   static hide(context: common.UIAbilityContext): void {
     const overlay = UpdatesReloadScreen.overlays.get(context);
     if (!overlay || overlay.hiding) return;
+
     if (!overlay.fade) {
-      UpdatesReloadScreen.remove(context);
+      UpdatesReloadScreen.dismiss(context);
       return;
     }
 
@@ -163,7 +164,7 @@ export class UpdatesReloadScreen {
         {
           duration: 300,
           onFinish: (): void => {
-            if (UpdatesReloadScreen.overlays.get(context) === overlay) UpdatesReloadScreen.remove(context);
+            if (UpdatesReloadScreen.overlays.get(context) === overlay) UpdatesReloadScreen.dismiss(context);
           },
         },
         (): void => {
@@ -173,11 +174,12 @@ export class UpdatesReloadScreen {
       );
     } catch (error) {
       console.warn(`Unable to animate the Updates reload screen: ${String(error)}`);
-      UpdatesReloadScreen.remove(context);
+
+      UpdatesReloadScreen.dismiss(context);
     }
   }
 
-  private static remove(context: common.UIAbilityContext): void {
+  static dismiss(context: common.UIAbilityContext): void {
     const overlay = UpdatesReloadScreen.overlays.get(context);
     if (!overlay) return;
 

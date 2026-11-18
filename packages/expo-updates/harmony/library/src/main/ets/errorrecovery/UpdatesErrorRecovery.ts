@@ -122,10 +122,16 @@ export class UpdatesErrorRecovery {
     if (runtime === undefined || !this.delegate.enabled() || !this.delegate.initialized()) return;
     if (!runtime.monitoring && !runtime.handler.isRunning) throw new ExpoUpdatesError('ERR_UPDATES_RECOVERY', error.message, error);
 
-    this.storage.setMetadata(this.delegate.scope(), 'fatal', error.message).catch((failure: Error) => {
+    const saved = this.storage.setMetadata(this.delegate.scope(), 'fatal', error.message).catch((failure: Error) => {
       this.storage.logger.log(`Unable to persist runtime error: ${String(failure)}`, 'Unknown', 'warn');
     });
 
-    return runtime.handler.recover(error);
+    let recovered = false;
+    try {
+      await runtime.handler.recover(error);
+      recovered = true;
+    } finally {
+      if (!recovered) await saved;
+    }
   }
 }

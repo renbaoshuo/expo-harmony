@@ -23,46 +23,48 @@ export class UpdatesDatabaseLauncher {
       if (!config.embedded && typeof value.manifest.launchAsset?.packagerHash === 'string') return false;
       return value.status !== 'embedded' || (config.embedded && value.id === this.embedded()?.id);
     });
-    const selected = this.policy.select(candidates, await this.storage.metadata(config.scope, 'filters'));
-    if (!selected) return undefined;
+    const update = this.policy.select(candidates, await this.storage.metadata(config.scope, 'filters'));
+    if (!update) return undefined;
 
-    // Error recovery, not selection, decides whether corrupt assets permit a rollback.
-    return this.launchUpdate(selected, config, headers);
+    // Leave rollback decisions after an asset failure to error recovery.
+    return this.launchUpdate(update, config, headers);
   }
 
-  async launchUpdate(selected: UpdateRecord, config: UpdatesConfiguration, headers: AssetHeaders): Promise<UpdateRecord | undefined> {
-    let available = selected.assets.some(asset => asset.launch);
+  async launchUpdate(update: UpdateRecord, config: UpdatesConfiguration, headers: AssetHeaders): Promise<UpdateRecord | undefined> {
+    let available = update.assets.some(asset => asset.launch);
 
-    for (let index = 0; index < selected.assets.length; index++) {
-      const asset = selected.assets[index];
-      if (isVerifiedAsset(this.storage.directory, asset)) continue;
+    for (let index = 0; index < update.assets.length; index++) {
+      const asset = update.assets[index];
+      if (await isVerifiedAsset(this.storage.directory, asset)) continue;
 
       const embedded = this.embedded()?.assets.find(value => asset.key !== null && value.key === asset.key && (!asset.hash || value.hash === asset.hash));
 
       try {
-        selected.assets[index] = await this.downloader.asset({ ...asset, embedded: embedded?.embedded }, await headers(selected), () => {}, {
+        update.assets[index] = await this.downloader.asset({ ...asset, embedded: embedded?.embedded }, await headers(update), () => {}, {
           headers: config.headers, timeout: Math.max(config.wait, 10000),
         });
       } catch (error) {
-        selected.assets[index] = { ...asset, path: undefined };
-        this.storage.logger.log(`Unable to repair asset ${asset.key}: ${String(error)}`, 'AssetsFailedToLoad', 'warn', selected.id, asset.key ?? undefined);
+        update.assets[index] = { ...asset, path: undefined };
+        this.storage.logger.log(`Unable to repair asset ${asset.key}: ${String(error)}`, 'AssetsFailedToLoad', 'warn', update.id, asset.key ?? undefined);
+
         if (asset.launch) available = false;
       }
     }
 
     if (available) {
       try {
-        this.storage.prepareDomAssets(selected);
+        await this.storage.prepareDomAssets(update);
       } catch (error) {
-        this.storage.logger.log(`Unable to prepare DOM assets: ${String(error)}`, 'AssetsFailedToLoad', 'warn', selected.id);
+        this.storage.logger.log(`Unable to prepare DOM assets: ${String(error)}`, 'AssetsFailedToLoad', 'warn', update.id);
         return undefined;
       }
-      await this.storage.markAccessed(selected.id);
 
-      return selected;
+      await this.storage.markAccessed(update.id);
+
+      return update;
     }
 
-    this.storage.logger.log(`Update ${selected.id} has missing or corrupt assets.`, 'UpdateAssetsNotAvailable', 'warn', selected.id);
+    this.storage.logger.log(`Update ${update.id} has missing or corrupt assets.`, 'UpdateAssetsNotAvailable', 'warn', update.id);
 
     return undefined;
   }

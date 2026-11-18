@@ -13,9 +13,7 @@ import { UpdatesStorage } from './UpdatesStorage';
 import { RemoteLoader } from './loader/RemoteLoader';
 import { clientIdentity, prepareClientIdentity } from './UpdatesClientIdentity';
 import { ExpoUpdatesError, Headers, Json, UpdateRecord } from './UpdatesProtocol';
-
 import { IUpdatesController } from './IUpdatesController';
-import { UpdatesLogReader } from './logging/UpdatesLogReader';
 import { SelectionPolicyFactory } from './selectionpolicy/SelectionPolicyFactory';
 import { UpdatesDatabaseLauncher } from './launcher/UpdatesDatabaseLauncher';
 import { localAssetFiles } from './UpdatesAssetPaths';
@@ -134,11 +132,6 @@ export class UpdatesDevLauncherController implements IUpdatesController {
   overrideHeaders(_headers: Headers | null): void {
     throw new ExpoUpdatesError('ERR_UPDATES_DEV_CLIENT', 'Updates.setUpdateRequestHeadersOverride() is not supported in development builds.');
   }
-
-
-  logs(age: number): Promise<Json[]> { return new UpdatesLogReader(this.context).read(age); }
-
-  clearLogs(): Promise<void> { return new UpdatesLogReader(this.context).clear(); }
 
   reset(): void {
     ++this.selectionGeneration;

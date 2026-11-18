@@ -33,9 +33,11 @@ export class ExpoUpdatesModule extends ExpoModule {
 
   definition(): ExpoModuleDefinition {
     const definition = new ExpoModuleDefinition().name('ExpoUpdates').events([event]);
+
     for (const key of Object.keys(this.controller.constants(this.context.runtimeId))) {
       definition.constant(key, (): ESObject => this.controller.constants(this.context.runtimeId)[key]);
     }
+
     return definition
       .asyncFunction('checkForUpdateAsync', async (): Promise<Json> => this.controller.checkForUpdateAsync())
       .asyncFunction('fetchUpdateAsync', async (): Promise<Json> => this.controller.fetchUpdateAsync())
@@ -114,6 +116,7 @@ export class ExpoUpdatesModule extends ExpoModule {
       .onStartObserving(event, (): void => {
         this.subscription?.remove();
         this.subscription = this.controller.state.subscribeContext((value: Json): void => this.sendEvent(event, value));
+
         const initial: Record<string, ESObject> = { 'context': this.subscription.getContext() };
         this.sendEvent(event, initial);
       })
@@ -128,6 +131,7 @@ export class ExpoUpdatesModule extends ExpoModule {
         this.controller.contentAppeared(this.context.runtimeId);
         UpdatesReloadScreen.hide(this.context.uiAbilityContext);
       })
+      .onWindowStageWillDestroy((): void => UpdatesReloadScreen.dismiss(this.context.uiAbilityContext))
       .onDestroy((): void => {
         this.subscription?.remove();
         this.subscription = undefined;

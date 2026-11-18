@@ -9,7 +9,6 @@ import type common from '@ohos.app.ability.common';
 import { IUpdatesController } from './IUpdatesController';
 import { UpdatesConfiguration } from './UpdatesConfiguration';
 import { UpdatesState } from './UpdatesState';
-import { UpdatesLogReader } from './logging/UpdatesLogReader';
 import { UpdatesLogger } from './logging/UpdatesLogger';
 import { ExpoUpdatesError, Headers, Json, UpdateRecord } from './UpdatesProtocol';
 
@@ -24,8 +23,11 @@ export class DisabledUpdatesController implements IUpdatesController {
   private started = false;
   private duration: number | null = null;
 
-  constructor(private readonly context: common.ApplicationContext, readonly configuration: UpdatesConfiguration,
-    private readonly failure?: Error) {
+  constructor(
+    context: common.ApplicationContext,
+    readonly configuration: UpdatesConfiguration,
+    private readonly failure?: Error,
+  ) {
     if (failure) new UpdatesLogger(context).error(failure.message, failure, 'InitializationError');
   }
 
@@ -82,9 +84,4 @@ export class DisabledUpdatesController implements IUpdatesController {
   overrideHeaders(_headers: Headers | null): void {
     throw new ExpoUpdatesError('ERR_UPDATES_DISABLED', 'Updates.setUpdateRequestHeadersOverride() is not supported when expo-updates is not enabled.');
   }
-
-
-  logs(age: number): Promise<Json[]> { return new UpdatesLogReader(this.context).read(age); }
-
-  clearLogs(): Promise<void> { return new UpdatesLogReader(this.context).clear(); }
 }

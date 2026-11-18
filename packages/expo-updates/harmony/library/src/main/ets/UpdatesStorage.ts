@@ -48,48 +48,60 @@ export function write(file: fs.File, bytes: ArrayBuffer): void {
   }
 }
 
-export function hashFile(path: string): string {
-  const file = fs.openSync(path, fs.OpenMode.READ_ONLY);
+export async function hashFile(path: string): Promise<string> {
+  const file = await fs.open(path, fs.OpenMode.READ_ONLY);
+
   try {
     const hash = crypto.createMd('SHA256');
     const buffer = new ArrayBuffer(65536);
     let count: number;
-    while ((count = fs.readSync(file.fd, buffer)) > 0) hash.updateSync({ data: new Uint8Array(buffer, 0, count) });
 
-    return base64(hash.digestSync().data).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    while ((count = await fs.read(file.fd, buffer)) > 0) {
+      await hash.update({ data: new Uint8Array(buffer, 0, count) });
+    }
+
+    const result = await hash.digest();
+    return base64(result.data).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   } finally {
-    fs.closeSync(file);
+    await fs.close(file);
   }
 }
 
-export function isVerifiedAsset(directory: string, asset: UpdateAsset, expected: string | undefined = asset.hash?.replace(/=+$/, '')): boolean {
-  if (!asset.path || !asset.digest || (expected !== undefined && asset.digest !== expected) || !isAssetPath(directory, asset.path)) return false;
+export async function isVerifiedAsset(directory: string, asset: UpdateAsset, expected: string | undefined = asset.hash?.replace(/=+$/, '')): Promise<boolean> {
+  const { path, digest } = asset;
+  if (!path || !digest || (expected !== undefined && digest !== expected) || !isAssetPath(directory, path)) return false;
 
-  try { return fs.lstatSync(asset.path).isFile() && hashFile(asset.path) === asset.digest; }
-  catch (_) { return false; }
+  try {
+    return (await fs.lstat(path)).isFile() && (await hashFile(path)) === digest;
+  } catch (_) {
+    return false;
+  }
 }
 
-function verifyDomLayout(root: string, entries: DomAsset[]): boolean {
+async function verifyDomLayout(root: string, entries: DomAsset[]): Promise<boolean> {
   try {
-    if (!fs.lstatSync(root).isDirectory()) return false;
+    if (!(await fs.lstat(root)).isDirectory()) return false;
 
     const expected = new Map(entries.map(entry => [entry.filename, entry.hash]));
-    const directories = [''];
+    const pending = [''];
 
-    while (directories.length) {
-      const directory = directories.pop()!;
-      for (const name of fs.listFileSync(root + '/' + directory)) {
-        const relative = directory + name;
+    while (pending.length) {
+      const dir = pending.pop()!;
+      for (const name of await fs.listFile(root + '/' + dir)) {
+        const relative = dir + name;
         const path = root + '/' + relative;
-        const info = fs.lstatSync(path);
-        if (info.isDirectory()) directories.push(relative + '/');
-        else if (info.isFile() && expected.has(relative) && expected.get(relative) === hashFile(path)) expected.delete(relative);
+        const info = await fs.lstat(path);
+
+        if (info.isDirectory()) pending.push(relative + '/');
+        else if (info.isFile() && expected.has(relative) && expected.get(relative) === (await hashFile(path))) expected.delete(relative);
         else return false;
       }
     }
 
     return expected.size === 0;
-  } catch (_) { return false; }
+  } catch (_) {
+    return false;
+  }
 }
 
 interface Database {
@@ -170,7 +182,7 @@ export class UpdatesStorage {
     } catch (error) { this.logger.log(`Unable to remove an Updates file or directory: ${String(error)}`, 'Unknown', 'warn'); }
   }
 
-  prepareDomAssets(update: UpdateRecord): void {
+  async prepareDomAssets(update: UpdateRecord): Promise<void> {
     const layout = parseDomAssetLayout(update.manifest);
     if (!layout.length) return;
     if (!isUpdateId(update.id)) throw new ExpoUpdatesError('ERR_UPDATES_ASSET', 'Invalid DOM update ID.');
@@ -179,20 +191,23 @@ export class UpdatesStorage {
     const entries = layout.map(entry => {
       const hash = entry.hash ?? sources.get(entry.key)?.digest;
       if (!hash) throw new ExpoUpdatesError('ERR_UPDATES_ASSET', `Missing verified DOM asset ${entry.key}.`);
+
       return { ...entry, hash };
     });
+
     if (!exists(this.domDirectory)) fs.mkdirSync(this.domDirectory);
     if (!fs.lstatSync(this.domDirectory).isDirectory()) throw new ExpoUpdatesError('ERR_UPDATES_ASSET', 'Invalid DOM storage directory.');
 
     const root = this.domDirectory + '/' + update.id;
-    if (!verifyDomLayout(root, entries)) this.publishDomAssets(sources, root, entries);
+    if (!(await verifyDomLayout(root, entries))) await this.publishDomAssets(sources, root, entries);
+
     update.domAssets = {
       baseUrl: assetFileUrl(root + '/' + domBundleDirectory),
       files: new Map(entries.map(entry => [entry.key, root + '/' + entry.filename])),
     };
   }
 
-  private publishDomAssets(sources: Map<string | null, UpdateAsset>, root: string, entries: DomAsset[]): void {
+  private async publishDomAssets(sources: Map<string | null, UpdateAsset>, root: string, entries: DomAsset[]): Promise<void> {
     const stage = this.temporary + '/' + util.generateRandomUUID();
     const previous = this.temporary + '/' + util.generateRandomUUID();
     let displaced = false;
@@ -206,24 +221,26 @@ export class UpdatesStorage {
           throw new ExpoUpdatesError('ERR_UPDATES_ASSET', `Missing verified DOM asset ${entry.key}.`);
         }
 
-        const destination = stage + '/' + entry.filename;
-        const directory = destination.slice(0, destination.lastIndexOf('/'));
-        if (!exists(directory)) fs.mkdirSync(directory, true);
-        if (!linkAsset(asset.path, destination)) fs.copyFileSync(asset.path, destination);
+        const path = stage + '/' + entry.filename;
+        const dir = path.slice(0, path.lastIndexOf('/'));
+
+        if (!exists(dir)) fs.mkdirSync(dir, true);
+        if (!linkAsset(asset.path, path)) await fs.copyFile(asset.path, path);
       }
 
-      if (!verifyDomLayout(stage, entries)) throw new ExpoUpdatesError('ERR_UPDATES_ASSET_HASH', 'DOM assets failed SHA-256 verification.');
+      if (!(await verifyDomLayout(stage, entries))) throw new ExpoUpdatesError('ERR_UPDATES_ASSET_HASH', 'DOM assets failed SHA-256 verification.');
 
       if (exists(root)) {
         fs.renameSync(root, previous);
         displaced = true;
       }
 
+      let published = false;
       try {
         fs.renameSync(stage, root);
-      } catch (error) {
-        if (displaced) fs.renameSync(previous, root);
-        throw error;
+        published = true;
+      } finally {
+        if (!published && displaced) fs.renameSync(previous, root);
       }
 
       if (displaced) this.removeTree(previous);
@@ -276,6 +293,7 @@ export class UpdatesStorage {
 
     await this.write((_a, updates) => {
       const stored = updates.get(update.id);
+
       if (stored) {
         if (JSON.stringify(parseDomAssetLayout(stored.manifest)) !== JSON.stringify(parseDomAssetLayout(update.manifest))) {
           throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'A cached update ID cannot change its DOM asset layout.');
@@ -287,19 +305,20 @@ export class UpdatesStorage {
         const assets = parseRemoteAssets(new ExpoUpdatesManifest(stored.manifest), {});
         const received = new Map(update.assets.map(asset => [asset.key, asset]));
         if (update.runtime !== stored.runtime || received.size !== assets.length || assets.some(asset => {
-          const replacement = received.get(asset.key);
-          return replacement === undefined || replacement.launch !== asset.launch
-            || replacement.hash?.replace(/=+$/, '') !== asset.hash?.replace(/=+$/, '')
-            || (!asset.hash && replacement.url !== asset.url);
+          const next = received.get(asset.key);
+          return next === undefined || next.launch !== asset.launch
+            || next.hash?.replace(/=+$/, '') !== asset.hash?.replace(/=+$/, '')
+            || (!asset.hash && next.url !== asset.url);
         })) {
           throw new ExpoUpdatesError('ERR_UPDATES_MANIFEST', 'A cached update ID cannot change its runtime or asset identities.');
         }
+
         if (stored.status === 'ready' && !stored.assets.some(asset => asset.launch)) updates.setStatus(update.id, 'pending');
 
         return;
       }
 
-      updates.insert(update);
+      updates.insert({ ...update, status: 'pending' });
     });
   }
 
@@ -308,14 +327,14 @@ export class UpdatesStorage {
       throw new ExpoUpdatesError('ERR_UPDATES_DATABASE', 'Cannot finish an update without its downloaded assets and launch asset.');
     }
 
-    this.prepareDomAssets(update);
+    await this.prepareDomAssets(update);
 
     const ids = await this.write((_a, updates) => {
       const stored = updates.get(update.id);
       if (!stored) updates.insert(update);
       else if (stored.scope !== update.scope) updates.setScope(update.id, update.scope);
 
-      const ids = update.assets.map((asset, ordinal) => updates.associate(update.id, asset, ordinal));
+      const ids = update.assets.map((asset, index) => updates.associate(update.id, asset, index));
       updates.setStatus(update.id, update.status);
 
       return ids;

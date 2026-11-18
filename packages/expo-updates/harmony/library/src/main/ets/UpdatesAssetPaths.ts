@@ -36,7 +36,8 @@ export function localAssetFiles(update: UpdateRecord | undefined, embedded: Upda
   const files = new Map<string, string>();
 
   for (const asset of [...embedded, ...update.assets]) {
-    if (asset.key === null) continue;
+    if (asset.launch || asset.key === null) continue;
+
     const path = update.domAssets?.files.get(asset.key) ?? asset.path;
     if (path) files.set(asset.key, assetFileUrl(path));
   }

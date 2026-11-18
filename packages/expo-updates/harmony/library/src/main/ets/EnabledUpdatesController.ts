@@ -15,13 +15,9 @@ import { UpdatesSelectionPolicy } from './selectionpolicy/UpdatesSelectionPolicy
 import { StartupProcedure } from './procedures/StartupProcedure';
 import { CheckForUpdateProcedure } from './procedures/CheckForUpdateProcedure';
 import { SelectionPolicyFactory } from './selectionpolicy/SelectionPolicyFactory';
-import { UpdatesLogReader } from './logging/UpdatesLogReader';
-import { ExpoUpdatesError, Headers, Json, UpdateRecord,
-  serializeHeaders } from './UpdatesProtocol';
-
+import { ExpoUpdatesError, Headers, Json, UpdateRecord, serializeHeaders } from './UpdatesProtocol';
 import { IUpdatesController } from './IUpdatesController';
 import { localAssetFiles } from './UpdatesAssetPaths';
-
 
 export class EnabledUpdatesController implements IUpdatesController {
   readonly state = new UpdatesState();
@@ -186,6 +182,7 @@ export class EnabledUpdatesController implements IUpdatesController {
     await this.storage.updateMetadata(this.configuration.scope, 'extra', extra => {
       const next = value === null ? { ...extra } : { ...extra, [key]: value };
       if (value === null) delete next[key];
+
       serializeHeaders(next);
 
       return next;
@@ -194,30 +191,28 @@ export class EnabledUpdatesController implements IUpdatesController {
 
   override(value: Json | null, headersOnly: boolean = false): void {
     this.requireEnabled();
+
     if (!headersOnly && !this.original.unsafe) throw new ExpoUpdatesError('ERR_UPDATES_RUNTIME_OVERRIDE', 'URL overrides require disableAntiBrickingMeasures.');
 
     const config = this.original.override(value, this.development);
+
     this.overrides!.save(value);
     this.configuration = config;
   }
 
   overrideHeaders(headers: Headers | null): void {
     this.requireEnabled();
+
     const next = headers === null ? null : UpdatesConfiguration.headers(headers);
     if (next && Object.keys(next).some(key => key === 'host' || !Object.prototype.hasOwnProperty.call(this.original.headers, key))) {
       throw new ExpoUpdatesError('ERR_UPDATES_RUNTIME_OVERRIDE',
         'Override keys must be declared in updates.requestHeaders in your app config at build time. Add the key to updates.requestHeaders and rebuild the app. Host overrides are not allowed.');
     }
 
-    const previous = this.overrides!.load() ?? {};
-    const value = { ...previous };
+    const value = { ...(this.overrides!.load() ?? {}) };
     if (headers === null) delete value.requestHeaders;
     else value.requestHeaders = next;
 
     this.override(Object.keys(value).length ? value : null, true);
   }
-
-  logs(age: number): Promise<Json[]> { return new UpdatesLogReader(this.context).read(age); }
-
-  clearLogs(): Promise<void> { return new UpdatesLogReader(this.context).clear(); }
 }
