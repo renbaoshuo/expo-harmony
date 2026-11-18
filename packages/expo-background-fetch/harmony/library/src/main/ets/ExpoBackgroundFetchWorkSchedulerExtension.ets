@@ -9,7 +9,7 @@ import { WorkSchedulerExtensionAbility, workScheduler } from '@kit.BackgroundTas
 
 import { ExpoTaskManagerRegistry } from '@expo-harmony/expo-task-manager';
 import { WORK_SCHEDULER_EXTENSION_NAME } from './BackgroundFetchConstants';
-import { BackgroundFetchRuntime, schedulerGenerationFromWork } from './BackgroundFetchRuntime';
+import { BackgroundFetchRuntime, isOwnedWork, schedulerGenerationFromWork } from './BackgroundFetchRuntime';
 
 class WorkRun {
   stopped: boolean = false;
@@ -21,29 +21,38 @@ export class ExpoBackgroundFetchWorkSchedulerExtension extends WorkSchedulerExte
 
   override onWorkStart(work: workScheduler.WorkInfo): void {
     const startedAt = Date.now();
-
-    ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
+    if (!this.accepts(work)) return;
 
     const key = `${work.workId}:${schedulerGenerationFromWork(work)}`;
-    const requests = this.requests.get(key) ?? [];
+    const runs = this.requests.get(key) ?? [];
     const run = new WorkRun();
 
-    requests.push(run);
-    this.requests.set(key, requests);
+    runs.push(run);
+    this.requests.set(key, runs);
+
     run.request = BackgroundFetchRuntime.start(this.context, work, startedAt, (): boolean => run.stopped);
   }
 
   override onWorkStop(work: workScheduler.WorkInfo): void {
-    ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
-
+    if (!this.accepts(work)) return;
 
     const key = `${work.workId}:${schedulerGenerationFromWork(work)}`;
-    const requests = this.requests.get(key);
-    const run = requests?.shift();
+    const runs = this.requests.get(key);
+    const run = runs?.shift();
 
     if (run !== undefined) run.stopped = true;
-    if (requests !== undefined && requests.length === 0) this.requests.delete(key);
+    if (runs !== undefined && runs.length === 0) this.requests.delete(key);
 
     BackgroundFetchRuntime.stop(this.context, work, run?.request);
+  }
+
+  private accepts(work: workScheduler.WorkInfo): boolean {
+    try {
+      ExpoTaskManagerRegistry.prepareExtension(this.context, WORK_SCHEDULER_EXTENSION_NAME);
+      return isOwnedWork(work, this.context.extensionAbilityInfo.bundleName);
+    } catch (error) {
+      console.error(`Unable to initialize Expo Background Fetch WorkScheduler: ${String(error)}`);
+      return false;
+    }
   }
 }

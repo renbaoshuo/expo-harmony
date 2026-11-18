@@ -99,18 +99,15 @@ class BackgroundFetchConsumer implements ExpoTaskConsumer {
   updateLifecycle(context: common.UIAbilityContext, state: BackgroundFetchState): void {
     const owner = context.abilityInfo.bundleName;
 
-    try {
-      BackgroundFetchRuntime.setState(context, owner, state);
-    } catch (error) {
-      console.warn(`Unable to save Expo Background Fetch lifecycle: ${String(error)}`);
-      return;
-    }
-
-    ExpoTaskManagerRegistry.withRegisteredTasks(context, owner, TASK_TYPE, async (tasks: ExpoTaskRecord[]): Promise<void> => {
-      await this.update(context, tasks);
-    }).catch((error: Object): void => {
-      console.warn(`Unable to update Expo Background Fetch lifecycle: ${String(error)}`);
-    });
+    BackgroundFetchRuntime.setState(context, owner, state)
+      .then((): Promise<void> =>
+        ExpoTaskManagerRegistry.withRegisteredTasks(context, owner, TASK_TYPE, (tasks: ExpoTaskRecord[]): Promise<void> =>
+          this.update(context, tasks),
+        ),
+      )
+      .catch((error: Object): void => {
+        console.warn(`Unable to update Expo Background Fetch lifecycle: ${String(error)}`);
+      });
   }
 
   private async update(context: common.UIAbilityContext, tasks: ExpoTaskRecord[]): Promise<void> {
@@ -352,19 +349,20 @@ function parseOptions(value: ESObject): Options {
 }
 
 function createWorkInfo(context: common.UIAbilityContext, id: number, task: ExpoTaskRecord, options: Options): workScheduler.WorkInfo {
+  const bundle = context.abilityInfo.bundleName;
   const params: Record<string, number | string | boolean> = {};
 
   params[OWNER_PARAMETER] = OWNER_PARAMETER_VALUE;
   params[TASK_NAME_PARAMETER] = task.taskName;
-  params[REGISTRATION_GENERATION_PARAMETER] = task.registrationGeneration;
+  params[REGISTRATION_GENERATION_PARAMETER] = String(task.registrationGeneration);
   params[SCHEDULER_GENERATION_PARAMETER] = util.generateRandomUUID(true);
-  ExpoTaskManagerWorkMetadata.write(params, context.abilityInfo.bundleName);
+  ExpoTaskManagerWorkMetadata.write(params, bundle);
   params[STOP_ON_TERMINATE_PARAMETER] = options.stopOnTerminate !== false;
   params[START_ON_BOOT_PARAMETER] = options.startOnBoot === true;
 
   return {
     workId: id,
-    bundleName: context.abilityInfo.bundleName,
+    bundleName: bundle,
     abilityName: WORK_SCHEDULER_EXTENSION_NAME,
     isPersisted: options.startOnBoot === true,
     isRepeat: true,

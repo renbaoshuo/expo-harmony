@@ -71,8 +71,12 @@ export class BackgroundFetchRuntime {
     });
   }
 
-  static setState(context: common.Context, owner: string, state: BackgroundFetchState): void {
-    writeTextAtomically(statePath(context, owner), `${bootCount(context)}:${state}:${process.pid}`);
+  static async setState(context: common.Context, owner: string, state: BackgroundFetchState): Promise<void> {
+    await BackgroundFetchRuntime.serialize(context, async (): Promise<void> => {
+      const boot = await bootCount(context);
+
+      await writeTextAtomically(statePath(context, owner), `${boot}:${state}:${process.pid}`);
+    });
   }
 
   static getState(context: common.Context, owner: string): Promise<BackgroundFetchState> {
@@ -159,7 +163,7 @@ export class BackgroundFetchRuntime {
         const next = [...works, pending];
 
         try {
-          writePendingWorks(context, next);
+          await writePendingWorks(context, next);
         } catch (error) {
           await finishPendingWorkIfIdle(pending, works);
 
@@ -231,7 +235,7 @@ export class BackgroundFetchRuntime {
       if (pending === undefined) return;
 
       const remaining = works.filter((work: StoredPendingWork): boolean => work.requestId !== requestId);
-      writePendingWorks(context, remaining);
+      await writePendingWorks(context, remaining);
 
       await finishPendingWorkIfIdle(pending, remaining);
     });
@@ -248,7 +252,7 @@ export class BackgroundFetchRuntime {
           await file.lock(true);
           await action();
         } finally {
-          fs.closeSync(file);
+          await fs.close(file);
         }
       });
 
@@ -257,14 +261,19 @@ export class BackgroundFetchRuntime {
   }
 }
 
-function bootCount(context: common.Context): number {
+async function bootCount(context: common.Context): Promise<number> {
   try {
     if (deviceInfo.sdkApiVersion >= BOOT_COUNT_API) return deviceInfo.bootCount;
-    const count = Number(settings.getValueSync(context, settings.general.BOOT_COUNTING, '-1'));
+
+    const value = await settings.getValue(context, settings.general.BOOT_COUNTING);
+    if (typeof value !== 'string' || !/^\d+$/.test(value)) return -1;
+
+    const count = Number(value);
     if (Number.isSafeInteger(count) && count >= 0) return count;
   } catch (error) {
     console.warn(`Unable to read the system boot count for Expo Background Fetch: ${String(error)}`);
   }
+
   return -1;
 }
 
@@ -274,12 +283,12 @@ function statePath(context: common.Context, owner: string): string {
 
 async function readState(context: common.Context, owner: string): Promise<BackgroundFetchState> {
   const path = statePath(context, owner);
-  if (!fs.accessSync(path)) return BackgroundFetchState.Background;
+  if (!(await fs.access(path))) return BackgroundFetchState.Background;
 
-  const fields = fs.readTextSync(path).split(':');
-  const boot = bootCount(context);
-  const recordedBoot = Number(fields[0]);
-  if (boot >= 0 && recordedBoot >= 0 && recordedBoot !== boot) return BackgroundFetchState.Rebooted;
+  const fields = (await fs.readText(path)).split(':');
+  const boot = await bootCount(context);
+  const recorded = Number(fields[0]);
+  if (boot >= 0 && recorded >= 0 && recorded !== boot) return BackgroundFetchState.Rebooted;
 
   const state = Number(fields[1]);
   if (state !== BackgroundFetchState.Foreground && state !== BackgroundFetchState.Background) return BackgroundFetchState.Terminated;
@@ -320,7 +329,7 @@ async function expirePendingWorks(
 
   if (remove.size > 0) {
     const remaining = all.filter((pending: StoredPendingWork): boolean => !remove.has(pending.requestId));
-    writePendingWorks(context, remaining);
+    await writePendingWorks(context, remaining);
 
     for (const pending of matching) {
       if (remove.has(pending.requestId)) await finishPendingWorkIfIdle(pending, remaining);
@@ -347,49 +356,52 @@ function pendingWorksPath(context: common.Context): string {
 
 async function readPendingWorks(context: common.Context): Promise<StoredPendingWork[]> {
   const path = pendingWorksPath(context);
-  const exists = fs.accessSync(path);
+  const exists = await fs.access(path);
   let raw: ESObject;
 
   if (exists) {
     // A UTF-16 code unit can require up to three bytes in UTF-8.
-    raw = fs.statSync(path).size <= MAXIMUM_PENDING_WORKS_LENGTH * 3 ? fs.readTextSync(path) : '';
+    raw = (await fs.stat(path)).size <= MAXIMUM_PENDING_WORKS_LENGTH * 3 ? await fs.readText(path) : '';
   } else {
     // Both processes migrate the old Preferences under the same lock.
     const legacy = await preferences.getPreferences(context.getApplicationContext(), { name: PREFERENCES_NAME });
     raw = await legacy.get(PENDING_WORKS_KEY, '[]');
   }
 
-  const decoded = decodePendingWorks(raw);
-  if (!exists || decoded.corrupted) writePendingWorks(context, decoded.values);
-  if (decoded.corrupted) console.warn('Expo Background Fetch repaired corrupted pending work storage.');
+  const result = decodePendingWorks(raw);
 
-  return decoded.values;
+  if (!exists || result.corrupted) await writePendingWorks(context, result.values);
+  if (result.corrupted) console.warn('Expo Background Fetch repaired corrupted pending work storage.');
+
+  return result.values;
 }
 
-function writePendingWorks(context: common.Context, works: StoredPendingWork[]): void {
+async function writePendingWorks(context: common.Context, works: StoredPendingWork[]): Promise<void> {
   const raw = JSON.stringify(works);
   if (raw.length > MAXIMUM_PENDING_WORKS_LENGTH) throw new Error('Expo Background Fetch pending work storage is full.');
 
-  writeTextAtomically(pendingWorksPath(context), raw);
+  await writeTextAtomically(pendingWorksPath(context), raw);
 }
 
-function writeTextAtomically(path: string, value: string): void {
+async function writeTextAtomically(path: string, value: string): Promise<void> {
   const temp = `${path}.${util.generateRandomUUID(true)}`;
   const bytes = new util.TextEncoder().encodeInto(value);
 
   try {
-    const file = fs.openSync(temp, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
+    const file = await fs.open(temp, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
 
     try {
-      if (fs.writeSync(file.fd, bytes.buffer) !== bytes.byteLength) throw new Error('Incomplete Expo Background Fetch state write.');
-      fs.fsyncSync(file.fd);
+      const written = await fs.write(file.fd, bytes.buffer);
+      if (written !== bytes.byteLength) throw new Error('Incomplete Expo Background Fetch state write.');
+
+      await fs.fsync(file.fd);
     } finally {
-      fs.closeSync(file);
+      await fs.close(file);
     }
 
-    fs.renameSync(temp, path);
+    await fs.rename(temp, path);
   } finally {
-    if (fs.accessSync(temp)) fs.unlinkSync(temp);
+    if (await fs.access(temp)) await fs.unlink(temp);
   }
 }
 
