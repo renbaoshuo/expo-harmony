@@ -36,24 +36,24 @@ class LogBoxView extends ExpoView {
   }
 
   update(): void {
-    if (this.payload.length === 0 || !expoLogBoxController.isEnabled()) return;
+    if (this.payload.length === 0 || this.error.length > 0 || !expoLogBoxController.isEnabled()) return;
+
     if (this.session !== undefined) {
       this.session.updateProps(this.payload);
       return;
     }
 
-    this.session = new ExpoLogBoxWebSession(
-      this.payload,
-      '',
-      (data: string): void => this.sendEvent<MessageEvent>('onMessage', { data }),
-      (): void => {},
-      (error: Object): void => {
-        this.session?.dispose();
-        this.session = undefined;
-
-        this.error = error instanceof Error ? error.message : String(error);
-      },
-    );
+    try {
+      this.session = new ExpoLogBoxWebSession(
+        this.payload,
+        '',
+        (data: string): void => this.sendEvent<MessageEvent>('onMessage', { data }),
+        (): void => {},
+        (error: Object): void => this.showLoadError(error),
+      );
+    } catch (error) {
+      this.showLoadError(error as Object);
+    }
   }
 
   retry(): void {
@@ -70,6 +70,24 @@ class LogBoxView extends ExpoView {
   destroy(): void {
     this.session?.dispose();
     this.session = undefined;
+  }
+
+  async inject(script: string): Promise<void> {
+    const session = this.session;
+    if (session === undefined) return;
+
+    try {
+      await session.inject(script);
+    } catch (error) {
+      if (this.session === session) this.showLoadError(error as Object);
+    }
+  }
+
+  private showLoadError(error: Object): void {
+    this.destroy();
+
+    const message = error instanceof Error ? error.message : String(error);
+    this.error = message || 'The Expo LogBox page failed.';
   }
 }
 
@@ -125,7 +143,7 @@ export class ExpoLogBoxModule extends ExpoModule {
       .asyncFunction(
         'injectJavaScript',
         ExpoFunction.ownedTyped1(ExpoValueTypes.string(), async (view: LogBoxView, script: string): Promise<void> => {
-          await view.session?.inject(script);
+          await view.inject(script);
         }),
       )
       .onDidUpdateProps((view: LogBoxView): void => view.update())

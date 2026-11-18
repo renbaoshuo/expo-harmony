@@ -16,29 +16,42 @@ struct ExpoLogBoxOverlay {
   private unsubscribe?: () => void;
 
   aboutToAppear(): void {
-    const windowName = this.getUIContext().getWindowName();
-    if (windowName === undefined) return;
-    this.unsubscribe = expoLogBoxController.subscribe(windowName, (presentation?: ExpoLogBoxPresentation): void => {
-      this.session?.dispose();
-      this.session =
-        presentation === undefined
-          ? undefined
-          : new ExpoLogBoxWebSession(
-              presentation.initialProps,
-              presentation.devServerOrigin,
-              (message: string): void => {
-                const session = this.session;
-                if (session === undefined) return;
-                expoLogBoxController.handleMessage(message, session.web, presentation.id).catch((error: Object): void => {
-                  console.error(`Expo LogBox native action failed: ${String(error)}`);
-                });
-              },
-              (): void => expoLogBoxController.ready(presentation.id),
-              (error: Object): void => expoLogBoxController.fail(presentation.id, error),
-            );
-      this.visible = presentation !== undefined;
+    const name = this.getUIContext().getWindowName();
+    if (name === undefined) return;
+
+    this.unsubscribe = expoLogBoxController.subscribe(name, (presentation?: ExpoLogBoxPresentation): void =>
+      this.show(presentation),
+    );
+  }
+
+  private show(presentation?: ExpoLogBoxPresentation): void {
+    this.session?.dispose();
+    this.session = undefined;
+    this.visible = false;
+
+    if (presentation === undefined) return;
+
+    try {
+      const session: ExpoLogBoxWebSession = new ExpoLogBoxWebSession(
+        presentation.initialProps,
+        presentation.devServerOrigin,
+        (message: string): void => {
+          if (this.session !== session) return;
+
+          expoLogBoxController.handleMessage(message, session.web, presentation.id).catch((error: Object): void => {
+            console.error(`Expo LogBox native action failed: ${String(error)}`);
+          });
+        },
+        (): void => expoLogBoxController.ready(presentation.id),
+        (error: Object): void => expoLogBoxController.fail(presentation.id, error),
+      );
+
+      this.session = session;
       this.generation += 1;
-    });
+      this.visible = true;
+    } catch (error) {
+      expoLogBoxController.fail(presentation.id, error as Object);
+    }
   }
 
   aboutToDisappear(): void {

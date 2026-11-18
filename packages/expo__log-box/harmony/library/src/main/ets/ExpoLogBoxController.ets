@@ -24,6 +24,7 @@ const DOM_EVENT: string = '$$dom_event';
 const NATIVE_ACTION: string = '$$native_action';
 const NATIVE_ACTION_RESULT: string = '$$native_action_result';
 const DEFAULT_ERROR_MESSAGE: string = 'Error without message.';
+const METRO_REQUEST_TIMEOUT_MS: number = 15_000;
 
 interface NativeStackFrame {
   file?: string;
@@ -121,13 +122,25 @@ class ExpoLogBoxController {
   private attachDevTools(manager: DevToolsController): void {
     if (this.managerCleanups.has(manager)) return;
 
-    const removeError = manager.eventEmitter.subscribe('NEW_ERROR', (error: RNOHError): void => this.present(error, manager));
-    const removeReload = manager.eventEmitter.subscribe('RELOAD', (): void => {
+    const offError = manager.eventEmitter.subscribe('NEW_ERROR', (error: RNOHError): void => {
+      try {
+        this.present(error, manager);
+      } catch (failure) {
+        const presentation = this.presentation;
+        if (presentation !== undefined && this.presentedManager === manager) {
+          this.fail(presentation.id, failure as Object);
+        } else {
+          console.error(`Expo LogBox could not prepare the error: ${errorMessage(failure as Object)}`);
+        }
+      }
+    });
+    const offReload = manager.eventEmitter.subscribe('RELOAD', (): void => {
       if (this.presentedManager === manager) this.clear();
     });
+
     this.managerCleanups.set(manager, (): void => {
-      removeError();
-      removeReload();
+      offError();
+      offReload();
     });
   }
 
@@ -167,11 +180,8 @@ class ExpoLogBoxController {
   ready(id: number): void {
     if (this.presentation?.id !== id) return;
 
-    const manager = this.presentedManager;
-    if (manager === undefined) return;
-
-    manager.dismissRNOHErrorDialog();
     this.customDialogReady = true;
+    this.dismissDefaultDialog();
   }
 
   fail(id: number, error: Object): void {
@@ -180,22 +190,26 @@ class ExpoLogBoxController {
     console.error(`Expo LogBox could not display the error: ${errorMessage(error)}`);
 
     const manager = this.presentedManager;
-    const presentedError = this.presentedError;
-    if (this.customDialogReady && manager !== undefined && presentedError !== undefined) {
-      // Restore RNOH's dialog before removing the failed custom view. The active presentation
-      // makes this controller ignore its own replayed NEW_ERROR event.
-      this.customDialogReady = false;
-      manager.setLastError(presentedError);
-      manager.eventEmitter.emit('NEW_ERROR', presentedError);
+    const latest = manager?.getLastError();
+
+    try {
+      if (this.customDialogReady && manager !== undefined && latest != null && this.ownsDefaultError(latest, manager)) {
+        // Keep the presentation active so this controller ignores its own replayed NEW_ERROR event.
+        this.customDialogReady = false;
+        manager.eventEmitter.emit('NEW_ERROR', latest);
+      }
+    } catch (failure) {
+      console.error(`Expo LogBox could not restore the RNOH error dialog: ${errorMessage(failure as Object)}`);
+    } finally {
+      this.clear();
     }
-    this.clear();
   }
 
-  async handleMessage(rawMessage: string, web: webview.WebviewController, presentationId: number): Promise<void> {
+  async handleMessage(raw: string, web: webview.WebviewController, presentationId: number): Promise<void> {
     let message: NativeActionMessage;
 
     try {
-      message = JSON.parse(rawMessage) as NativeActionMessage;
+      message = JSON.parse(raw) as NativeActionMessage;
     } catch (error) {
       console.error(`Expo LogBox received an invalid native action: ${errorMessage(error as Object)}`);
       return;
@@ -220,8 +234,9 @@ class ExpoLogBoxController {
         if (actionId === ACTION_DISMISS && args[0] !== 0) throw new Error('Invalid native LogBox log index.');
 
         await respond('');
+
         if (this.presentation?.id === presentationId) {
-          this.presentedManager?.dismissRNOHErrorDialog();
+          this.dismissDefaultDialog();
           this.clear();
         }
       } else if (actionId === ACTION_COPY_TEXT) {
@@ -250,14 +265,14 @@ class ExpoLogBoxController {
   private present(error: RNOHError, manager: DevToolsController): void {
     if (!this.enabled) return;
 
-    const runtimeId = error instanceof RNInstanceError ? error.getRNInstanceId() : undefined;
-    const runtime = runtimeId === undefined ? this.latestRuntime(manager) : this.runtimes.get(runtimeId);
-    if (runtime === undefined || runtime.core.devToolsController !== manager) return;
+    const runtime = this.runtimeForError(error, manager);
+    if (runtime === undefined) return;
 
     const windowName = runtimeWindowName(runtime);
     if (windowName === undefined) return;
 
     const id = runtime.instance.getId();
+
     if (this.presentation !== undefined) {
       if (this.presentedManager !== manager) return;
       if (this.reloading && id !== this.presentation.runtimeId && runtime.owner === this.presentation.owner) {
@@ -273,12 +288,12 @@ class ExpoLogBoxController {
     }
 
     const adapter = this.adapters.get(id);
-    const sourceError = adapter?.originalError(error) ?? error;
-    const nativeLog: NativeLog = {
-      message: normalizedMessage(sourceError),
-      stack: normalizedStack(sourceError),
+    const source = adapter?.originalError(error) ?? error;
+    const log: NativeLog = {
+      message: normalizedMessage(source),
+      stack: normalizedStack(source),
     };
-    const props: LogBoxProps = { nativeLogs: [nativeLog] };
+    const props: LogBoxProps = { nativeLogs: [log] };
     const payload: InitialProps = {
       names: [ACTION_RELOAD, ACTION_FETCH_TEXT, ACTION_COPY_TEXT, ACTION_MINIMIZE, ACTION_DISMISS],
       props,
@@ -339,7 +354,9 @@ class ExpoLogBoxController {
       method,
       header,
       extraData: hasBody ? body : undefined,
+      timeout: METRO_REQUEST_TIMEOUT_MS,
     });
+
     const response = await request.promise.catch((error: HttpErrorResponse | Error) => {
       const cause = error instanceof Error ? error : (error?.error ?? error);
       throw new Error(errorMessage(cause));
@@ -371,13 +388,32 @@ class ExpoLogBoxController {
     return result;
   }
 
+  private runtimeForError(error: RNOHError, manager: DevToolsController): ReactRuntimeContext | undefined {
+    const id = error instanceof RNInstanceError ? error.getRNInstanceId() : undefined;
+    const runtime = id === undefined ? this.latestRuntime(manager) : this.runtimes.get(id);
+    return runtime?.core.devToolsController === manager ? runtime : undefined;
+  }
+
+  private ownsDefaultError(error: RNOHError, manager: DevToolsController): boolean {
+    if (error === this.presentedError) return true;
+
+    const runtime = this.runtimeForError(error, manager);
+    return runtime !== undefined && runtimeWindowName(runtime) === this.presentation?.windowName;
+  }
+
+  private dismissDefaultDialog(): void {
+    const manager = this.presentedManager;
+    const error = manager?.getLastError();
+    if (manager !== undefined && error != null && this.ownsDefaultError(error, manager)) manager.dismissRNOHErrorDialog();
+  }
+
   private dismissDefaultDialogAfterErrorEvent(presentationId: number): void {
     const manager = this.presentedManager;
     if (!this.customDialogReady || manager === undefined) return;
 
     Promise.resolve().then((): void => {
       if (this.presentation?.id === presentationId && this.customDialogReady && this.presentedManager === manager) {
-        manager.dismissRNOHErrorDialog();
+        this.dismissDefaultDialog();
       }
     });
   }

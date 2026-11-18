@@ -10,6 +10,7 @@ import { STACK_PARSER_SCRIPT } from './generated/ExpoLogBoxScripts';
 
 const WEB_BRIDGE_NAME: string = 'ExpoLogBoxNative';
 const WEB_BRIDGE_METHODS: string[] = ['postMessage'];
+const LOG_BOX_PAGE_URL: string = 'resource://rawfile/expo_log_box/index.html';
 const DOCUMENT_START_SCRIPT_RULES: string[] = ['*'];
 const LOG_BOX_READY_SELECTOR: string = '[data-expo-log-backdrop="true"]';
 const DOM_READY: string = '$$dom_ready';
@@ -168,7 +169,7 @@ export struct ExpoLogBoxWebView {
   build(): void {
     if (this.session !== undefined) {
       Web({
-        src: $rawfile('expo_log_box/index.html'),
+        src: LOG_BOX_PAGE_URL,
         controller: this.session.web,
         incognitoMode: true,
       })
@@ -183,6 +184,7 @@ export struct ExpoLogBoxWebView {
         .fileAccess(false)
         .blockNetwork(true)
         .zoomAccess(false)
+        .onLoadIntercept((event): boolean => !event.data.isMainFrame() || event.data.getRequestUrl() !== LOG_BOX_PAGE_URL)
         .onAppear((): void => this.session?.appear())
         .onControllerAttached((): void => this.session?.attached())
         .onErrorReceive((event): void => {
@@ -217,6 +219,8 @@ function bootstrapScript(initialProps: string, devServerOrigin: string): string 
 
   return `
     ;(() => {
+      if (window.top !== window) return;
+
       const exports = {};
       ${STACK_PARSER_SCRIPT}
       window.$$EXPO_LOG_BOX_NORMALIZE_PROPS = (payload) => {
