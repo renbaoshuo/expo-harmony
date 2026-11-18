@@ -34,7 +34,7 @@ export class ExpoPrintModule extends ExpoModule {
   private generation: number = 0;
   private printing: boolean = false;
   private queue: Promise<void> = Promise.resolve();
-  private renderers: Set<PrintRenderer> = new Set<PrintRenderer>();
+  private renderer?: PrintRenderer;
   private downloadCancels: Set<() => void> = new Set<() => void>();
 
   definition(): ExpoModuleDefinition {
@@ -159,12 +159,12 @@ export class ExpoPrintModule extends ExpoModule {
       this.assertActive(generation);
 
       const renderer = new PrintRenderer(window.getUIContext(), options);
-      this.renderers.add(renderer);
+      this.renderer = renderer;
 
       try {
         return await renderer.render();
       } finally {
-        this.renderers.delete(renderer);
+        this.renderer = undefined;
       }
     });
 
@@ -190,10 +190,8 @@ export class ExpoPrintModule extends ExpoModule {
 
   private cancelPending(message: string): void {
     this.generation += 1;
-    const error = new ExpoModuleError('ERR_PRINT_CANCELLED', message);
-    this.renderers.forEach((renderer: PrintRenderer): void => {
-      renderer.fail(error);
-    });
+
+    this.renderer?.fail(new ExpoModuleError('ERR_PRINT_CANCELLED', message));
     this.downloadCancels.forEach((cancel: () => void): void => cancel());
     this.downloadCancels.clear();
   }

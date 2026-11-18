@@ -10,7 +10,7 @@ import { fileIo } from '@kit.CoreFileKit';
 import { taskpool, util } from '@kit.ArkTS';
 import { pdfService } from '@kit.PDFKit';
 import { print } from '@kit.BasicServicesKit';
-import { rcp } from '@kit.RemoteCommunicationKit';
+import lazy { rcp } from '@kit.RemoteCommunicationKit';
 import uri from '@ohos.uri';
 import { ORIENTATION_LANDSCAPE, ORIENTATION_PORTRAIT } from './PrintOptions';
 
@@ -69,7 +69,14 @@ export async function materializePdf(
     assertActive();
 
     if (/^https?:/i.test(source)) {
-      await downloadPdf(new uri.URI(source).toString(), path, downloadCancels);
+      const address = new uri.URI(source);
+
+      if (!address.host) throw new Error('A remote PDF URI must include a hostname.');
+      if (!canIUse('SystemCapability.Collaboration.RemoteCommunication')) {
+        throw new Error('This device does not support remote PDF downloads.');
+      }
+
+      await downloadPdf(address.toString(), path, downloadCancels);
     } else if (/^data:/i.test(source)) {
       const comma = source.indexOf(',');
       const metadata = source.slice(5, comma).toLowerCase().split(';');
@@ -86,19 +93,21 @@ export async function materializePdf(
     }
 
     assertActive();
-    await assertPdfHeader(path);
-    assertActive();
 
     if (canIUse('SystemCapability.OfficeService.PDFService.Core')) {
       await taskpool.execute(inspectPdf, path, true);
-      assertActive();
+    } else {
+      await assertPdfHeader(path);
     }
+
+    assertActive();
   } catch (error) {
     if (error instanceof ExpoModuleError) {
       throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
     }
 
     assertActive();
+
     throw new ExpoModuleError('ERR_PRINT_CANNOT_LOAD_URI', 'Unable to load the PDF URI.', error as Object);
   }
 }
@@ -213,6 +222,7 @@ export async function pageCount(path: string): Promise<number> {
 class PdfPrintAdapter implements print.PrintDocumentAdapter {
   private readonly path: string;
   private finished: boolean = false;
+  private pendingWrites: number = 0;
 
   constructor(path: string) {
     this.path = path;
@@ -231,12 +241,20 @@ class PdfPrintAdapter implements print.PrintDocumentAdapter {
   private async write(jobId: string, fd: number, complete: (jobId: string, state: print.PrintFileCreationState) => void): Promise<void> {
     let state = print.PrintFileCreationState.PRINT_FILE_CREATION_FAILED;
 
-    try {
-      // The print service owns the destination descriptor.
-      await fileIo.copyFile(this.path, fd);
-      state = print.PrintFileCreationState.PRINT_FILE_CREATED;
-    } catch (error) {
-      console.warn(`Unable to provide the PDF to the print service: ${String(error)}`);
+    if (!this.finished) {
+      this.pendingWrites += 1;
+
+      try {
+        // The print service owns the destination descriptor.
+        await fileIo.copyFile(this.path, fd);
+
+        if (!this.finished) state = print.PrintFileCreationState.PRINT_FILE_CREATED;
+      } catch (error) {
+        console.warn(`Unable to provide the PDF to the print service: ${String(error)}`);
+      } finally {
+        this.pendingWrites -= 1;
+        this.removeFinishedFile();
+      }
     }
 
     try {
@@ -248,6 +266,7 @@ class PdfPrintAdapter implements print.PrintDocumentAdapter {
 
   onJobStateChanged(_jobId: string, state: print.PrintDocumentAdapterState): void {
     if (this.finished) return;
+
     if (
       state !== print.PrintDocumentAdapterState.PREVIEW_DESTROY &&
       state !== print.PrintDocumentAdapterState.PRINT_TASK_SUCCEED &&
@@ -256,7 +275,11 @@ class PdfPrintAdapter implements print.PrintDocumentAdapter {
     ) return;
 
     this.finished = true;
-    void removeFile(this.path);
+    this.removeFinishedFile();
+  }
+
+  private removeFinishedFile(): void {
+    if (this.finished && this.pendingWrites === 0) void removeFile(this.path);
   }
 }
 

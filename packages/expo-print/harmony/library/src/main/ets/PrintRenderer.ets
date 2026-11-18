@@ -42,7 +42,7 @@ function printWebView(renderer: PrintRenderer) {
       .onPageEnd((event): void => renderer.pageEnded(event.url))
       .onErrorReceive((event): void => {
         if (event.request.isMainFrame()) {
-          renderer.fail(new ExpoModuleError('ERR_PRINT_HTML_LOAD', event.error.getErrorInfo()));
+          renderer.pageFailed(event.request.getRequestUrl(), event.error.getErrorInfo());
         }
       })
       .onRenderExited((): void => renderer.fail(new ExpoModuleError('ERR_PRINT_HTML_RENDER', 'The ArkWeb renderer exited.')))
@@ -65,6 +65,7 @@ export class PrintRenderer {
   readonly config: webview.PdfConfiguration;
   private content?: ComponentContent<PrintRenderer>;
   private timeout?: number;
+  private submitted: boolean = false;
   private loaded: boolean = false;
   private appeared: boolean = false;
   private disappeared: boolean = false;
@@ -124,9 +125,11 @@ export class PrintRenderer {
       // Base64 keeps loadData from treating literal '%' or '#' as URL syntax.
       const bytes = util.TextEncoder.create().encodeInto(this.options.html || '<!doctype html><html><body></body></html>');
       const html = await new util.Base64Helper().encodeToString(bytes);
+
       if (this.settled) return;
 
       this.controller.onActive();
+      this.submitted = true;
       this.controller.loadData(html, 'text/html; charset=utf-8', 'base64');
     } catch (error) {
       this.fail(new ExpoModuleError('ERR_PRINT_HTML_LOAD', 'Unable to load HTML for printing.', error as Object));
@@ -135,9 +138,16 @@ export class PrintRenderer {
 
   pageEnded(url: string): void {
     // loadData without a base URL creates a data: document. Ignore the Web's initial empty page.
-    if (!this.attached || !url.startsWith('data:')) return;
+    if (!this.submitted || !url.startsWith('data:')) return;
+
     this.loaded = true;
     this.schedule();
+  }
+
+  pageFailed(url: string, message: string): void {
+    if (this.submitted && url.startsWith('data:')) {
+      this.fail(new ExpoModuleError('ERR_PRINT_HTML_LOAD', message));
+    }
   }
 
   appear(): void {

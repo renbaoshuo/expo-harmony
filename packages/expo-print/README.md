@@ -32,7 +32,7 @@ npm install @expo-harmony/expo-print expo-print@~57.0.2
 
 `html` 是要打印的 HTML。HTML 中的 JavaScript 不会执行；相对地址没有基准路径，本地文件地址不会读取。图片可使用内联 Base64 或网络地址，网络图片需要 `ohos.permission.INTERNET`。页面大小、边距、文字缩放和方向选项均在打印 HTML 时生效。
 
-`uri` 必须指向 PDF，支持可读取的本地 PDF URI、HTTP(S) PDF 地址，以及 `data:application/pdf;base64,` 数据 URI。外部文件 URI 需要应用具有读取授权。URI 无法读取或内容不是 PDF 时请求失败。
+`uri` 必须指向 PDF，支持可读取的本地 PDF URI、HTTP(S) PDF 地址，以及 `data:application/pdf;base64,` 数据 URI。外部文件 URI 需要应用具有读取授权。URI 无法读取或内容不是 PDF 时请求失败。HTTP 明文下载遵循宿主应用的 [网络安全配置](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/network-connection-security-configuration/)。
 
 调用时应用需处于前台；应用进入后台或关闭时，尚未提交的请求会失败或取消。设备不支持系统打印功能时请求失败。
 
