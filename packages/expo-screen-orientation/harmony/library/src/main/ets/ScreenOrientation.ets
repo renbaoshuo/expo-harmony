@@ -74,7 +74,7 @@ export function requireOrientationLockSupport(): void {
 }
 
 export function canObserveWindowDisplayChange(): boolean {
-  return deviceInfo.deviceType !== TWO_IN_ONE_DEVICE_TYPE && deviceInfo.sdkApiVersion >= WINDOW_DISPLAY_CHANGE_API_LEVEL
+  return deviceInfo.sdkApiVersion >= WINDOW_DISPLAY_CHANGE_API_LEVEL
     && canIUse('SystemCapability.Window.SessionManager');
 }
 
@@ -138,11 +138,13 @@ export function readOrientation(win: window.Window): Orientation {
   try {
     screen = props.displayId === undefined ? display.getDefaultDisplaySync() : display.getDisplayByIdSync(props.displayId);
   } catch (error) {
-    const code = (error as BusinessError).code;
-    // The display can disappear before the window's displayId is updated.
-    if (code === (props.displayId === undefined ? INVALID_DISPLAY : DISPLAY_SERVICE_ABNORMAL)) return Orientation.UNKNOWN;
+    const failure = error as BusinessError;
 
-    throw error as Error;
+    // The display can disappear before the window's displayId is updated.
+    const missing = props.displayId === undefined ? INVALID_DISPLAY : DISPLAY_SERVICE_ABNORMAL;
+    if (failure.code === missing) return Orientation.UNKNOWN;
+
+    throw new ExpoModuleError('ERR_ARKTS_MODULE', failure.message, failure);
   }
 
   if (deviceInfo.sdkApiVersion >= ORIENTATION_CONVERSION_API_LEVEL && canIUse('SystemCapability.Window.SessionManager')) {

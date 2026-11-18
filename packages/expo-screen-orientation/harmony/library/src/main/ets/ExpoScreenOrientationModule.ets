@@ -31,19 +31,27 @@ interface OrientationChangeEvent {
 }
 
 interface AppliedOrientation {
-  target: window.Window;
-  original: window.Orientation;
-  applied: window.Orientation;
+  owner: ExpoScreenOrientationModule;
+  value: window.Orientation;
 }
 
+interface WindowOrientations {
+  target: window.Window;
+  original: window.Orientation;
+  locks: AppliedOrientation[];
+}
+
+// Expo runtimes attached to the same window share a single native orientation policy.
+const windowOrientations: Map<number, WindowOrientations> = new Map();
+let pendingWindowOperation: Promise<void> = Promise.resolve();
+
 export class ExpoScreenOrientationModule extends ExpoModule {
-  private pending: Promise<void> = Promise.resolve();
   private cleanup: Promise<void> | null = null;
   private destroyed: boolean = false;
   private stage: window.WindowStage | null = null;
   private generation: number = 0;
-  private readonly orientations: Map<number, AppliedOrientation> = new Map();
   private observing: boolean = false;
+  private lastOrientation: Orientation = Orientation.UNKNOWN;
   private stopObservingWindow?: () => void;
 
   definition(): ExpoModuleDefinition {
@@ -87,6 +95,7 @@ export class ExpoScreenOrientationModule extends ExpoModule {
         .onStopObserving(ORIENTATION_EVENT, (): void => {
           this.observing = false;
           this.unobserveWindow();
+          this.lastOrientation = Orientation.UNKNOWN;
         })
         .onWindowStageSetup((stage: window.WindowStage): void => {
           if (this.destroyed || this.stage === stage) return;
@@ -110,12 +119,20 @@ export class ExpoScreenOrientationModule extends ExpoModule {
 
       const id = win.getWindowProperties().id;
       const previous = win.getPreferredOrientation();
-      const owned = this.orientations.get(id);
-      const original = owned !== undefined && previous === owned.applied ? owned.original : previous;
+      let state = windowOrientations.get(id);
 
-      // The OS may have changed orientation after the previous lock.
       await win.setPreferredOrientation(orientation);
-      this.orientations.set(id, { target: win, original, applied: orientation });
+
+      // A host policy change ends the ownership chain before this new lock.
+      if (state === undefined || state.locks[state.locks.length - 1].value !== previous) {
+        state = { target: win, original: previous, locks: [] };
+        windowOrientations.set(id, state);
+      }
+
+      const locks = state.locks;
+      const index = locks.findIndex((lock: AppliedOrientation): boolean => lock.owner === this);
+      if (index >= 0) locks.splice(index, 1);
+      locks.push({ owner: this, value: orientation });
     });
   }
 
@@ -126,7 +143,6 @@ export class ExpoScreenOrientationModule extends ExpoModule {
 
     try {
       const win = stage.getMainWindowSync();
-      let last = Orientation.UNKNOWN;
       let active = true;
 
       const refresh = (notify: boolean): void => {
@@ -134,10 +150,10 @@ export class ExpoScreenOrientationModule extends ExpoModule {
 
         try {
           const orientation = readOrientation(win);
-          if (orientation === Orientation.UNKNOWN || orientation === last) return;
+          if (orientation === Orientation.UNKNOWN || orientation === this.lastOrientation) return;
 
           if (!notify) {
-            last = orientation;
+            this.lastOrientation = orientation;
             return;
           }
 
@@ -145,14 +161,14 @@ export class ExpoScreenOrientationModule extends ExpoModule {
             orientationLock: fromPreferredOrientation(win.getPreferredOrientation()),
             orientationInfo: { orientation },
           };
-          last = orientation;
+
+          this.lastOrientation = orientation;
           this.sendEvent(ORIENTATION_EVENT, event);
         } catch (error) {
           console.warn(`Unable to read the Expo ScreenOrientation window update: ${String(error)}`);
         }
       };
 
-      refresh(false);
       const onChange = (): void => refresh(true);
 
       const subscriptions: (() => void)[] = [];
@@ -182,6 +198,8 @@ export class ExpoScreenOrientationModule extends ExpoModule {
           }
         }
       };
+
+      refresh(this.lastOrientation !== Orientation.UNKNOWN);
     } catch (error) {
       console.warn(`Unable to start observing the Expo ScreenOrientation window: ${String(error)}`);
     }
@@ -215,8 +233,8 @@ export class ExpoScreenOrientationModule extends ExpoModule {
   }
 
   private serialize<T>(task: () => Promise<T>): Promise<T> {
-    const next = this.pending.then(task);
-    this.pending = next.then(
+    const next = pendingWindowOperation.then(task);
+    pendingWindowOperation = next.then(
       (): void => {},
       (): void => {},
     );
@@ -239,6 +257,8 @@ export class ExpoScreenOrientationModule extends ExpoModule {
   }
 
   private releaseWindow(): void {
+    if (this.stage === null) return;
+
     this.unobserveWindow();
     this.stage = null;
     this.generation += 1;
@@ -268,21 +288,37 @@ export class ExpoScreenOrientationModule extends ExpoModule {
   private async restoreOrientations(): Promise<void> {
     let failure: Object | undefined;
 
-    for (const entry of this.orientations.values()) {
+    for (const entry of windowOrientations) {
+      const id = entry[0];
+      const state = entry[1];
+      const locks = state.locks;
+      const index = locks.findIndex((lock: AppliedOrientation): boolean => lock.owner === this);
+      if (index < 0) continue;
+
+      const current = index === locks.length - 1;
+      const applied = locks[index].value;
+      locks.splice(index, 1);
+      if (locks.length === 0) windowOrientations.delete(id);
+      if (!current) continue;
+
       try {
-        // A host or another window owner can change the policy after our request.
-        if (entry.target.getPreferredOrientation() === entry.applied && entry.original !== entry.applied) {
-          await entry.target.setPreferredOrientation(entry.original);
+        if (state.target.getPreferredOrientation() !== applied) {
+          windowOrientations.delete(id);
+          continue;
+        }
+
+        const previous = locks.length === 0 ? state.original : locks[locks.length - 1].value;
+        if (previous !== applied) {
+          await state.target.setPreferredOrientation(previous);
         }
       } catch (error) {
+        windowOrientations.delete(id);
         failure = error;
       }
     }
 
-    this.orientations.clear();
-
     if (failure !== undefined) {
-      throw new ExpoModuleError('ERR_SCREEN_ORIENTATION_RESTORE', `Unable to restore the initial window orientation: ${String(failure)}`);
+      throw new ExpoModuleError('ERR_SCREEN_ORIENTATION_RESTORE', `Unable to restore the previous window orientation: ${String(failure)}`, failure);
     }
   }
 }
