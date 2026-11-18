@@ -24,6 +24,7 @@ import { mergeAttributes } from './AppMetricsLogging.ts';
 
 export interface StartupMetricsStorage {
   createSessionId(): string;
+  metricWithGlobals(metric: Metric): Metric;
   scheduleStartupSession(
     sessionId: string,
     timestamp: string,
@@ -41,6 +42,9 @@ export interface StartupMetricAttributes {
   routeName?: string;
   params?: Record<string, ESObject>;
 }
+
+// Match SDK 57's guard against stalls and background launches skewing startup times.
+const MAX_STARTUP_DURATION_SECONDS = 3 * 60;
 
 export class ProcessClock {
   private readonly now: () => number;
@@ -110,6 +114,7 @@ export class StartupCoordinator {
   private interactiveRecorded: boolean = false;
   private foregroundSeen: boolean = false;
   private interrupted: boolean = false;
+  private savedCount: number = 0;
   private scheduledCount: number = -1;
   private scheduledClockRevision: number = -1;
 
@@ -147,10 +152,8 @@ export class StartupCoordinator {
 
   onBackground(): void {
     this.saveStartupMetricsIfNeeded();
-    if (this.interactiveRecorded || this.interrupted) return;
 
-    this.interrupted = true;
-    this.frameRecorder.stop();
+    if (!this.interactiveRecorded) this.interrupt();
   }
 
   markFirstRender(): void {
@@ -164,7 +167,7 @@ export class StartupCoordinator {
     const nowMs = this.now();
     if (nowMs === undefined) return;
 
-    const value = elapsedSeconds(launchMs, nowMs);
+    const value = this.startupDuration(launchMs, nowMs);
     if (value === undefined) return;
 
     this.renderRecorded = true;
@@ -186,7 +189,7 @@ export class StartupCoordinator {
     const nowMs = this.now();
     if (nowMs === undefined) return;
 
-    const value = elapsedSeconds(launchMs, nowMs);
+    const value = this.startupDuration(launchMs, nowMs);
     if (value === undefined) return;
 
     const end = Date.now();
@@ -229,6 +232,22 @@ export class StartupCoordinator {
     }
   }
 
+  private interrupt(): void {
+    if (this.interrupted) return;
+
+    this.interrupted = true;
+    this.frameRecorder.stop();
+  }
+
+  private startupDuration(start: number, end: number): number | undefined {
+    const duration = elapsedSeconds(start, end);
+    if (duration === undefined || duration <= MAX_STARTUP_DURATION_SECONDS) return duration;
+
+    this.interrupt();
+
+    return undefined;
+  }
+
   private addStartupMetric(
     name: string,
     value: number,
@@ -237,7 +256,7 @@ export class StartupCoordinator {
   ): void {
     if (!Number.isFinite(value) || value < 0) return;
 
-    this.metrics.push(new Metric(
+    const metric = new Metric(
       this.storage.createSessionId(),
       this.appSessionId,
       new Date().toISOString(),
@@ -246,7 +265,9 @@ export class StartupCoordinator {
       value,
       routeName,
       params
-    ));
+    );
+    this.metrics.push(this.storage.metricWithGlobals(metric));
+
     this.saveStartupMetricsIfNeeded();
   }
 
@@ -254,6 +275,7 @@ export class StartupCoordinator {
     const count = this.metrics.length;
     const revision = this.processClock.getRevision();
     if (this.scheduledCount === count && this.scheduledClockRevision === revision) return;
+
     this.scheduledCount = count;
     this.scheduledClockRevision = revision;
 
@@ -262,13 +284,16 @@ export class StartupCoordinator {
     this.storage.scheduleStartupSession(
       this.appSessionId,
       this.processClock.getTimestamp(),
-      this.metrics.slice(),
+      this.metrics.slice(this.savedCount),
       this.metadata
-    ).catch((error: unknown): void => {
+    ).then((): void => {
+      this.savedCount = count;
+    }).catch((error: unknown): void => {
       if (this.scheduledCount === count && this.scheduledClockRevision === revision) {
         this.scheduledCount = -1;
         this.scheduledClockRevision = -1;
       }
+
       this.warn(`Unable to save Expo App Metrics startup data: ${String(error)}`);
     });
   }

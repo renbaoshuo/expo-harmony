@@ -54,6 +54,11 @@ export function persistFatalError(filesDir: string, sessionId: string, log: LogR
     }
 
     fs.renameSync(temporary, path);
+
+    const files = pendingFiles(fs.listFileSync(directory));
+    files.slice(0, Math.max(0, files.length - MAX_PENDING_ERRORS)).forEach((name: string): void => {
+      removePendingFile(`${directory}/${name}`, warn);
+    });
   } catch (error) {
     warnSafely(warn, `Unable to persist an Expo App Metrics fatal error: ${String(error)}`);
     if (temporary !== undefined) removePendingFile(temporary, warn);
@@ -74,7 +79,8 @@ export async function recoverFatalErrors(filesDir: string, storage: AppMetricsSt
   names.filter((name: string): boolean => name.endsWith('.tmp')).forEach((name: string): void => {
     removePendingFile(`${directory}/${name}`, warn);
   });
-  const files = names.filter((name: string): boolean => name.endsWith('.json')).sort();
+
+  const files = pendingFiles(names);
   const overflow = Math.max(0, files.length - MAX_PENDING_ERRORS);
   if (overflow > 0) warnSafely(warn, `Dropping ${overflow} pending Expo App Metrics errors past the ${MAX_PENDING_ERRORS}-file cap.`);
   files.slice(0, overflow).forEach((name: string): void => removePendingFile(`${directory}/${name}`, warn));
@@ -111,4 +117,8 @@ export async function recoverFatalErrors(filesDir: string, storage: AppMetricsSt
       }
     }
   }
+}
+
+function pendingFiles(names: string[]): string[] {
+  return names.filter((name: string): boolean => !name.includes('/') && name.endsWith('.json')).sort();
 }

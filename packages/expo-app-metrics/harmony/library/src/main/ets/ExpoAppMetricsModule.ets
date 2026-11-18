@@ -5,10 +5,12 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import type common from '@ohos.app.ability.common';
+import { bundleManager, type common } from '@kit.AbilityKit';
 import type { UIContext, window } from '@kit.ArkUI';
-import { taskpool } from '@kit.ArkTS';
-import { systemDateTime } from '@kit.BasicServicesKit';
+import { process, taskpool } from '@kit.ArkTS';
+import { deviceInfo, systemDateTime } from '@kit.BasicServicesKit';
+import { i18n } from '@kit.LocalizationKit';
+import { hidebug } from '@kit.PerformanceAnalysisKit';
 import {
   ExpoAppLifecycleSubscriber,
   ExpoAbilityLifecycleSubscriber,
@@ -26,11 +28,6 @@ import {
   UpdatesStateChangeListener,
   UpdatesStateChangeSubscription,
 } from '@expo-harmony/expo-updates-interface';
-import bundleManager from '@ohos.bundle.bundleManager';
-import deviceInfo from '@ohos.deviceInfo';
-import hidebug from '@ohos.hidebug';
-import i18n from '@ohos.i18n';
-import process from '@ohos.process';
 import { HAR_VERSION } from '../../../BuildProfile';
 
 import {
@@ -47,7 +44,6 @@ import {
   UPDATES_CATEGORY,
 } from './AppMetricsModels';
 import {
-  AppMetricsServiceLifecycle,
   kilobytesToBytes,
   processAgeMilliseconds,
   remainingKilobytes,
@@ -287,7 +283,7 @@ export class ExpoAppMetricsModule extends ExpoModule implements UpdatesStateChan
   private storage?: AppMetricsStorage;
   private scope?: StartupScope;
   private startup?: StartupCoordinator;
-  private readonly lifecycle: AppMetricsServiceLifecycle = new AppMetricsServiceLifecycle();
+  private active: boolean = true;
   private readonly sessionIds: Set<string> = new Set<string>();
   private readonly snapshots: Set<Promise<MemoryUsageSnapshot>> = new Set<Promise<MemoryUsageSnapshot>>();
   private metadataTask?: Promise<AppMetadata>;
@@ -426,7 +422,7 @@ export class ExpoAppMetricsModule extends ExpoModule implements UpdatesStateChan
   }
 
   updatesStateDidChange(event: Record<string, ESObject>): void {
-    if (this.lifecycle.isActive() && event['type'] === 'downloadCompleteWithUpdate') this.recordUpdateDownload();
+    if (this.active && event['type'] === 'downloadCompleteWithUpdate') this.recordUpdateDownload();
   }
 
   private observeUpdates(): void {
@@ -499,7 +495,7 @@ export class ExpoAppMetricsModule extends ExpoModule implements UpdatesStateChan
   }
 
   private onJavaScriptBundleLoaded(durationSeconds?: number): void {
-    if (!this.lifecycle.isActive()) return;
+    if (!this.active) return;
 
     const startup = this.requireStartup();
 
@@ -509,14 +505,11 @@ export class ExpoAppMetricsModule extends ExpoModule implements UpdatesStateChan
 
   private scheduleStopSession(sessionId: string): void {
     this.assertActive();
-    this.requireStorage()
-      .stopSession(sessionId)
-      .then((): void => {
-        this.sessionIds.delete(sessionId);
-      })
-      .catch((error: Object): void => {
-        this.warn(`Unable to stop Expo App Metrics session: ${String(error)}`);
-      });
+    const id = requireSessionId(sessionId);
+
+    this.trackWrite(this.requireStorage().stopSession(id).then((): void => {
+      this.sessionIds.delete(id);
+    }));
   }
 
   private destroy(): void {
@@ -553,7 +546,8 @@ export class ExpoAppMetricsModule extends ExpoModule implements UpdatesStateChan
   }
 
   private beginShutdown(): string[] {
-    if (this.lifecycle.beginShutdown()) {
+    if (this.active) {
+      this.active = false;
       this.updatesSubscription?.remove();
       this.updatesSubscription = undefined;
       this.updatesController = undefined;
@@ -562,7 +556,7 @@ export class ExpoAppMetricsModule extends ExpoModule implements UpdatesStateChan
   }
 
   private assertActive(): void {
-    if (!this.lifecycle.isActive()) {
+    if (!this.active) {
       throw new ExpoAppMetricsError('ERR_APP_METRICS_DESTROYED', 'The Expo App Metrics Harmony module has already begun shutting down.');
     }
   }
@@ -714,8 +708,12 @@ async function readMemory(): Promise<string[]> {
 
 @Concurrent
 function readMemoryInTask(): string[] {
+  const rss = typeof hidebug.getRssInfo === 'function'
+    ? hidebug.getRssInfo().rss
+    : hidebug.getAppNativeMemInfo().rss;
+
   return [
-    hidebug.getAppNativeMemInfo().rss.toString(),
+    rss.toString(),
     hidebug.getAppMemoryLimit().rssLimit.toString(),
     hidebug.getSystemMemInfo().availableMem.toString(),
   ];

@@ -64,8 +64,14 @@ export class AppMetricsCrashObserver {
           group.appEventInfos.forEach((event: hiAppEvent.AppEventInfo): void => {
             // HiAppEvent acknowledges its callback synchronously. Stage the event durably
             // before returning so an RN reload or process death cannot lose an async write.
-            try { this.deliver(event, this.stage(event)); }
-            catch (error) { warn(`Unable to stage a HiAppEvent fault: ${String(error)}`); }
+            let path: string | undefined;
+            try {
+              path = this.stage(event);
+            } catch (error) {
+              warn(`Unable to stage a HiAppEvent fault: ${String(error)}`);
+            }
+
+            this.deliver(event, path);
           });
         });
       },
@@ -78,6 +84,7 @@ export class AppMetricsCrashObserver {
 
   private stage(event: hiAppEvent.AppEventInfo): string {
     if (!fs.accessSync(this.pendingDirectory)) fs.mkdirSync(this.pendingDirectory);
+
     // Only repair an earlier failed post-commit budget cleanup before accepting more data.
     // A normal new write must not evict valid pending diagnostics before it commits.
     if (this.stagingBudgetBlocked) {
@@ -86,26 +93,47 @@ export class AppMetricsCrashObserver {
     } else {
       this.cleanupTemporaryFiles();
     }
-    const serialized = JSON.stringify(event);
-    if (serialized.length > MAX_PENDING_FAULT_BYTES) throw new Error('HiAppEvent fault exceeds the 16 MiB native diagnostic staging budget.');
 
-    const payload = new util.TextEncoder().encodeInto(serialized);
+    const params = optionalMap(event.params as ESObject);
+    const diagnostic: Record<string, ESObject> = {};
+    for (const key of [SESSION_PARAMETER, 'time', 'bundle_version', 'pid', 'uuid', 'crash_type', 'exception', 'threads']) {
+      const value: ESObject = params?.[key];
+      if (value !== undefined) diagnostic[key] = value;
+    }
+
+    const snapshot: hiAppEvent.AppEventInfo = {
+      domain: event.domain,
+      name: event.name,
+      eventType: event.eventType,
+      params: diagnostic,
+    };
+    const json = JSON.stringify(snapshot);
+    if (json.length > MAX_PENDING_FAULT_BYTES) throw new Error('HiAppEvent fault exceeds the 16 MiB native diagnostic staging budget.');
+
+    const payload = new util.TextEncoder().encodeInto(json);
     if (payload.byteLength > MAX_PENDING_FAULT_BYTES) throw new Error('HiAppEvent fault exceeds the 16 MiB native diagnostic staging budget.');
+
     const path = `${this.pendingDirectory}/${Date.now()}-${util.generateRandomUUID(true)}.json`;
-    const temporary = `${path}.tmp`;
+    const temp = `${path}.tmp`;
+    let committed = false;
+
     try {
-      const file = fs.openSync(temporary, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC | fs.OpenMode.NOFOLLOW);
+      const file = fs.openSync(temp, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC | fs.OpenMode.NOFOLLOW);
       try {
         const written = fs.writeSync(file.fd, payload.buffer);
         if (written !== payload.byteLength) throw new Error('Incomplete write of the staged HiAppEvent fault.');
+
         fs.fsyncSync(file.fd);
-      } finally { fs.closeSync(file); }
-      fs.renameSync(temporary, path);
-    } catch (error) {
-      this.removeStagedFile(temporary);
-      throw error as Error;
+      } finally {
+        fs.closeSync(file);
+      }
+
+      fs.renameSync(temp, path);
+      committed = true;
+    } finally {
+      if (!committed) this.removeStagedFile(temp);
     }
-    // Commit first: a failed write never sacrifices an older pending diagnostic.
+
     try {
       this.boundedFiles();
     } catch (error) {
@@ -168,17 +196,14 @@ export class AppMetricsCrashObserver {
     return files;
   }
 
-  private deliver(event: hiAppEvent.AppEventInfo, path: string): void {
+  private deliver(event: hiAppEvent.AppEventInfo, path?: string): void {
     this.receive(event).then((): void => {
-      // A later event may have reclaimed this pending file while ingestion was queued.
-      try { if (fs.accessSync(path)) fs.unlinkSync(path); }
-      catch (error) { this.warn(`Unable to remove ingested HiAppEvent fault '${path}': ${String(error)}`); }
+      if (path !== undefined) this.removeStagedFile(path);
     }, (error: Object): void => {
-      if (error instanceof ExpoAppMetricsError && error.code === 'ERR_APP_METRICS_STORAGE_CAPACITY') {
+      if (path !== undefined && error instanceof ExpoAppMetricsError && error.code === 'ERR_APP_METRICS_STORAGE_CAPACITY') {
         this.warn(`Dropping staged HiAppEvent fault '${path}' after a permanent metrics-storage capacity failure: ${error.message}`);
         this.removeStagedFile(path);
       } else {
-        // Transient storage I/O failures retain the record in the bounded retry queue.
         this.warn(`Unable to save a HiAppEvent fault: ${String(error)}`);
       }
     });

@@ -11,14 +11,18 @@ import { optionalMap, optionalText, truncateLogText } from './AppMetricsLogging.
 export class CrashStackFrame {
   symbol?: string;
   binaryName?: string;
+  binaryUUID?: string;
 }
+
 export class CrashStack {
   threadAttributed: boolean = true;
   callStackRootFrames: CrashStackFrame[] = [];
 }
+
 export class CrashStackTree {
   callStacks: CrashStack[] = [];
 }
+
 export class CrashReport {
   eventId: string;
   sessionId: string | null = null;
@@ -51,11 +55,14 @@ export function crashFromSystemEvent(name: string, params: Record<string, ESObje
   const id = `${name}:${time}:${String(params['pid'])}:${optionalText(params['uuid']) ?? ''}`;
   const report = new CrashReport(id, version, new Date(time).toISOString());
   report.crashType = optionalText(params['crash_type']);
+
   const exception = optionalMap(params['exception']);
-  report.terminationReason = optionalText(exception?.['message']);
+  const message = nonEmptyText(exception?.['message']);
   const kind = optionalText(exception?.['name']);
+  report.terminationReason = message;
   report.exceptionName = kind;
-  if (kind !== undefined) report.exceptionReason = `${kind}: ${report.terminationReason ?? ''}`;
+  report.exceptionReason = kind === undefined || message === undefined ? kind ?? message : `${kind}: ${message}`;
+
   const signal = optionalMap(exception?.['signal']);
   const signo: ESObject = signal?.['signo'];
   if (typeof signo === 'number' && Number.isSafeInteger(signo) && signo > 0) report.signal = signo;
@@ -83,15 +90,17 @@ export function crashFromSystemEvent(name: string, params: Record<string, ESObje
 
       if (typeof tid === 'number' && thread?.['tid'] === tid) {
         // The thread list carries the full stack when the exception has only a summary.
-        stack.callStackRootFrames = frames;
+        if (frames.length > stack.callStackRootFrames.length) stack.callStackRootFrames = frames;
         return;
       }
+
       const other = new CrashStack();
       other.threadAttributed = false;
       other.callStackRootFrames = frames;
       tree.callStacks.push(other);
     });
   }
+
   if (stack.callStackRootFrames.length > 0) tree.callStacks.unshift(stack);
   if (tree.callStacks.length > 0) report.callStackTree = tree;
 
@@ -105,13 +114,21 @@ function readFrames(value: ESObject): CrashStackFrame[] {
   (value as ESObject[]).forEach((raw: ESObject): void => {
     const input = optionalMap(raw);
     if (input === undefined) return;
+
     const frame = new CrashStackFrame();
-    frame.symbol = optionalText(input['symbol']);
-    frame.binaryName = optionalText(input['file']);
+    frame.symbol = nonEmptyText(input['symbol']);
+    frame.binaryName = nonEmptyText(input['file']);
+    frame.binaryUUID = nonEmptyText(input['buildId']);
+
     if (frame.symbol !== undefined || frame.binaryName !== undefined) frames.push(frame);
   });
 
   return frames;
+}
+
+function nonEmptyText(value: ESObject): string | undefined {
+  const text = optionalText(value);
+  return text !== undefined && text.length > 0 ? text : undefined;
 }
 
 // SDK 57 limits diagnostic log rendering while retaining the complete crash report.
@@ -146,12 +163,14 @@ export function nativeCrashLog(report: CrashReport): LogRecord {
     attributes['expo.crash.signal_number'] = report.signal;
   }
   if (report.terminationReason !== undefined) attributes['expo.crash.termination_reason'] = report.terminationReason;
+
   const symbols: string[] = [];
   const stacks = report.callStackTree?.callStacks ?? [];
   const attributed = stacks.filter((stack: CrashStack): boolean => stack.threadAttributed);
   (attributed.length > 0 ? attributed : stacks).forEach((stack: CrashStack): void => {
-    stack.callStackRootFrames.forEach((frame: CrashStackFrame): void => { symbols.push(frame.symbol ?? '<unknown>'); });
+    stack.callStackRootFrames.forEach((frame: CrashStackFrame): void => { symbols.push(frame.symbol ?? frame.binaryName ?? '<unknown>'); });
   });
+
   let stacktrace: string | null = null;
   if (symbols.length > 0) {
     const rendered = symbols.slice(0, MAX_LOG_STACK_FRAMES);
@@ -159,6 +178,7 @@ export function nativeCrashLog(report: CrashReport): LogRecord {
     stacktrace = truncateLogText(rendered.join('\n'), MAX_LOG_STACKTRACE_LENGTH, (message: string): void => console.warn(message));
   }
   attributes['exception.stacktrace'] = stacktrace;
+
   const log = new LogRecord(report.timestampBegin, 'native.exception', 'fatal', undefined, attributes);
   log.recordId = report.eventId;
 
@@ -180,6 +200,7 @@ export function decodeCrashReport(value: ESObject): CrashReport | undefined {
   result.exceptionReason = optionalText(input['exceptionReason']);
   result.exceptionName = optionalText(input['exceptionName']);
   result.crashType = optionalText(input['crashType']);
+
   const tree = optionalMap(input['callStackTree']);
   const stacks: ESObject = tree?.['callStacks'];
   if (Array.isArray(stacks)) {
@@ -192,11 +213,13 @@ export function decodeCrashReport(value: ESObject): CrashReport | undefined {
       const stack = new CrashStack();
       if (typeof stackInput?.['threadAttributed'] === 'boolean') stack.threadAttributed = stackInput['threadAttributed'];
       (frames as ESObject[]).forEach((rawFrame: ESObject): void => {
-        const frameInput = optionalMap(rawFrame);
-        if (frameInput === undefined) return;
+        const fields = optionalMap(rawFrame);
+        if (fields === undefined) return;
+
         const frame = new CrashStackFrame();
-        frame.symbol = optionalText(frameInput['symbol']);
-        frame.binaryName = optionalText(frameInput['binaryName']);
+        frame.symbol = nonEmptyText(fields['symbol']);
+        frame.binaryName = optionalText(fields['binaryName']);
+        frame.binaryUUID = optionalText(fields['binaryUUID']);
         stack.callStackRootFrames.push(frame);
       });
       result.callStackTree?.callStacks.push(stack);

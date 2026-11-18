@@ -34,7 +34,7 @@ npm install @expo-harmony/expo-app-metrics expo-app-metrics@~57.0.23
 
 #### `useNetworkRequestObserver(options?)`
 
-订阅当前 React Native 实例发出的网络请求。`filter.hosts` 按主机名筛选，`filter.methods` 按请求方法筛选；更新筛选条件时会继续使用当前订阅。`onStarted` 和 `onCompleted` 分别接收请求开始和完成事件。
+订阅当前 React Native 实例中可观察的 HTTP 请求。`filter.hosts` 按主机名筛选，`filter.methods` 按请求方法筛选；更新筛选条件时会继续使用当前订阅。`onStarted` 和 `onCompleted` 分别接收请求开始和完成事件。
 
 ### Methods
 
@@ -138,7 +138,7 @@ npm install @expo-harmony/expo-app-metrics expo-app-metrics@~57.0.23
 
 #### `NetworkRequestObserver`
 
-创建观察器后，可通过 `addListener` 订阅 `requestStarted` 和 `requestCompleted`，并通过 `setFilter` 更新主机名或请求方法筛选条件。只观察当前 React Native 实例发出的请求；工作线程或绕过该实例网络接口发出的请求不会产生事件。
+创建观察器后，可通过 `addListener` 订阅 `requestStarted` 和 `requestCompleted`，并通过 `setFilter` 更新主机名或请求方法筛选条件。观察范围包括当前 React Native 实例主线程上的 RNOH HTTP 客户端，以及接入 Expo 网络观察接口的请求。RNOH Worker 的独立网络客户端不在此范围内。
 
 #### `requestStarted`
 

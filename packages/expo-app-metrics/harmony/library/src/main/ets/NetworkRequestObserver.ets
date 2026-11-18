@@ -6,8 +6,7 @@
  */
 
 import type { common } from '@kit.AbilityKit';
-import util from '@ohos.util';
-import url from '@ohos.url';
+import { url, util } from '@kit.ArkTS';
 import { RNInstanceImpl } from '@rnoh/react-native-openharmony';
 import type { HttpClient } from '@rnoh/react-native-openharmony/src/main/ets/HttpClient/HttpClient';
 import type {
@@ -24,7 +23,25 @@ interface NativeHttpRequest {
   promise: Promise<HttpResponse>;
 }
 
-/** Preserve the native transport, cookies, cancellation, custom interceptors and errors. */
+class ExpoHttpRequestError extends Error {
+  readonly code?: number | string;
+  readonly statusCode: number | null;
+  readonly cause: Object;
+
+  constructor(message: string, status: number | null, cause: Object) {
+    super(message);
+    if (cause instanceof Error) this.name = cause.name;
+
+    this.statusCode = status;
+    this.cause = cause;
+
+    const code: ESObject = cause !== null && typeof cause === 'object'
+      ? (cause as Record<string, ESObject>)['code']
+      : undefined;
+    if (typeof code === 'number' || typeof code === 'string') this.code = code;
+  }
+}
+
 class ObservedHttpClient implements HttpClient {
   private readonly client: HttpClient;
   private readonly runtimeId: number;
@@ -38,8 +55,10 @@ class ObservedHttpClient implements HttpClient {
 
   sendRequest(target: string, options: RequestOptions): NativeHttpRequest {
     const observation = ExpoNetworkObservation.start(this.runtimeId, target, options.method ?? 'GET');
+
     try {
       const request: NativeHttpRequest = this.client.sendRequest(target, options);
+
       const promise: Promise<HttpResponse> = request.promise.then((response: HttpResponse): HttpResponse => {
         observation?.finish(response.statusCode);
         return response;
@@ -47,16 +66,20 @@ class ObservedHttpClient implements HttpClient {
         observation?.finish(requestErrorStatus(error), requestErrorMessage(error));
         return Promise.reject<HttpResponse>(error);
       });
+
       return {
         cancel: (): void => {
-          observation?.finish(null, 'Request cancelled');
           request.cancel();
+          observation?.finish(null, 'Request cancelled');
         },
         promise,
       };
     } catch (error) {
-      observation?.finish(requestErrorStatus(error), requestErrorMessage(error));
-      throw error as Error;
+      const status = requestErrorStatus(error);
+      const message = requestErrorMessage(error);
+      observation?.finish(status, message);
+
+      throw new ExpoHttpRequestError(message, status, error as Object);
     }
   }
 }

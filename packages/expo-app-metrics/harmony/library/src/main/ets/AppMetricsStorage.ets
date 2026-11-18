@@ -5,8 +5,8 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import type common from '@ohos.app.ability.common';
-import util from '@ohos.util';
+import type { common } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
 import { preferences, relationalStore } from '@kit.ArkData';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { CrashReport, decodeCrashReport, nativeCrashLog } from './AppMetricsCrashReport';
@@ -98,8 +98,6 @@ export class AppMetricsStorage {
   }
 
   scheduleStartupSession(id: string, timestamp: string, metrics: Metric[], metadata: Promise<AppMetadata>): Promise<void> {
-    const entries = metrics.map((metric: Metric): Metric => this.metricWithGlobals(metric));
-
     return this.run(async (store: relationalStore.RdbStore): Promise<void> => {
       if (this.clearedSessions.has(id)) {
         throw new ExpoAppMetricsError('ERR_APP_METRICS_SESSION_NOT_FOUND', `No app metrics session exists for '${id}'.`);
@@ -108,11 +106,14 @@ export class AppMetricsStorage {
       const saved = await readSession(store, id);
       const session = saved ?? new Session(id, timestamp, this.environment, await metadata);
       session.type = 'main';
-      session.startTimestamp = timestamp;
 
       await this.transaction(store, async (): Promise<void> => {
-        await putSession(store, session);
-        for (const metric of entries) await putMetric(store, metric);
+        if (saved === undefined || saved.startTimestamp !== timestamp) {
+          session.startTimestamp = timestamp;
+          await putSession(store, session);
+        }
+
+        for (const metric of metrics) await putMetric(store, metric);
       });
     });
   }
@@ -257,10 +258,11 @@ export class AppMetricsStorage {
     });
   }
 
-  private metricWithGlobals(metric: Metric): Metric {
-    const entry = copyMetric(metric);
-    entry.params = this.mergeGlobals(entry.params);
-    return entry;
+  metricWithGlobals(metric: Metric): Metric {
+    const copy = copyMetric(metric);
+    copy.params = this.mergeGlobals(copy.params);
+
+    return copy;
   }
 
   private schedule(work: Promise<void>): void {

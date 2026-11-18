@@ -14,7 +14,6 @@ import { FrameMetricsAccumulator, FrameMetricsBaseline } from './FrameMetricsAcc
 
 export class FrameMetricsMonitor {
   private readonly warn: (message: string) => void;
-  private readonly baseline = new FrameMetricsBaseline();
   private readonly recorders = new Set<FrameMetricsRecorder>();
   private observer?: displaySync.DisplaySync;
   private callback?: (info: displaySync.IntervalInfo) => void;
@@ -51,7 +50,11 @@ export class FrameMetricsMonitor {
     try {
       const observer = displaySync.create();
       const callback = (info: displaySync.IntervalInfo): void => {
-        if (observer === this.observer) this.processFrame(info);
+        if (observer !== this.observer) return;
+
+        this.recorders.forEach((recorder: FrameMetricsRecorder): void => {
+          recorder.processFrame(info.timestamp, info.targetTimestamp);
+        });
       };
 
       this.observer = observer;
@@ -72,7 +75,8 @@ export class FrameMetricsMonitor {
 
     this.observer = undefined;
     this.callback = undefined;
-    this.baseline.reset();
+    this.recorders.forEach((recorder: FrameMetricsRecorder): void => recorder.resetBaseline());
+
     if (observer === undefined || callback === undefined || context === null) return;
 
     try {
@@ -87,24 +91,11 @@ export class FrameMetricsMonitor {
       this.warn(`Unable to remove HarmonyOS frame interval monitoring: ${String(error)}`);
     }
   }
-
-  private processFrame(info: displaySync.IntervalInfo): void {
-    const sample = this.baseline.sample(info.timestamp, info.targetTimestamp);
-    if (sample === undefined) return;
-
-    const interval = frameIntervalMilliseconds(
-      sample.previousTimestampNs, sample.previousTargetTimestampNs, sample.timestampNs, sample.targetTimestampNs,
-    );
-    if (interval === undefined) return;
-
-    this.recorders.forEach((recorder: FrameMetricsRecorder): void => {
-      recorder.addInterval(interval.actualMs, interval.expectedMs);
-    });
-  }
 }
 
 export class FrameMetricsRecorder {
   private readonly monitor: FrameMetricsMonitor;
+  private readonly baseline = new FrameMetricsBaseline();
   private readonly frames = new FrameMetricsAccumulator();
   private started = false;
 
@@ -120,21 +111,33 @@ export class FrameMetricsRecorder {
 
   pause(): FrameMetricsRecord {
     this.monitor.stop(this);
+    this.resetBaseline();
+
     return this.frames.pause();
   }
 
   stop(): FrameMetricsRecord {
     this.monitor.stop(this);
+    this.resetBaseline();
+
     const result = this.frames.finish();
     this.started = false;
 
     return result;
   }
 
-  addInterval(actualMs: number, expectedMs: number): void {
-    this.frames.addInterval(actualMs, expectedMs);
+  processFrame(timestamp: number, targetTimestamp: number): void {
+    const sample = this.baseline.sample(timestamp, targetTimestamp);
+    if (sample === undefined) return;
+
+    const interval = frameIntervalMilliseconds(
+      sample.previousTimestampNs, sample.previousTargetTimestampNs, sample.timestampNs, sample.targetTimestampNs,
+    );
+
+    if (interval !== undefined) this.frames.addInterval(interval.actualMs, interval.expectedMs);
   }
 
+  resetBaseline(): void { this.baseline.reset(); }
   didStart(): void { this.started = true; }
   hasStarted(): boolean { return this.started; }
   isRunning(): boolean { return this.frames.isActive(); }

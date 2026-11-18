@@ -14,20 +14,6 @@ export const METRICS_RETENTION_DAYS: number = 7;
 const BYTES_PER_KILOBYTE: bigint = 1024n;
 const MAX_SAFE_INTEGER_BYTES: bigint = BigInt(Number.MAX_SAFE_INTEGER);
 
-export class AppMetricsServiceLifecycle {
-  private active: boolean = true;
-
-  isActive(): boolean {
-    return this.active;
-  }
-
-  beginShutdown(): boolean {
-    if (!this.active) return false;
-    this.active = false;
-    return true;
-  }
-}
-
 export function elapsedSeconds(startMs: number, endMs: number): number | undefined {
   const duration = endMs - startMs;
 
