@@ -6,12 +6,12 @@
  */
 
 import { ColorMetrics } from '@kit.ArkUI';
-import { Descriptor, ViewDescriptorWrapperBase } from '@rnoh/react-native-openharmony';
+import { convertColorValueToHex, Descriptor, ViewDescriptorWrapperBase } from '@rnoh/react-native-openharmony';
 import {
-  ExpoEither,
   ExpoModule,
   ExpoModuleContext,
   ExpoModuleDefinition,
+  ExpoValueType,
   ExpoValueTypes,
   ExpoView,
   ExpoViewContext,
@@ -19,14 +19,10 @@ import {
 } from '@expo-harmony/expo-modules-core';
 import type { ExpoViewContentContext } from '@expo-harmony/expo-modules-core';
 
-type GradientColor = ExpoEither<number, string> | null | undefined;
-type GradientNumber = number | null | undefined;
 type GradientStop = [string, number];
 
-// Invalid colors and incomplete points can arrive as null array entries from upstream JS.
-const COLOR_TYPE = ExpoValueTypes.either(ExpoValueTypes.number(), ExpoValueTypes.string()).nullable().optional();
-const COLORS_TYPE = ExpoValueTypes.array(COLOR_TYPE);
-const NUMBERS_TYPE = ExpoValueTypes.array(ExpoValueTypes.number().nullable().optional()).nullable();
+// Validate jointly so a malformed stop or point cannot abort the Expo view's entire prop update.
+const GRADIENT_PROP: ExpoValueType<ESObject> = ExpoValueTypes.any();
 
 interface Gradient {
   readonly stops: GradientStop[];
@@ -36,8 +32,8 @@ interface Gradient {
 
 @Observed
 class ExpoLinearGradientView extends ExpoView {
-  colors: GradientColor[] = [];
-  locations: GradientNumber[] | null = null;
+  colors: ESObject = [];
+  locations: ESObject = null;
   startPoint: number[] = [0.5, 0];
   endPoint: number[] = [0.5, 1];
   gradient?: Gradient;
@@ -57,8 +53,9 @@ class ExpoLinearGradientView extends ExpoView {
 
   updateGradient(): void {
     const stops: GradientStop[] | undefined = gradientStops(this.colors, this.locations);
+
     if (stops === undefined) {
-      // A resized canvas still needs the last valid gradient.
+      // Keep the last valid gradient for canvas resizes.
       console.warn('ExpoLinearGradient ignored an invalid colors or locations update.');
       return;
     }
@@ -68,21 +65,17 @@ class ExpoLinearGradientView extends ExpoView {
   }
 }
 
-function colorToString(color: GradientColor): string | undefined {
-  if (color === undefined || color === null) return undefined;
-  if (color.isFirst) {
-    const value: number | undefined = color.first;
-    if (value === undefined || !Number.isFinite(value) || !Number.isInteger(value) || value < -2147483648 || value > 4294967295) {
+function colorToString(color: ESObject): string | undefined {
+  if (typeof color === 'number') {
+    if (!Number.isInteger(color) || color < -0x80000000 || color > 0xffffffff) {
       return undefined;
     }
-
-    const argb: number = value >>> 0;
-
-    return `#${argb.toString(16).padStart(8, '0')}`;
+    return convertColorValueToHex(color);
   }
+  if (typeof color !== 'string') return undefined;
 
-  const value: string | undefined = color.second?.trim();
-  if (value === undefined || value.length === 0) return undefined;
+  const value: string = color.trim();
+  if (value.length === 0) return undefined;
 
   try {
     return ColorMetrics.resourceColor(value).color;
@@ -91,39 +84,40 @@ function colorToString(color: GradientColor): string | undefined {
   }
 }
 
-function gradientStops(colors: GradientColor[], locations: GradientNumber[] | null): GradientStop[] | undefined {
-  if (colors.length < 2) return undefined;
-  if (locations !== null && locations.length !== colors.length) return undefined;
+function gradientStops(colors: ESObject, locations: ESObject): GradientStop[] | undefined {
+  if (!Array.isArray(colors) || colors.length < 2) return undefined;
+  if (locations != null && (!Array.isArray(locations) || locations.length < colors.length)) return undefined;
 
   const stops: GradientStop[] = [];
-  let previous: number = -1;
+  let last: number = -1;
 
   for (let index = 0; index < colors.length; index += 1) {
     const color: string | undefined = colorToString(colors[index]);
     if (color === undefined) return undefined;
 
-    const offset: GradientNumber = locations === null ? index / (colors.length - 1) : locations[index];
-    if (typeof offset !== 'number' || !Number.isFinite(offset) || offset < 0 || offset > 1 || offset < previous) {
+    const offset: ESObject = locations == null ? index / (colors.length - 1) : locations[index];
+    if (typeof offset !== 'number' || !Number.isFinite(offset) || offset < 0 || offset > 1 || offset < last) {
       return undefined;
     }
 
-    previous = offset;
+    last = offset;
     stops.push([color, offset]);
   }
 
   return stops;
 }
 
-function normalizePoint(point: GradientNumber[] | null, x: number, y: number): number[] | undefined {
-  if (point === null) return [x, y];
+function normalizePoint(point: ESObject, defaultX: number, defaultY: number): number[] | undefined {
+  if (point == null) return [defaultX, defaultY];
+  if (!Array.isArray(point) || point.length !== 2) return undefined;
 
-  const pointX: GradientNumber = point[0];
-  const pointY: GradientNumber = point[1];
-  if (point.length !== 2 || typeof pointX !== 'number' || typeof pointY !== 'number' || !Number.isFinite(pointX) || !Number.isFinite(pointY)) {
+  const x: ESObject = point[0];
+  const y: ESObject = point[1];
+  if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
     return undefined;
   }
 
-  return [pointX, pointY];
+  return [x, y];
 }
 
 @Component
@@ -215,35 +209,35 @@ export class ExpoLinearGradientModule extends ExpoModule {
       .groupView()
       .prop(
         'colors',
-        COLORS_TYPE,
-        (view: ExpoLinearGradientView, colors: GradientColor[]): void => {
+        GRADIENT_PROP,
+        (view: ExpoLinearGradientView, colors: ESObject): void => {
           view.colors = colors;
         },
         [],
       )
       .prop(
         'locations',
-        NUMBERS_TYPE,
-        (view: ExpoLinearGradientView, locations: GradientNumber[] | null): void => {
+        GRADIENT_PROP,
+        (view: ExpoLinearGradientView, locations: ESObject): void => {
           view.locations = locations;
         },
         null,
       )
       .prop(
         'startPoint',
-        NUMBERS_TYPE,
-        (view: ExpoLinearGradientView, point: GradientNumber[] | null): void => {
-          const normalized: number[] | undefined = normalizePoint(point, 0.5, 0);
-          if (normalized !== undefined) view.startPoint = normalized;
+        GRADIENT_PROP,
+        (view: ExpoLinearGradientView, point: ESObject): void => {
+          const coords: number[] | undefined = normalizePoint(point, 0.5, 0);
+          if (coords !== undefined) view.startPoint = coords;
         },
         null,
       )
       .prop(
         'endPoint',
-        NUMBERS_TYPE,
-        (view: ExpoLinearGradientView, point: GradientNumber[] | null): void => {
-          const normalized: number[] | undefined = normalizePoint(point, 0.5, 1);
-          if (normalized !== undefined) view.endPoint = normalized;
+        GRADIENT_PROP,
+        (view: ExpoLinearGradientView, point: ESObject): void => {
+          const coords: number[] | undefined = normalizePoint(point, 0.5, 1);
+          if (coords !== undefined) view.endPoint = coords;
         },
         null,
       )
