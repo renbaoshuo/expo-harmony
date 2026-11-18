@@ -90,7 +90,7 @@ export class ExpoClipboardModule extends ExpoModule {
   definition(): ExpoModuleDefinition {
     return new ExpoModuleDefinition()
       .name('ExpoClipboard')
-      .constant('isPasteButtonAvailable', canIUse(PASTEBOARD_CAPABILITY) && canIUse(PASTE_BUTTON_CAPABILITY))
+      .constant('isPasteButtonAvailable', !this.context.isHeadless && canIUse(PASTEBOARD_CAPABILITY) && canIUse(PASTE_BUTTON_CAPABILITY))
       .view(defineClipboardPasteButton((types: ContentType[], options: GetImageOptions, emit: (result: PasteButtonResult) => void): Promise<void> =>
         this.pasteFromButton(types, options, emit)))
       .events([CLIPBOARD_CHANGED_EVENT])
@@ -203,22 +203,25 @@ export class ExpoClipboardModule extends ExpoModule {
       async (data: pasteboard.PasteData): Promise<string> => {
         if (format === StringFormat.HTML) {
           const html = await readEntry(data, pasteboard.MIMETYPE_TEXT_HTML);
+
           if (typeof html === 'string') return html;
         }
 
         const plain = await readEntry(data, pasteboard.MIMETYPE_TEXT_PLAIN);
         if (typeof plain === 'string') return format === StringFormat.HTML ? htmlFromPlainText(plain) : plain;
 
-        const html = await readEntry(data, pasteboard.MIMETYPE_TEXT_HTML);
+        if (format === StringFormat.PlainText) {
+          const html = await readEntry(data, pasteboard.MIMETYPE_TEXT_HTML);
 
-        if (typeof html === 'string') {
-          this.assertActive();
-          return await plainTextFromHtml(html);
+          if (typeof html === 'string') {
+            this.assertActive();
+            return await plainTextFromHtml(html);
+          }
         }
 
         const uri = await readEntry(data, pasteboard.MIMETYPE_TEXT_URI);
-        if (typeof uri !== 'string') return '';
 
+        if (typeof uri !== 'string') return '';
         return format === StringFormat.HTML ? htmlFromPlainText(uri) : uri;
       },
     );
@@ -475,10 +478,15 @@ export class ExpoClipboardModule extends ExpoModule {
   }
 
   private startObservation(): void {
-    if (this.destroyed || !this.listening || this.observing || !this.context.isValid || this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) return;
+    if (this.destroyed || !this.listening || this.observing || !this.context.isValid ||
+      this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND || !canIUse(PASTEBOARD_CAPABILITY)) return;
 
-    this.board.on('update', this.changed);
-    this.observing = true;
+    try {
+      this.board.on('update', this.changed);
+      this.observing = true;
+    } catch (error) {
+      this.warn('subscribe to clipboard updates', error);
+    }
   }
 
   private stopObservation(): void {
