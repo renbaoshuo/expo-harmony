@@ -40,8 +40,7 @@ npm install @expo-harmony/expo-dev-menu-interface expo-dev-menu-interface@~57.0.
 | `modulesConforming?(conforms: (module: Object) => boolean): Object[]` | 方法 | 返回所有使 `conforms` 返回 `true` 的模块。 |
 | `requestReload?(): void` | 方法 | 请求重载应用。 |
 
-- HarmonyOS 未提供完整的原生模块列表，因此无法按名称查询或筛选模块。
-- 本包不提供通用重载桥接，因此不能通过 `requestReload` 请求重载。
+这些操作由宿主按需提供。RNOH 支持按名称查询 UI TurboModule，但没有公开枚举完整原生模块注册表的接口。只有能查询完整注册表的宿主才应实现 `modulesConforming`。当前 HarmonyOS 开发菜单通过 Expo React 宿主重载运行时。
 
 #### `DevMenuHostDelegate`
 
