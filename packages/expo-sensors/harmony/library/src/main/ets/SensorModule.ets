@@ -116,15 +116,7 @@ export class SensorModule extends ExpoModule {
         subscribe,
         unsubscribe,
         (value: T): void => {
-          if (!this.context.isValid) return;
-
-          if (!this.hasPermissions()) {
-            this.pause();
-
-            return;
-          }
-
-          receive(value);
+          if (this.context.isValid) receive(value);
         },
         (message: string): void => {
           this.warn(message);
@@ -137,11 +129,16 @@ export class SensorModule extends ExpoModule {
   }
 
   protected emitMeasurement(value: Object): void {
-    if (!this.running || !this.context.isValid || !this.hasPermissions()) return;
+    if (!this.running || !this.context.isValid) return;
 
     const now = systemDateTime.getUptime(systemDateTime.TimeType.STARTUP);
-
     if (this.emitted >= 0 && now - this.emitted < this.interval) return;
+
+    if (!this.hasPermissions()) {
+      this.pause();
+
+      return;
+    }
 
     this.sendEvent(this.event, value);
     this.emitted = now;
@@ -160,17 +157,16 @@ export class SensorModule extends ExpoModule {
   protected resumeSafely(reset: boolean = true): void {
     if (reset) this.retries = 0;
 
+    if (!this.canObserve() || this.running || !canIUse(SENSOR_CAPABILITY)) return;
+
     try {
+      if (!this.hasPermissions()) return;
       this.resume();
     } catch (error) {
       this.warn(`Unable to observe ${this.name}: ${String(error)}`);
 
       if (
-        this.context.isValid &&
-        this.hasPermissions() &&
-        this.observing &&
-        this.foreground &&
-        !this.destroyed &&
+        this.canObserve() &&
         this.retry < 0 &&
         this.retries < MAX_SUBSCRIBE_RETRIES
       ) {
@@ -187,11 +183,11 @@ export class SensorModule extends ExpoModule {
     this.logger?.warn(message);
   }
 
-  private resume(): void {
-    if (this.destroyed || !this.foreground || !this.observing || this.running) return;
-    if (!canIUse(SENSOR_CAPABILITY)) return;
-    if (!this.hasPermissions()) throw new ExpoModuleError('ERR_SENSOR_PERMISSION_DENIED', `Permission to observe ${this.name} was not granted.`);
+  private canObserve(): boolean {
+    return !this.destroyed && this.foreground && this.observing && this.context.isValid;
+  }
 
+  private resume(): void {
     this.running = true;
 
     try {
@@ -242,6 +238,8 @@ export class SensorModule extends ExpoModule {
   }
 
   private destroy(): void {
+    if (this.destroyed) return;
+
     this.destroyed = true;
     this.observing = false;
 

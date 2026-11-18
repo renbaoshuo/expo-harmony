@@ -5,12 +5,13 @@
  * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
  */
 
-import { ExpoModuleContext, ExpoModuleError, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
+import { ExpoAppLifecycleState, ExpoModuleContext, ExpoModuleError, ExpoPermissionStatus } from '@expo-harmony/expo-modules-core';
 import { Permissions } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { deviceInfo } from '@kit.BasicServicesKit';
 
 export const ACTIVITY_MOTION: Permissions = 'ohos.permission.ACTIVITY_MOTION';
+const PERMISSION_ERROR_REASONS_API: number = 18;
 const SELF_PERMISSION_STATUS_API: number = 20;
 const PREFERENCES_NAME: string = 'ExpoSensors';
 const DECISION_KEY: string = 'activityMotionDetermined';
@@ -79,6 +80,13 @@ export class PedometerPermissions {
   }
 
   private async requestOnce(): Promise<SensorPermissionResponse> {
+    const current = await this.get();
+    if (current.granted) return current;
+
+    if (this.context.isHeadless || this.context.appLifecycleState !== ExpoAppLifecycleState.FOREGROUND) {
+      throw new ExpoModuleError('ERR_SENSOR_PERMISSION', 'Requesting activity motion permission requires a foreground application.');
+    }
+
     const request = await this.context.requestPermissions([ACTIVITY_MOTION]).catch((error: Error) => {
       throw new ExpoModuleError('ERR_SENSOR_PERMISSION', 'The system could not request activity motion permission.', error);
     });
@@ -87,10 +95,9 @@ export class PedometerPermissions {
 
     for (const result of request.systemResults) {
       const index = result.permissions.indexOf(ACTIVITY_MOTION);
-      let reason: number = RequestReason.Success;
-      if (deviceInfo.apiAvailable(18)) {
-        reason = result.errorReasons?.[index] ?? RequestReason.Success;
-      }
+      const reason: number = deviceInfo.sdkApiVersion >= PERMISSION_ERROR_REASONS_API
+        ? result.errorReasons?.[index] ?? RequestReason.Success
+        : RequestReason.Success;
 
       if (index < 0 || reason === RequestReason.InvalidPermission || reason === RequestReason.NotDeclared) {
         throw new ExpoModuleError(

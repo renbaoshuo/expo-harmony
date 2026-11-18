@@ -82,7 +82,7 @@ npm install @expo-harmony/expo-sensors expo-sensors@~57.0.3
 
 参数 `start` 和 `end` 为 `Date`，表示查询范围的起止时间；返回类型为 `Promise<PedometerResult>`。
 
-- HarmonyOS 不提供按时间范围查询步数的功能。
+- HarmonyOS 端的此方法返回 `ERR_NOT_SUPPORTED`。
 
 ### Event subscriptions
 
@@ -202,7 +202,7 @@ npm install @expo-harmony/expo-sensors expo-sensors@~57.0.3
 
 #### `ERR_NOT_SUPPORTED`
 
-调用 `Pedometer.getStepCountAsync()` 时抛出；HarmonyOS 不支持按日期范围查询步数。
+调用 `Pedometer.getStepCountAsync()` 时抛出。Sensor Service Kit 的计步器提供实时累计步数，按日期查询需要另行接入并授权的健康数据服务。
 
 #### `ERR_SENSOR_INTERVAL`
 
@@ -210,7 +210,7 @@ npm install @expo-harmony/expo-sensors expo-sensors@~57.0.3
 
 #### `ERR_SENSOR_PERMISSION`
 
-查询或请求计步权限时，权限未在应用中声明、系统无法请求权限或系统返回无效权限状态时抛出。
+查询或请求计步权限时，权限未在应用中声明、需弹出授权对话框时应用不在前台、系统无法请求权限或返回无效权限状态时抛出。
 
 ### Permissions
 

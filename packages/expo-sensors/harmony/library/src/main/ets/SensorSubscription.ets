@@ -95,8 +95,8 @@ export class SensorSubscription<T extends sensor.Response> implements SensorObse
     try {
       request.apply(fastest);
     } catch (error) {
-      this.active = false;
-      this.callback = undefined;
+      // A native subscription can fail after registering the sensor or its callback.
+      this.stop();
 
       throw new Error(`Unable to subscribe sensor ${this.id}: ${String(error)}`);
     }

@@ -14,6 +14,7 @@ import { ACTIVITY_MOTION, PedometerPermissions, SensorPermissionResponse } from 
 export class PedometerModule extends SensorModule {
   private readonly permissions: PedometerPermissions;
   private previous?: number;
+  private previousTimestamp: number = -1;
   private steps: number = 0;
 
   constructor(context: ExpoModuleContext) {
@@ -57,17 +58,21 @@ export class PedometerModule extends SensorModule {
 
   protected resetObservation(): void {
     this.previous = undefined;
+    this.previousTimestamp = -1;
     this.steps = 0;
   }
 
   private onSteps(value: sensor.PedometerResponse): void {
-    const steps = value.steps;
-    if (!Number.isSafeInteger(steps) || steps < 0) throw new RangeError('Invalid pedometer step count.');
+    const count = value.steps;
+    if (!Number.isSafeInteger(count) || count < 0) throw new RangeError('Invalid pedometer step count.');
+    if (value.timestamp <= this.previousTimestamp) return;
 
-    if (this.previous !== undefined && steps >= this.previous) {
-      this.steps += steps - this.previous;
+    if (this.previous !== undefined && count >= this.previous) {
+      this.steps += count - this.previous;
     }
-    this.previous = steps;
+
+    this.previous = count;
+    this.previousTimestamp = value.timestamp;
 
     this.emitMeasurement(new PedometerMeasurement(this.steps));
   }
