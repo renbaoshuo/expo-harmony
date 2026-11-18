@@ -16,7 +16,7 @@ npm install @expo-harmony/expo-status-bar expo-status-bar@~57.0.1
 
 在 `app.json` 的 `expo.plugins` 中加入 `["@expo-harmony/expo-status-bar", { "style": "dark", "hidden": false }]`，可以在 JavaScript 启动前设置状态栏。`style` 接受 `'light'` 或 `'dark'`。`hidden` 接受布尔值，`false` 显式显示状态栏。省略的属性由窗口默认设置决定。
 
-系统在受支持设备的全屏或最大化主窗口上应用状态栏设置。2in1 设备由系统管理状态栏。
+系统在受支持设备的全屏或最大化主窗口上应用状态栏设置。自由窗口模式下由系统管理状态栏。
 
 ## API 对照表
 
