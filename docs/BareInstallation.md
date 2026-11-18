@@ -145,7 +145,7 @@ module.exports = require('@react-native-oh/react-native-harmony-cli/react-native
 
 自动链接按 `entry/src/main` 这一固定路径查找文件，因此入口模块目录必须是 `harmony/entry`。模块名和 Ability 名可以修改，但要与 `build-profile.json5` 中的模块登记以及 `module.json5` 中的 `mainElement`、`abilities` 保持对应。产品和构建目标会优先选择名为 `default` 的项；没有 `default` 时，可用的候选必须只有一个。
 
-SDK 版本在 `build-profile.json5` 中设置，示例使用最低兼容版本 API 20、目标版本 API 24。添加其他原生模块时，还需要满足这些模块的最低 API 要求。
+SDK 版本在 `build-profile.json5` 中设置，示例使用最低兼容版本 API 14（HarmonyOS 5.0.2）、目标版本 API 24。添加其他原生模块时，还需要满足这些模块的最低 API 要求。
 
 ### 接入 C++ 和 ArkTS 包注册
 

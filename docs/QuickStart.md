@@ -77,7 +77,7 @@ demo 的配置在 [`apps/demo/app.json`](../apps/demo/app.json)，要改四处�
 ```
 
 - `bundleName` 是应用包名，必填。
-- `targetSdkVersion` 和 `compatibleSdkVersion` 默认分别为 24（HarmonyOS 6.1.1）和 20（HarmonyOS 6.0.0）。通过 [expo-build-properties](../packages/expo-build-properties/README.md) 配置 SDK、ABI、SO 打包和 release 选项。应用的最低兼容版本须不低于所有原生依赖的要求：`expo-constants` 为 14、`@expo-harmony/expo` 为 20、`expo-file-system` 为 21，因此 demo 显式设置为 21。
+- `targetSdkVersion` 和 `compatibleSdkVersion` 默认分别为 24（HarmonyOS 6.1.1）和 20（HarmonyOS 6.0.0）。通过 [expo-build-properties](../packages/expo-build-properties/README.md) 配置 SDK、ABI、SO 打包和 release 选项。应用的最低兼容版本须不低于所有原生依赖的要求：`expo-constants` 为 14、`@expo-harmony/expo` 为 14、`expo-file-system` 为 21，因此 demo 显式设置为 21。
 - 权限声明会写进生成的 `module.json5`。
 
 ## 配置 metro.config.js

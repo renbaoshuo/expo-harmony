@@ -8,6 +8,7 @@
 import { ExpoFetchError } from './ExpoFetchError';
 import url from '@ohos.url';
 
+const INVALID_TOKEN_CHAR = /[^A-Za-z0-9!#$%&'*+.^_`|~-]/;
 const NON_COMBINABLE_REQUEST_HEADERS: Set<string> = new Set<string>(['authorization', 'content-length', 'host', 'proxy-authorization']);
 
 export function collectRequestHeaders(pairs: string[][]): Map<string, string> {
@@ -19,16 +20,25 @@ export function collectRequestHeaders(pairs: string[][]): Map<string, string> {
       throw new ExpoFetchError('ERR_FETCH_HEADERS', 'Each request header must contain exactly a name and a value');
     }
 
-    const normalized = pair[0].toLowerCase();
-    const name = names.get(normalized) ?? pair[0];
+    const header = pair[0];
+    const value = pair[1];
+    if (header.length === 0 || INVALID_TOKEN_CHAR.test(header)) {
+      throw new ExpoFetchError('ERR_FETCH_HEADERS', 'Invalid request header name');
+    }
+    if (/[\u0000-\u0008\u000a-\u001f\u007f]/.test(value)) {
+      throw new ExpoFetchError('ERR_FETCH_HEADERS', `Invalid value for request header ${header}`);
+    }
+
+    const normalized = header.toLowerCase();
+    const name = names.get(normalized) ?? header;
     names.set(normalized, name);
     const prior = values.get(name);
 
     if (prior !== undefined && NON_COMBINABLE_REQUEST_HEADERS.has(normalized)) {
-      throw new ExpoFetchError('ERR_FETCH_HEADERS', `HarmonyOS NetStack cannot preserve duplicate ${pair[0]} request headers`);
+      throw new ExpoFetchError('ERR_FETCH_HEADERS', `HarmonyOS NetStack cannot preserve duplicate ${header} request headers`);
     }
 
-    values.set(name, prior === undefined ? pair[1] : `${prior}${normalized === 'cookie' ? '; ' : ', '}${pair[1]}`);
+    values.set(name, prior === undefined ? value : `${prior}${normalized === 'cookie' ? '; ' : ', '}${value}`);
   });
 
   return values;
@@ -84,7 +94,7 @@ export function mergeCookieHeaders(explicit: string | null, stored: string): str
 }
 
 export function requestMethodPolicy(method: string): string {
-  if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(method)) {
+  if (method.length === 0 || INVALID_TOKEN_CHAR.test(method)) {
     throw new ExpoFetchError('ERR_FETCH_METHOD', method);
   }
 
