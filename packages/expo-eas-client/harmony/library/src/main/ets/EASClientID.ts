@@ -7,9 +7,9 @@
 
 /// <reference path="./EASClient.d.ts" />
 
-import preferences from '@ohos.data.preferences';
-import type common from '@ohos.app.ability.common';
-import util from '@ohos.util';
+import type { common } from '@kit.AbilityKit';
+import { preferences } from '@kit.ArkData';
+import { util } from '@kit.ArkTS';
 import client from 'libexpo_eas_client.so';
 
 const name = 'expo-eas-client';
@@ -21,8 +21,8 @@ type Migration = (context: common.ApplicationContext) => string | undefined;
 
 export class EASClientID {
   private static migration?: Migration;
+  private static readonly storedIDs = new Map<string, string>();
   private readonly path: string;
-  private storedID?: string;
 
   constructor(private readonly context: common.ApplicationContext) {
     this.path = `${context.filesDir}/${filename}`;
@@ -51,32 +51,50 @@ export class EASClientID {
   }
 
   get clientID(): string {
-    this.storedID ??= this.loadClientID();
-    return this.storedID;
+    const cached = EASClientID.storedIDs.get(this.path);
+    if (cached !== undefined) return cached;
+
+    const id = this.loadClientID();
+    EASClientID.storedIDs.set(this.path, id);
+
+    return id;
   }
 
   private loadClientID(): string {
     const existing = client.clientID(this.path);
     if (existing !== undefined) return existing;
 
+    let candidate: string | undefined;
+
+    try {
+      candidate = this.loadCandidate();
+    } finally {
+      // Recover only if another process published the ID. Otherwise Updates must see the original migration error.
+      if (candidate === undefined) {
+        const published = client.clientID(this.path);
+        if (published !== undefined) return published;
+      }
+    }
+
+    return client.clientID(this.path, candidate);
+  }
+
+  private loadCandidate(): string {
     // Drop cached values that may predate another ExtensionAbility's flush.
     preferences.removePreferencesFromCacheSync(this.context, { name });
     const store = preferences.getPreferencesSync(this.context, { name });
 
-    let candidate: string;
     if (store.hasSync(key)) {
       const value = store.getSync(key, '');
-
       if (typeof value !== 'string' || !uuid.test(value)) throw new Error('The persisted EAS client ID is invalid.');
 
-      candidate = value;
-    } else {
-      candidate = EASClientID.migration?.(this.context) ?? util.generateRandomUUID();
-
-      if (!uuid.test(candidate)) throw new Error('The EAS client ID must be a valid UUID.');
+      return value;
     }
 
-    return client.clientID(this.path, candidate);
+    const id = EASClientID.migration?.(this.context) ?? util.generateRandomUUID();
+    if (!uuid.test(id)) throw new Error('The EAS client ID must be a valid UUID.');
+
+    return id;
   }
 
   get deterministicUniformValue(): number {
