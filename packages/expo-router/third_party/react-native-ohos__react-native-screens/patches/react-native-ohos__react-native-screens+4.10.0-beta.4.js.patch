@@ -92,7 +92,7 @@
 +}
 --- /dev/null
 +++ b/src/components/gamma/modals/form-sheet/index.tsx
-@@ -0,0 +1,268 @@
+@@ -0,0 +1,275 @@
 +'use client';
 +
 +import React from 'react';
@@ -182,18 +182,25 @@
 +  const close = React.useCallback(
 +    (native: boolean) => {
 +      if (phase.current === 'closed' || phase.current === 'closing') return;
++
 +      if (native && latest.current.preventNativeDismiss) {
 +        latest.current.onNativeDismissPrevented?.(makeEvent({}));
 +        settle(detentIndex);
 +        return;
 +      }
++
 +      if (phase.current === 'presenting') {
 +        phase.current = 'closed';
 +        setVisible(false);
++
++        const dismiss = native ? latest.current.onNativeDismiss : latest.current.onDismiss;
++        dismiss?.(makeEvent({}));
 +        return;
 +      }
++
 +      phase.current = 'closing';
 +      latest.current.onWillDisappear?.(makeEvent({}));
++
 +      Animated.timing(offset, {
 +        toValue: windowHeight,
 +        duration: 220,

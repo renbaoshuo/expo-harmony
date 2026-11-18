@@ -846,9 +846,20 @@
  export * from "./RNSScreenContentWrapper"
 --- a/src/main/ets/components/RNSSearchBar.ets
 +++ b/src/main/ets/components/RNSSearchBar.ets
-@@ -24,0 +25 @@
-+import { deviceInfo } from '@kit.BasicServicesKit';
-@@ -30,0 +32,26 @@
+@@ -22,12 +22,42 @@
+  * SOFTWARE.
+  */
+
++import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
+ import { Descriptor, RNComponentContext, } from '@rnoh/react-native-openharmony';
+ import { RNC }  from '../generated/ts';
+ import { NATIVE_BUTTON_OFFSET, NATIVE_BUTTON_VERTICAL_EDGE_MARGIN } from '../Constants'
+
+ export type RNSSearchBarDescriptor = Descriptor<"RNSSearchBar", RNC.RNSSearchBar.Props>
+
++const INITIAL_FOCUS_DELAY_MS = 50;
++const FOCUS_REGISTRATION_RETRY_DELAY_MS = 300;
++const FOCUS_TARGET_NOT_MOUNTED = 150003;
 +
 +class SearchAutoCapitalization implements AttributeModifier<SearchAttribute> {
 +  private mode: string;
@@ -875,36 +886,89 @@
 +    }
 +  }
 +}
-@@ -56 +83,5 @@
+
+ @Component
+ export struct RNSSearchBar {
+@@ -53,7 +83,12 @@
+   @State autoFocus: boolean = false;
+   @State autoCapitalize: string = 'none';
+   onSearchFocusChange?: (focused: boolean) => void = undefined;
 -  private cleanupCommandCallback?: () => void = undefined;
 +  private focusTimer: number | undefined = undefined;
++  private searchFocused: boolean = false;
 +
 +  private get searchInputId(): string {
 +    return RNSSearchBar.NAME + this.tag;
 +  }
-@@ -68 +99,2 @@
+
+   aboutToAppear() {
+     this.eventEmitter = new RNC.RNSSearchBar.EventEmitter(this.ctx.rnInstance, this.tag)
+@@ -65,32 +100,24 @@
+       }
+     ))
+     this.updateState()
 -    this.cleanupCommandCallback = this.ctx.componentCommandReceiver.registerCommandCallback(
 +
 +    this.cleanUpCallbacks.push(this.ctx.componentCommandReceiver.registerCommandCallback(
-@@ -74,0 +107 @@
-+            this.eventEmitter!.emit("open", {});
-@@ -80,0 +114 @@
-+            this.eventEmitter!.emit("close", {});
-@@ -89 +123 @@
+       this.tag,
+       (command, args:ESObject[]) => {
+-        this.ctx.logger.info(this.tag, "ETS------------> command: " + command+',args'+args)
+         if (command === 'open') {
+-          if (!this.showTextInput) {
+-            this.showTextInput = true;
+-            this.onSearchFocusChange?.(true)
+-          }
++          this.openSearch();
+         } else if (command === 'close') {
+-          if (this.showTextInput) {
+-            this.getUIContext().getFocusController().clearFocus();
+-            this.showTextInput = false;
+-            this.onSearchFocusChange?.(false)
+-          }
++          this.closeSearch();
+         } else if (command === 'focus') {
+-          this.showTextInput = true;
+-          this.safeRequestSearchFocus(50);
++          this.openSearch(true);
+         } else if (command === 'blur') {
+-          this.getUIContext().getFocusController().clearFocus();
++          this.clearSearchFocus();
+         } else if (command === 'setText') {
 -          this.text = args.toString();
-+          this.text = typeof args[0] === 'string' ? args[0] : '';
-@@ -93 +127 @@
++          this.updateText(typeof args[0] === 'string' ? args[0] : '');
+         } else if (command === 'clearText') {
+-          this.text = "";
++          this.updateText('');
+         } else if (command === 'toggleCancelButton') {
 -          if (args.toString() == 'true') {
 +          if (args[0] === true) {
-@@ -101 +135 @@
+             this.cancelIconVisiblilty = Visibility.Visible;
+           } else {
+             this.cancelIconVisiblilty = Visibility.None;
+@@ -98,7 +125,7 @@
+         } else if (command === 'cancelSearch') {
+           this.cancelSearch();
+         }
 -      });
 +      }));
-@@ -120,3 +154 @@
+   }
+
+   updateState() {
+@@ -117,9 +144,7 @@
+     if (this.type !== this.getInputType(this.descriptor.rawProps["inputType"])) {
+       this.type = this.getInputType(this.descriptor.rawProps["inputType"])
+     }
 -    if (this.hintTextColor !== this.descriptor.rawProps["hintTextColor"] || '#333333') {
 -      this.hintTextColor = this.descriptor.rawProps["hintTextColor"] || '#333333';
 -    }
 +    this.hintTextColor = this.descriptor.rawProps["hintTextColor"] ?? '#333333';
-@@ -134,15 +165,0 @@
+     this.cancelButtonText = this.descriptor.rawProps["cancelButtonText"] || 'cancel';
+     this.headerIconColor = this.descriptor.rawProps["headerIconColor"];
+     this.shouldShowHintSearchIcon = this.descriptor.rawProps["shouldShowHintSearchIcon"];
+@@ -131,23 +156,12 @@
+         rawAutoCapitalize === 'sentences' || rawAutoCapitalize === 'characters') ? rawAutoCapitalize : 'none';
+   }
+
 -  getAutoCapitalizationMode(): AutoCapitalizationMode | undefined {
 -    switch (this.autoCapitalize) {
 -      case 'words':
@@ -920,16 +984,47 @@
 -    }
 -  }
 -
-@@ -150 +167,7 @@
+   aboutToDisappear() {
 -    this.cleanUpCallbacks.forEach(cb => cb())
-+    if (this.focusTimer !== undefined) {
-+      clearTimeout(this.focusTimer);
-+      this.focusTimer = undefined;
-+    }
++    this.cancelFocusRequest();
++    this.searchFocused = false;
 +
 +    this.cleanUpCallbacks.forEach(off => off());
 +    this.cleanUpCallbacks = [];
-@@ -175,13 +198,14 @@
+   }
+
+   getInputType(value: string): SearchType {
+@@ -165,26 +179,67 @@
+     }
+   }
+
+-  cancelSearch() {
+-    this.eventEmitter!.emit("cancelButtonPress", {})
++  private updateText(value: string): void {
++    if (this.text === value) return;
++    this.text = value;
++    this.eventEmitter?.emit('changeText', { text: value });
++  }
++
++  private openSearch(focus: boolean = false): void {
++    if (!this.showTextInput) {
++      this.showTextInput = true;
++      this.eventEmitter!.emit('open', {});
++      this.onSearchFocusChange?.(true);
++    }
++
++    if (focus) this.safeRequestSearchFocus(INITIAL_FOCUS_DELAY_MS);
++  }
++
++  private closeSearch(): void {
++    if (!this.showTextInput) return;
++
++    this.clearSearchFocus();
+     this.showTextInput = false;
+-    this.onSearchFocusChange?.(false)
+-    this.eventEmitter!.emit("close", {})
+-  }
+-
 -  private safeRequestSearchFocus(initialDelay: number) {
 -    const tryFocus = (delay: number) => {
 -      setTimeout(() => {
@@ -939,12 +1034,32 @@
 -          if (delay < 300) {
 -            tryFocus(300);
 -          }
--        }
--      }, delay);
--    };
--    tryFocus(initialDelay);
-+  private safeRequestSearchFocus(delay: number) {
-+    if (this.focusTimer !== undefined) clearTimeout(this.focusTimer);
++
++    this.onSearchFocusChange?.(false);
++    this.eventEmitter!.emit('close', {});
++  }
++
++  private cancelSearch(): void {
++    if (!this.showTextInput) return;
++
++    this.updateText('');
++    this.eventEmitter!.emit('cancelButtonPress', {});
++    this.closeSearch();
++  }
++
++  private cancelFocusRequest(): void {
++    if (this.focusTimer === undefined) return;
++    clearTimeout(this.focusTimer);
++    this.focusTimer = undefined;
++  }
++
++  private clearSearchFocus(): void {
++    this.cancelFocusRequest();
++    if (this.searchFocused) this.getUIContext().getFocusController().clearFocus();
++  }
++
++  private safeRequestSearchFocus(delay: number): void {
++    this.cancelFocusRequest();
 +
 +    this.focusTimer = setTimeout(() => {
 +      this.focusTimer = undefined;
@@ -952,13 +1067,88 @@
 +
 +      try {
 +        this.getUIContext().getFocusController().requestFocus(this.searchInputId);
-+      } catch {
++      } catch (error) {
 +        // Focus registration may finish after the native header's first layout.
-+        if (delay < 300) this.safeRequestSearchFocus(300);
++        if ((error as BusinessError).code === FOCUS_TARGET_NOT_MOUNTED && delay === INITIAL_FOCUS_DELAY_MS) {
++          this.safeRequestSearchFocus(FOCUS_REGISTRATION_RETRY_DELAY_MS);
+         }
+-      }, delay);
+-    };
+-    tryFocus(initialDelay);
 +      }
 +    }, delay);
-@@ -203,0 +228 @@
+   }
+
+   build() {
+@@ -201,48 +256,37 @@
+               .backgroundColor(this.backgroundColorValue)
+               .cancelButton({ style: CancelButtonStyle.CONSTANT, icon: { color: this.headerIconColor }})
+               .type(this.type)
 +              .attributeModifier(new SearchAutoCapitalization(this.autoCapitalize))
-@@ -222 +247 @@
+               .focusable(true)
+-              .onChange((value: string) => {
+-                this.text = value
+-                this.eventEmitter!.emit("changeText", { text: value })
+-              })
++              .onChange((value: string) => this.updateText(value))
+               .onFocus(() => {
+-                this.eventEmitter!.emit("searchFocus", {})
+-                this.onSearchFocusChange?.(true)
++                this.searchFocused = true;
++                this.eventEmitter!.emit('searchFocus', {});
+               })
+               .onBlur(() => {
+-                this.eventEmitter!.emit("searchBlur", {})
+-                this.onSearchFocusChange?.(false)
++                this.searchFocused = false;
++                this.eventEmitter!.emit('searchBlur', {});
+               })
+               .onSubmit(() => {
+                 this.eventEmitter?.emit("searchButtonPress", {
+                   text: this.text
+                 })
+               })
 -              .id("search")
 +              .id(this.searchInputId)
+               .onAppear(() => {
+                 if (this.autoFocus) {
+-                  this.safeRequestSearchFocus(50);
++                  this.safeRequestSearchFocus(INITIAL_FOCUS_DELAY_MS);
+                 }
+               })
+             Text(this.cancelButtonText)
+               .fontColor(this.tintColor)
+               .padding({ left: 5 })
+               .visibility(this.cancelIconVisiblilty)
+-              .onClick((e) => {
+-                if (this.text !== "") {
+-                  this.text = "";
+-                  this.eventEmitter!.emit("changeText", { text: this.text })
+-                }
+-                this.cancelSearch()
+-              })
++              .onClick(() => this.cancelSearch())
+           }.width(200)
+           .justifyContent(FlexAlign.End)
+         } else {
+-          SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(26).onClick(() => {
+-            this.showTextInput = true;
+-            this.eventEmitter!.emit("open", {})
+-          })
++          SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(26).onClick(() => this.openSearch(true))
+         }
+       }.justifyContent(FlexAlign.End)
+     }
+@@ -257,11 +301,6 @@
+   }
+
+   onPageShow(): void {
+-    if (!this.descriptor) {
+-      return;
+-    }
+-    if (this.autoFocus && !this.showTextInput) {
+-      this.showTextInput = true;
+-    }
++    if (this.autoFocus) this.openSearch();
+   }
+ }
