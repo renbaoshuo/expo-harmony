@@ -24,6 +24,7 @@ import { NativeDatabase, NativeSession, NativeStatement, SQLiteConnection, SQLit
 const MEMORY_DATABASE = ':memory:';
 const FILE_NOT_FOUND = 13900002;
 const FILE_ALREADY_EXISTS = 13900015;
+const MOVE_WITHOUT_OVERWRITE = 1;
 
 export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
   private connections: SQLiteConnection[] = [];
@@ -39,7 +40,7 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
   }
 
   complete(result: NativeResult): ESObject {
-    if (result.error.length > 0) throw new ExpoModuleError(result.errorCode, result.error);
+    if (result.error !== null) throw new ExpoModuleError(result.errorCode, result.error);
 
     return result.value;
   }
@@ -365,7 +366,7 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
 
     const definition = new ExpoModuleDefinition()
       .name('ExpoSQLite')
-      .constant('defaultDatabaseDirectory', (): string => `${filePathFromUri(this.context.persistentFilesDirectory).replace(/\/$/, '')}/SQLite`)
+      .constant('defaultDatabaseDirectory', (): string => `${this.context.persistentFilesPath.replace(/\/$/, '')}/SQLite`)
       .constant('bundledExtensions', (): Record<string, Object> => sqlite.bundledExtensions)
       .events(['onDatabaseChange'])
       .onStartObserving((): void => this.setObserving(true))
@@ -444,7 +445,7 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
     }
 
     const localFile = bytes == null && file !== MEMORY_DATABASE && (!sqlite.useLibSQL || !options.libSQLRemoteOnly)
-      ? fileIdentity(file)
+      ? this.canonicalPath(file)
       : null;
 
     if (localFile !== null && this.importing.has(localFile)) {
@@ -540,7 +541,7 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
 
   private unlinkDatabase(path: string): void {
     // Keep the open check and unlink in the same JS turn.
-    this.assertFileIdle(path, fileIdentity(path), 'E_SQLITE_DELETE_DATABASE');
+    this.assertFileIdle(path, this.canonicalPath(path), 'E_SQLITE_DELETE_DATABASE');
 
     try {
       fs.unlinkSync(path);
@@ -559,13 +560,12 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
 
     if (!overwrite && databaseFileExists(path)) return;
 
-    const identity = fileIdentity(path);
+    const identity = this.canonicalPath(path);
     this.assertFileIdle(path, identity, 'E_SQLITE_OPEN_DATABASE');
-
     this.importing.add(identity);
 
     let directory: string | null = null;
-    let temp: string | null = null;
+    let staging: string | null = null;
 
     try {
       await this.ensurePathAsync(path);
@@ -575,25 +575,41 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
       }
 
       directory = await fs.mkdtemp(`${parentDirectory(path)}/.expo-sqlite-XXXXXX`);
-      temp = `${directory}/database`;
+      staging = `${directory}/database`;
       assertStandaloneDatabaseFile(asset);
 
-      await fs.copyFile(asset, temp);
+      await fs.copyFile(asset, staging);
 
-      // Another runtime can create the destination while the copy is pending.
-      if (overwrite || !databaseFileExists(path)) {
-        assertStandaloneDatabaseFile(asset);
-        assertStandaloneDatabaseFile(path);
-
-        fs.renameSync(temp, path);
-        temp = null;
+      if (this.destroyed) {
+        throw new ExpoModuleError('E_SQLITE_OPEN_DATABASE', 'Database module is destroyed.');
       }
+      assertStandaloneDatabaseFile(asset);
+
+      if (overwrite) {
+        assertStandaloneDatabaseFile(path);
+        fs.renameSync(staging, path);
+      } else {
+        try {
+          fs.moveFileSync(staging, path, MOVE_WITHOUT_OVERWRITE);
+        } catch (error) {
+          const failure = error as BusinessError;
+          if (failure.code === FILE_ALREADY_EXISTS) return;
+
+          throw new ExpoModuleError('E_SQLITE_OPEN_DATABASE', failure.message, failure);
+        }
+      }
+
+      staging = null;
     } catch (error) {
-      if (error instanceof ExpoModuleError) throw error as ExpoModuleError;
-      throw new ExpoModuleError('E_SQLITE_OPEN_DATABASE', (error as BusinessError).message);
+      if (error instanceof ExpoModuleError) {
+        throw new ExpoModuleError(error.code, error.message, error.cause, error.path);
+      }
+
+      const failure = error as BusinessError;
+      throw new ExpoModuleError('E_SQLITE_OPEN_DATABASE', failure.message, failure);
     } finally {
-      if (temp !== null) {
-        try { fs.unlinkSync(temp); } catch (_) {}
+      if (staging !== null) {
+        try { fs.unlinkSync(staging); } catch (_) {}
       }
       if (directory !== null) {
         try { fs.rmdirSync(directory); } catch (_) {}
@@ -608,13 +624,17 @@ export class ExpoSQLiteModule extends ExpoModule implements SQLiteHost {
 
     for (const connection of this.connections) connection.observe(observing, this.onDatabaseChange);
   }
+
+  private canonicalPath(path: string): string {
+    return this.complete(sqlite.canonicalPath(path)) as string;
+  }
 }
 
 function localPath(path: string): string {
   if (path === MEMORY_DATABASE) return path;
 
   try {
-    const resolved = path.startsWith('file:') ? filePathFromUri(path) : path;
+    const resolved = /^file:/i.test(path) ? filePathFromUri(path) : path;
     if (resolved.length && !resolved.includes('\0') && !resolved.includes('://')) return resolved;
   } catch (_) {}
 
@@ -624,21 +644,6 @@ function localPath(path: string): string {
 function parentDirectory(path: string): string {
   const slash = path.lastIndexOf('/');
   return slash < 0 ? '.' : path.substring(0, slash) || '/';
-}
-
-function fileIdentity(path: string): string {
-  const absolute = path.startsWith('/');
-  const segments: string[] = [];
-  for (const part of path.split('/')) {
-    if (!part.length || part === '.') continue;
-    if (part === '..' && segments.length && segments[segments.length - 1] !== '..') {
-      segments.pop();
-    } else if (part !== '..' || !absolute) {
-      segments.push(part);
-    }
-  }
-
-  return (absolute ? '/' : '') + segments.join('/');
 }
 
 function databaseFileExists(path: string): boolean {

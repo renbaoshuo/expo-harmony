@@ -436,8 +436,12 @@ Value execute(Task &task) {
     return Handle(session);
   }
   case Op::LoadExtension: {
+#ifdef SQLITE_OMIT_LOAD_EXTENSION
+    throw NativeError("ERR_UNSUPPORTED_OPERATION", "SQLite extension loading is disabled in this build");
+#else
     const auto &path = cstring(args[1]);
     const char *entry = args[2].isNull() || cstring(args[2]).empty() ? nullptr : cstring(args[2]).c_str();
+
     // Enable only SQLite's C API. SQL source must not gain load_extension().
     db->check(exsqlite3_db_config(db->db, SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 1, static_cast<int *>(nullptr)));
 
@@ -447,6 +451,7 @@ Value execute(Task &task) {
     if (status != SQLITE_OK) throw std::runtime_error(message ? message : exsqlite3_errmsg(db->db));
 
     return {};
+#endif
   }
   case Op::Backup: {
     auto source = resource<Connection>(args[2]);

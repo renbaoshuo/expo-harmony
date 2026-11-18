@@ -17,6 +17,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <map>
 #include <memory>
@@ -54,6 +55,7 @@ struct Value {
 };
 
 enum class Op {
+  CanonicalPath,
   Open,
   Dispose,
   SyncLibSQL,
@@ -92,7 +94,7 @@ struct Task {
   const Spec *spec;
   std::vector<Value> args;
   Value value;
-  std::string error;
+  std::optional<std::string> error;
   std::string errorCode = "ERR_INTERNAL_SQLITE_ERROR";
   napi_async_work work = nullptr;
   napi_deferred deferred = nullptr;
@@ -172,6 +174,19 @@ struct EventSink {
 
 void perform(Task &task) noexcept {
   try {
+    if (task.spec->op == Op::CanonicalPath) {
+      std::error_code error;
+      const auto path = std::filesystem::absolute(cstring(task.args[0]), error);
+      if (error) throw NativeError("E_SQLITE_INVALID_PATH", error.message());
+
+      const auto canonical = std::filesystem::weakly_canonical(path, error);
+      if (error) throw NativeError("E_SQLITE_INVALID_PATH", error.message());
+
+      task.value = canonical.string();
+
+      return;
+    }
+
     std::vector<std::shared_ptr<Connection>> connections;
     for (const auto &arg : task.args) {
       if (auto *handle = std::get_if<Handle>(&arg.data)) connections.push_back((*handle)->connection());
@@ -404,7 +419,7 @@ napi_value outcome(napi_env env, const Task &task) {
   // serialization still returns Uint8Array in the upstream native contract.
   checkNapi(napi_set_named_property(env, result, "value", toNapi(env, task.value, task.spec->op != Op::Serialize)));
   checkNapi(napi_set_named_property(env, result, "errorCode", toNapi(env, task.errorCode)));
-  checkNapi(napi_set_named_property(env, result, "error", toNapi(env, task.error)));
+  checkNapi(napi_set_named_property(env, result, "error", toNapi(env, task.error ? Value(*task.error) : Value{})));
 
   return result;
 }
@@ -491,7 +506,8 @@ napi_value invoke(napi_env env, napi_callback_info info) {
 
 #define PAIR(name, op, argc)                                                                                           \
   {name "Sync", Op::op, argc, false}, { name "Async", Op::op, argc, true }
-const Spec SPECS[] = {{"open", Op::Open, 3, false},
+const Spec SPECS[] = {{"canonicalPath", Op::CanonicalPath, 1, false},
+                      {"open", Op::Open, 3, false},
                       {"dispose", Op::Dispose, 1, false},
                       {"syncLibSQL", Op::SyncLibSQL, 1, true},
                       PAIR("init", Init, 1),
@@ -522,7 +538,7 @@ napi_value init(napi_env env, napi_value exports) {
   if (napi_define_properties(env, exports, 1, &listener) != napi_ok) return nullptr;
 
   Value::Record extensions;
-#if EXPO_SQLITE_WITH_VEC
+#if EXPO_SQLITE_WITH_VEC && !defined(SQLITE_OMIT_LOAD_EXTENSION)
   extensions.emplace("sqlite-vec", Value::Record{{"libPath", std::string("libexpo_sqlite_vec.so")},
                                                  {"entryPoint", std::string("sqlite3_vec_init")}});
 #endif

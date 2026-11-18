@@ -264,8 +264,23 @@ bool hasStatement(const std::string &sql) {
 void exec(Connection &db, const std::string &sql) {
   const auto executeStatement = [&](const std::string &statement) {
     if (!hasStatement(statement)) return;
-    LibSQLCall call;
-    call.check(libsql_execute(db.conn, statement.c_str(), &call.error));
+
+    // The local backend's libsql_execute rejects SQLITE_ROW, including RETURNING.
+    // Drain the rows so every statement runs once.
+    libsql_rows_t result = nullptr;
+    LibSQLCall query;
+    query.check(libsql_query(db.conn, statement.c_str(), &result, &query.error));
+    if (!result) throw std::runtime_error("libsql_query returned null rows");
+
+    std::unique_ptr<const libsql_rows, decltype(&libsql_free_rows)> rows(result, libsql_free_rows);
+    while (true) {
+      libsql_row_t row = nullptr;
+      LibSQLCall next;
+      next.check(libsql_next_row(rows.get(), &row, &next.error));
+      if (!row) break;
+
+      libsql_free_row(row);
+    }
   };
 
   size_t start = 0;

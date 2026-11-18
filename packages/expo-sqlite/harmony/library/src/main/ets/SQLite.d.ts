@@ -17,7 +17,7 @@ declare module 'libexpo_sqlite.so' {
   export interface NativeResult {
     value: Object | null;
     errorCode: string;
-    error: string;
+    error: string | null;
   }
   export interface NativeOpenOptions {
     enableChangeListener: boolean;
@@ -29,6 +29,7 @@ declare module 'libexpo_sqlite.so' {
     readonly bundledExtensions: Record<string, Object>;
     readonly useLibSQL: boolean;
     observe(database: Object, callback: (event: DatabaseChangeEvent) => void, listening: boolean): void;
+    canonicalPath(path: string): NativeResult;
     syncLibSQL(database: Object): Promise<NativeResult>;
     open(path: string, options: NativeOpenOptions, serialized: Uint8Array | null): NativeResult;
     dispose(database: Object): NativeResult;
