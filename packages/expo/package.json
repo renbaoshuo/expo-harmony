@@ -51,7 +51,7 @@
           "upstream": "expo",
           "origin": "src/dom/webview-wrapper.tsx",
           "request": "./base",
-          "target": "dom/base.js"
+          "target": "src/dom/base.js"
         }
       ]
     },
