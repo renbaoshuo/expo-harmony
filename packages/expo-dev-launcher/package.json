@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-dev-launcher",
-  "version": "57.0.21-harmony.0",
+  "version": "57.0.21-harmony.1",
   "description": "HarmonyOS port of expo-dev-launcher",
   "keywords": [
     "react-native",

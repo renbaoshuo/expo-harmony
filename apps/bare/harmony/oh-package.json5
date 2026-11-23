@@ -1,10 +1,3 @@
-/*!
- * @expo-harmony-copyright
- *
- * Copyright 2026-present, Baoshuo <i@baoshuo.ren> ( https://baoshuo.ren ).
- * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
- */
-
 {
   "modelVersion": "5.0.0",
   "name": "cn.baoshuo.expoharmony.demo.bare",
@@ -12,20 +5,20 @@
   "license": "MIT",
   "dependencies": {
     "@rnoh/react-native-openharmony": "0.86.1",
-    "@expo-harmony/expo": "57.0.30-harmony.0",
-    "@expo-harmony/expo-asset": "57.0.20-harmony.0",
-    "@expo-harmony/expo-battery": "57.0.3-harmony.0",
-    "@expo-harmony/expo-constants": "57.0.22-harmony.0",
-    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
+    "@expo-harmony/expo": "57.0.30-harmony.1",
+    "@expo-harmony/expo-asset": "57.0.20-harmony.1",
+    "@expo-harmony/expo-battery": "57.0.3-harmony.1",
+    "@expo-harmony/expo-constants": "57.0.22-harmony.1",
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.1",
     "@react-native-ohos/react-native-worklets": "1.1.0-beta.1"
   },
   "overrides": {
     "@rnoh/react-native-openharmony": "0.86.1",
-    "@expo-harmony/expo": "57.0.30-harmony.0",
-    "@expo-harmony/expo-asset": "57.0.20-harmony.0",
-    "@expo-harmony/expo-battery": "57.0.3-harmony.0",
-    "@expo-harmony/expo-constants": "57.0.22-harmony.0",
-    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
+    "@expo-harmony/expo": "57.0.30-harmony.1",
+    "@expo-harmony/expo-asset": "57.0.20-harmony.1",
+    "@expo-harmony/expo-battery": "57.0.3-harmony.1",
+    "@expo-harmony/expo-constants": "57.0.22-harmony.1",
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.1",
     "@react-native-ohos/react-native-worklets": "1.1.0-beta.1"
   }
 }

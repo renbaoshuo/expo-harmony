@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-module-scripts",
-  "version": "57.0.0-harmony.0",
+  "version": "57.0.0-harmony.1",
   "description": "HarmonyOS port of expo-module-scripts",
   "keywords": [
     "react-native",

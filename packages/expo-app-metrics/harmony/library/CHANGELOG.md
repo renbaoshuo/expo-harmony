@@ -1,5 +1,5 @@
 # Changelog
 
-Version: 0.2.6-harmony.3
+Version: 57.0.23-harmony.1
 
 [Commit History](https://github.com/renbaoshuo/expo-harmony/commits/master/packages/expo-app-metrics)

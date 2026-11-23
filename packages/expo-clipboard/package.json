@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-clipboard",
-  "version": "57.0.2-harmony.0",
+  "version": "57.0.2-harmony.1",
   "description": "HarmonyOS port of expo-clipboard",
   "keywords": [
     "react-native",

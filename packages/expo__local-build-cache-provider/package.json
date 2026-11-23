@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo__local-build-cache-provider",
-  "version": "57.0.9-harmony.0",
+  "version": "57.0.9-harmony.1",
   "description": "HarmonyOS port of @expo/local-build-cache-provider",
   "keywords": [
     "react-native",

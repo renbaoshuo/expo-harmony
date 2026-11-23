@@ -1,5 +1,5 @@
 # Changelog
 
-Version: 55.0.13-harmony.3
+Version: 57.0.2-harmony.1
 
 [Commit History](https://github.com/renbaoshuo/expo-harmony/commits/master/packages/expo-app-integrity)

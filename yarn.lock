@@ -2983,7 +2983,7 @@ __metadata:
     semver: "npm:7.7.3"
     typescript: "npm:^6.0.3"
   peerDependencies:
-    "@expo-harmony/expo-modules-core": ^57.0.23-harmony.0
+    "@expo-harmony/expo-modules-core": 57.0.23-harmony.1
     "@expo/metro-runtime": ~57.0.17
     expo: ~57.0.31
     metro-config: ^0.84.3

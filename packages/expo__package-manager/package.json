@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo__package-manager",
-  "version": "1.13.1-harmony.0",
+  "version": "1.13.1-harmony.1",
   "description": "HarmonyOS port of @expo/package-manager",
   "keywords": [
     "react-native",

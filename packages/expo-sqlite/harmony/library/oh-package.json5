@@ -1,13 +1,6 @@
-/*!
- * @expo-harmony-copyright
- *
- * Copyright 2026-present, Baoshuo <i@baoshuo.ren> ( https://baoshuo.ren ).
- * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
- */
-
 {
   "name": "@expo-harmony/expo-sqlite",
-  "version": "57.0.4-harmony.0",
+  "version": "57.0.4-harmony.1",
   "description": "HarmonyOS port of expo-sqlite",
   "keywords": [
     "react-native",
@@ -25,7 +18,7 @@
   "license": "MIT",
   "main": "Index.ets",
   "dependencies": {
-    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.1",
     "@rnoh/react-native-openharmony": "~0.86.1"
   }
 }

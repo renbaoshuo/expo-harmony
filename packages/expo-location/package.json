@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-location",
-  "version": "57.0.22-harmony.0",
+  "version": "57.0.22-harmony.1",
   "description": "HarmonyOS port of expo-location",
   "keywords": [
     "react-native",

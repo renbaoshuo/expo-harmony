@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo__image-utils",
-  "version": "0.11.6-harmony.0",
+  "version": "0.11.6-harmony.1",
   "description": "HarmonyOS port of @expo/image-utils",
   "keywords": [
     "react-native",

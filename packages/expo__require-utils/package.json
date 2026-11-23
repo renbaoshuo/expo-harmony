@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo__require-utils",
-  "version": "57.0.6-harmony.0",
+  "version": "57.0.6-harmony.1",
   "description": "HarmonyOS port of @expo/require-utils",
   "keywords": [
     "react-native",

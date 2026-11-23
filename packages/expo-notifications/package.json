@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-notifications",
-  "version": "57.0.23-harmony.0",
+  "version": "57.0.23-harmony.1",
   "description": "HarmonyOS port of expo-notifications",
   "keywords": [
     "react-native",

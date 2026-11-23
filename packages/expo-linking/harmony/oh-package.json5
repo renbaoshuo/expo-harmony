@@ -1,14 +1,7 @@
-/*!
- * @expo-harmony-copyright
- *
- * Copyright 2026-present, Baoshuo <i@baoshuo.ren> ( https://baoshuo.ren ).
- * Released under MIT license. https://github.com/renbaoshuo/expo-harmony
- */
-
 {
   "modelVersion": "5.0.0",
   "name": "@expo-harmony-internal/expo-linking",
-  "version": "57.0.13-harmony.0",
+  "version": "57.0.13-harmony.1",
   "description": "HarmonyOS port of expo-linking",
   "keywords": [
     "react-native",
@@ -28,7 +21,7 @@
     "@expo-harmony/expo-linking": "./library"
   },
   "overrides": {
-    "@expo-harmony/expo-modules-core": "57.0.23-harmony.0",
+    "@expo-harmony/expo-modules-core": "57.0.23-harmony.1",
     "@rnoh/react-native-openharmony": "~0.86.1"
   }
 }

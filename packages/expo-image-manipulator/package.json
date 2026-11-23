@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-image-manipulator",
-  "version": "57.0.21-harmony.0",
+  "version": "57.0.21-harmony.1",
   "description": "HarmonyOS port of expo-image-manipulator",
   "keywords": [
     "react-native",

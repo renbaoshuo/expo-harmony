@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo__metro-runtime",
-  "version": "57.0.17-harmony.0",
+  "version": "57.0.17-harmony.1",
   "description": "HarmonyOS port of @expo/metro-runtime",
   "keywords": [
     "react-native",

@@ -1,6 +1,6 @@
 {
   "name": "@expo-harmony/expo-eas-client",
-  "version": "57.0.5-harmony.0",
+  "version": "57.0.5-harmony.1",
   "description": "HarmonyOS port of expo-eas-client",
   "keywords": [
     "react-native",
